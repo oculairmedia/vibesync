@@ -139,44 +139,6 @@ services:
         max-size: '10m'
         max-file: '3'
 
-  temporal-worker:
-    build:
-      context: .
-      dockerfile: temporal/Dockerfile
-    image: vibesync-temporal-worker:latest
-    container_name: vibesync-temporal-worker
-    restart: unless-stopped
-    user: '1000:1000'
-    mem_limit: 2g
-    cpus: 2.0
-    environment:
-      - NODE_OPTIONS=--max-old-space-size=1536
-      - TEMPORAL_ADDRESS=localhost:7233
-      - TEMPORAL_TASK_QUEUE=vibesync-queue
-      - VIBE_API_URL=${VIBE_API_URL:-http://192.168.50.90:3105/api}
-      - LETTA_API_URL=${LETTA_BASE_URL:-http://192.168.50.90:8289}
-      - LETTA_PASSWORD=${LETTA_PASSWORD}
-      - STACKS_DIR=/opt/stacks
-      - NODE_ENV=production
-    volumes:
-      - /opt/stacks:/opt/stacks:rw
-      # Mount local compiled Temporal code
-      - ./temporal/dist:/app/temporal/dist:ro
-      # Mount lib folder for database and other shared modules
-      - ./lib:/app/lib:ro
-      # Mount logs directory for database access
-      - ./logs:/app/logs:rw
-      # Dolt SQL client (mysql2 + deps) — bundled in image via npm ci
-      # No individual mounts needed; image node_modules already contains these
-    network_mode: host
-    depends_on:
-      - vibesync
-    logging:
-      driver: 'json-file'
-      options:
-        max-size: '10m'
-        max-file: '3'
-
   vibesync-ui:
     image: node:18-alpine
     container_name: vibesync-ui

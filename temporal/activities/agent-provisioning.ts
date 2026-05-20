@@ -8,10 +8,8 @@
 import { ApplicationFailure } from '@temporalio/activity';
 import { LettaClient } from '@letta-ai/letta-client';
 import path from 'path';
-
-function appRootModule(modulePath: string): string {
-  return path.join(process.cwd(), modulePath);
-}
+import { createSyncDatabase } from '../../src/database.js';
+import { agentsMdGenerator } from '../../src/AgentsMdGenerator.js';
 
 // Configuration
 const LETTA_API_BASE = process.env.LETTA_API_URL || 'http://192.168.50.90:8289';
@@ -118,7 +116,6 @@ export async function fetchAgentsToProvision(projectIdentifiers?: string[]): Pro
   console.log('[Activity:FetchAgents] Fetching agents to provision...');
 
   try {
-    const { createSyncDatabase } = await import(appRootModule('src/database.js'));
     const dbPath = process.env.DB_PATH || path.join(process.cwd(), 'logs', 'sync-state.db');
     const db = createSyncDatabase(dbPath);
 
@@ -584,7 +581,6 @@ export async function updateProjectAgentsMd(
       return { success: true, error: 'no_project_path' };
     }
 
-  const { agentsMdGenerator } = await import(appRootModule('src/AgentsMdGenerator.js'));
     const agentsMdPath = path.join(projectPath, 'AGENTS.md');
     const agentName = `PM - ${projectName}`;
 
@@ -659,12 +655,11 @@ export async function checkAgentExists(
 
   try {
     // First check the sync database
-    const { createSyncDatabase } = await import(appRootModule('src/database.js'));
     const dbPath = process.env.DB_PATH || '/opt/stacks/vibesync/logs/sync-state.db';
     const db = createSyncDatabase(dbPath);
 
     try {
-      const lettaInfo = db.getProjectLettaInfo(projectIdentifier);
+      const lettaInfo = db.getProjectLettaInfo(projectIdentifier) as { letta_agent_id?: string } | null;
       if (lettaInfo?.letta_agent_id) {
         console.log(`[Activity:CheckAgent] Found agent in database: ${lettaInfo.letta_agent_id}`);
         return {
@@ -732,7 +727,6 @@ export async function updateProjectAgent(
   );
 
   try {
-    const { createSyncDatabase } = await import(appRootModule('src/database.js'));
     const dbPath = process.env.DB_PATH || '/opt/stacks/vibesync/logs/sync-state.db';
     const db = createSyncDatabase(dbPath);
 

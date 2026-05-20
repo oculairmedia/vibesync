@@ -36,6 +36,7 @@ html/
 
 # Build artifacts
 /dist/
+temporal/dist/
 .*.bun-build
 *.working
 *.backup
