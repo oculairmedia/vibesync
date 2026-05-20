@@ -1,8 +1,14 @@
 import path from 'node:path';
-import { execFile, execFileSync } from 'node:child_process';
-import { readFileSync, readlinkSync } from 'node:fs';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { logger as defaultLogger } from './logger';
+import {
+  defaultDeps as defaultPortSweeperDeps,
+  detectConflict as detectPortConflict,
+  pickFreePort,
+  type PortSweeperDeps,
+  type SweeperProject,
+} from './beads/PortSweeper';
 import type {
   DoltHubProvisioningConfig,
   DoltHubProvisioningResult,
@@ -10,8 +16,6 @@ import type {
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_BRANCH = 'main';
-const DEFAULT_FLEET_PORT_START = 32000;
-const DEFAULT_FLEET_PORT_END = 60999;
 
 interface CommandResult {
   stdout: string;
@@ -88,6 +92,7 @@ interface DoltHubServiceOptions {
   logger?: { child?: (ctx: Record<string, unknown>) => unknown; error?: (ctx: Record<string, unknown>, msg: string) => void; info?: (ctx: Record<string, unknown>, msg: string) => void };
   fetchImpl?: FetchImpl;
   commandRunner?: CommandRunner;
+  portSweeperDeps?: PortSweeperDeps;
 }
 
 function trimTrailingSlash(value: string): string {
@@ -155,6 +160,7 @@ export class DoltHubProvisioningService {
   private logger: DoltHubServiceOptions['logger'];
   private fetchImpl: FetchImpl;
   private commandRunner: CommandRunner;
+  private portSweeperDeps: PortSweeperDeps;
 
   constructor(options: DoltHubServiceOptions = {}) {
     const {
@@ -163,6 +169,7 @@ export class DoltHubProvisioningService {
       logger = defaultLogger,
       fetchImpl = globalThis.fetch as FetchImpl,
       commandRunner,
+      portSweeperDeps,
     } = options;
     this.config = {
       enabled: Boolean(config.enabled),
@@ -177,6 +184,7 @@ export class DoltHubProvisioningService {
     this.logger = logger;
     this.fetchImpl = fetchImpl;
     this.commandRunner = commandRunner || defaultCommandRunner;
+    this.portSweeperDeps = portSweeperDeps ?? defaultPortSweeperDeps;
   }
 
   get enabled(): boolean {
@@ -382,23 +390,20 @@ export class DoltHubProvisioningService {
   }
 
   private async ensureUniqueBeadsPort(project: BeadsProject, commands: string[]): Promise<void> {
-    const currentPort = readBeadsPort(project.filesystem_path);
-    if (currentPort === null) return;
+    const registry: readonly SweeperProject[] = (this.db?.projects?.getAllProjects?.() ?? []).map(
+      (entry) => ({ identifier: entry.identifier, filesystem_path: entry.filesystem_path ?? null }),
+    );
+    const sweeperProject: SweeperProject = {
+      identifier: project.identifier,
+      filesystem_path: project.filesystem_path,
+    };
 
-    const conflict = this.hasConfiguredPortDuplicate(project, currentPort) || hasWrongPortOwner(project.filesystem_path, currentPort);
+    const conflict = detectPortConflict(sweeperProject, registry, this.portSweeperDeps);
     if (!conflict) return;
 
-    const nextPort = findFreeFleetPort(this.db?.projects?.getAllProjects?.() ?? []);
+    const nextPort = pickFreePort(registry, this.portSweeperDeps);
     await this.runBd(project.filesystem_path, ['dolt', 'set', 'port', String(nextPort)], commands);
     await this.runBd(project.filesystem_path, ['dolt', 'start'], commands);
-  }
-
-  private hasConfiguredPortDuplicate(project: BeadsProject, currentPort: number): boolean {
-    const projects = this.db?.projects?.getAllProjects?.() ?? [];
-    return projects.some((candidate) => {
-      if (candidate.identifier === project.identifier || !candidate.filesystem_path) return false;
-      return readBeadsPort(candidate.filesystem_path) === currentPort;
-    });
   }
 
   private async listBeadsRemotes(
@@ -429,56 +434,6 @@ export class DoltHubProvisioningService {
   }
 }
 
-function readBeadsPort(projectPath: string): number | null {
-  try {
-    const raw = readFileSync(path.join(projectPath, '.beads', 'dolt-server.port'), 'utf8').trim();
-    const port = Number.parseInt(raw, 10);
-    return Number.isFinite(port) && port > 0 ? port : null;
-  } catch {
-    return null;
-  }
-}
-
-function hasWrongPortOwner(projectPath: string, port: number): boolean {
-  try {
-    const output = execFileSync('ss', ['-H', '-tlnp', `sport = :${port}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    const line = output.split('\n').find((entry) => entry.trim().length > 0);
-    if (!line) return false;
-    const pid = /pid=(\d+)/.exec(line)?.[1];
-    if (!pid) return false;
-    return readlinkSync(`/proc/${pid}/cwd`) !== path.join(projectPath, '.beads', 'dolt');
-  } catch {
-    return false;
-  }
-}
-
-function findFreeFleetPort(projects: readonly RegistryProject[]): number {
-  const reserved = new Set<number>();
-  for (const project of projects) {
-    if (!project.filesystem_path) continue;
-    const port = readBeadsPort(project.filesystem_path);
-    if (port !== null) reserved.add(port);
-  }
-  for (const port of readListeningPorts()) reserved.add(port);
-  for (let port = DEFAULT_FLEET_PORT_START; port <= DEFAULT_FLEET_PORT_END; port++) {
-    if (!reserved.has(port)) return port;
-  }
-  throw new Error(`No free Beads/Dolt port in range ${DEFAULT_FLEET_PORT_START}-${DEFAULT_FLEET_PORT_END}`);
-}
-
-function readListeningPorts(): Set<number> {
-  try {
-    const output = execFileSync('ss', ['-H', '-tln'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    const ports = new Set<number>();
-    for (const line of output.split('\n')) {
-      const match = /:(\d+)\s/.exec(line);
-      if (match?.[1]) ports.add(Number.parseInt(match[1], 10));
-    }
-    return ports;
-  } catch {
-    return new Set();
-  }
-}
 
 export function createDoltHubProvisioningService(
   options: DoltHubServiceOptions,

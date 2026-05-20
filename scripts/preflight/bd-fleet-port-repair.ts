@@ -17,10 +17,18 @@
 
 // @ts-expect-error bun-only import; resolved at runtime under Bun
 import Database from 'bun:sqlite';
-import { execFileSync, execSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { inspectDoltServerPortOwner, preflight } from './bd-preflight.js';
+import { preflight } from './bd-preflight.js';
+import {
+  DEFAULT_FLEET_PORT_END,
+  DEFAULT_FLEET_PORT_START,
+  defaultDeps as defaultSweeperDeps,
+  detectConflict,
+  pickFreePort,
+  type SweeperProject,
+} from '../../src/beads/PortSweeper.js';
 
 interface ProjectRow {
   readonly identifier: string;
@@ -70,8 +78,8 @@ function parseArgs(argv: readonly string[]): Options {
     json: argv.includes('--json'),
     dbPath: readFlag(argv, '--db') ?? process.env.VIBESYNC_DB_PATH ?? '/opt/stacks/vibesync/logs/sync-state.db',
     projects,
-    startPort: Number.parseInt(readFlag(argv, '--start-port') ?? '32000', 10),
-    endPort: Number.parseInt(readFlag(argv, '--end-port') ?? '60999', 10),
+    startPort: Number.parseInt(readFlag(argv, '--start-port') ?? String(DEFAULT_FLEET_PORT_START), 10),
+    endPort: Number.parseInt(readFlag(argv, '--end-port') ?? String(DEFAULT_FLEET_PORT_END), 10),
   };
 }
 
@@ -94,16 +102,6 @@ function readRegistry(dbPath: string): ProjectRow[] {
   }
 }
 
-function readProjectPort(projectPath: string): number | null {
-  try {
-    const raw = readFileSync(join(projectPath, '.beads', 'dolt-server.port'), 'utf8').trim();
-    const port = Number.parseInt(raw, 10);
-    return Number.isFinite(port) && port > 0 ? port : null;
-  } catch {
-    return null;
-  }
-}
-
 function candidateProjects(projects: readonly ProjectRow[], selected: ReadonlySet<string>): ProjectRow[] {
   return projects.filter((project) => {
     if (selected.size > 0 && !selected.has(project.identifier)) return false;
@@ -112,29 +110,8 @@ function candidateProjects(projects: readonly ProjectRow[], selected: ReadonlySe
   });
 }
 
-function readListeningPorts(): Set<number> {
-  try {
-    const out = execSync('ss -H -tln', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    const ports = new Set<number>();
-    for (const line of out.split('\n')) {
-      const match = /:(\d+)\s/.exec(line);
-      if (!match?.[1]) continue;
-      ports.add(Number.parseInt(match[1], 10));
-    }
-    return ports;
-  } catch {
-    return new Set();
-  }
-}
-
-function nextFreePort(reserved: Set<number>, startPort: number, endPort: number): number {
-  for (let port = startPort; port <= endPort; port++) {
-    if (!reserved.has(port)) {
-      reserved.add(port);
-      return port;
-    }
-  }
-  throw new Error(`No free port in range ${startPort}-${endPort}`);
+function asSweeperProject(row: ProjectRow): SweeperProject {
+  return { identifier: row.identifier, filesystem_path: row.filesystem_path };
 }
 
 function commandPlan(projectPath: string, port: number): string[] {
@@ -160,48 +137,26 @@ function applyRepair(projectPath: string, port: number): string | null {
 
 function auditAndMaybeRepair(opts: Options): Finding[] {
   const projects = candidateProjects(readRegistry(opts.dbPath), opts.projects);
-  const configuredByPort = new Map<number, ProjectRow[]>();
-  for (const project of projects) {
-    const port = readProjectPort(project.filesystem_path ?? '');
-    if (port === null) continue;
-    const existing = configuredByPort.get(port) ?? [];
-    configuredByPort.set(port, [...existing, project]);
-  }
-
-  const reserved = readListeningPorts();
-  for (const port of configuredByPort.keys()) reserved.add(port);
+  const sweeperRegistry = projects.map(asSweeperProject);
 
   const findings: Finding[] = [];
-  const duplicateVictims = new Set<string>();
-  for (const [port, group] of configuredByPort.entries()) {
-    for (const project of group.slice(1)) {
-      duplicateVictims.add(project.identifier);
-      findings.push(buildFinding({
-        opts,
-        project,
-        kind: 'duplicate-configured-port',
-        currentPort: port,
-        recommendedPort: nextFreePort(reserved, opts.startPort, opts.endPort),
-        detail: `port ${port} is configured by ${group.map((entry) => entry.identifier).join(', ')}`,
-      }));
-    }
-  }
 
   for (const project of projects) {
-    if (duplicateVictims.has(project.identifier)) continue;
-    const projectPath = project.filesystem_path;
-    if (!projectPath) continue;
-    const port = readProjectPort(projectPath);
-    if (port === null) continue;
-    const owner = inspectDoltServerPortOwner(port, join(projectPath, '.beads', 'dolt'));
-    if (owner.level !== 'error') continue;
+    const conflict = detectConflict(asSweeperProject(project), sweeperRegistry, defaultSweeperDeps);
+    if (!conflict) continue;
+
+    // pickFreePort recomputes reservations from the registry + listening ports
+    // each call, so two concurrently-broken projects won't collide on the same
+    // replacement port — the just-repaired project's new port is in its own
+    // .beads/dolt-server.port by the time the next loop iteration reads it.
+    const recommendedPort = pickFreePort(sweeperRegistry, defaultSweeperDeps, opts.startPort, opts.endPort);
     findings.push(buildFinding({
       opts,
       project,
-      kind: 'port-owner-conflict',
-      currentPort: port,
-      recommendedPort: nextFreePort(reserved, opts.startPort, opts.endPort),
-      detail: owner.detail,
+      kind: conflict.kind === 'duplicate-configured-port' ? 'duplicate-configured-port' : 'port-owner-conflict',
+      currentPort: conflict.currentPort,
+      recommendedPort,
+      detail: conflict.detail,
     }));
   }
 

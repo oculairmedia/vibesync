@@ -29,6 +29,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import mysql from 'mysql2/promise';
 import type { Pool } from 'mysql2/promise';
+import { computeRepoId, defaultRepoFingerprintDeps, type RepoFingerprintDeps } from '../../beads/repoFingerprint.js';
 
 /**
  * Configuration for connecting to the local Dolt server that bd init
@@ -45,6 +46,40 @@ export interface DoltClientConfig {
   readonly host?: string;
   /** Connection-pool size. */
   readonly poolSize?: number;
+  /** Override the expected repo_id (otherwise computed from git remote of beadsRoot). */
+  readonly expectedRepoId?: string;
+  /** Injectable deps for tests; defaults read real git/fs. */
+  readonly repoFingerprintDeps?: RepoFingerprintDeps;
+}
+
+/**
+ * Thrown by `DoltClient.verifyFingerprint()` when the connected database's
+ * `metadata.repo_id` does not match the expected fingerprint for the
+ * project. This is the same condition `bd doctor` reports as
+ * "Repo Fingerprint: Database belongs to different repository".
+ *
+ * Treat this error as a hard signal that the local Dolt server is bound
+ * to the wrong database (typically: another project's `dolt sql-server`
+ * grabbed the port after a host reboot). Recover by running the port
+ * sweep (see vibesync-jhb).
+ */
+export class WrongDoltDatabaseError extends Error {
+  readonly expectedRepoId: string;
+  readonly actualRepoId: string;
+  readonly database: string;
+  readonly port: number;
+  constructor(args: { expectedRepoId: string; actualRepoId: string; database: string; port: number }) {
+    super(
+      `WrongDoltDatabase: connected to ${args.database} on port ${args.port} ` +
+        `with repo_id=${args.actualRepoId.slice(0, 8)}, expected ${args.expectedRepoId.slice(0, 8)} — ` +
+        `another project's Dolt server probably owns this port (bd doctor: \"Database belongs to different repository\")`,
+    );
+    this.name = 'WrongDoltDatabaseError';
+    this.expectedRepoId = args.expectedRepoId;
+    this.actualRepoId = args.actualRepoId;
+    this.database = args.database;
+    this.port = args.port;
+  }
 }
 
 function resolvedBeadsRoot(cfg: DoltClientConfig): string {
@@ -117,6 +152,32 @@ export interface DependencyRow {
 }
 
 /**
+ * Compare an expected repo_id against the value just read from the
+ * connected database. Throws `WrongDoltDatabaseError` on mismatch.
+ * Treats an empty `actualRepoId` as a legacy DB (no error) — same
+ * convention as `bd doctor` (warning, not error).
+ *
+ * Extracted as a top-level pure function so unit tests can pin the
+ * mismatch behavior without spinning up a real mysql pool.
+ */
+export function assertFingerprintMatch(args: {
+  readonly expectedRepoId: string;
+  readonly actualRepoId: string;
+  readonly database: string;
+  readonly port: number;
+}): void {
+  if (!args.actualRepoId) return;
+  if (args.actualRepoId !== args.expectedRepoId) {
+    throw new WrongDoltDatabaseError({
+      expectedRepoId: args.expectedRepoId,
+      actualRepoId: args.actualRepoId,
+      database: args.database,
+      port: args.port,
+    });
+  }
+}
+
+/**
  * The direct-SQL client. Owns a connection pool to the local Dolt
  * server. All operations are typed and parameterized; raw SQL is not
  * exposed to callers.
@@ -124,11 +185,18 @@ export interface DependencyRow {
 export class DoltClient {
   private readonly pool: Pool;
   readonly database: string;
+  readonly port: number;
+  private readonly expectedRepoId: string | null;
+  private fingerprintVerified = false;
 
   constructor(cfg: DoltClientConfig = {}) {
     const port = readPort(cfg);
     const database = readDatabase(cfg);
     this.database = database;
+    this.port = port;
+    this.expectedRepoId =
+      cfg.expectedRepoId ??
+      computeRepoId(resolvedBeadsRoot(cfg), cfg.repoFingerprintDeps ?? defaultRepoFingerprintDeps);
     this.pool = mysql.createPool({
       host: cfg.host ?? '127.0.0.1',
       port,
@@ -146,6 +214,39 @@ export class DoltClient {
   /** Close the pool. Idempotent. */
   async close(): Promise<void> {
     await this.pool.end();
+  }
+
+  /**
+   * Verify the connected Dolt database is actually the one we expect.
+   * Compares the DB's `metadata.repo_id` row against the fingerprint
+   * computed from the project's git remote (see repoFingerprint.ts).
+   *
+   * Returns immediately once verified. Throws `WrongDoltDatabaseError`
+   * on mismatch — callers should treat that as a hard failure and refuse
+   * to read or write further.
+   *
+   * No-op when no expected fingerprint is known (project lacks a git
+   * remote and a resolvable path). That's a legacy/edge case; we log
+   * a warning instead of forcing every test fixture to set one.
+   */
+  async verifyFingerprint(): Promise<void> {
+    if (this.fingerprintVerified) return;
+    if (!this.expectedRepoId) {
+      this.fingerprintVerified = true;
+      return;
+    }
+    const [rows] = await this.pool.execute(
+      'SELECT value FROM metadata WHERE `key` = ? LIMIT 1',
+      ['repo_id'],
+    );
+    const actualRepoId = (rows as { value?: string }[])[0]?.value ?? '';
+    assertFingerprintMatch({
+      expectedRepoId: this.expectedRepoId,
+      actualRepoId,
+      database: this.database,
+      port: this.port,
+    });
+    this.fingerprintVerified = true;
   }
 
   /**
@@ -303,6 +404,31 @@ export class DoltClient {
         provider_kind: task.providerKind,
         session_id: task.sessionId,
       };
+      await conn.execute(
+        `UPDATE issues SET metadata = CAST(? AS JSON) WHERE id = ?`,
+        [JSON.stringify(meta), stepId],
+      );
+      await conn.commit();
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
+  }
+
+  /** Persist latest retry-aware execution attempt count. */
+  async recordStepAttempt(stepId: string, attempt: number): Promise<void> {
+    const conn = await this.pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [rows] = await conn.execute<mysql.RowDataPacket[]>(
+        `SELECT metadata FROM issues WHERE id = ?`,
+        [stepId],
+      );
+      const existing = rows[0]?.['metadata'];
+      const meta = typeof existing === 'string' ? JSON.parse(existing) : (existing ?? {});
+      meta.exec = { ...(meta.exec ?? {}), attempts: attempt };
       await conn.execute(
         `UPDATE issues SET metadata = CAST(? AS JSON) WHERE id = ?`,
         [JSON.stringify(meta), stepId],
