@@ -54,6 +54,7 @@ describe('buildDefaultToolAttacher', () => {
     const service = {
       attachDispatchMoleculeTool: vi.fn(async (_agentId: string) => true),
       attachSearchFolderPassagesTool: vi.fn(async (_agentId: string) => true),
+      attachListFormulasTool: vi.fn(async (_agentId: string) => true),
     };
     const attacher = buildDefaultToolAttacher(service);
 
@@ -64,10 +65,24 @@ describe('buildDefaultToolAttacher', () => {
     expect(service.attachSearchFolderPassagesTool).toHaveBeenCalledWith('agent-1');
   });
 
+  it('wires list_formulas to LettaService.attachListFormulasTool', async () => {
+    const service = {
+      attachDispatchMoleculeTool: vi.fn(async (_agentId: string) => true),
+      attachSearchFolderPassagesTool: vi.fn(async (_agentId: string) => true),
+      attachListFormulasTool: vi.fn(async (_agentId: string) => true),
+    };
+    const attacher = buildDefaultToolAttacher(service);
+
+    const result = await attacher.attach('agent-1', 'list_formulas');
+    expect(result.status).toBe('attached');
+    expect(service.attachListFormulasTool).toHaveBeenCalledWith('agent-1');
+  });
+
   it('returns status=unknown for built-in tool names (read_file, list_directory, etc.)', async () => {
     const service = {
       attachDispatchMoleculeTool: vi.fn(async () => true),
       attachSearchFolderPassagesTool: vi.fn(async () => true),
+      attachListFormulasTool: vi.fn(async () => true),
     };
     const attacher = buildDefaultToolAttacher(service);
 

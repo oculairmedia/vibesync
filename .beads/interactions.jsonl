@@ -331,3 +331,9 @@
 {"id":"int-4b495d48","kind":"field_change","created_at":"2026-05-21T05:53:12.995510251Z","actor":"Claude Code","issue_id":"vibesync-cy4","extra":{"field":"status","new_value":"closed","old_value":"open"}}
 {"id":"int-9af9b724","kind":"field_change","created_at":"2026-05-21T05:53:17.116238877Z","actor":"Claude Code","issue_id":"vibesync-qen","extra":{"field":"status","new_value":"closed","old_value":"open"}}
 {"id":"int-77d6f2c5","kind":"field_change","created_at":"2026-05-21T12:40:38.595525866Z","actor":"Claude Code","issue_id":"vibesync-cs2","extra":{"field":"status","new_value":"closed","old_value":"open"}}
+{"id":"int-df42eff4","kind":"field_change","created_at":"2026-05-21T13:07:59.51546772Z","actor":"Claude Code","issue_id":"vibesync-j1i","extra":{"field":"status","new_value":"closed","old_value":"open"}}
+{"id":"int-8f8107ad","kind":"field_change","created_at":"2026-05-21T13:08:01.125741609Z","actor":"Claude Code","issue_id":"vibesync-rgx","extra":{"field":"status","new_value":"closed","old_value":"open"}}
+{"id":"int-2693fb0f","kind":"field_change","created_at":"2026-05-21T13:08:01.787162125Z","actor":"Claude Code","issue_id":"vibesync-3co","extra":{"field":"status","new_value":"closed","old_value":"open"}}
+{"id":"int-c3ab9362","kind":"field_change","created_at":"2026-05-21T13:08:04.88179096Z","actor":"Claude Code","issue_id":"vibesync-3hj","extra":{"field":"status","new_value":"closed","old_value":"open"}}
+{"id":"int-0674e964","kind":"field_change","created_at":"2026-05-21T13:08:08.044486816Z","actor":"Claude Code","issue_id":"vibesync-cmc","extra":{"field":"status","new_value":"closed","old_value":"open"}}
+{"id":"int-16b32f3d","kind":"field_change","created_at":"2026-05-21T13:08:10.130562842Z","actor":"Claude Code","issue_id":"vibesync-bec","extra":{"field":"status","new_value":"closed","old_value":"open"}}

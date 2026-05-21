@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { DoltClient } from '../../../src/orchestration/store/index.js';
 import { MoleculeWalker } from '../../../src/orchestration/molecule/index.js';
-import { loadFormulasFromFile } from '../../../src/orchestration/formula/index.js';
+import { loadPack } from '../../../src/orchestration/packs/index.js';
 
 /**
  * huly-vibe-sync-k6h acceptance: "`vibesync dispatch --formula
@@ -47,8 +47,11 @@ describe.skipIf(!RUN)('formula → molecule dispatch (integration)', () => {
   });
 
   it('dispatches the code-review formula end-to-end', async () => {
-    const formulas = loadFormulasFromFile(join(BEADS_ROOT, 'formulas', 'code-review.toml'));
-    const codeReview = formulas.find((f) => f.name === 'code-review');
+    // Formula source moved from formulas/ to packs/gastown/formulas/ in 1689d44
+    // (chore(formulas): remove orphan top-level code-review formula). Load via
+    // the gastown pack so the path tracks the canonical pack scope. (vibesync-bec)
+    const pack = loadPack(join(BEADS_ROOT, 'packs', 'gastown'), 'project');
+    const codeReview = pack.formulas.find((f) => f.name === 'code-review');
     expect(codeReview).toBeDefined();
 
     const view = await walker.dispatch({

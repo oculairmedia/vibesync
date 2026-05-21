@@ -96,7 +96,32 @@ export class LettaService {
 
   async ensureControlAgent() { this._syncRuntimeConfig(); const result = await this._lifecycle.ensureControlAgent(); this._syncControlAgentCache(); return result; }
   async getControlAgentConfig(agentId: string | null = null) { this._syncRuntimeConfig(); const result = await this._lifecycle.getControlAgentConfig(agentId); this._syncControlAgentCache(); return result; }
-  async ensureAgent(projectIdentifier: string, projectName: string) { this._syncRuntimeConfig(); const result = await this._lifecycle.ensureAgent(projectIdentifier, projectName); this._syncControlAgentCache(); return result; }
+  async ensureAgent(projectIdentifier: string, projectName: string) {
+    this._syncRuntimeConfig();
+    const result = await this._lifecycle.ensureAgent(projectIdentifier, projectName);
+    this._syncControlAgentCache();
+    if (result && typeof result === 'object' && typeof (result as { id?: unknown }).id === 'string') {
+      await this._finalizePmAgent((result as { id: string }).id);
+    }
+    return result;
+  }
+
+  /**
+   * Post-spawn wiring shared by every ensureAgent return path
+   * (vibesync-rgx). Idempotent — every step ends up in the
+   * already-attached / already-set state on re-run. Failures are logged
+   * but never throw; an undelivered tool or env var leaves the PM agent
+   * usable for everything except formula dispatch, which is a soft
+   * regression rather than a fatal one.
+   */
+  private async _finalizePmAgent(agentId: string): Promise<void> {
+    try { await this._tools.attachDispatchMoleculeTool(agentId); }
+    catch (err) { console.warn(`[Letta] _finalizePmAgent: attachDispatchMoleculeTool failed for ${agentId}: ${(err as Error).message}`); }
+    try { await this._tools.attachListFormulasTool(agentId); }
+    catch (err) { console.warn(`[Letta] _finalizePmAgent: attachListFormulasTool failed for ${agentId}: ${(err as Error).message}`); }
+    try { await this._tools.syncPmAgentEnvVars(agentId); }
+    catch (err) { console.warn(`[Letta] _finalizePmAgent: syncPmAgentEnvVars failed for ${agentId}: ${(err as Error).message}`); }
+  }
   async getAgent(agentId: string) { this._syncRuntimeConfig(); return this._lifecycle.getAgent(agentId); }
   async listAgents(filters: Record<string, unknown> = {}) { this._syncRuntimeConfig(); return this._lifecycle.listAgents(filters); }
   _buildPersonaBlock(projectIdentifier: string, projectName: string) { return this._lifecycle._buildPersonaBlock(projectIdentifier, projectName); }
@@ -116,7 +141,10 @@ export class LettaService {
   async attachSearchFolderPassagesTool(agentId: string) { return this._tools.attachSearchFolderPassagesTool(agentId); }
   async ensureDispatchMoleculeTool() { return this._tools.ensureDispatchMoleculeTool(); }
   async attachDispatchMoleculeTool(agentId: string) { return this._tools.attachDispatchMoleculeTool(agentId); }
+  async ensureListFormulasTool() { return this._tools.ensureListFormulasTool(); }
+  async attachListFormulasTool(agentId: string) { return this._tools.attachListFormulasTool(agentId); }
   async setAgentIdEnvVar(agentId: string) { return this._tools.setAgentIdEnvVar(agentId); }
+  async syncPmAgentEnvVars(agentId: string, extra: Record<string, string> = {}) { return this._tools.syncPmAgentEnvVars(agentId, extra); }
 
   async _updatePersonaBlock(agentId: string, personaContent: string) { this._syncRuntimeConfig(); return (this._memory as unknown as { _updatePersonaBlock: (a: string, c: string) => Promise<void> })._updatePersonaBlock(agentId, personaContent); }
   async _ensureTemplateBlocks(agentId: string, opts: Record<string, unknown>) { this._syncRuntimeConfig(); return (this._memory as unknown as { _ensureTemplateBlocks: (a: string, o: Record<string, unknown>) => Promise<void> })._ensureTemplateBlocks(agentId, opts); }

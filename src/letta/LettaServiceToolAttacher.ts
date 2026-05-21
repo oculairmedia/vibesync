@@ -43,6 +43,7 @@ export interface LettaServiceToolAttacherOptions {
 export interface LettaServiceToolMethods {
   attachDispatchMoleculeTool(agentId: string): Promise<boolean>;
   attachSearchFolderPassagesTool(agentId: string): Promise<boolean>;
+  attachListFormulasTool(agentId: string): Promise<boolean>;
 }
 
 export class LettaServiceToolAttacher implements ToolAttacher {
@@ -78,6 +79,7 @@ export function buildDefaultToolAttacher(service: LettaServiceToolMethods): Lett
   return new LettaServiceToolAttacher({
     attachers: {
       dispatch_molecule: (agentId) => service.attachDispatchMoleculeTool(agentId),
+      list_formulas: (agentId) => service.attachListFormulasTool(agentId),
       search_folder_passages: (agentId) => service.attachSearchFolderPassagesTool(agentId),
     },
   });

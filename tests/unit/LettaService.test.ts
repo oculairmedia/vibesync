@@ -371,6 +371,35 @@ describe('LettaService', () => {
       expect(service._agentState.agents['TEST']).toBe('agent-existing');
     });
 
+    it('finalizePmAgent attaches dispatch_molecule + list_formulas and syncs env vars after ensureAgent (vibesync-rgx)', async () => {
+      const agent = { id: 'agent-final', name: 'PM - X' };
+      fetchWithPool.mockResolvedValue({ ok: true, json: async () => [{ id: 'tool-dispatch', name: 'dispatch_molecule' }] });
+      // First fetchWithPool call inside ensureAgent (list-by-name) needs to
+      // return the existing agent so we land in the resume path.
+      fetchWithPool.mockResolvedValueOnce({ ok: true, json: async () => [agent] });
+
+      const attachDispatchSpy = vi.spyOn(service._tools, 'attachDispatchMoleculeTool');
+      const attachListSpy = vi.spyOn(service._tools, 'attachListFormulasTool');
+      const envSpy = vi.spyOn(service._tools, 'syncPmAgentEnvVars');
+
+      await service.ensureAgent('X', 'X');
+
+      expect(attachDispatchSpy).toHaveBeenCalledWith('agent-final');
+      expect(attachListSpy).toHaveBeenCalledWith('agent-final');
+      expect(envSpy).toHaveBeenCalledWith('agent-final');
+    });
+
+    it('finalizePmAgent failures are non-fatal — ensureAgent still returns the agent (vibesync-rgx)', async () => {
+      const agent = { id: 'agent-soft-fail', name: 'PM - X' };
+      fetchWithPool.mockResolvedValue({ ok: true, json: async () => [agent] });
+
+      vi.spyOn(service._tools, 'attachDispatchMoleculeTool').mockRejectedValueOnce(new Error('letta down'));
+      vi.spyOn(service._tools, 'syncPmAgentEnvVars').mockRejectedValueOnce(new Error('letta down'));
+
+      const result = await service.ensureAgent('X', 'X');
+      expect(result.id).toBe('agent-soft-fail');
+    });
+
     it('should return persisted agent if found in Letta', async () => {
       service._agentState.agents['TEST'] = 'agent-persisted';
 

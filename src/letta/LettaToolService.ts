@@ -208,6 +208,93 @@ export class LettaToolService {
   }
 
   /**
+   * Register or look up the `list_formulas` Letta tool (vibesync-3co).
+   *
+   * Pair tool to `dispatch_molecule`: GETs `/formulas` and returns the
+   * catalog so the PM agent can read each formula's `whenToUse` hint
+   * before dispatching. Source is Python, lives at
+   * `tools/list_formulas.py`, uploaded verbatim on first use.
+   */
+  async ensureListFormulasTool(): Promise<string> {
+    const toolName = 'list_formulas';
+    const { apiURL, password } = this.config;
+
+    try {
+      const response = await fetchWithPool(`${apiURL}/tools?name=${toolName}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${password}`, 'Content-Type': 'application/json' },
+      });
+      if (response.ok) {
+        const tools = await response.json() as unknown[];
+        if (Array.isArray(tools) && tools.length > 0) {
+          const first = tools[0] as Record<string, unknown> | undefined;
+          if (first && typeof first === 'object' && 'id' in first) {
+            console.log(`[Letta] list_formulas tool exists: ${String(first.id)}`);
+            return String(first.id);
+          }
+        }
+      }
+
+      console.log('[Letta] Creating list_formulas tool...');
+      const toolSourcePath = resolveFromAppRoot('tools', 'list_formulas.py');
+      let sourceCode: string;
+      try {
+        sourceCode = fs.readFileSync(toolSourcePath, 'utf8');
+      } catch (readError) {
+        console.error(`[Letta] Could not read tool source from ${toolSourcePath}:`, (readError as Error).message);
+        throw new Error(`Tool source file not found: ${toolSourcePath}`);
+      }
+
+      const createResponse = await fetchWithPool(`${apiURL}/tools`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${password}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: toolName,
+          description: 'List every vibesync formula with its whenToUse hint. Call this before dispatch_molecule when the right formula is not already obvious.',
+          source_code: sourceCode,
+          source_type: 'python',
+          tags: ['vibesync', 'orchestration', 'formula', 'catalog'],
+        }),
+      });
+
+      if (!createResponse.ok) {
+        const errorText = await createResponse.text();
+        throw new Error(`Failed to create list_formulas tool: HTTP ${createResponse.status}: ${errorText}`);
+      }
+      const newTool = await createResponse.json() as Record<string, unknown>;
+      if (!newTool || typeof newTool !== 'object' || !('id' in newTool)) {
+        throw new Error('Failed to create list_formulas tool: response did not include an id');
+      }
+      console.log(`[Letta] list_formulas tool created: ${String(newTool.id)}`);
+      return String(newTool.id);
+    } catch (error) {
+      console.error('[Letta] Error ensuring list_formulas tool:', (error as Error).message);
+      throw error;
+    }
+  }
+
+  /**
+   * Attach the `list_formulas` tool to an agent. Same idempotent shape as
+   * `attachDispatchMoleculeTool` — returns true if the tool ended up
+   * attached (including already-attached); never throws.
+   */
+  async attachListFormulasTool(agentId: string): Promise<boolean> {
+    try {
+      const toolId = await this.ensureListFormulasTool();
+      await this.config.client.agents.tools.attach(agentId, toolId);
+      console.log(`[Letta] list_formulas tool attached to agent ${agentId}`);
+      return true;
+    } catch (error) {
+      if ((error as Error).message?.includes('already attached')) {
+        console.log(`[Letta] list_formulas already attached to agent ${agentId}`);
+        return true;
+      }
+      console.error('[Letta] Error attaching list_formulas:', (error as Error).message);
+      return false;
+    }
+  }
+
+  /**
    * Attach the `dispatch_molecule` tool to an agent. Returns true if the
    * tool ended up attached (including the "already attached" case).
    * Surfaces errors via console.error but never throws — same shape as
@@ -230,12 +317,70 @@ export class LettaToolService {
   }
 
   async setAgentIdEnvVar(agentId: string): Promise<boolean> {
-    const { apiURL, password } = this.config;
-    try {
-      const response = await fetchWithPool(`${apiURL}/agents/${agentId}`, { method: 'PATCH', headers: { Authorization: `Bearer ${password}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ tool_exec_environment_variables: { LETTA_AGENT_ID: agentId } }) });
-      if (!response.ok) { const errorText = await response.text(); throw new Error(`HTTP ${response.status}: ${errorText}`); }
-      console.log(`[Letta] LETTA_AGENT_ID env var set on agent ${agentId}`);
-      return true;
-    } catch (error) { console.error('[Letta] Error setting LETTA_AGENT_ID env var:', (error as Error).message); return false; }
+    return this.syncPmAgentEnvVars(agentId, { LETTA_AGENT_ID: agentId });
   }
+
+  /**
+   * Write the PM agent's `tool_exec_environment_variables` in one shot
+   * (vibesync-j1i). Letta's PATCH on this field replaces the whole map,
+   * so every caller that touches it must own the full set. The map this
+   * builder writes:
+   *
+   *   LETTA_AGENT_ID         — required, used by every PM-scoped tool
+   *   VIBESYNC_API_BASE_URL  — required, where dispatch_molecule /
+   *                            list_formulas POST/GET; defaults to
+   *                            `http://localhost:${HEALTH_PORT}` when
+   *                            VIBESYNC_API_BASE_URL is unset in the
+   *                            server process env
+   *   VIBESYNC_ORCHESTRATION_TOKEN — optional bearer for the API; omitted
+   *                            from the map when unset so the tool sees
+   *                            undefined rather than an empty string
+   *
+   * Callers may pass `extra` to merge additional keys (e.g. tests). The
+   * defaults always take precedence over `extra` for the three keys
+   * above so a caller cannot accidentally clobber them.
+   */
+  async syncPmAgentEnvVars(agentId: string, extra: Record<string, string> = {}): Promise<boolean> {
+    const { apiURL, password } = this.config;
+    const envVars = buildPmAgentEnvVars(agentId, extra);
+    try {
+      const response = await fetchWithPool(`${apiURL}/agents/${agentId}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${password}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tool_exec_environment_variables: envVars }),
+      });
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
+      }
+      const keys = Object.keys(envVars).sort().join(', ');
+      console.log(`[Letta] tool_exec env vars synced on agent ${agentId}: ${keys}`);
+      return true;
+    } catch (error) {
+      console.error('[Letta] Error syncing PM agent env vars:', (error as Error).message);
+      return false;
+    }
+  }
+}
+
+/**
+ * Source of truth for the PM agent's tool_exec_environment_variables.
+ * Pure function so tests can pin the shape without a network round-trip.
+ * Resolution order for VIBESYNC_API_BASE_URL:
+ *   1. process.env.VIBESYNC_API_BASE_URL (deployment override)
+ *   2. `http://localhost:${HEALTH_PORT}` where HEALTH_PORT mirrors the
+ *      ApiServer default (3099). Reads HEALTH_PORT at call time so the
+ *      env reflects however the server actually bound this process.
+ */
+export function buildPmAgentEnvVars(agentId: string, extra: Record<string, string> = {}): Record<string, string> {
+  const port = (process.env['HEALTH_PORT'] ?? '3099').trim() || '3099';
+  const apiBaseUrl = (process.env['VIBESYNC_API_BASE_URL'] ?? `http://localhost:${port}`).replace(/\/+$/, '');
+  const token = (process.env['VIBESYNC_ORCHESTRATION_TOKEN'] ?? '').trim();
+  const out: Record<string, string> = {
+    ...extra,
+    LETTA_AGENT_ID: agentId,
+    VIBESYNC_API_BASE_URL: apiBaseUrl,
+  };
+  if (token) out['VIBESYNC_ORCHESTRATION_TOKEN'] = token;
+  return out;
 }

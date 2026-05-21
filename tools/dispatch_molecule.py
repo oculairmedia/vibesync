@@ -37,7 +37,7 @@ def dispatch_molecule(formula: str, input: str, pack: str = "gastown", motivatin
     import urllib.request
     import urllib.error
 
-    base = os.environ.get("VIBESYNC_API_BASE_URL", "http://localhost:3000").rstrip("/")
+    base = os.environ.get("VIBESYNC_API_BASE_URL", "http://localhost:3099").rstrip("/")
     token = os.environ.get("VIBESYNC_ORCHESTRATION_TOKEN", "").strip()
 
     url = f"{base}/formulas/{formula}/run"
