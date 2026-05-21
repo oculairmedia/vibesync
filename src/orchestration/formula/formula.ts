@@ -20,6 +20,8 @@
  *   prompt_template = "<path-relative-to-formula>"
  *   wait_for = "completion"  # optional, default
  *   depends_on = "<step>"    # optional, single name OR array
+ *   retries = 0              # optional, non-negative integer
+ *   retry_backoff_ms = 1000  # optional, non-negative integer
  *
  * See vibesync-k6h.
  */
@@ -144,14 +146,26 @@ function parseStep(
       `formula "${formulaName}": step "${name}".wait_for must be "completion" (got ${JSON.stringify(waitForRaw)})`,
     );
   }
+  const retries = readNonNegativeInteger(raw['retries'], 0, `formula "${formulaName}": step "${name}".retries`);
+  const retryBackoffMs = readNonNegativeInteger(raw['retry_backoff_ms'], 1000, `formula "${formulaName}": step "${name}".retry_backoff_ms`);
   const spec: StepSpec = {
     name,
     role,
     ...(promptTemplate !== undefined ? { promptTemplate } : {}),
     ...(dependsOn !== undefined ? { dependsOn } : {}),
     waitFor: 'completion',
+    retries,
+    retryBackoffMs,
   };
   return spec;
+}
+
+function readNonNegativeInteger(value: unknown, defaultValue: number, label: string): number {
+  if (value === undefined) return defaultValue;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative integer`);
+  }
+  return value;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

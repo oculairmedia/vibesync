@@ -78,6 +78,32 @@ describe('FormulaDispatcher', () => {
     expect(provider.recorder.starts.map((start) => start.role)).toEqual(['reviewer']);
   });
 
+  it('retries a failed step according to the formula retry policy', async () => {
+    const { dispatcher, store, provider, events } = newHarness({
+      script: (spec) => {
+        const attempt = Number(spec.extra?.['attempt'] ?? 0);
+        return eventScript(attempt < 3 ? [{ kind: 'error', message: `attempt ${attempt} failed` }] : [{ kind: 'message-delta', text: 'eventual success' }]);
+      },
+    });
+
+    const result = await dispatcher.run({ formula: retryFormula(), pack: retryPack(), input: 'retry this' });
+    const step = await store.getBead(newMoleculeStepId(result.moleculeId, 'worker'));
+
+    expect(result.outputs).toEqual({ worker: 'eventual success' });
+    expect(provider.recorder.starts.map((start) => start.extra?.['attempt'])).toEqual([1, 2, 3]);
+    expect(step?.status).toBe('closed');
+    expect(step?.metadata).toMatchObject({
+      exec: {
+        attempts: 3,
+        output_payload: { output: 'eventual success', attempts: 3 },
+      },
+    });
+    expect(events.filter((event) => event.kind === 'dispatcher/step.retry').map((event) => event.payload)).toEqual([
+      expect.objectContaining({ attempt: 1, nextAttempt: 2, backoffMs: 0, reason: 'attempt 1 failed' }),
+      expect.objectContaining({ attempt: 2, nextAttempt: 3, backoffMs: 0, reason: 'attempt 2 failed' }),
+    ]);
+  });
+
   it('renders only declared predecessor outputs required by depends_on before each step runs', async () => {
     const formula: Formula = {
       name: 'chain',
@@ -141,6 +167,46 @@ describe('FormulaDispatcher', () => {
       'dispatcher/step.started:beta',
       'dispatcher/step.finished:beta',
     ]);
+  });
+
+  it('queues whole-molecule runs FIFO when maxConcurrentMolecules is reached', async () => {
+    const gates = [newDeferred<void>(), newDeferred<void>(), newDeferred<void>(), newDeferred<void>(), newDeferred<void>()];
+    let observeCount = 0;
+    const { dispatcher, provider, events } = newHarness({
+      maxConcurrentMolecules: 2,
+      script: () => gatedScript(gates[observeCount++]?.promise ?? Promise.resolve()),
+    });
+
+    const runs = ['one', 'two', 'three', 'four', 'five'].map((input) =>
+      dispatcher.run({ formula: singleStepFormula(), pack: singleStepPack(), input }),
+    );
+
+    await waitForCondition(() => provider.recorder.starts.length === 2 && dispatcher.getQueueDepth() === 3);
+    expect(dispatcher.getActiveMoleculeCount()).toBe(2);
+    expect(events.filter((event) => event.kind === 'dispatcher/formula.queued').map((event) => event.payload)).toEqual([
+      expect.objectContaining({ depth: 1, position: 1, formulaName: 'single-step', active: 2, maxConcurrentMolecules: 2 }),
+      expect.objectContaining({ depth: 2, position: 2, formulaName: 'single-step', active: 2, maxConcurrentMolecules: 2 }),
+      expect.objectContaining({ depth: 3, position: 3, formulaName: 'single-step', active: 2, maxConcurrentMolecules: 2 }),
+    ]);
+
+    gates[0]?.resolve(undefined);
+    await waitForCondition(() => provider.recorder.starts.length === 3 && dispatcher.getQueueDepth() === 2);
+    gates[1]?.resolve(undefined);
+    await waitForCondition(() => provider.recorder.starts.length === 4 && dispatcher.getQueueDepth() === 1);
+    gates[2]?.resolve(undefined);
+    await waitForCondition(() => provider.recorder.starts.length === 5 && dispatcher.getQueueDepth() === 0);
+    gates[3]?.resolve(undefined);
+    gates[4]?.resolve(undefined);
+
+    await Promise.all(runs);
+    expect(provider.recorder.prompts.map((prompt) => prompt.content[0]?.type === 'text' ? prompt.content[0].text : '')).toEqual([
+      'Run one',
+      'Run two',
+      'Run three',
+      'Run four',
+      'Run five',
+    ]);
+    expect(dispatcher.getActiveMoleculeCount()).toBe(0);
   });
 
   it('passes role memory block replace policy into runtime extra', async () => {
@@ -255,7 +321,11 @@ describe('FormulaDispatcher', () => {
   });
 });
 
-function newHarness(args: { readonly script: (spec: SessionSpec) => AsyncIterable<SessionEvent>; readonly maxParallelSteps?: number }) {
+function newHarness(args: {
+  readonly script: (spec: SessionSpec) => AsyncIterable<SessionEvent>;
+  readonly maxParallelSteps?: number;
+  readonly maxConcurrentMolecules?: number;
+}) {
   const store = new InMemoryDoltClient();
   const provider = newFakeProvider({ kind: 'fake-runtime', script: args.script });
   const eventBus = new EventBus({ noPersist: true });
@@ -266,6 +336,7 @@ function newHarness(args: { readonly script: (spec: SessionSpec) => AsyncIterabl
     walker: new MoleculeWalker(store),
     eventBus,
     ...(args.maxParallelSteps === undefined ? {} : { maxParallelSteps: args.maxParallelSteps }),
+    ...(args.maxConcurrentMolecules === undefined ? {} : { maxConcurrentMolecules: args.maxConcurrentMolecules }),
   });
   return { dispatcher, store, provider, events };
 }
@@ -300,6 +371,36 @@ function parallelPack(): Pack {
       'prompts/alpha.md': 'Alpha ${input}',
       'prompts/beta.md': 'Beta ${input}',
     },
+  });
+}
+
+function retryFormula(): Formula {
+  return {
+    name: 'retrying',
+    description: 'Retrying formula',
+    steps: [{ name: 'worker', role: 'worker', promptTemplate: 'prompts/worker.md', waitFor: 'completion', retries: 2, retryBackoffMs: 0 }],
+  };
+}
+
+function retryPack(): Pack {
+  return newPack({
+    roles: ['worker'],
+    prompts: { 'prompts/worker.md': 'Retry ${input}' },
+  });
+}
+
+function singleStepFormula(): Formula {
+  return {
+    name: 'single-step',
+    description: 'Single step',
+    steps: [{ name: 'worker', role: 'worker', promptTemplate: 'prompts/worker.md', waitFor: 'completion' }],
+  };
+}
+
+function singleStepPack(): Pack {
+  return newPack({
+    roles: ['worker'],
+    prompts: { 'prompts/worker.md': 'Run ${input}' },
   });
 }
 
@@ -346,6 +447,30 @@ async function* eventScript(events: readonly ScriptEvent[]): AsyncIterable<Sessi
     else yield { kind: 'error', ts, code: 'fake-error', message: event.message };
   }
   yield { kind: 'turn-done', ts };
+}
+
+async function* gatedScript(done: Promise<void>): AsyncIterable<SessionEvent> {
+  const ts = new Date().toISOString();
+  yield { kind: 'started', ts };
+  await done;
+  yield { kind: 'message-delta', ts, text: 'ok' };
+  yield { kind: 'turn-done', ts };
+}
+
+function newDeferred<T>(): { readonly promise: Promise<T>; readonly resolve: (value: T | PromiseLike<T>) => void } {
+  let resolve: (value: T | PromiseLike<T>) => void = () => undefined;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+async function waitForCondition(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error('condition was not met');
 }
 
 type ScriptEvent =

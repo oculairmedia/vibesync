@@ -21,6 +21,8 @@ role = "greeter"
     expect(formulas[0]!.steps[0]!.role).toBe('greeter');
     expect(formulas[0]!.steps[0]!.name).toBe('greeter');
     expect(formulas[0]!.steps[0]!.waitFor).toBe('completion');
+    expect(formulas[0]!.steps[0]!.retries).toBe(0);
+    expect(formulas[0]!.steps[0]!.retryBackoffMs).toBe(1000);
   });
 
   it('parses the reference code-review formula', () => {
@@ -118,5 +120,36 @@ role = "r"
 wait_for = "first_token"
 `;
     expect(() => parseFormulasFromToml(toml)).toThrow(/wait_for must be "completion"/);
+  });
+
+  it('parses per-step retry policy fields', () => {
+    const toml = `
+[formula.retrying]
+[[formula.retrying.steps]]
+role = "worker"
+retries = 2
+retry_backoff_ms = 25
+`;
+    const formulas = parseFormulasFromToml(toml);
+    expect(formulas[0]!.steps[0]).toMatchObject({
+      retries: 2,
+      retryBackoffMs: 25,
+    });
+  });
+
+  it('rejects invalid retry policy fields', () => {
+    expect(() => parseFormulasFromToml(`
+[formula.bad]
+[[formula.bad.steps]]
+role = "worker"
+retries = -1
+`)).toThrow(/retries must be a non-negative integer/);
+
+    expect(() => parseFormulasFromToml(`
+[formula.bad]
+[[formula.bad.steps]]
+role = "worker"
+retry_backoff_ms = 1.5
+`)).toThrow(/retry_backoff_ms must be a non-negative integer/);
   });
 });

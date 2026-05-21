@@ -19,6 +19,7 @@ export interface BootOrchestrationPlaneOptions {
   readonly dolt: DoltClient;
   readonly persistEvents?: boolean;
   readonly runDriftAuditOnBoot?: boolean;
+  readonly maxConcurrentMolecules?: number;
 }
 
 export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions): Promise<OrchestrationHandle> {
@@ -45,7 +46,13 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   }
 
   const walker = new MoleculeWalker(opts.dolt);
-  const dispatcher = new FormulaDispatcher({ provider, walker, eventBus: bus });
+  const maxConcurrentMolecules = opts.maxConcurrentMolecules ?? readMaxConcurrentMoleculesFromEnv();
+  const dispatcher = new FormulaDispatcher({
+    provider,
+    walker,
+    eventBus: bus,
+    ...(maxConcurrentMolecules === undefined ? {} : { maxConcurrentMolecules }),
+  });
   let shutDown = false;
 
   return {
@@ -62,4 +69,11 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
       await daemon.stop();
     },
   };
+}
+
+function readMaxConcurrentMoleculesFromEnv(): number | undefined {
+  const raw = process.env['VIBESYNC_MAX_CONCURRENT_MOLECULES'];
+  if (!raw) return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) ? Math.floor(value) : undefined;
 }

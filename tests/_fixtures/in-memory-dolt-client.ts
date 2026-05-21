@@ -106,6 +106,13 @@ export class InMemoryDoltClient {
     });
   }
 
+  async recordStepAttempt(stepId: string, attempt: number): Promise<void> {
+    const row = this.requireBead(stepId);
+    this.updateBead(stepId, {
+      metadata: mergeExec(row.metadata, { attempts: attempt }),
+    });
+  }
+
   async markStepDone(stepId: string, output: unknown): Promise<void> {
     const row = this.requireBead(stepId);
     this.updateBead(stepId, {

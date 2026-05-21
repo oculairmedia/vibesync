@@ -33,6 +33,8 @@ export interface StepSpec {
   readonly promptTemplate?: string;
   readonly dependsOn?: readonly string[];
   readonly waitFor?: 'completion';
+  readonly retries?: number;
+  readonly retryBackoffMs?: number;
 }
 
 /**
@@ -69,6 +71,7 @@ export interface MoleculeStore {
   findRunningStepsForMolecule(rootId: string): Promise<readonly BeadRow[]>;
   markStepRunning(stepId: string): Promise<void>;
   recordStepTask(stepId: string, task: { readonly taskId: string; readonly providerKind: string; readonly sessionId: string }): Promise<void>;
+  recordStepAttempt(stepId: string, attempt: number): Promise<void>;
   markStepDone(stepId: string, output: unknown): Promise<void>;
   markStepFailed(stepId: string, errorTrace: string): Promise<void>;
 }
@@ -224,6 +227,11 @@ export class MoleculeWalker {
   /** Persist provider-opaque task metadata for restart re-attachment. */
   async recordStepTask(stepId: string, task: { readonly taskId: string; readonly providerKind: string; readonly sessionId: string }): Promise<void> {
     await this.store.recordStepTask(stepId, task);
+  }
+
+  /** Persist the latest execution attempt count for retry-aware steps. */
+  async recordStepAttempt(stepId: string, attempt: number): Promise<void> {
+    await this.store.recordStepAttempt(stepId, attempt);
   }
 
   /** Mark a step as done. Pass-through. */

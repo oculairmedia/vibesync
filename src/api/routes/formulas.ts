@@ -21,6 +21,7 @@ export function registerFormulaRoutes(app: App, deps: FormulaRoutesDeps): void {
     match: ({ pathname, method }) => pathname === '/formulas' && method === 'GET',
     handle: async ({ res }) => {
       const packs = loadAvailablePacks();
+      const queueDepth = deps.orchestration?.dispatcher.getQueueDepth();
       deps.sendJson(res, 200, {
         formulas: packs.flatMap((pack) =>
           pack.formulas.map((formula) => ({
@@ -31,6 +32,7 @@ export function registerFormulaRoutes(app: App, deps: FormulaRoutesDeps): void {
             roles: formula.steps.map((step) => step.role),
           })),
         ),
+        ...(queueDepth === undefined ? {} : { queue: { depth: queueDepth } }),
       });
     },
   });

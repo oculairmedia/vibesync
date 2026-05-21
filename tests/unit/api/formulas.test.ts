@@ -28,6 +28,18 @@ describe('formula routes', () => {
     }));
   });
 
+  it('GET /formulas includes dispatcher queue depth when orchestration is booted', async () => {
+    const harness = newHarness({ queueDepth: 3 });
+    const route = harness.find('GET', '/formulas');
+
+    await route.handle(ctx('/formulas'));
+
+    expect(harness.sendJson).toHaveBeenCalledWith(harness.res, 200, expect.objectContaining({
+      formulas: expect.arrayContaining([expect.objectContaining({ name: 'code-review' })]),
+      queue: { depth: 3 },
+    }));
+  });
+
   it('POST /formulas/:name/run rejects missing input', async () => {
     const harness = newHarness();
     const route = harness.find('POST', '/formulas/code-review/run');
@@ -176,7 +188,7 @@ describe('formula routes', () => {
   });
 });
 
-function newHarness(overrides: { orchestration?: ReturnType<typeof newOrchestration> | null; bus?: EventBus; walker?: MoleculeWalker } = {}) {
+function newHarness(overrides: { orchestration?: ReturnType<typeof newOrchestration> | null; bus?: EventBus; walker?: MoleculeWalker; queueDepth?: number } = {}) {
   const routes: Route[] = [];
   const app: App = { registerRoute: (route) => { routes.push(route); } };
   const orchestration = overrides.orchestration === undefined
@@ -205,7 +217,7 @@ function newHarness(overrides: { orchestration?: ReturnType<typeof newOrchestrat
   };
 }
 
-function newOrchestration(overrides: { bus?: EventBus; walker?: MoleculeWalker } = {}): TestOrchestration {
+function newOrchestration(overrides: { bus?: EventBus; walker?: MoleculeWalker; queueDepth?: number } = {}): TestOrchestration {
   const bus = overrides.bus ?? new EventBus({ noPersist: true });
   const walker = overrides.walker ?? new MoleculeWalker(new InMemoryDoltClient());
   return {
@@ -223,6 +235,8 @@ function newOrchestration(overrides: { bus?: EventBus; walker?: MoleculeWalker }
       }),
       resume: vi.fn(async (moleculeId: string) => ({ moleculeId, outputs: { reviewer: 'recovered' } })),
       cancel: vi.fn(async (moleculeId: string) => ({ moleculeId, cancelledStepCount: 1 })),
+      getQueueDepth: vi.fn(() => overrides.queueDepth ?? 0),
+      getActiveMoleculeCount: vi.fn(() => 0),
     },
     provider: {},
     patrol: {},
@@ -237,6 +251,8 @@ interface TestOrchestration {
     readonly run: ReturnType<typeof vi.fn>;
     readonly resume: ReturnType<typeof vi.fn>;
     readonly cancel: ReturnType<typeof vi.fn>;
+    readonly getQueueDepth: ReturnType<typeof vi.fn>;
+    readonly getActiveMoleculeCount: ReturnType<typeof vi.fn>;
   };
   readonly provider: Record<string, never>;
   readonly patrol: Record<string, never>;

@@ -9,6 +9,9 @@ import { renderTemplate } from './render.js';
 /**
  * FormulaDispatcher runs formula steps and records enough provider-opaque
  * execution metadata on molecule-step beads to resume after restart.
+ * Whole-molecule runs can be capped with `maxConcurrentMolecules`; calls
+ * above that limit wait in a FIFO in-process queue so a burst of formula runs
+ * cannot consume every runtime teammate slot at once.
  * Ready steps fan out in parallel up to `maxParallelSteps`; dependency ordering
  * still comes from MoleculeWalker, so formulas can opt into parallelism by
  * declaring independent steps.
@@ -44,6 +47,12 @@ export interface FormulaDispatcherOptions {
   readonly eventBus: EventBus;
   readonly idPrefix?: string;
   readonly maxParallelSteps?: number;
+  readonly maxConcurrentMolecules?: number;
+}
+
+interface QueuedMoleculeRun {
+  readonly input: DispatchInput;
+  readonly resolve: () => void;
 }
 
 export class FormulaDispatchError extends Error {
@@ -70,6 +79,9 @@ export class FormulaDispatcher {
   private readonly eventBus: EventBus;
   private readonly idPrefix: string;
   private readonly maxParallelSteps: number;
+  private readonly maxConcurrentMolecules: number;
+  private readonly moleculeQueue: QueuedMoleculeRun[] = [];
+  private activeMolecules = 0;
 
   constructor(opts: FormulaDispatcherOptions) {
     this.provider = opts.provider;
@@ -77,9 +89,27 @@ export class FormulaDispatcher {
     this.eventBus = opts.eventBus;
     this.idPrefix = opts.idPrefix ?? 'mol';
     this.maxParallelSteps = normalizeMaxParallelSteps(opts.maxParallelSteps);
+    this.maxConcurrentMolecules = normalizeMaxConcurrentMolecules(opts.maxConcurrentMolecules);
   }
 
   async run(input: DispatchInput): Promise<DispatchResult> {
+    await this.acquireMoleculeSlot(input);
+    try {
+      return await this.runNow(input);
+    } finally {
+      this.releaseMoleculeSlot();
+    }
+  }
+
+  getQueueDepth(): number {
+    return this.moleculeQueue.length;
+  }
+
+  getActiveMoleculeCount(): number {
+    return this.activeMolecules;
+  }
+
+  private async runNow(input: DispatchInput): Promise<DispatchResult> {
     const startedAt = Date.now();
     const view = await this.walker.dispatch({
       prefix: this.idPrefix,
@@ -122,6 +152,36 @@ export class FormulaDispatcher {
       durationMs: Date.now() - startedAt,
     });
     return { moleculeId, outputs };
+  }
+
+  private acquireMoleculeSlot(input: DispatchInput): Promise<void> {
+    if (this.activeMolecules < this.maxConcurrentMolecules) {
+      this.activeMolecules++;
+      return Promise.resolve();
+    }
+
+    const position = this.moleculeQueue.length + 1;
+    const depth = position;
+    this.emit('dispatcher/formula.queued', undefined, undefined, {
+      formulaName: input.formula.name,
+      pack: input.pack.manifest.name,
+      depth,
+      position,
+      active: this.activeMolecules,
+      maxConcurrentMolecules: this.maxConcurrentMolecules,
+    });
+
+    return new Promise<void>((resolve) => {
+      this.moleculeQueue.push({ input, resolve });
+    });
+  }
+
+  private releaseMoleculeSlot(): void {
+    this.activeMolecules--;
+    const next = this.moleculeQueue.shift();
+    if (!next) return;
+    this.activeMolecules++;
+    next.resolve();
   }
 
   async resume(moleculeId: string): Promise<DispatchResult> {
@@ -237,45 +297,113 @@ export class FormulaDispatcher {
       throw new FormulaDispatchError(`FormulaDispatcher: step "${stepName}" has no promptTemplate`, args.moleculeId);
     }
 
-    this.emit('dispatcher/step.started', args.moleculeId, args.step.id, {
+    const maxAttempts = (stepSpec.retries ?? 0) + 1;
+    const retryBackoffMs = stepSpec.retryBackoffMs ?? 1000;
+    const rendered = renderTemplate({
+      packRoot: args.input.pack.root,
+      template: stepSpec.promptTemplate,
+      context: renderContext(args.input.input, args.outputs),
+    });
+
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await this.walker.recordStepAttempt(args.step.id, attempt);
+        const output = await this.runStepAttempt({
+          stepId: args.step.id,
+          stepName,
+          role: stepSpec.role,
+          roleConfig,
+          moleculeId: args.moleculeId,
+          formulaName: args.input.formula.name,
+          rendered,
+          attempt,
+        });
+        args.outputs[stepName] = output.text;
+        await this.walker.finishStep(args.step.id, { output: output.text, eventCount: output.eventCount, attempts: attempt });
+        this.emit('dispatcher/step.finished', args.moleculeId, args.step.id, {
+          stepName,
+          role: stepSpec.role,
+          stepId: args.step.id,
+          outputLength: output.text.length,
+          attempts: attempt,
+        });
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt >= maxAttempts) break;
+        this.emit('dispatcher/step.retry', args.moleculeId, args.step.id, {
+          stepName,
+          role: stepSpec.role,
+          stepId: args.step.id,
+          attempt,
+          nextAttempt: attempt + 1,
+          maxAttempts,
+          backoffMs: retryBackoffMs,
+          reason: stringifyError(error),
+        });
+        await sleep(retryBackoffMs);
+      }
+    }
+
+    await this.walker.failStep(args.step.id, stringifyError(lastError));
+    this.emit('dispatcher/step.failed', args.moleculeId, args.step.id, {
       stepName,
       role: stepSpec.role,
       stepId: args.step.id,
+      error: stringifyError(lastError),
+      attempts: maxAttempts,
+    });
+    throw new FormulaDispatchError(`FormulaDispatcher: step "${stepName}" failed`, args.moleculeId, { cause: lastError });
+  }
+
+  private async runStepAttempt(args: {
+    readonly stepId: string;
+    readonly stepName: string;
+    readonly role: string;
+    readonly roleConfig: RoleConfig;
+    readonly moleculeId: string;
+    readonly formulaName: string;
+    readonly rendered: string;
+    readonly attempt: number;
+  }): Promise<{ readonly text: string; readonly eventCount: number }> {
+    this.emit('dispatcher/step.started', args.moleculeId, args.stepId, {
+      stepName: args.stepName,
+      role: args.role,
+      stepId: args.stepId,
+      attempt: args.attempt,
     });
 
     let handle: Awaited<ReturnType<RuntimeProvider['start']>> | null = null;
     let eventCount = 0;
     let output = '';
     try {
-      await this.walker.startStep(args.step.id);
-      const rendered = renderTemplate({
-        packRoot: args.input.pack.root,
-        template: stepSpec.promptTemplate,
-        context: renderContext(args.input.input, args.outputs),
-      });
+      await this.walker.startStep(args.stepId);
       handle = await this.provider.start({
-        role: stepSpec.role,
-        label: `${args.input.formula.name}/${stepName}`,
+        role: args.role,
+        label: `${args.formulaName}/${args.stepName}`,
         extra: {
           moleculeId: args.moleculeId,
-          stepName,
+          stepName: args.stepName,
+          attempt: args.attempt,
           memfsEnabled: false,
-          memoryBlocks: roleConfig.memoryBlocks ?? [],
-          ...(roleConfig.memoryBlocksPolicy?.mode === 'replace' ? { memoryBlockSeedMode: 'replace' } : {}),
+          memoryBlocks: args.roleConfig.memoryBlocks ?? [],
+          ...(args.roleConfig.memoryBlocksPolicy?.mode === 'replace' ? { memoryBlockSeedMode: 'replace' } : {}),
         },
       });
-      const promptResult = await this.provider.prompt(handle, [{ type: 'text', text: rendered }]);
+      const promptResult = await this.provider.prompt(handle, [{ type: 'text', text: args.rendered }]);
       if (promptResult.taskId) {
-        await this.walker.recordStepTask(args.step.id, {
+        await this.walker.recordStepTask(args.stepId, {
           taskId: promptResult.taskId,
           providerKind: handle.providerKind,
           sessionId: handle.id,
         });
         this.emit('dispatcher/step.task_recorded', args.moleculeId, promptResult.taskId, {
-          stepName,
-          role: stepSpec.role,
-          stepId: args.step.id,
+          stepName: args.stepName,
+          role: args.role,
+          stepId: args.stepId,
           sessionId: handle.id,
+          attempt: args.attempt,
         });
       }
       for await (const event of this.provider.observe(handle)) {
@@ -285,23 +413,7 @@ export class FormulaDispatcher {
         if (event.kind === 'stopped') throw new Error('runtime stopped before turn completion');
         if (event.kind === 'turn-done') break;
       }
-      args.outputs[stepName] = output;
-      await this.walker.finishStep(args.step.id, { output, eventCount });
-      this.emit('dispatcher/step.finished', args.moleculeId, args.step.id, {
-        stepName,
-        role: stepSpec.role,
-        stepId: args.step.id,
-        outputLength: output.length,
-      });
-    } catch (error) {
-      await this.walker.failStep(args.step.id, stringifyError(error));
-      this.emit('dispatcher/step.failed', args.moleculeId, args.step.id, {
-        stepName,
-        role: stepSpec.role,
-        stepId: args.step.id,
-        error: stringifyError(error),
-      });
-      throw new FormulaDispatchError(`FormulaDispatcher: step "${stepName}" failed`, args.moleculeId, { cause: error });
+      return { text: output, eventCount };
     } finally {
       if (handle) await this.provider.stop(handle);
     }
@@ -374,11 +486,11 @@ export class FormulaDispatcher {
     }
   }
 
-  private emit(kind: string, moleculeId: string, taskId: string | undefined, payload: Readonly<Record<string, unknown>>): void {
+  private emit(kind: string, moleculeId: string | undefined, taskId: string | undefined, payload: Readonly<Record<string, unknown>>): void {
     this.eventBus.emit({
       layer: 'dispatcher',
       kind,
-      molecule_id: moleculeId,
+      ...(moleculeId ? { molecule_id: moleculeId } : {}),
       ...(taskId ? { task_id: taskId } : {}),
       payload,
     });
@@ -438,6 +550,20 @@ function normalizeMaxParallelSteps(value: number | undefined): number {
     throw new Error('FormulaDispatcher: maxParallelSteps must be at least 1');
   }
   return Math.floor(value);
+}
+
+function normalizeMaxConcurrentMolecules(value: number | undefined): number {
+  if (value === undefined) return Number.POSITIVE_INFINITY;
+  if (!Number.isFinite(value)) return Number.POSITIVE_INFINITY;
+  if (value < 1) {
+    throw new Error('FormulaDispatcher: maxConcurrentMolecules must be at least 1');
+  }
+  return Math.floor(value);
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function stringifyError(error: unknown): string {
