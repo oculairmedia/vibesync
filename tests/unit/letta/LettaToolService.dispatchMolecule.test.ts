@@ -79,12 +79,15 @@ describe('ensureDispatchMoleculeTool', () => {
     const createCall = mockedFetch.mock.calls[1]!;
     expect(createCall[0]).toBe('https://letta.test/v1/tools');
     const body = JSON.parse(createCall[1].body as string) as Record<string, unknown>;
-    expect(body.name).toBe('dispatch_molecule');
+    // Letta API derives name/description from the Python function + docstring
+    // and rejects explicit name/description/tags fields with HTTP 422. Only
+    // source_code + source_type ride the body.
     expect(body.source_type).toBe('python');
     expect(typeof body.source_code).toBe('string');
     expect((body.source_code as string).length).toBeGreaterThan(0);
-    expect(body.tags).toEqual(['vibesync', 'orchestration', 'formula']);
-    expect(body.description).toMatch(/whenToUse catalog/);
+    expect('name' in body).toBe(false);
+    expect('description' in body).toBe(false);
+    expect('tags' in body).toBe(false);
     expect(createCall[1].headers).toEqual(expect.objectContaining({ Authorization: 'Bearer sekret' }));
   });
 

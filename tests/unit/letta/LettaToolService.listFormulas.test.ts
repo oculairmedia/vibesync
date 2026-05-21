@@ -79,12 +79,13 @@ describe('ensureListFormulasTool (vibesync-3co)', () => {
     const createCall = mockedFetch.mock.calls[1]!;
     expect(createCall[0]).toBe('https://letta.test/v1/tools');
     const body = JSON.parse(createCall[1].body as string) as Record<string, unknown>;
-    expect(body.name).toBe('list_formulas');
+    // See LettaToolService.dispatchMolecule.test.ts — same Letta API contract.
     expect(body.source_type).toBe('python');
     expect(typeof body.source_code).toBe('string');
     expect((body.source_code as string).length).toBeGreaterThan(0);
-    expect(body.tags).toEqual(['vibesync', 'orchestration', 'formula', 'catalog']);
-    expect(body.description).toMatch(/whenToUse/);
+    expect('name' in body).toBe(false);
+    expect('description' in body).toBe(false);
+    expect('tags' in body).toBe(false);
   });
 
   it('throws when create returns non-OK with the upstream error body', async () => {

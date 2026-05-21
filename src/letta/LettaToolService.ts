@@ -179,15 +179,17 @@ export class LettaToolService {
         throw new Error(`Tool source file not found: ${toolSourcePath}`);
       }
 
+      // Letta API derives name from the Python function and description
+      // from the docstring; explicit `name`/`description`/`tags` fields are
+      // rejected with HTTP 422 ('Extra inputs are not permitted'). Send
+      // only what the API accepts. The docstring in tools/dispatch_molecule.py
+      // carries the catalog-first guidance the model needs.
       const createResponse = await fetchWithPool(`${apiURL}/tools`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${password}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: toolName,
-          description: 'Dispatch a vibesync formula (multi-agent workflow) and return its molecule id. Call GET /formulas first to read the whenToUse catalog if you are unsure which formula matches the bead.',
           source_code: sourceCode,
           source_type: 'python',
-          tags: ['vibesync', 'orchestration', 'formula'],
         }),
       });
 
@@ -245,15 +247,13 @@ export class LettaToolService {
         throw new Error(`Tool source file not found: ${toolSourcePath}`);
       }
 
+      // See ensureDispatchMoleculeTool — same Letta API constraint.
       const createResponse = await fetchWithPool(`${apiURL}/tools`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${password}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: toolName,
-          description: 'List every vibesync formula with its whenToUse hint. Call this before dispatch_molecule when the right formula is not already obvious.',
           source_code: sourceCode,
           source_type: 'python',
-          tags: ['vibesync', 'orchestration', 'formula', 'catalog'],
         }),
       });
 
