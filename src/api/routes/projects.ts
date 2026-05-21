@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import { buildIssueAnalytics, getAnalyticsRange } from './issueAnalytics.js';
+import { stripUrlCredentials } from '../../utils.js';
 import type { ProjectRow } from '../../types/db.js';
 import type { NormalizedBeadsIssue } from '../../types/beads.js';
 import type {
@@ -154,7 +155,10 @@ function serializeProject(project: ProjectLike | null): SerializedProject | null
     last_scan_at: project.last_checked_at,
     issue_count: project.issue_count,
     filesystem_path: project.filesystem_path,
-    git_url: project.git_url,
+    // SECURITY (vibesync-6kg): defense in depth — sanitize any inlined
+    // credential in the URL at serialization time, so a regression in the
+    // ingest path (or pre-fix stored rows) cannot leak tokens to the wire.
+    git_url: stripUrlCredentials(project.git_url),
     beads_remote: serializeBeadsRemoteStatus(project),
     description: project.description ?? null,
     last_sync_at: project.last_sync_at,
@@ -165,7 +169,9 @@ function serializeBeadsRemoteStatus(project: ProjectLike): SerializedRemote {
   return {
     owner: project.beads_remote_owner || null,
     repo: project.beads_remote_repo || null,
-    url: project.beads_remote_url || null,
+    // SECURITY (vibesync-6kg): beads remote URLs can be configured with inline
+    // credentials too — strip them at serialization (defense in depth).
+    url: stripUrlCredentials(project.beads_remote_url || null),
     name: project.beads_remote_name || null,
     status: project.beads_remote_status || 'not_provisioned',
     visibility: project.beads_remote_visibility || null,
@@ -303,7 +309,11 @@ function serializeProjectSummary(project: ProjectLike, issues: IssueLike[] = [],
     tech_stack: project.tech_stack || null,
     repo: {
       provider: project.git_url ? 'git' : null,
-      remote_url: project.git_url || null,
+      // SECURITY (vibesync-6kg): this is THE field that leaked the GitHub PAT.
+      // Even though ingest now strips credentials, defense in depth requires we
+      // sanitize at the response layer too — any future storage regression must
+      // not reach the wire.
+      remote_url: stripUrlCredentials(project.git_url || null),
       filesystem_path: project.filesystem_path || null,
       branch: null,
       dirty: null,

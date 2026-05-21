@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { stripUrlCredentials } from '../utils';
 
 export function extractFilesystemPath(description: string | null | undefined): string | null {
   if (!description) {
@@ -32,7 +33,10 @@ export function getGitUrl(repoPath: string): string | null {
       encoding: 'utf8',
     }).trim();
 
-    return url || null;
+    // SECURITY (vibesync-6kg): `git remote get-url origin` returns the URL
+    // exactly as configured, including any inlined `https://<token>@host/...`
+    // credential. Strip it before returning so callers/storage never see it.
+    return stripUrlCredentials(url || null);
   } catch {
     return null;
   }

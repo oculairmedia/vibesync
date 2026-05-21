@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { logger as rootLogger } from './logger';
+import { stripUrlCredentials } from './utils';
 
 interface TechDetector {
   file: string;
@@ -225,7 +226,10 @@ export class ProjectRegistry {
       if (!fs.existsSync(gitConfigPath)) return null;
       const content = fs.readFileSync(gitConfigPath, 'utf8');
       const match = content.match(/url\s*=\s*(.+)/);
-      return match?.[1]?.trim() ?? null;
+      // SECURITY (vibesync-6kg): strip any inline credential before persisting.
+      // git config can carry `https://<token>@host/...` if the remote was added
+      // with credentials inline. We must NEVER let that reach the database.
+      return stripUrlCredentials(match?.[1]?.trim() ?? null);
     } catch {
       return null;
     }
