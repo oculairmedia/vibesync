@@ -24,6 +24,8 @@ export type {
   MemoryBlockInput,
   MemoryBlockSeedOptions,
   MemoryBlockSeeder,
+  ToolAttacher,
+  ToolAttachResult,
 } from './letta-teams-provider.js';
 
 export { A2UIProvider } from './a2ui-provider.js';

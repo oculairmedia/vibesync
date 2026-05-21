@@ -529,6 +529,136 @@ describe('LettaTeamsProvider', () => {
     });
   });
 
+  describe('role-tool attachment (vibesync-cs2)', () => {
+    const collectToolAttachEvents = (bus: EventBus): Event[] => {
+      const out: Event[] = [];
+      bus.subscribe((event) => {
+        if (event.kind.startsWith('runtime/teammate.tool_attach.')) out.push(event);
+      });
+      return out;
+    };
+
+    it('calls the attacher once per declared tool and emits per-tool events on the bus', async () => {
+      const bus = new EventBus({ noPersist: true });
+      const events = collectToolAttachEvents(bus);
+
+      const attach = vi.fn(async (_agentId: string, toolName: string) => {
+        if (toolName === 'dispatch_molecule') return { status: 'attached' as const };
+        if (toolName === 'search_folder_passages') return { status: 'already_attached' as const };
+        if (toolName === 'read_file') return { status: 'unknown' as const };
+        return { status: 'error' as const, error: 'boom' };
+      });
+      const provider = newProvider({ eventBus: bus, toolAttacher: { attach } });
+      const { runtime } = fakeRuntime({ agentId: 'agent-mayor' });
+      inject(provider, runtime);
+
+      await provider.start({
+        role: 'mayor',
+        extra: {
+          moleculeId: 'mol-1',
+          tools: ['dispatch_molecule', 'search_folder_passages', 'read_file', 'flaky_tool'],
+        },
+      });
+
+      expect(attach).toHaveBeenCalledTimes(4);
+      expect(attach.mock.calls.map((c) => c[1])).toEqual([
+        'dispatch_molecule',
+        'search_folder_passages',
+        'read_file',
+        'flaky_tool',
+      ]);
+      const byKind = (k: string) => events.filter((e) => e.kind === k);
+      expect(byKind('runtime/teammate.tool_attach.attached')).toHaveLength(1);
+      expect(byKind('runtime/teammate.tool_attach.already_attached')).toHaveLength(1);
+      expect(byKind('runtime/teammate.tool_attach.unknown')).toHaveLength(1);
+      expect(byKind('runtime/teammate.tool_attach.error')).toHaveLength(1);
+      const errorEvt = byKind('runtime/teammate.tool_attach.error')[0]!;
+      expect(errorEvt.payload).toMatchObject({ tool: 'flaky_tool', agent_id: 'agent-mayor', error: 'boom' });
+      expect(errorEvt.molecule_id).toBe('mol-1');
+      expect(errorEvt.teammate).toBe('mol-1-mayor');
+    });
+
+    it('reports a thrown attacher as an error event without crashing start()', async () => {
+      const bus = new EventBus({ noPersist: true });
+      const events = collectToolAttachEvents(bus);
+
+      const attach = vi.fn(async () => {
+        throw new Error('letta down');
+      });
+      const provider = newProvider({ eventBus: bus, toolAttacher: { attach } });
+      const { runtime } = fakeRuntime({ agentId: 'agent-1' });
+      inject(provider, runtime);
+
+      await expect(
+        provider.start({ role: 'mayor', extra: { tools: ['dispatch_molecule'] } }),
+      ).resolves.toBeDefined();
+      expect(events).toHaveLength(1);
+      expect(events[0]!.payload).toMatchObject({ tool: 'dispatch_molecule', error: 'letta down' });
+    });
+
+    it('emits a single skipped event with reason=no_attacher when tools declared but no attacher wired', async () => {
+      const bus = new EventBus({ noPersist: true });
+      const events = collectToolAttachEvents(bus);
+
+      const provider = newProvider({ eventBus: bus });
+      const { runtime } = fakeRuntime({ agentId: 'agent-1' });
+      inject(provider, runtime);
+
+      await provider.start({ role: 'mayor', extra: { tools: ['dispatch_molecule', 'read_file'] } });
+
+      expect(events).toHaveLength(1);
+      expect(events[0]!.payload).toMatchObject({
+        reason: 'no_attacher',
+        tools: ['dispatch_molecule', 'read_file'],
+      });
+    });
+
+    it('emits a single skipped event with reason=no_agent_id when teammate lacks agentId', async () => {
+      const bus = new EventBus({ noPersist: true });
+      const events = collectToolAttachEvents(bus);
+
+      const attach = vi.fn(async () => ({ status: 'attached' as const }));
+      const provider = newProvider({ eventBus: bus, toolAttacher: { attach } });
+      const { runtime, spies } = fakeRuntime();
+      // Make spawn return a teammate without an agentId.
+      spies.spawn.mockImplementationOnce(async (input: { name: string; role: string }) => ({
+        name: input.name,
+        role: input.role,
+      } as never));
+      inject(provider, runtime);
+
+      await provider.start({ role: 'mayor', extra: { tools: ['dispatch_molecule'] } });
+
+      expect(attach).not.toHaveBeenCalled();
+      expect(events).toHaveLength(1);
+      expect(events[0]!.payload).toMatchObject({ reason: 'no_agent_id', tools: ['dispatch_molecule'] });
+    });
+
+    it('does nothing when no tools are declared', async () => {
+      const attach = vi.fn(async () => ({ status: 'attached' as const }));
+      const provider = newProvider({ toolAttacher: { attach } });
+      const { runtime } = fakeRuntime({ agentId: 'agent-1' });
+      inject(provider, runtime);
+
+      await provider.start({ role: 'reviewer' });
+      expect(attach).not.toHaveBeenCalled();
+    });
+
+    it('dedupes tool names and drops non-string entries before iterating', async () => {
+      const attach = vi.fn(async (_agentId: string, _toolName: string) => ({ status: 'attached' as const }));
+      const provider = newProvider({ toolAttacher: { attach } });
+      const { runtime } = fakeRuntime({ agentId: 'agent-1' });
+      inject(provider, runtime);
+
+      await provider.start({
+        role: 'mayor',
+        extra: { tools: ['dispatch_molecule', '', 42, 'dispatch_molecule', 'search_folder_passages'] as unknown as readonly string[] },
+      });
+
+      expect(attach.mock.calls.map((call) => call[1])).toEqual(['dispatch_molecule', 'search_folder_passages']);
+    });
+  });
+
   describe('memfs lifecycle', () => {
     it('forwards memfsStartup when supplied as a valid mode', async () => {
       const provider = newProvider();

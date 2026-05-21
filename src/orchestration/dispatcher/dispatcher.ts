@@ -389,6 +389,7 @@ export class FormulaDispatcher {
           memfsEnabled: false,
           memoryBlocks: args.roleConfig.memoryBlocks ?? [],
           ...(args.roleConfig.memoryBlocksPolicy?.mode === 'replace' ? { memoryBlockSeedMode: 'replace' } : {}),
+          ...(args.roleConfig.tools && args.roleConfig.tools.length > 0 ? { tools: [...args.roleConfig.tools] } : {}),
         },
       });
       const promptResult = await this.provider.prompt(handle, [{ type: 'text', text: args.rendered }]);

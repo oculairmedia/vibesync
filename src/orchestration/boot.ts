@@ -3,6 +3,7 @@ import { EventBus } from './events/index.js';
 import { HealthPatrol } from './health/index.js';
 import { MoleculeWalker } from './molecule/index.js';
 import { LettaTeamsProvider } from './runtime/index.js';
+import type { ToolAttacher } from './runtime/index.js';
 import type { DoltClient } from './store/index.js';
 import { LettaTeamsBackendConfig } from '../letta/LettaTeamsBackendConfig.js';
 import { installLettaClientValidationFilter } from '../letta/LettaClientValidationFilter.js';
@@ -22,6 +23,14 @@ export interface BootOrchestrationPlaneOptions {
   readonly persistEvents?: boolean;
   readonly runDriftAuditOnBoot?: boolean;
   readonly maxConcurrentMolecules?: number;
+  /**
+   * Optional adapter that resolves role-declared tool names (from
+   * roleConfig.tools, threaded through dispatcher → extra.tools) to
+   * attach calls on the spawned teammate's Letta agent. When omitted,
+   * declared tools are skipped with a single `runtime/teammate.tool_attach.skipped`
+   * event per spawn (reason='no_attacher'). See vibesync-cs2.
+   */
+  readonly toolAttacher?: ToolAttacher;
 }
 
 export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions): Promise<OrchestrationHandle> {
@@ -49,6 +58,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   const provider = new LettaTeamsProvider({
     eventBus: bus,
     memoryBlockSeeder: backend.buildSeeder(),
+    ...(opts.toolAttacher ? { toolAttacher: opts.toolAttacher } : {}),
   });
   const patrol = new HealthPatrol(bus);
   const daemon = provider.daemonSupervisor();

@@ -127,6 +127,38 @@ export interface MemoryBlockSeeder {
   seed(agentId: string, blocks: readonly MemoryBlockInput[], opts?: MemoryBlockSeedOptions): Promise<void>;
 }
 
+/**
+ * Outcome of a single per-tool attach attempt. Status values:
+ *
+ *   attached         — the tool was just attached to the agent
+ *   already_attached — the agent already had the tool (idempotent no-op)
+ *   unknown          — the attacher does not know how to handle that tool
+ *                       name (typically a built-in or pre-attached tool that
+ *                       the provider does not need to wire — surfaces as a
+ *                       warning event but is not an error)
+ *   error            — attach failed; details in `error`
+ *
+ * Implementations never throw — failures are reported via status='error'
+ * so the start() path stays resilient across a partially-wired tool registry.
+ */
+export interface ToolAttachResult {
+  readonly status: 'attached' | 'already_attached' | 'unknown' | 'error';
+  readonly error?: string;
+}
+
+/**
+ * Adapter the provider calls once per name in `extra.tools` after a
+ * teammate spawns. Implementations live next to the SDKs they wrap
+ * (e.g. src/letta/) so the orchestration plane never imports the
+ * Letta client directly. See vibesync-cs2.
+ *
+ * Contract: idempotent; unknown tool names return status='unknown'
+ * instead of throwing.
+ */
+export interface ToolAttacher {
+  attach(agentId: string, toolName: string): Promise<ToolAttachResult>;
+}
+
 interface LettaTeamsSessionHandle extends SessionHandle {
   readonly providerKind: 'letta-teams';
   /** Teammate name in letta-teams-sdk (also the dispatch target). */
@@ -171,6 +203,15 @@ export interface LettaTeamsProviderOptions {
    * never imports @letta-ai/letta-client directly.
    */
   readonly memoryBlockSeeder?: MemoryBlockSeeder;
+  /**
+   * Optional adapter that resolves each name in `extra.tools` to an
+   * attach call against the spawned teammate's Letta agent. When the
+   * caller passes tools but no attacher is wired, the provider emits a
+   * single `runtime/teammate.tool_attach.skipped` event with reason
+   * 'no_attacher' and continues — declared tools are advisory, not a
+   * hard precondition for start(). See vibesync-cs2.
+   */
+  readonly toolAttacher?: ToolAttacher;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 250;
@@ -185,6 +226,7 @@ export class LettaTeamsProvider implements RuntimeProvider {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly eventBus: EventBus | null;
   private readonly memoryBlockSeeder: MemoryBlockSeeder | null;
+  private readonly toolAttacher: ToolAttacher | null;
 
   constructor(opts: LettaTeamsProviderOptions = {}) {
     this.pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
@@ -192,6 +234,7 @@ export class LettaTeamsProvider implements RuntimeProvider {
     this.sleep = opts.sleep ?? defaultSleep;
     this.eventBus = opts.eventBus ?? null;
     this.memoryBlockSeeder = opts.memoryBlockSeeder ?? null;
+    this.toolAttacher = opts.toolAttacher ?? null;
   }
 
   /**
@@ -305,12 +348,28 @@ export class LettaTeamsProvider implements RuntimeProvider {
       }
     }
 
+    const moleculeId = readStringExtra(spec, 'moleculeId');
+
+    // Attach role-declared tools onto the teammate's Letta agent
+    // (vibesync-cs2). Failures are advisory — we emit per-tool events
+    // and continue rather than failing the whole session start, since
+    // an unknown tool typically means the provider does not need to wire
+    // it (it is already attached or supplied by the daemon).
+    const toolNames = readToolNames(spec);
+    if (toolNames.length > 0) {
+      await this.attachRoleTools({
+        target,
+        agentId: teammate?.agentId,
+        ...(moleculeId !== undefined ? { moleculeId } : {}),
+        toolNames,
+      });
+    }
+
     const handle: LettaTeamsSessionHandle = {
       id: `letta-teams:${target}`,
       providerKind: 'letta-teams',
       target,
     };
-    const moleculeId = readStringExtra(spec, 'moleculeId');
     const resumeTaskId = readStringExtra(spec, 'resumeTaskId');
     const session: SessionState = { activeTaskId: resumeTaskId ?? null, stopped: false };
     if (moleculeId !== undefined) session.moleculeId = moleculeId;
@@ -483,6 +542,83 @@ export class LettaTeamsProvider implements RuntimeProvider {
   }
 
   /**
+   * Resolve each name in `extra.tools` against the injected ToolAttacher
+   * and emit one `runtime/teammate.tool_attach.<status>` event per name.
+   * Never throws — attach failures and unknown names surface as bus
+   * events so the session start path stays resilient (vibesync-cs2).
+   *
+   * Edge cases:
+   *   - No attacher wired   → one `.skipped` event with reason='no_attacher'
+   *                            tagged with the full tool list.
+   *   - Teammate lacks agentId → one `.skipped` event with reason='no_agent_id'
+   *                            tagged with the full tool list (cannot
+   *                            address a Letta agent without an id).
+   *   - Attacher throws     → reported as `.error` for that tool only;
+   *                            the loop continues with the next name.
+   */
+  private async attachRoleTools(args: {
+    readonly target: string;
+    readonly agentId: string | undefined;
+    readonly moleculeId?: string;
+    readonly toolNames: readonly string[];
+  }): Promise<void> {
+    if (!this.toolAttacher) {
+      this.emitToolAttachEvent({
+        target: args.target,
+        ...(args.moleculeId !== undefined ? { moleculeId: args.moleculeId } : {}),
+        kind: 'runtime/teammate.tool_attach.skipped',
+        payload: { reason: 'no_attacher', tools: [...args.toolNames] },
+      });
+      return;
+    }
+    if (!args.agentId) {
+      this.emitToolAttachEvent({
+        target: args.target,
+        ...(args.moleculeId !== undefined ? { moleculeId: args.moleculeId } : {}),
+        kind: 'runtime/teammate.tool_attach.skipped',
+        payload: { reason: 'no_agent_id', tools: [...args.toolNames] },
+      });
+      return;
+    }
+    const agentId = args.agentId;
+    for (const toolName of args.toolNames) {
+      let result: ToolAttachResult;
+      try {
+        result = await this.toolAttacher.attach(agentId, toolName);
+      } catch (err) {
+        result = { status: 'error', error: (err as Error).message ?? String(err) };
+      }
+      this.emitToolAttachEvent({
+        target: args.target,
+        ...(args.moleculeId !== undefined ? { moleculeId: args.moleculeId } : {}),
+        kind: `runtime/teammate.tool_attach.${result.status}`,
+        payload: {
+          tool: toolName,
+          agent_id: agentId,
+          ...(result.error !== undefined ? { error: result.error } : {}),
+        },
+      });
+    }
+  }
+
+  private emitToolAttachEvent(args: {
+    readonly target: string;
+    readonly moleculeId?: string;
+    readonly kind: string;
+    readonly payload: Record<string, unknown>;
+  }): void {
+    if (!this.eventBus) return;
+    const input: EventInput = {
+      layer: 'runtime',
+      kind: args.kind,
+      teammate: args.target,
+      ...(args.moleculeId ? { molecule_id: args.moleculeId } : {}),
+      payload: args.payload,
+    };
+    this.eventBus.emit(input);
+  }
+
+  /**
    * Forward one SessionEvent to the orchestration EventBus, if one was
    * supplied at construction time. Tagged as `runtime/session.<kind>`
    * with the teammate target and the active task id; molecule_id is
@@ -629,6 +765,27 @@ function readMemoryBlocks(spec: SessionSpec): MemoryBlockInput[] {
 
 function readMemoryBlockSeedMode(spec: SessionSpec): MemoryBlockSeedMode {
   return spec.extra?.['memoryBlockSeedMode'] === 'replace' ? 'replace' : 'augment';
+}
+
+/**
+ * Pull the list of role tool names from SessionSpec.extra.tools. Returns
+ * a deduplicated array of non-empty strings; ignores any non-string or
+ * empty entry rather than throwing so a malformed role pack does not
+ * kill session start.
+ */
+function readToolNames(spec: SessionSpec): string[] {
+  const raw = spec.extra?.['tools'];
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'string') continue;
+    if (entry.length === 0) continue;
+    if (seen.has(entry)) continue;
+    seen.add(entry);
+    out.push(entry);
+  }
+  return out;
 }
 
 /**

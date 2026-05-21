@@ -108,6 +108,7 @@ describe('FormulaDispatcher', () => {
     const formula: Formula = {
       name: 'chain',
       description: 'Chain',
+      whenToUse: '',
       steps: [
         { name: 'alpha', role: 'alpha', promptTemplate: 'prompts/alpha.md', waitFor: 'completion' },
         { name: 'beta', role: 'beta', promptTemplate: 'prompts/beta.md', dependsOn: ['alpha'], waitFor: 'completion' },
@@ -221,6 +222,25 @@ describe('FormulaDispatcher', () => {
       memoryBlocks: [{ label: 'persona', value: 'reviewer persona', limit: 1000 }],
     });
     expect(provider.recorder.starts[1]?.extra).not.toHaveProperty('memoryBlockSeedMode');
+  });
+
+  it('threads roleConfig.tools through to extra.tools on each session start (vibesync-cs2)', async () => {
+    const { dispatcher, provider } = newHarness({
+      script: scriptByRole({ reviewer: 'review output', coder: 'code output', tester: 'test output' }),
+    });
+
+    await dispatcher.run({
+      formula: codeReviewFormula(),
+      pack: newPack({ toolsByRole: { reviewer: ['dispatch_molecule', 'search_folder_passages'], coder: [] } }),
+      input: 'please review',
+    });
+
+    expect(provider.recorder.starts[0]?.extra).toMatchObject({
+      tools: ['dispatch_molecule', 'search_folder_passages'],
+    });
+    // Empty tools array → property omitted entirely (avoids no-op tool-attach loops).
+    expect(provider.recorder.starts[1]?.extra).not.toHaveProperty('tools');
+    expect(provider.recorder.starts[2]?.extra).not.toHaveProperty('tools');
   });
 
   it('resumes a running step by re-attaching to the persisted runtime task id', async () => {
@@ -345,6 +365,7 @@ function codeReviewFormula(): Formula {
   return {
     name: 'code-review',
     description: 'Code review',
+    whenToUse: '',
     steps: [
       { name: 'reviewer', role: 'reviewer', promptTemplate: 'prompts/reviewer.md', waitFor: 'completion' },
       { name: 'coder', role: 'coder', promptTemplate: 'prompts/coder.md', dependsOn: ['reviewer'], waitFor: 'completion' },
@@ -357,6 +378,7 @@ function parallelFormula(): Formula {
   return {
     name: 'parallel-review',
     description: 'Parallel review',
+    whenToUse: '',
     steps: [
       { name: 'alpha', role: 'alpha', promptTemplate: 'prompts/alpha.md', waitFor: 'completion' },
       { name: 'beta', role: 'beta', promptTemplate: 'prompts/beta.md', waitFor: 'completion' },
@@ -378,6 +400,7 @@ function retryFormula(): Formula {
   return {
     name: 'retrying',
     description: 'Retrying formula',
+    whenToUse: '',
     steps: [{ name: 'worker', role: 'worker', promptTemplate: 'prompts/worker.md', waitFor: 'completion', retries: 2, retryBackoffMs: 0 }],
   };
 }
@@ -393,6 +416,7 @@ function singleStepFormula(): Formula {
   return {
     name: 'single-step',
     description: 'Single step',
+    whenToUse: '',
     steps: [{ name: 'worker', role: 'worker', promptTemplate: 'prompts/worker.md', waitFor: 'completion' }],
   };
 }
@@ -408,6 +432,7 @@ function newPack(args: {
   readonly roles?: readonly string[];
   readonly prompts?: Readonly<Record<string, string>>;
   readonly replaceMemoryRoles?: readonly string[];
+  readonly toolsByRole?: Readonly<Record<string, readonly string[]>>;
 } = {}): Pack {
   const prompts = args.prompts ?? {
     'prompts/reviewer.md': 'Review ${input}',
@@ -422,6 +447,7 @@ function newPack(args: {
   }
   const roles = args.roles ?? ['reviewer', 'coder', 'tester'];
   const replaceMemoryRoles = new Set(args.replaceMemoryRoles ?? []);
+  const toolsByRole = args.toolsByRole ?? {};
   return {
     manifest: { name: 'test-pack', version: '1.0.0' },
     root,
@@ -430,6 +456,7 @@ function newPack(args: {
       name: role,
       memoryBlocks: [{ label: 'persona', value: `${role} persona`, limit: 1000 }],
       ...(replaceMemoryRoles.has(role) ? { memoryBlocksPolicy: { mode: 'replace' as const } } : {}),
+      ...(toolsByRole[role] !== undefined ? { tools: toolsByRole[role] } : {}),
     })),
     formulas: [],
   };
