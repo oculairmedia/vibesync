@@ -26,14 +26,14 @@ role = "greeter"
   });
 
   it('parses the reference code-review formula', () => {
-    const formulas = loadFormulasFromFile('/opt/stacks/vibesync/formulas/code-review.toml');
+    const formulas = loadFormulasFromFile('/opt/stacks/vibesync/packs/gastown/formulas/code-review.toml');
     expect(formulas).toHaveLength(1);
     const f = formulas[0]!;
     expect(f.name).toBe('code-review');
     expect(f.steps.map((s) => s.role)).toEqual(['reviewer', 'coder', 'tester']);
     expect(f.steps[1]!.dependsOn).toEqual(['reviewer']);
     expect(f.steps[2]!.dependsOn).toEqual(['coder']);
-    expect(f.steps[0]!.promptTemplate).toBe('prompts/review.md');
+    expect(f.steps[0]!.promptTemplate).toBe('prompts/reviewer-system.md');
   });
 
   it('returns empty array when no [formula] table is present', () => {
