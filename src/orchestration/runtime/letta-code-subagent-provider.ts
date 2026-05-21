@@ -106,6 +106,30 @@ export interface PersonaLoader {
   load(role: string): Promise<string>;
 }
 
+/**
+ * Resolver for persistent per-(project, role) subagent ids
+ * (vibesync-mcz Phase C). Wired in production to the
+ * RoleAgentBootstrapper backed by project_role_agents.
+ *
+ * Contract:
+ *   - Return a real Letta Code agent id ('agent-<uuid>') and the
+ *     provider will dispatch via Agent(subagent_type='general-purpose',
+ *     agent_id=<id>, prompt=<task>) — persona is NOT inlined; the
+ *     persistent agent owns its own system prompt.
+ *   - Return null and the provider falls back to today's inline
+ *     persona path (backwards compat for projects that haven't been
+ *     bootstrapped yet, or callers that don't want persistence).
+ *   - Throwing is treated as a hard failure (start() rejects). Use
+ *     null for "no row", not for transient errors.
+ */
+export interface AgentIdResolver {
+  resolveRoleAgent(
+    role: string,
+    parentAgentId: string,
+    projectIdentifier: string | null,
+  ): Promise<string | null>;
+}
+
 export interface LettaCodeSubagentProviderOptions {
   /**
    * Base URL of the local-backend shim (e.g. http://localhost:8291).
@@ -124,8 +148,20 @@ export interface LettaCodeSubagentProviderOptions {
    * Loader for persona content (`packs/<pack>/.letta/agents/<role>.md`).
    * Required at construction time; the default
    * `createDefaultPersonaLoader` reads from packs/gastown/.letta/agents/.
+   *
+   * Still required even when an AgentIdResolver is wired — it's the
+   * fallback when the resolver returns null (no persistent agent has
+   * been bootstrapped yet for this (project, role) pair).
    */
   readonly personaLoader: PersonaLoader;
+  /**
+   * Optional resolver for persistent per-(project, role) subagent ids
+   * (vibesync-mcz Phase C). When provided AND the resolver returns a
+   * non-null id, the puppet message dispatches via agent_id and the
+   * persona is NOT inlined. When omitted, or the resolver returns
+   * null, the provider uses the inline-persona path unchanged.
+   */
+  readonly agentIdResolver?: AgentIdResolver;
   /**
    * Injectable fetch. Defaults to the global. Tests inject a fake
    * that returns a fixed SSE body.
@@ -143,7 +179,19 @@ interface SessionState {
   readonly role: string;
   readonly parentAgentId: string;
   readonly subagentType: string;
+  /**
+   * Persona body inlined into the puppet message when we DON'T have
+   * a persistent agent id. Ignored when `agentId` is non-null (the
+   * persistent agent owns its system prompt).
+   */
   readonly personaContent: string;
+  /**
+   * Persistent role-agent id (vibesync-mcz Phase C). When non-null,
+   * the puppet message dispatches with agent_id and omits persona;
+   * the persistent agent's stored system prompt is the source of
+   * truth for identity. When null, fall back to the inline path.
+   */
+  readonly agentId: string | null;
   conversationId: string | null;
   stopped: boolean;
   activeTaskId: string | null;
@@ -161,9 +209,12 @@ const DEFAULT_TURN_TIMEOUT_MS = 10 * 60 * 1000;
 
 export class LettaCodeSubagentProvider implements RuntimeProvider {
   readonly kind = 'letta-code-subagent';
-  private readonly opts: Required<Omit<LettaCodeSubagentProviderOptions, 'password' | 'fetchImpl'>> & {
+  private readonly opts: Required<
+    Omit<LettaCodeSubagentProviderOptions, 'password' | 'fetchImpl' | 'agentIdResolver'>
+  > & {
     readonly password: string;
     readonly fetchImpl: typeof fetch;
+    readonly agentIdResolver: AgentIdResolver | null;
   };
   private readonly sessions = new Map<string, SessionState>();
   private handleCounter = 0;
@@ -180,6 +231,7 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
       password: opts.password ?? '',
       turnTimeoutMs: opts.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS,
       personaLoader: opts.personaLoader,
+      agentIdResolver: opts.agentIdResolver ?? null,
       fetchImpl: opts.fetchImpl ?? fetch.bind(globalThis),
     };
   }
@@ -192,9 +244,30 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
       );
     }
     const subagentType = readStringExtra(spec, 'subagentType') ?? 'general-purpose';
-    const personaContent =
-      readStringExtra(spec, 'personaContent') ?? (await this.opts.personaLoader.load(spec.role));
     const conversationId = readStringExtra(spec, 'conversationId') ?? null;
+    const projectIdentifier = readStringExtra(spec, 'projectIdentifier') ?? null;
+
+    // vibesync-mcz Phase C: precedence for agent_id is
+    //   1. explicit extra.agentId (caller already knows the id)
+    //   2. resolver lookup (production: project_role_agents row)
+    //   3. null → inline-persona fallback path (today's behavior)
+    // Persona is only loaded on path 3 — when we have a persistent
+    // agent_id, the agent's stored system prompt is the source of
+    // truth and we MUST NOT re-inline persona text.
+    const explicitAgentId = readStringExtra(spec, 'agentId') ?? null;
+    let resolvedAgentId = explicitAgentId;
+    if (resolvedAgentId === null && this.opts.agentIdResolver) {
+      resolvedAgentId = await this.opts.agentIdResolver.resolveRoleAgent(
+        spec.role,
+        parentAgentId,
+        projectIdentifier,
+      );
+    }
+
+    const personaContent =
+      resolvedAgentId !== null
+        ? ''
+        : readStringExtra(spec, 'personaContent') ?? (await this.opts.personaLoader.load(spec.role));
 
     this.handleCounter += 1;
     const handle: LettaCodeSubagentSessionHandle = {
@@ -208,6 +281,7 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
       parentAgentId,
       subagentType,
       personaContent,
+      agentId: resolvedAgentId,
       conversationId,
       stopped: false,
       activeTaskId: null,
@@ -244,6 +318,7 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
       personaContent: state.personaContent,
       role: state.role,
       input: rendered,
+      agentId: state.agentId,
     });
     // Reset the event queue so observe() only sees the current turn.
     state.events = [];
@@ -485,13 +560,45 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
  *
  * Kept ASCII-friendly and explicit so the PM's instruction-following
  * has the smallest possible space to misinterpret.
+ *
+ * vibesync-mcz Phase C: when `agentId` is provided, the puppet
+ * instructs the PM to dispatch via Agent(subagent_type=..., agent_id=...,
+ * prompt=<task only>) — persona is NOT inlined because the persistent
+ * agent at `agentId` owns its system prompt. When `agentId` is null
+ * (default), the inline-persona path is used unchanged — backwards
+ * compat for projects that haven't been bootstrapped yet.
  */
 export function buildPuppetMessage(args: {
   readonly subagentType: string;
   readonly personaContent: string;
   readonly role: string;
   readonly input: string;
+  readonly agentId?: string | null;
 }): string {
+  if (args.agentId) {
+    return [
+      `[orchestration/subagent-dispatch]`,
+      ``,
+      `Call the Agent tool exactly once with these arguments:`,
+      `  subagent_type: ${JSON.stringify(args.subagentType)}`,
+      `  agent_id: ${JSON.stringify(args.agentId)}`,
+      `  description: ${JSON.stringify(`${args.role} role`)}`,
+      `  prompt: |-`,
+      `<<<PROMPT_BEGIN>>>`,
+      `# Task`,
+      ``,
+      `${args.input.trim()}`,
+      `<<<PROMPT_END>>>`,
+      ``,
+      `The subagent at agent_id ${JSON.stringify(args.agentId)} already`,
+      `knows its role identity from its persistent system prompt — do`,
+      `NOT inline persona or role instructions in the prompt.`,
+      ``,
+      `Return ONLY the subagent's final output verbatim. Do not summarize,`,
+      `reformat, prefix, or comment on it. The dispatcher consumes your`,
+      `next assistant message as the step output.`,
+    ].join('\n');
+  }
   return [
     `[orchestration/subagent-dispatch]`,
     ``,

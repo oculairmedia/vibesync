@@ -396,6 +396,215 @@ describe('LettaCodeSubagentProvider', () => {
       await expect(provider.nudge(handle)).resolves.toBeUndefined();
     });
   });
+
+  describe('AgentIdResolver (vibesync-mcz Phase C)', () => {
+    /**
+     * Builds a resolver that records every call and returns the
+     * provided fixed result. Lets us assert (a) it was consulted with
+     * the right args and (b) the provider honored the return value.
+     */
+    function recordingResolver(result: string | null) {
+      const calls: Array<{ role: string; parentAgentId: string; projectIdentifier: string | null }> = [];
+      return {
+        calls,
+        resolver: {
+          async resolveRoleAgent(
+            role: string,
+            parentAgentId: string,
+            projectIdentifier: string | null,
+          ): Promise<string | null> {
+            calls.push({ role, parentAgentId, projectIdentifier });
+            return result;
+          },
+        },
+      };
+    }
+
+    it('falls back to inline-persona path when no resolver is wired (backwards compat)', async () => {
+      const { fetchImpl, calls } = makeFakeFetch({
+        conversationId: 'conv-fallback',
+        sseFrames: [frame({ type: 'stop', stop_reason: 'end_turn' })],
+      });
+      const persona = '# Reviewer\nYou are the reviewer. Be skeptical.';
+      const provider = new LettaCodeSubagentProvider({
+        shimBaseUrl: 'http://localhost:8291',
+        personaLoader: fakePersonaLoader({ reviewer: persona }),
+        fetchImpl,
+      });
+      const handle = await provider.start({
+        role: 'reviewer',
+        extra: { parentAgentId: 'agent-pm', projectIdentifier: 'vibesync' },
+      });
+      await provider.prompt(handle, [{ type: 'text', text: 'review abc' }]);
+      await drain(provider, handle);
+
+      const messagePost = calls.find((c) => c.url.includes('/messages'))!;
+      const body = JSON.parse(messagePost.init!.body as string) as { content: string };
+      // Today's contract: persona is inlined under '# Role: reviewer'.
+      expect(body.content).toContain('# Role: reviewer');
+      expect(body.content).toContain('You are the reviewer. Be skeptical.');
+      // And the puppet must NOT smuggle an agent_id arg.
+      expect(body.content).not.toContain('agent_id');
+    });
+
+    it('falls back to inline-persona path when resolver returns null', async () => {
+      const { fetchImpl, calls } = makeFakeFetch({
+        conversationId: 'conv-null',
+        sseFrames: [frame({ type: 'stop', stop_reason: 'end_turn' })],
+      });
+      const { calls: resolverCalls, resolver } = recordingResolver(null);
+      const provider = new LettaCodeSubagentProvider({
+        shimBaseUrl: 'http://localhost:8291',
+        personaLoader: fakePersonaLoader({ reviewer: '# Reviewer\nbe skeptical' }),
+        agentIdResolver: resolver,
+        fetchImpl,
+      });
+      const handle = await provider.start({
+        role: 'reviewer',
+        extra: { parentAgentId: 'agent-pm', projectIdentifier: 'vibesync' },
+      });
+      await provider.prompt(handle, [{ type: 'text', text: 'review abc' }]);
+      await drain(provider, handle);
+
+      expect(resolverCalls).toHaveLength(1);
+      expect(resolverCalls[0]).toEqual({
+        role: 'reviewer',
+        parentAgentId: 'agent-pm',
+        projectIdentifier: 'vibesync',
+      });
+
+      const messagePost = calls.find((c) => c.url.includes('/messages'))!;
+      const body = JSON.parse(messagePost.init!.body as string) as { content: string };
+      expect(body.content).toContain('# Role: reviewer');
+      expect(body.content).toContain('be skeptical');
+      expect(body.content).not.toContain('agent_id');
+    });
+
+    it('dispatches via agent_id and skips persona when resolver returns an id', async () => {
+      const { fetchImpl, calls } = makeFakeFetch({
+        conversationId: 'conv-persistent',
+        sseFrames: [frame({ type: 'stop', stop_reason: 'end_turn' })],
+      });
+      // Persona loader is wired but MUST NOT be consulted on the
+      // agent_id path. Make load() throw so any call fails loudly.
+      const personaLoader = {
+        async load(role: string): Promise<string> {
+          throw new Error(`persona loader called unexpectedly for role=${role}`);
+        },
+      };
+      const { resolver } = recordingResolver('agent-reviewer-vibesync-1');
+      const provider = new LettaCodeSubagentProvider({
+        shimBaseUrl: 'http://localhost:8291',
+        personaLoader,
+        agentIdResolver: resolver,
+        fetchImpl,
+      });
+      const handle = await provider.start({
+        role: 'reviewer',
+        extra: { parentAgentId: 'agent-pm', projectIdentifier: 'vibesync' },
+      });
+      await provider.prompt(handle, [{ type: 'text', text: 'review abc' }]);
+      await drain(provider, handle);
+
+      const messagePost = calls.find((c) => c.url.includes('/messages'))!;
+      const body = JSON.parse(messagePost.init!.body as string) as { content: string };
+      // agent_id tool arg present, persona block absent.
+      expect(body.content).toContain('agent_id: "agent-reviewer-vibesync-1"');
+      expect(body.content).not.toContain('# Role: reviewer');
+      // Sentinel block still wraps the task only.
+      expect(body.content).toContain('<<<PROMPT_BEGIN>>>');
+      expect(body.content).toContain('# Task');
+      expect(body.content).toContain('review abc');
+      expect(body.content).toContain('<<<PROMPT_END>>>');
+      // Explicit anti-inlining instruction is present so the PM
+      // doesn't helpfully add persona text on its own.
+      expect(body.content).toContain('do');
+      expect(body.content).toContain('NOT inline persona');
+    });
+
+    it('extra.agentId overrides the resolver (caller-supplied id wins)', async () => {
+      const { fetchImpl, calls } = makeFakeFetch({
+        conversationId: 'conv-explicit',
+        sseFrames: [frame({ type: 'stop', stop_reason: 'end_turn' })],
+      });
+      const { calls: resolverCalls, resolver } = recordingResolver('agent-from-resolver');
+      const provider = new LettaCodeSubagentProvider({
+        shimBaseUrl: 'http://localhost:8291',
+        personaLoader: fakePersonaLoader(),
+        agentIdResolver: resolver,
+        fetchImpl,
+      });
+      const handle = await provider.start({
+        role: 'reviewer',
+        extra: {
+          parentAgentId: 'agent-pm',
+          projectIdentifier: 'vibesync',
+          agentId: 'agent-explicit-override',
+        },
+      });
+      await provider.prompt(handle, [{ type: 'text', text: 'go' }]);
+      await drain(provider, handle);
+
+      // Resolver must NOT be consulted when extra.agentId is supplied.
+      expect(resolverCalls).toHaveLength(0);
+
+      const messagePost = calls.find((c) => c.url.includes('/messages'))!;
+      const body = JSON.parse(messagePost.init!.body as string) as { content: string };
+      expect(body.content).toContain('agent_id: "agent-explicit-override"');
+      expect(body.content).not.toContain('agent-from-resolver');
+    });
+
+    it('honors extra.conversationId on the agent_id path (per-dispatch isolation)', async () => {
+      const { fetchImpl, calls } = makeFakeFetch({
+        sseFrames: [frame({ type: 'stop', stop_reason: 'end_turn' })],
+      });
+      const { resolver } = recordingResolver('agent-reviewer-vibesync-1');
+      const provider = new LettaCodeSubagentProvider({
+        shimBaseUrl: 'http://localhost:8291',
+        personaLoader: fakePersonaLoader(),
+        agentIdResolver: resolver,
+        fetchImpl,
+      });
+      const handle = await provider.start({
+        role: 'reviewer',
+        extra: {
+          parentAgentId: 'agent-pm',
+          projectIdentifier: 'vibesync',
+          conversationId: 'conv-iso-7',
+        },
+      });
+      await provider.prompt(handle, [{ type: 'text', text: 'go' }]);
+      await drain(provider, handle);
+
+      // No conversation creation roundtrip (we already have the id).
+      expect(calls.find((c) => c.url.endsWith('/v1/conversations'))).toBeUndefined();
+      // First call must be the message POST against the supplied conv id.
+      expect(calls[0]!.url).toBe('http://localhost:8291/v1/conversations/conv-iso-7/messages');
+    });
+
+    it('resolver receives null projectIdentifier when extra.projectIdentifier is omitted', async () => {
+      const { fetchImpl } = makeFakeFetch({
+        conversationId: 'conv-no-pid',
+        sseFrames: [frame({ type: 'stop', stop_reason: 'end_turn' })],
+      });
+      const { calls: resolverCalls, resolver } = recordingResolver(null);
+      const provider = new LettaCodeSubagentProvider({
+        shimBaseUrl: 'http://localhost:8291',
+        personaLoader: fakePersonaLoader(),
+        agentIdResolver: resolver,
+        fetchImpl,
+      });
+      const handle = await provider.start({
+        role: 'reviewer',
+        extra: { parentAgentId: 'agent-pm' },
+      });
+      await provider.prompt(handle, [{ type: 'text', text: 'go' }]);
+      await drain(provider, handle);
+
+      expect(resolverCalls).toHaveLength(1);
+      expect(resolverCalls[0]?.projectIdentifier).toBeNull();
+    });
+  });
 });
 
 describe('buildPuppetMessage', () => {
@@ -413,6 +622,36 @@ describe('buildPuppetMessage', () => {
     expect(out).toContain('You are the reviewer.');
     expect(out).toContain('Review commit abc.');
     expect(out).toMatch(/Return ONLY the subagent's final output/);
+  });
+
+  it('treats agentId=null as the inline-persona path (backwards compat)', () => {
+    const out = buildPuppetMessage({
+      subagentType: 'general-purpose',
+      personaContent: 'You are the reviewer.',
+      role: 'reviewer',
+      input: 'Review commit abc.',
+      agentId: null,
+    });
+    expect(out).toContain('# Role: reviewer');
+    expect(out).toContain('You are the reviewer.');
+    expect(out).not.toContain('agent_id');
+  });
+
+  it('switches to the agent_id path when agentId is provided, dropping persona inlining', () => {
+    const out = buildPuppetMessage({
+      subagentType: 'general-purpose',
+      // persona content should be ignored on the agent_id path
+      personaContent: 'SHOULD NOT APPEAR',
+      role: 'reviewer',
+      input: 'Review commit abc.',
+      agentId: 'agent-reviewer-vibesync-1',
+    });
+    expect(out).toContain('agent_id: "agent-reviewer-vibesync-1"');
+    expect(out).toContain('# Task');
+    expect(out).toContain('Review commit abc.');
+    expect(out).not.toContain('SHOULD NOT APPEAR');
+    expect(out).not.toContain('# Role: reviewer');
+    expect(out).toMatch(/NOT inline persona/);
   });
 });
 

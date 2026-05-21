@@ -28,6 +28,7 @@ export {
 export type {
   LettaCodeSubagentProviderOptions,
   PersonaLoader,
+  AgentIdResolver,
 } from './letta-code-subagent-provider.js';
 
 export { LettaTeamsProvider } from './letta-teams-provider.js';
