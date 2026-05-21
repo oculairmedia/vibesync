@@ -34,7 +34,11 @@ beads.right.jsonl
 beads.right.meta.json
 
 # Keep JSONL exports and config (source of truth for git)
-!issues.jsonl
 !interactions.jsonl
 !metadata.json
 !config.json
+
+# Dolt is the source of truth — these exports just churn in git
+# (per vibesync-1rx: causes constant PR conflicts, no info not already in Dolt)
+issues.jsonl
+export-state.json
