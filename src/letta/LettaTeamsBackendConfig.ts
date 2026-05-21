@@ -67,8 +67,9 @@
 
 import { LettaClient } from '@letta-ai/letta-client';
 
-import type { MemoryBlockSeeder } from '../orchestration/runtime/index.js';
+import type { MemoryBlockSeeder, TeammateDeleter } from '../orchestration/runtime/index.js';
 import { LettaTeamsMemoryBlockSeeder } from './LettaTeamsMemoryBlockSeeder.js';
+import { LettaTeammateDeleter } from './LettaTeammateDeleter.js';
 
 const DEFAULT_LETTA_BASE_URL = 'https://api.letta.com';
 
@@ -150,5 +151,19 @@ export class LettaTeamsBackendConfig {
   buildSeeder(): MemoryBlockSeeder {
     const client = new LettaClient({ baseUrl: this.baseUrl, token: this.apiKey });
     return new LettaTeamsMemoryBlockSeeder(client as never);
+  }
+
+  /**
+   * Build a TeammateDeleter pointing at the same Letta backend
+   * (vibesync-6zj). Wired in alongside the seeder at orchestration
+   * boot so LettaTeamsProvider.stop() can actually free the spawned
+   * agent after each formula step.
+   *
+   * apiURL on the deleter normalizes to include `/v1` — matching the
+   * shape LettaToolService and friends already use.
+   */
+  buildDeleter(): TeammateDeleter {
+    const apiURL = this.baseUrl.endsWith('/v1') ? this.baseUrl : `${this.baseUrl}/v1`;
+    return new LettaTeammateDeleter({ apiURL, password: this.apiKey });
   }
 }

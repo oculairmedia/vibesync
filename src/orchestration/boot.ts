@@ -58,6 +58,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   const provider = new LettaTeamsProvider({
     eventBus: bus,
     memoryBlockSeeder: backend.buildSeeder(),
+    teammateDeleter: backend.buildDeleter(),
     ...(opts.toolAttacher ? { toolAttacher: opts.toolAttacher } : {}),
   });
   const patrol = new HealthPatrol(bus);

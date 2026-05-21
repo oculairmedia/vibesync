@@ -697,6 +697,83 @@ describe('LettaTeamsProvider', () => {
     });
   });
 
+  describe('teammate delete (vibesync-6zj)', () => {
+    it('calls teammateDeleter.delete with the Letta agentId captured at spawn time', async () => {
+      const del = vi.fn(async (_agentId: string) => undefined);
+      const provider = newProvider({ teammateDeleter: { delete: del } });
+      const { runtime, spies } = fakeRuntime({ agentId: 'agent-coder-123' });
+      inject(provider, runtime);
+      const h = await provider.start({ role: 'coder' });
+      await provider.stop(h);
+      // The SDK's local-file remove still runs first.
+      expect(spies.remove).toHaveBeenCalledWith('coder');
+      // Then the actual Letta agent gets deleted via the injected deleter.
+      expect(del).toHaveBeenCalledWith('agent-coder-123');
+    });
+
+    it('logs but does not throw when the deleter rejects (e.g. server unreachable)', async () => {
+      const del = vi.fn(async () => { throw new Error('letta down'); });
+      const provider = newProvider({ teammateDeleter: { delete: del } });
+      const { runtime } = fakeRuntime({ agentId: 'agent-x' });
+      inject(provider, runtime);
+      const h = await provider.start({ role: 'coder' });
+      // stop() must not propagate the deleter failure — it runs from the
+      // dispatcher's finally-block; throwing would mask the real error.
+      await expect(provider.stop(h)).resolves.toBeUndefined();
+      expect(del).toHaveBeenCalledWith('agent-x');
+    });
+
+    it('skips the deleter cleanly when no agentId was captured', async () => {
+      const del = vi.fn(async () => undefined);
+      const provider = newProvider({ teammateDeleter: { delete: del } });
+      const { runtime, spies } = fakeRuntime();
+      // Make spawn return a teammate without an agentId.
+      spies.spawn.mockImplementationOnce(async (input: { name: string; role: string }) => ({
+        name: input.name,
+        role: input.role,
+      } as never));
+      inject(provider, runtime);
+      const h = await provider.start({ role: 'coder' });
+      await provider.stop(h);
+      expect(del).not.toHaveBeenCalled();
+    });
+
+    it('warns once when no deleter is wired but spawned agents have ids', async () => {
+      const provider = newProvider(); // no teammateDeleter
+      const warnSpy = vi.spyOn(console, 'warn');
+      const ourWarns: string[] = [];
+      warnSpy.mockImplementation((...args: unknown[]) => {
+        const msg = args.map((p) => String(p)).join(' ');
+        if (msg.includes('teammateDeleter not wired')) ourWarns.push(msg);
+      });
+      try {
+        const { runtime } = fakeRuntime({ agentId: 'agent-1' });
+        inject(provider, runtime);
+        const h1 = await provider.start({ role: 'coder' });
+        await provider.stop(h1);
+        const h2 = await provider.start({ role: 'reviewer' });
+        await provider.stop(h2);
+        // Warning fires exactly once across two stops on the same provider.
+        expect(ourWarns).toHaveLength(1);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('clears its session entry on stop so a re-spawn starts fresh', async () => {
+      const del = vi.fn(async () => undefined);
+      const provider = newProvider({ teammateDeleter: { delete: del } });
+      const { runtime } = fakeRuntime({ agentId: 'agent-1' });
+      inject(provider, runtime);
+      const h = await provider.start({ role: 'coder' });
+      const sessionsBefore = (provider as unknown as { sessions: Map<string, unknown> }).sessions.size;
+      await provider.stop(h);
+      const sessionsAfter = (provider as unknown as { sessions: Map<string, unknown> }).sessions.size;
+      expect(sessionsBefore).toBe(1);
+      expect(sessionsAfter).toBe(0);
+    });
+  });
+
   describe('init handling (role packs own memory blocks)', () => {
     it('passes skipInit: true on spawn by default', async () => {
       const provider = newProvider();

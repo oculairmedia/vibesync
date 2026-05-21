@@ -26,6 +26,7 @@ export type {
   MemoryBlockSeeder,
   ToolAttacher,
   ToolAttachResult,
+  TeammateDeleter,
 } from './letta-teams-provider.js';
 
 export { A2UIProvider } from './a2ui-provider.js';

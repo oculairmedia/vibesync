@@ -128,6 +128,22 @@ export interface MemoryBlockSeeder {
 }
 
 /**
+ * Adapter the provider calls during stop() to actually delete the
+ * spawned Letta agent (vibesync-6zj). letta-teams-sdk's
+ * `teammates.remove(name)` only deletes a local JSON file in the
+ * daemon's project dir — it does NOT touch the underlying Letta agent.
+ * Without this hook the underlying agents accumulate forever.
+ *
+ * Implementations live in src/letta/ so the orchestration plane never
+ * imports @letta-ai/letta-client directly. Contract: idempotent;
+ * tolerate "already gone" (HTTP 404 / not-found) silently; surface
+ * other failures so the provider can log them.
+ */
+export interface TeammateDeleter {
+  delete(agentId: string): Promise<void>;
+}
+
+/**
  * Outcome of a single per-tool attach attempt. Status values:
  *
  *   attached         — the tool was just attached to the agent
@@ -173,6 +189,13 @@ interface SessionState {
   stopped: boolean;
   /** Optional molecule id sourced from SessionSpec.extra at start time. */
   moleculeId?: string;
+  /**
+   * Letta agent id behind the spawned teammate. Captured at spawn time
+   * because the daemon's `removeTeammate` only unlinks the local
+   * teammate file — we need to call DELETE /v1/agents/<agentId>
+   * directly during stop() to actually free the agent (vibesync-6zj).
+   */
+  agentId?: string;
 }
 
 export interface LettaTeamsProviderOptions {
@@ -212,6 +235,15 @@ export interface LettaTeamsProviderOptions {
    * hard precondition for start(). See vibesync-cs2.
    */
   readonly toolAttacher?: ToolAttacher;
+  /**
+   * Optional adapter that actually deletes the Letta agent during
+   * stop() (vibesync-6zj). letta-teams-sdk's teammates.remove only
+   * unlinks a local JSON file — without this hook every formula run
+   * leaks one Letta agent per role. Missing deleter is logged once but
+   * does not throw; old agents continue to accumulate until the deleter
+   * is wired.
+   */
+  readonly teammateDeleter?: TeammateDeleter;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 250;
@@ -227,6 +259,8 @@ export class LettaTeamsProvider implements RuntimeProvider {
   private readonly eventBus: EventBus | null;
   private readonly memoryBlockSeeder: MemoryBlockSeeder | null;
   private readonly toolAttacher: ToolAttacher | null;
+  private readonly teammateDeleter: TeammateDeleter | null;
+  private warnedAboutMissingDeleter = false;
 
   constructor(opts: LettaTeamsProviderOptions = {}) {
     this.pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
@@ -235,6 +269,7 @@ export class LettaTeamsProvider implements RuntimeProvider {
     this.eventBus = opts.eventBus ?? null;
     this.memoryBlockSeeder = opts.memoryBlockSeeder ?? null;
     this.toolAttacher = opts.toolAttacher ?? null;
+    this.teammateDeleter = opts.teammateDeleter ?? null;
   }
 
   /**
@@ -372,6 +407,7 @@ export class LettaTeamsProvider implements RuntimeProvider {
     };
     const resumeTaskId = readStringExtra(spec, 'resumeTaskId');
     const session: SessionState = { activeTaskId: resumeTaskId ?? null, stopped: false };
+    if (teammate?.agentId) session.agentId = teammate.agentId;
     if (moleculeId !== undefined) session.moleculeId = moleculeId;
     this.sessions.set(handle.id, session);
     return handle;
@@ -382,10 +418,40 @@ export class LettaTeamsProvider implements RuntimeProvider {
     const runtime = await this.getRuntime();
     const session = this.sessions.get(h.id);
     if (session) session.stopped = true;
-    // Stop is teammate removal; the SDK does its own confirmation flow
-    // for destructive operations. For VibeSync's lifecycle we just call
-    // remove and accept the false result if it failed.
+
+    // letta-teams-sdk's removeTeammate(name) only unlinks the daemon's
+    // local teammate JSON file — it does NOT touch the underlying Letta
+    // agent (verified at node_modules/letta-teams-sdk/dist/store/teammate.js).
+    // Without an explicit DELETE on the agent id, every spawn leaks one
+    // agent per role (vibesync-6zj). Call the SDK first (so the
+    // daemon's local view stays consistent), then delete the Letta
+    // agent via the injected deleter.
     await runtime.teammates.remove(h.target);
+
+    if (session?.agentId) {
+      if (!this.teammateDeleter) {
+        if (!this.warnedAboutMissingDeleter) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            'LettaTeamsProvider: teammateDeleter not wired — spawned Letta agents will leak (one per role per molecule). See vibesync-6zj.',
+          );
+          this.warnedAboutMissingDeleter = true;
+        }
+      } else {
+        try {
+          await this.teammateDeleter.delete(session.agentId);
+        } catch (err) {
+          // Deleter contract: tolerate "already gone" silently. Anything
+          // that reaches here is a real failure we want visibility on,
+          // but it's not fatal to the dispatcher's finally-block.
+          // eslint-disable-next-line no-console
+          console.warn(
+            `LettaTeamsProvider: teammateDeleter.delete(${session.agentId}) failed: ${(err as Error).message}`,
+          );
+        }
+      }
+    }
+    this.sessions.delete(h.id);
   }
 
   async prompt(handle: SessionHandle, content: readonly ContentBlock[]): Promise<PromptResult> {
