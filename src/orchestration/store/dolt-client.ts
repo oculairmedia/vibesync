@@ -22,6 +22,16 @@
  *   - Type discriminator (vibesync-93h): molecule beads are written
  *     with issue_type ∈ {'molecule_root', 'molecule_step', 'mail'}.
  *
+ * Version-pin discipline (vibesync-bll):
+ *   `verifySchema()` hashes `SHOW CREATE TABLE` for every bd table we
+ *   INSERT into or SELECT from and compares it to the vendored constant
+ *   in schema-fingerprint.ts. When bd is upgraded the hash will drift —
+ *   that is intentional. The fix is to re-run the dispatcher's hot-path
+ *   INSERTs against the new bd, fix any breakage, and bump both
+ *   `EXPECTED_BD_SCHEMA_FINGERPRINT` and `BD_FINGERPRINT_BD_VERSION`.
+ *   Never paste the actual fingerprint in without re-testing — that
+ *   defeats the silent-breakage guard the constant exists to provide.
+ *
  * See vibesync-w5z.
  */
 
@@ -30,6 +40,15 @@ import { join } from 'node:path';
 import mysql from 'mysql2/promise';
 import type { Pool } from 'mysql2/promise';
 import { computeRepoId, defaultRepoFingerprintDeps, type RepoFingerprintDeps } from '../../beads/repoFingerprint.js';
+import {
+  BD_FINGERPRINT_BD_VERSION,
+  BD_FINGERPRINT_TABLES,
+  EXPECTED_BD_SCHEMA_FINGERPRINT,
+  WrongBdSchemaError,
+  computeSchemaFingerprint,
+  perTableHashes,
+  type TableSchemaRow,
+} from './schema-fingerprint.js';
 
 /**
  * Configuration for connecting to the local Dolt server that bd init
@@ -188,6 +207,7 @@ export class DoltClient {
   readonly port: number;
   private readonly expectedRepoId: string | null;
   private fingerprintVerified = false;
+  private schemaVerified = false;
 
   constructor(cfg: DoltClientConfig = {}) {
     const port = readPort(cfg);
@@ -247,6 +267,52 @@ export class DoltClient {
       port: this.port,
     });
     this.fingerprintVerified = true;
+  }
+
+  /**
+   * Verify the bd table schemas the daemon depends on still match the
+   * version we vendored a fingerprint for. See schema-fingerprint.ts
+   * for the version-pin discipline.
+   *
+   * Boot calls this before the dispatcher starts so a bd upgrade that
+   * silently changes one of the tables we INSERT into fails loudly
+   * here instead of wedging on the first hot-path INSERT.
+   *
+   * Throws `WrongBdSchemaError` with per-table drift context on
+   * mismatch. Idempotent after the first successful call.
+   */
+  async verifySchema(): Promise<void> {
+    if (this.schemaVerified) return;
+    const rows: TableSchemaRow[] = [];
+    for (const table of BD_FINGERPRINT_TABLES) {
+      const [result] = await this.pool.query<mysql.RowDataPacket[]>(`SHOW CREATE TABLE \`${table}\``);
+      const createTableSql = String(result[0]?.['Create Table'] ?? '');
+      if (!createTableSql) {
+        throw new WrongBdSchemaError({
+          expected: EXPECTED_BD_SCHEMA_FINGERPRINT,
+          actual: '(missing)',
+          bdVersionPin: BD_FINGERPRINT_BD_VERSION,
+          perTableDrift: [{ table, expectedHash: '(pinned)', actualHash: '(missing)' }],
+        });
+      }
+      rows.push({ table, createTableSql });
+    }
+    const actual = computeSchemaFingerprint(rows);
+    if (actual !== EXPECTED_BD_SCHEMA_FINGERPRINT) {
+      const actualPerTable = perTableHashes(rows);
+      const perTableDrift = BD_FINGERPRINT_TABLES.map((table) => ({
+        table,
+        expectedHash: '(pinned aggregate)',
+        actualHash: actualPerTable[table] ?? '(missing)',
+      }));
+      throw new WrongBdSchemaError({
+        expected: EXPECTED_BD_SCHEMA_FINGERPRINT,
+        actual,
+        bdVersionPin: BD_FINGERPRINT_BD_VERSION,
+        perTableDrift,
+      });
+    }
+    this.schemaVerified = true;
   }
 
   /**

@@ -34,6 +34,34 @@
  * the operational rule is: **never wipe ~/.lteams/ without first
  * deleting the corresponding agents on the Letta server**.
  *
+ * ## `LETTA_SEND_MESSAGES` is a no-op (vibesync-vkp)
+ *
+ * The env var `LETTA_SEND_MESSAGES` exists in `tests/setup.ts` history
+ * as a perceived safety gate, but it is **not consulted anywhere** —
+ * not in vibesync, not in letta-teams-sdk, not in `@letta-ai/letta-
+ * client`. There is no dry-run mode for either the REST seeder path or
+ * the teams `runtime.tasks.dispatch` path. If you need a dry-run guard,
+ * one has to be built; do not rely on `LETTA_SEND_MESSAGES=false` to
+ * stop outbound side effects.
+ *
+ * ## "Failed to validate." spam is informational (vibesync-vkp)
+ *
+ * `@letta-ai/letta-client` is Fern-generated and calls
+ * `maybeSkipValidation` with `skipValidation: true` on every resource
+ * response. When the Letta server returns a payload the bundled schema
+ * does not recognise, the client emits `console.warn("Failed to
+ * validate.\n  - <field>: <reason>")` and proceeds with the raw value.
+ * The warning is harmless — it indicates server-side schema drift
+ * relative to the pinned client, not a request failure. The teammate
+ * dispatch we observed during the first Gastown molecule run
+ * (vibesync-vkp) was producing this warning ~8× per reviewer step and
+ * still completing successfully.
+ *
+ * To silence the spam at boot, set `LETTA_SILENCE_VALIDATION_SPAM=true`
+ * and call `installLettaClientValidationFilter()` once during boot —
+ * see LettaClientValidationFilter.ts. Default is "noisy" so we never
+ * lose signal in incident triage.
+ *
  * See vibesync-6wn.11.
  */
 
