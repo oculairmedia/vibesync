@@ -454,8 +454,17 @@ export class DoltClient {
     await this.pool.execute(`UPDATE issues SET status = 'in_progress' WHERE id = ?`, [stepId]);
   }
 
-  /** Persist provider-opaque runtime task metadata for restart re-attachment. */
-  async recordStepTask(stepId: string, task: { readonly taskId: string; readonly providerKind: string; readonly sessionId: string }): Promise<void> {
+  /**
+   * Persist provider-opaque runtime task metadata for restart re-attachment.
+   * vibesync-mcz Phase D: also persists conversation_id when supplied so a
+   * future resume can re-attach to the same persistent-subagent conversation.
+   */
+  async recordStepTask(stepId: string, task: {
+    readonly taskId: string;
+    readonly providerKind: string;
+    readonly sessionId: string;
+    readonly conversationId?: string;
+  }): Promise<void> {
     const conn = await this.pool.getConnection();
     try {
       await conn.beginTransaction();
@@ -470,6 +479,7 @@ export class DoltClient {
         task_id: task.taskId,
         provider_kind: task.providerKind,
         session_id: task.sessionId,
+        ...(task.conversationId ? { conversation_id: task.conversationId } : {}),
       };
       await conn.execute(
         `UPDATE issues SET metadata = CAST(? AS JSON) WHERE id = ?`,

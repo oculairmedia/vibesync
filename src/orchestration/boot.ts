@@ -1,4 +1,11 @@
-import { FormulaDispatcher, installWritebackHook, type ProviderResolver, type WritebackStore } from './dispatcher/index.js';
+import {
+  FormulaDispatcher,
+  installWritebackHook,
+  type ProviderResolver,
+  type RoleAgentBootstrapContextResolver,
+  type RoleAgentBootstrapperLike,
+  type WritebackStore,
+} from './dispatcher/index.js';
 import { EventBus } from './events/index.js';
 import { HealthPatrol } from './health/index.js';
 import { MoleculeWalker } from './molecule/index.js';
@@ -89,6 +96,31 @@ export interface BootOrchestrationProviderRoutingOptions {
    * disable caching. Default: unlimited.
    */
   readonly cacheLimit?: number;
+  /**
+   * vibesync-mcz Phase D — persistent per-(project, role) subagent
+   * bootstrap. When supplied alongside a per-project pack lookup,
+   * the dispatcher will call `bootstrapper.ensureRoleAgent` for
+   * each step's role on letta-code-subagent projects, threading the
+   * resulting agentId through extra.agentId so the provider
+   * dispatches against the persistent role agent (Phase C path).
+   *
+   * `packDirsByProject` is a static map of projectIdentifier →
+   * absolute pack root (the directory that contains
+   * `.letta/agents/<role>.md`). Missing entries fall through to the
+   * inline-persona path.
+   *
+   * `storageDirsByProject` is a static map of projectIdentifier →
+   * absolute local-backend storage dir (where the persistent agent
+   * JSON files live). Missing entries fall through to the inline
+   * path.
+   *
+   * Either map missing for a given project = no persistent bootstrap
+   * for that project = today's behavior. This keeps the rollout
+   * project-by-project rather than backend-wide.
+   */
+  readonly roleAgentBootstrapper?: RoleAgentBootstrapperLike;
+  readonly packDirsByProject?: Readonly<Record<string, string>>;
+  readonly storageDirsByProject?: Readonly<Record<string, string>>;
 }
 
 export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions): Promise<OrchestrationHandle> {
@@ -138,12 +170,16 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   const providerResolver = opts.providerRouting
     ? buildProviderResolver(opts.providerRouting)
     : undefined;
+  const roleAgentContextResolver = opts.providerRouting
+    ? buildRoleAgentContextResolver(opts.providerRouting)
+    : undefined;
   const dispatcher = new FormulaDispatcher({
     provider,
     walker,
     eventBus: bus,
     ...(maxConcurrentMolecules === undefined ? {} : { maxConcurrentMolecules }),
     ...(providerResolver ? { providerResolver } : {}),
+    ...(roleAgentContextResolver ? { roleAgentContextResolver } : {}),
   });
 
   // Molecule → motivating-bead writeback hook (vibesync-0xo). Idempotent
@@ -246,6 +282,41 @@ export function buildProviderResolver(opts: BootOrchestrationProviderRoutingOpti
         `[boot] provider routing: project ${projectId} requested unknown provider_kind='${row.providerKind}' — falling back to default`,
       );
       return null;
+    },
+  };
+}
+
+/**
+ * vibesync-mcz Phase D — construct the dispatcher's persistent
+ * role-agent bootstrap context resolver. Returns null when the
+ * project isn't on the letta-code-subagent path or when the
+ * bootstrapper/pack-dir/storage-dir mapping isn't supplied (full
+ * backwards-compat fall-through to today's inline-persona path).
+ *
+ * Exported for unit tests; production callers go through
+ * bootOrchestrationPlane.
+ */
+export function buildRoleAgentContextResolver(
+  opts: BootOrchestrationProviderRoutingOptions,
+): RoleAgentBootstrapContextResolver {
+  return {
+    resolve(input) {
+      const projectId = input.projectIdentifier;
+      if (!projectId) return null;
+      // Only letta-code-subagent projects get persistent role agents
+      // in this epic. LettaTeamsProvider projects keep their existing
+      // teammate-pool flow.
+      const row = opts.store.getProjectProviderRouting(projectId);
+      if (!row || row.providerKind !== 'letta-code-subagent') return null;
+      const bootstrapper = opts.roleAgentBootstrapper;
+      const packDir = opts.packDirsByProject?.[projectId];
+      const storageDir = opts.storageDirsByProject?.[projectId];
+      const lettaBaseUrl = row.lettaBaseUrl;
+      // ALL of bootstrapper + packDir + storageDir + lettaBaseUrl
+      // must be present. Any missing piece means we can't bootstrap
+      // safely — fall through to inline-persona, which still works.
+      if (!bootstrapper || !packDir || !storageDir || !lettaBaseUrl) return null;
+      return { bootstrapper, packDir, storageDir, lettaBaseUrl };
     },
   };
 }

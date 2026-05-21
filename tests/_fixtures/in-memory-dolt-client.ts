@@ -101,13 +101,19 @@ export class InMemoryDoltClient {
     this.updateBead(stepId, { status: 'in_progress' });
   }
 
-  async recordStepTask(stepId: string, task: { readonly taskId: string; readonly providerKind: string; readonly sessionId: string }): Promise<void> {
+  async recordStepTask(stepId: string, task: {
+    readonly taskId: string;
+    readonly providerKind: string;
+    readonly sessionId: string;
+    readonly conversationId?: string;
+  }): Promise<void> {
     const row = this.requireBead(stepId);
     this.updateBead(stepId, {
       metadata: mergeExec(row.metadata, {
         task_id: task.taskId,
         provider_kind: task.providerKind,
         session_id: task.sessionId,
+        ...(task.conversationId ? { conversation_id: task.conversationId } : {}),
       }),
     });
   }

@@ -70,7 +70,18 @@ export interface MoleculeStore {
   findReadyStepsForMolecule(rootId: string): Promise<readonly BeadRow[]>;
   findRunningStepsForMolecule(rootId: string): Promise<readonly BeadRow[]>;
   markStepRunning(stepId: string): Promise<void>;
-  recordStepTask(stepId: string, task: { readonly taskId: string; readonly providerKind: string; readonly sessionId: string }): Promise<void>;
+  recordStepTask(stepId: string, task: {
+    readonly taskId: string;
+    readonly providerKind: string;
+    readonly sessionId: string;
+    /**
+     * Optional persistent-subagent conversation id (vibesync-mcz
+     * Phase D). When present, persisted as metadata.exec.conversation_id
+     * alongside task_id so a future resume can re-attach to the
+     * same conversation on the persistent role agent.
+     */
+    readonly conversationId?: string;
+  }): Promise<void>;
   recordStepAttempt(stepId: string, attempt: number): Promise<void>;
   markStepDone(stepId: string, output: unknown): Promise<void>;
   markStepFailed(stepId: string, errorTrace: string): Promise<void>;
@@ -224,8 +235,18 @@ export class MoleculeWalker {
     await this.store.markStepRunning(stepId);
   }
 
-  /** Persist provider-opaque task metadata for restart re-attachment. */
-  async recordStepTask(stepId: string, task: { readonly taskId: string; readonly providerKind: string; readonly sessionId: string }): Promise<void> {
+  /**
+   * Persist provider-opaque task metadata for restart re-attachment.
+   * vibesync-mcz Phase D: also persists conversation_id when supplied
+   * so a future resume can re-attach to the same persistent-subagent
+   * conversation.
+   */
+  async recordStepTask(stepId: string, task: {
+    readonly taskId: string;
+    readonly providerKind: string;
+    readonly sessionId: string;
+    readonly conversationId?: string;
+  }): Promise<void> {
     await this.store.recordStepTask(stepId, task);
   }
 
