@@ -460,7 +460,7 @@ export class DoltClient {
    * future resume can re-attach to the same persistent-subagent conversation.
    */
   async recordStepTask(stepId: string, task: {
-    readonly taskId: string;
+    readonly taskId?: string;
     readonly providerKind: string;
     readonly sessionId: string;
     readonly conversationId?: string;
@@ -476,7 +476,7 @@ export class DoltClient {
       const meta = typeof existing === 'string' ? JSON.parse(existing) : (existing ?? {});
       meta.exec = {
         ...(meta.exec ?? {}),
-        task_id: task.taskId,
+        ...(task.taskId ? { task_id: task.taskId } : {}),
         provider_kind: task.providerKind,
         session_id: task.sessionId,
         ...(task.conversationId ? { conversation_id: task.conversationId } : {}),

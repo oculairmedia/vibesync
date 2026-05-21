@@ -616,9 +616,18 @@ export class FormulaDispatcher {
         },
       });
       const promptResult = await args.provider.prompt(handle, [{ type: 'text', text: args.rendered }]);
-      if (promptResult.taskId) {
+      // vibesync-mcz Phase D/F: persist execution metadata whenever
+      // we have anything meaningful to persist — a taskId (f5g
+      // resume contract) OR a conversationId (mcz per-dispatch
+      // isolation contract). Earlier revisions gated this entirely
+      // on taskId, which silently dropped conversationId for
+      // providers that report taskId asynchronously via SSE rather
+      // than synchronously on prompt() (the LettaCodeSubagentProvider
+      // case). Persist what we have; absent fields are simply not
+      // written.
+      if (promptResult.taskId || conversationId) {
         await this.walker.recordStepTask(args.stepId, {
-          taskId: promptResult.taskId,
+          ...(promptResult.taskId ? { taskId: promptResult.taskId } : {}),
           providerKind: handle.providerKind,
           sessionId: handle.id,
           ...(conversationId ? { conversationId } : {}),

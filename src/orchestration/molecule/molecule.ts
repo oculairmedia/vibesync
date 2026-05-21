@@ -71,7 +71,16 @@ export interface MoleculeStore {
   findRunningStepsForMolecule(rootId: string): Promise<readonly BeadRow[]>;
   markStepRunning(stepId: string): Promise<void>;
   recordStepTask(stepId: string, task: {
-    readonly taskId: string;
+    /**
+     * Provider-opaque task id for restart re-attachment (f5g).
+     * Optional because providers that surface their task id
+     * asynchronously via the SSE stream (e.g. LettaCodeSubagentProvider)
+     * may not have it synchronously available at prompt() return
+     * time; for those, the dispatcher persists conversation_id
+     * alone and the resume path falls back to conversation
+     * re-attachment.
+     */
+    readonly taskId?: string;
     readonly providerKind: string;
     readonly sessionId: string;
     /**
@@ -242,7 +251,7 @@ export class MoleculeWalker {
    * conversation.
    */
   async recordStepTask(stepId: string, task: {
-    readonly taskId: string;
+    readonly taskId?: string;
     readonly providerKind: string;
     readonly sessionId: string;
     readonly conversationId?: string;

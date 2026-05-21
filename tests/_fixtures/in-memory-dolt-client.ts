@@ -102,7 +102,7 @@ export class InMemoryDoltClient {
   }
 
   async recordStepTask(stepId: string, task: {
-    readonly taskId: string;
+    readonly taskId?: string;
     readonly providerKind: string;
     readonly sessionId: string;
     readonly conversationId?: string;
@@ -110,7 +110,7 @@ export class InMemoryDoltClient {
     const row = this.requireBead(stepId);
     this.updateBead(stepId, {
       metadata: mergeExec(row.metadata, {
-        task_id: task.taskId,
+        ...(task.taskId ? { task_id: task.taskId } : {}),
         provider_kind: task.providerKind,
         session_id: task.sessionId,
         ...(task.conversationId ? { conversation_id: task.conversationId } : {}),
