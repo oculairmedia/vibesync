@@ -308,16 +308,17 @@ export class DoltClient {
          VALUES (?, ?, '', '', '', '', 'open', 2, 'molecule_step', CAST(? AS JSON), 'orchestration-daemon', 'orchestration-daemon')`,
         [args.id, args.title, JSON.stringify(meta)],
       );
-      // parent-child edge to root
+      // parent-child edge to root (depends_on_id is now a generated column in
+      // bd's schema; write the issue-typed source column instead)
       await conn.execute(
-        `INSERT INTO dependencies (issue_id, depends_on_id, type, created_by)
+        `INSERT INTO dependencies (issue_id, depends_on_issue_id, type, created_by)
          VALUES (?, ?, 'parent-child', 'orchestration-daemon')`,
         [args.id, args.parentRootId],
       );
       // blocks edges to predecessor steps
       for (const dep of args.dependsOnStepIds ?? []) {
         await conn.execute(
-          `INSERT INTO dependencies (issue_id, depends_on_id, type, created_by)
+          `INSERT INTO dependencies (issue_id, depends_on_issue_id, type, created_by)
            VALUES (?, ?, 'blocks', 'orchestration-daemon')`,
           [args.id, dep],
         );
