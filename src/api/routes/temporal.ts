@@ -119,7 +119,7 @@ export function registerTemporalRoutes(app: App, deps: TemporalDeps): void {
       try {
         const temporal = await getTemporalClient();
         if (!temporal) { sendJson(res, 200, { available: false, message: 'Temporal not available', workflows: [] }); return; }
-        const clientModuleUrl = new URL('../../../temporal/dist/client.js', import.meta.url);
+        const clientModuleUrl = new URL('../../../temporal/client.ts', import.meta.url);
         const { listSyncWorkflows } = await import(clientModuleUrl.href) as { listSyncWorkflows: (limit: number) => Promise<Record<string, unknown>[]> };
         const limit = parseInt(url.searchParams.get('limit') || '20', 10);
         const workflows = await listSyncWorkflows(limit);

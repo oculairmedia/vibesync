@@ -37,7 +37,8 @@ const ENABLE_ORCHESTRATION = process.env.ENABLE_ORCHESTRATION === 'true';
 async function getTemporalOrchestration(): Promise<Record<string, (...args: unknown[]) => Promise<unknown>> | null> {
   if (!temporalOrchestration && USE_TEMPORAL_ORCHESTRATION) {
     try {
-      const temporalModule = (await import('../temporal/dist/client.js')) as Record<string, unknown>;
+      const temporalClientPath = '../temporal/client.js';
+      const temporalModule = (await import(/* @vite-ignore */ temporalClientPath)) as Record<string, unknown>;
 
       if (await (temporalModule.isTemporalAvailable as () => Promise<boolean>)()) {
         temporalOrchestration = {

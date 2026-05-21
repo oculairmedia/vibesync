@@ -55,7 +55,7 @@ async function runMemoryUpdateWorkflow(
     const worker = await Worker.create({
       connection: testEnv.nativeConnection,
       taskQueue,
-      workflowsPath: path.resolve(__dirname, '../../../temporal/dist/workflows/memory-update.js'),
+      workflowsPath: path.resolve(__dirname, '../../../temporal/workflows/memory-update.ts'),
       activities: mockActivities,
     });
 
@@ -88,7 +88,7 @@ async function runBatchMemoryUpdateWorkflow(
     const worker = await Worker.create({
       connection: testEnv.nativeConnection,
       taskQueue,
-      workflowsPath: path.resolve(__dirname, '../../../temporal/dist/workflows/memory-update.js'),
+      workflowsPath: path.resolve(__dirname, '../../../temporal/workflows/memory-update.ts'),
       activities: mockActivities,
     });
 

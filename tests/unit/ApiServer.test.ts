@@ -48,7 +48,7 @@ vi.mock('child_process', () => ({
 }));
 
 const temporalClientUrl = vi.hoisted(
-  () => new URL('../../temporal/dist/client.js', import.meta.url).href
+  () => new URL('../../temporal/client.ts', import.meta.url).href
 );
 
 vi.mock(temporalClientUrl, () => ({

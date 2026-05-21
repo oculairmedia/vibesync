@@ -77,7 +77,7 @@ async function runIssueSyncWorkflowTest(
     const worker = await Worker.create({
       connection: testEnv.nativeConnection,
       taskQueue,
-      workflowsPath: path.resolve(__dirname, '../../../temporal/dist/workflows/issue-sync.js'),
+      workflowsPath: path.resolve(__dirname, '../../../temporal/workflows/issue-sync.ts'),
       activities: mockActivities,
     });
 
@@ -116,7 +116,7 @@ async function runBatchIssueSyncWorkflowTest(
     const worker = await Worker.create({
       connection: testEnv.nativeConnection,
       taskQueue,
-      workflowsPath: path.resolve(__dirname, '../../../temporal/dist/workflows/issue-sync.js'),
+      workflowsPath: path.resolve(__dirname, '../../../temporal/workflows/issue-sync.ts'),
       activities: mockActivities,
     });
 

@@ -51,7 +51,7 @@ async function runSingleIssueWorkflow(
   const worker = await Worker.create({
     connection: testEnv.nativeConnection,
     taskQueue,
-    workflowsPath: path.resolve(__dirname, '../../../temporal/dist/workflows/full-sync.js'),
+    workflowsPath: path.resolve(__dirname, '../../../temporal/workflows/full-sync.ts'),
     activities: mockActivities,
   });
 
@@ -84,7 +84,7 @@ async function runProjectWorkflow(
   const worker = await Worker.create({
     connection: testEnv.nativeConnection,
     taskQueue,
-    workflowsPath: path.resolve(__dirname, '../../../temporal/dist/workflows/full-sync.js'),
+    workflowsPath: path.resolve(__dirname, '../../../temporal/workflows/full-sync.ts'),
     activities: mockActivities,
   });
 

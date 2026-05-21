@@ -52,8 +52,9 @@ function extractGitRepoPath(description?: string): string | null {
 
   for (const pattern of patterns) {
     const match = description.match(pattern);
-    if (match) {
-      const path = match[1].trim().replace(/[,;.]$/, '');
+    const captured = match?.[1];
+    if (captured) {
+      const path = captured.trim().replace(/[,;.]$/, '');
       if (path.startsWith('/')) return path;
     }
   }
@@ -172,8 +173,7 @@ export async function ProjectSyncWorkflow(input: ProjectSyncInput): Promise<Proj
               agentId: agentCheck.agentId,
               project: project,
               issues: [],
-              gitRepoPath: gitRepoPath || undefined,
-              gitUrl: undefined,
+              ...(gitRepoPath ? { gitRepoPath } : {}),
             });
             result.lettaUpdated = memResult.success;
           }
