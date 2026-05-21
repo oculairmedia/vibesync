@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import { ProjectLettaRepository } from './ProjectLettaRepository';
+import { ProjectRoleAgentRepository } from './ProjectRoleAgentRepository';
 import type { ProjectRow } from '../../types/db.js';
 import type { LettaAgentInfo } from './ProjectLettaRepository';
 
@@ -41,9 +42,11 @@ export interface BeadsRemoteSnapshot {
 
 export class ProjectRepository {
   public letta: ProjectLettaRepository;
+  public roleAgents: ProjectRoleAgentRepository;
 
   constructor(private db: Database.Database) {
     this.letta = new ProjectLettaRepository(db);
+    this.roleAgents = new ProjectRoleAgentRepository(db);
   }
 
   upsertProject(project: ProjectUpsert): void {

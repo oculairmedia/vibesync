@@ -221,6 +221,23 @@ export class SyncDatabase {
     return this.projects!.letta.setProjectProviderRouting(id, routing);
   }
 
+  // Project role-agent convenience proxies (vibesync-mcz Phase A)
+  getRoleAgent(projectIdentifier: string, roleName: string) {
+    return this.projects!.roleAgents.getRoleAgent(projectIdentifier, roleName);
+  }
+  upsertRoleAgent(projectIdentifier: string, roleName: string, agentId: string, lettaBaseUrl: string, now?: number) {
+    return this.projects!.roleAgents.upsertRoleAgent(projectIdentifier, roleName, agentId, lettaBaseUrl, now);
+  }
+  touchRoleAgent(projectIdentifier: string, roleName: string, now?: number): boolean {
+    return this.projects!.roleAgents.touchRoleAgent(projectIdentifier, roleName, now);
+  }
+  listRoleAgents(projectIdentifier: string) {
+    return this.projects!.roleAgents.listRoleAgents(projectIdentifier);
+  }
+  deleteRoleAgent(projectIdentifier: string, roleName: string): boolean {
+    return this.projects!.roleAgents.deleteRoleAgent(projectIdentifier, roleName);
+  }
+
   // Issue convenience proxies
   upsertIssue(issue: IssueUpsert): void { return this.issues!.upsertIssue(issue); }
   upsertBeadsIssue(pid: string, issue: BeadsIssueInput): void { return this.issues!.upsertBeadsIssue(pid, issue); }
