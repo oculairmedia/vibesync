@@ -339,6 +339,158 @@ describe('FormulaDispatcher', () => {
     expect(thrown).toBeInstanceOf(FormulaDispatchError);
     expect(String((thrown as Error).message)).toContain('has no running steps to cancel');
   });
+
+  describe('per-project provider routing (vibesync-f5g)', () => {
+    it('uses the default provider when no resolver is wired', async () => {
+      const { dispatcher, provider } = newHarness({ script: scriptByRole({ worker: 'ran on default' }) });
+      const result = await dispatcher.resolveProvider({
+        formula: singleStepFormula(),
+        pack: singleStepPack(),
+        input: 'hi',
+        projectIdentifier: 'whatever',
+      });
+      expect(result).toBe(provider);
+    });
+
+    it('uses the default provider when a resolver is wired but projectIdentifier is absent', async () => {
+      const store = new InMemoryDoltClient();
+      const provider = newFakeProvider({ kind: 'default', script: scriptByRole({ worker: 'ok' }) });
+      const altProvider = newFakeProvider({ kind: 'alt', script: scriptByRole({ worker: 'alt' }) });
+      const eventBus = new EventBus({ noPersist: true });
+      const dispatcher = new FormulaDispatcher({
+        provider,
+        walker: new MoleculeWalker(store),
+        eventBus,
+        providerResolver: { resolve: () => altProvider },
+      });
+      const result = await dispatcher.resolveProvider({
+        formula: singleStepFormula(),
+        pack: singleStepPack(),
+        input: 'hi',
+        // No projectIdentifier — routing skipped.
+      });
+      expect(result).toBe(provider);
+    });
+
+    it('routes through the resolver when projectIdentifier is set', async () => {
+      const store = new InMemoryDoltClient();
+      const provider = newFakeProvider({ kind: 'default', script: scriptByRole({ worker: 'default ran' }) });
+      const altProvider = newFakeProvider({ kind: 'alt', script: scriptByRole({ worker: 'alt ran' }) });
+      const eventBus = new EventBus({ noPersist: true });
+      const dispatcher = new FormulaDispatcher({
+        provider,
+        walker: new MoleculeWalker(store),
+        eventBus,
+        providerResolver: {
+          resolve: (input) => (input.projectIdentifier === 'vibesync' ? altProvider : null),
+        },
+      });
+      const result = await dispatcher.resolveProvider({
+        formula: singleStepFormula(),
+        pack: singleStepPack(),
+        input: 'hi',
+        projectIdentifier: 'vibesync',
+      });
+      expect(result).toBe(altProvider);
+    });
+
+    it('falls back to the default when the resolver returns null', async () => {
+      const store = new InMemoryDoltClient();
+      const provider = newFakeProvider({ kind: 'default', script: scriptByRole({ worker: 'ok' }) });
+      const eventBus = new EventBus({ noPersist: true });
+      const dispatcher = new FormulaDispatcher({
+        provider,
+        walker: new MoleculeWalker(store),
+        eventBus,
+        providerResolver: { resolve: () => null },
+      });
+      const result = await dispatcher.resolveProvider({
+        formula: singleStepFormula(),
+        pack: singleStepPack(),
+        input: 'hi',
+        projectIdentifier: 'other-project',
+      });
+      expect(result).toBe(provider);
+    });
+
+    it('runs the entire molecule against the resolved provider — not the default', async () => {
+      const store = new InMemoryDoltClient();
+      const provider = newFakeProvider({ kind: 'default', script: scriptByRole({ worker: 'DEFAULT' }) });
+      const altProvider = newFakeProvider({ kind: 'alt', script: scriptByRole({ worker: 'ALT' }) });
+      const eventBus = new EventBus({ noPersist: true });
+      const dispatcher = new FormulaDispatcher({
+        provider,
+        walker: new MoleculeWalker(store),
+        eventBus,
+        providerResolver: {
+          resolve: (input) => (input.projectIdentifier === 'vibesync' ? altProvider : null),
+        },
+      });
+
+      const result = await dispatcher.run({
+        formula: singleStepFormula(),
+        pack: singleStepPack(),
+        input: 'go',
+        projectIdentifier: 'vibesync',
+      });
+
+      // Default provider never received start().
+      expect(provider.recorder.starts).toHaveLength(0);
+      expect(provider.recorder.prompts).toHaveLength(0);
+
+      // Alt provider ran the whole step.
+      expect(altProvider.recorder.starts).toHaveLength(1);
+      expect(altProvider.recorder.prompts).toHaveLength(1);
+      expect(altProvider.recorder.stops).toHaveLength(1);
+
+      // The step output came from the alt provider's script.
+      expect(result.outputs).toMatchObject({ worker: 'ALT' });
+    });
+
+    it('threads projectIdentifier into the spawned session.extra', async () => {
+      const store = new InMemoryDoltClient();
+      const altProvider = newFakeProvider({ kind: 'alt', script: scriptByRole({ worker: 'ok' }) });
+      const eventBus = new EventBus({ noPersist: true });
+      const dispatcher = new FormulaDispatcher({
+        provider: newFakeProvider({ kind: 'default', script: scriptByRole({ worker: 'unused' }) }),
+        walker: new MoleculeWalker(store),
+        eventBus,
+        providerResolver: { resolve: () => altProvider },
+      });
+      await dispatcher.run({
+        formula: singleStepFormula(),
+        pack: singleStepPack(),
+        input: 'go',
+        projectIdentifier: 'vibesync',
+      });
+      const spec = altProvider.recorder.starts[0]!;
+      expect((spec.extra as Record<string, unknown>)['projectIdentifier']).toBe('vibesync');
+    });
+
+    it('emits formula.started with providerKind so observers can see routing', async () => {
+      const store = new InMemoryDoltClient();
+      const altProvider = newFakeProvider({ kind: 'subagent-test', script: scriptByRole({ worker: 'ok' }) });
+      const eventBus = new EventBus({ noPersist: true });
+      const events: Event[] = [];
+      eventBus.subscribe((event) => events.push(event));
+      const dispatcher = new FormulaDispatcher({
+        provider: newFakeProvider({ kind: 'default-test', script: scriptByRole({ worker: 'unused' }) }),
+        walker: new MoleculeWalker(store),
+        eventBus,
+        providerResolver: { resolve: () => altProvider },
+      });
+      await dispatcher.run({
+        formula: singleStepFormula(),
+        pack: singleStepPack(),
+        input: 'go',
+        projectIdentifier: 'vibesync',
+      });
+      const started = events.find((e) => e.kind === 'dispatcher/formula.started');
+      expect(started).toBeDefined();
+      expect(started?.payload?.providerKind).toBe('subagent-test');
+      expect(started?.payload?.projectIdentifier).toBe('vibesync');
+    });
+  });
 });
 
 function newHarness(args: {

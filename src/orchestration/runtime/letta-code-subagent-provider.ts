@@ -553,8 +553,11 @@ export function parseSseFrame(frame: string): ShimFrameEvent[] {
   }
   try {
     const data = JSON.parse(joined) as unknown;
-    if (data && typeof data === 'object' && 'type' in (data as Record<string, unknown>) && typeof (data as Record<string, unknown>).type === 'string') {
-      return [{ type: (data as Record<string, string>).type, data }];
+    if (data && typeof data === 'object') {
+      const typed = (data as Record<string, unknown>)['type'];
+      if (typeof typed === 'string') {
+        return [{ type: typed, data }];
+      }
     }
     return [{ type: eventType, data }];
   } catch {
@@ -592,8 +595,10 @@ export function translateShimEvent(frame: ShimFrameEvent): TranslatedFrame {
   const data = (frame.data ?? {}) as Record<string, unknown>;
   switch (frame.type) {
     case 'start':
-    case 'message_start':
-      return { events: [], taskId: readString(data['id']) ?? readString(data['message_id']) ?? undefined };
+    case 'message_start': {
+      const taskId = readString(data['id']) ?? readString(data['message_id']);
+      return taskId ? { events: [], taskId } : { events: [] };
+    }
     case 'tool_call': {
       const tool = readString(data['tool_name']) ?? readString(data['name']) ?? 'unknown';
       const args = data['args'] ?? data['input'] ?? null;
@@ -644,9 +649,13 @@ function extractSubagentText(result: unknown): string {
     if (Array.isArray(r['content'])) {
       const parts: string[] = [];
       for (const part of r['content']) {
-        if (typeof part === 'string') parts.push(part);
-        else if (part && typeof part === 'object' && typeof (part as Record<string, unknown>)['text'] === 'string') {
-          parts.push((part as Record<string, string>)['text']);
+        if (typeof part === 'string') {
+          parts.push(part);
+          continue;
+        }
+        if (part && typeof part === 'object') {
+          const txt = (part as Record<string, unknown>)['text'];
+          if (typeof txt === 'string') parts.push(txt);
         }
       }
       return parts.join('');

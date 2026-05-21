@@ -29,6 +29,30 @@ export interface DispatchInput {
   readonly pack: Pack;
   readonly input: string;
   readonly motivatingBeadId?: string;
+  /**
+   * Per-project routing key (vibesync-f5g / vibesync-8hk). When set,
+   * the dispatcher consults its ProviderResolver to pick the right
+   * RuntimeProvider for this run (e.g. LettaCodeSubagentProvider for
+   * vibesync, LettaTeamsProvider for legacy projects). When omitted,
+   * the dispatcher uses the default provider supplied at construction
+   * time — preserving backwards-compatibility with every existing
+   * caller / test that pre-dates the routing path.
+   */
+  readonly projectIdentifier?: string;
+}
+
+/**
+ * Routes a dispatch to the right RuntimeProvider based on the project
+ * identifier. Implementations look up the per-project routing row
+ * (provider_kind, letta_base_url) and either return a cached provider
+ * or construct a project-scoped one. See ProjectLettaRepository.
+ *
+ * The resolver MAY return null to fall back to the dispatcher's
+ * default provider — useful when the routing row exists but has no
+ * override.
+ */
+export interface ProviderResolver {
+  resolve(input: DispatchInput): Promise<RuntimeProvider | null> | RuntimeProvider | null;
 }
 
 export interface DispatchResult {
@@ -48,6 +72,17 @@ export interface FormulaDispatcherOptions {
   readonly idPrefix?: string;
   readonly maxParallelSteps?: number;
   readonly maxConcurrentMolecules?: number;
+  /**
+   * Optional per-dispatch provider resolver (vibesync-f5g / vibesync-8hk).
+   * When supplied, the dispatcher consults this before falling back
+   * to the default `provider`. A resolver that returns null for a
+   * given dispatch yields the default — same as if no resolver were
+   * configured. Resolution happens once per run; the chosen provider
+   * is then used for every step (and on cancel/resume) of that
+   * molecule, so concurrent runs against different projects can hit
+   * different providers without interfering.
+   */
+  readonly providerResolver?: ProviderResolver;
 }
 
 interface QueuedMoleculeRun {
@@ -74,22 +109,47 @@ export class FormulaCancellationConflictError extends FormulaDispatchError {
 }
 
 export class FormulaDispatcher {
-  private readonly provider: RuntimeProvider;
+  private readonly defaultProvider: RuntimeProvider;
   private readonly walker: MoleculeWalker;
   private readonly eventBus: EventBus;
   private readonly idPrefix: string;
   private readonly maxParallelSteps: number;
   private readonly maxConcurrentMolecules: number;
+  private readonly providerResolver: ProviderResolver | null;
   private readonly moleculeQueue: QueuedMoleculeRun[] = [];
   private activeMolecules = 0;
 
   constructor(opts: FormulaDispatcherOptions) {
-    this.provider = opts.provider;
+    this.defaultProvider = opts.provider;
     this.walker = opts.walker;
     this.eventBus = opts.eventBus;
     this.idPrefix = opts.idPrefix ?? 'mol';
     this.maxParallelSteps = normalizeMaxParallelSteps(opts.maxParallelSteps);
     this.maxConcurrentMolecules = normalizeMaxConcurrentMolecules(opts.maxConcurrentMolecules);
+    this.providerResolver = opts.providerResolver ?? null;
+  }
+
+  /**
+   * Back-compat alias: many callsites and tests still read
+   * `dispatcher.provider` to introspect which RuntimeProvider was
+   * wired in at boot. Returns the default; per-dispatch overrides
+   * resolved at run time are NOT visible here.
+   */
+  get provider(): RuntimeProvider {
+    return this.defaultProvider;
+  }
+
+  /**
+   * Resolve the RuntimeProvider for a given dispatch. Returns the
+   * default when no resolver is configured, the resolver yields null,
+   * or the dispatch has no projectIdentifier.
+   *
+   * Exposed for tests; production code goes through run().
+   */
+  async resolveProvider(input: DispatchInput): Promise<RuntimeProvider> {
+    if (!this.providerResolver || !input.projectIdentifier) return this.defaultProvider;
+    const resolved = await this.providerResolver.resolve(input);
+    return resolved ?? this.defaultProvider;
   }
 
   async run(input: DispatchInput): Promise<DispatchResult> {
@@ -111,6 +171,7 @@ export class FormulaDispatcher {
 
   private async runNow(input: DispatchInput): Promise<DispatchResult> {
     const startedAt = Date.now();
+    const provider = await this.resolveProvider(input);
     const view = await this.walker.dispatch({
       prefix: this.idPrefix,
       formulaName: input.formula.name,
@@ -126,6 +187,8 @@ export class FormulaDispatcher {
       formulaName: input.formula.name,
       moleculeId,
       stepCount: input.formula.steps.length,
+      providerKind: provider.kind,
+      ...(input.projectIdentifier ? { projectIdentifier: input.projectIdentifier } : {}),
     });
 
     try {
@@ -135,7 +198,7 @@ export class FormulaDispatcher {
           throw new FormulaDispatchError(`FormulaDispatcher: molecule ${moleculeId} has no ready steps but is incomplete`, moleculeId);
         }
         const batch = ready.slice(0, this.maxParallelSteps);
-        const settled = await Promise.allSettled(batch.map((step) => this.runStep({ input, step, moleculeId, outputs, rolesByName })));
+        const settled = await Promise.allSettled(batch.map((step) => this.runStep({ input, step, moleculeId, outputs, rolesByName, provider })));
         const failed = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected');
         if (failed) throw failed.reason;
       }
@@ -283,6 +346,7 @@ export class FormulaDispatcher {
     readonly moleculeId: string;
     readonly outputs: Record<string, string>;
     readonly rolesByName: ReadonlyMap<string, RoleConfig>;
+    readonly provider: RuntimeProvider;
   }): Promise<void> {
     const stepName = readStepName(args.step);
     const stepSpec = args.input.formula.steps.find((candidate) => candidate.name === stepName);
@@ -318,6 +382,8 @@ export class FormulaDispatcher {
           formulaName: args.input.formula.name,
           rendered,
           attempt,
+          provider: args.provider,
+          ...(args.input.projectIdentifier ? { projectIdentifier: args.input.projectIdentifier } : {}),
         });
         args.outputs[stepName] = output.text;
         await this.walker.finishStep(args.step.id, { output: output.text, eventCount: output.eventCount, attempts: attempt });
@@ -366,6 +432,8 @@ export class FormulaDispatcher {
     readonly formulaName: string;
     readonly rendered: string;
     readonly attempt: number;
+    readonly provider: RuntimeProvider;
+    readonly projectIdentifier?: string;
   }): Promise<{ readonly text: string; readonly eventCount: number }> {
     this.emit('dispatcher/step.started', args.moleculeId, args.stepId, {
       stepName: args.stepName,
@@ -379,7 +447,7 @@ export class FormulaDispatcher {
     let output = '';
     try {
       await this.walker.startStep(args.stepId);
-      handle = await this.provider.start({
+      handle = await args.provider.start({
         role: args.role,
         label: `${args.formulaName}/${args.stepName}`,
         extra: {
@@ -390,9 +458,10 @@ export class FormulaDispatcher {
           memoryBlocks: args.roleConfig.memoryBlocks ?? [],
           ...(args.roleConfig.memoryBlocksPolicy?.mode === 'replace' ? { memoryBlockSeedMode: 'replace' } : {}),
           ...(args.roleConfig.tools && args.roleConfig.tools.length > 0 ? { tools: [...args.roleConfig.tools] } : {}),
+          ...(args.projectIdentifier ? { projectIdentifier: args.projectIdentifier } : {}),
         },
       });
-      const promptResult = await this.provider.prompt(handle, [{ type: 'text', text: args.rendered }]);
+      const promptResult = await args.provider.prompt(handle, [{ type: 'text', text: args.rendered }]);
       if (promptResult.taskId) {
         await this.walker.recordStepTask(args.stepId, {
           taskId: promptResult.taskId,
@@ -407,7 +476,7 @@ export class FormulaDispatcher {
           attempt: args.attempt,
         });
       }
-      for await (const event of this.provider.observe(handle)) {
+      for await (const event of args.provider.observe(handle)) {
         eventCount++;
         if (event.kind === 'message-delta') output += event.text;
         if (event.kind === 'error') throw new Error(event.message);
@@ -416,7 +485,7 @@ export class FormulaDispatcher {
       }
       return { text: output, eventCount };
     } finally {
-      if (handle) await this.provider.stop(handle);
+      if (handle) await args.provider.stop(handle);
     }
   }
 

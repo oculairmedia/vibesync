@@ -68,6 +68,9 @@ export function registerFormulaRoutes(app: App, deps: FormulaRoutesDeps): void {
           pack,
           input: body.input,
           ...(typeof body.motivatingBeadId === 'string' ? { motivatingBeadId: body.motivatingBeadId } : {}),
+          ...(typeof body.projectIdentifier === 'string' && body.projectIdentifier.length > 0
+            ? { projectIdentifier: body.projectIdentifier }
+            : {}),
         });
         deps.sendJson(ctx.res, 202, { moleculeId, formulaName, pack: pack.manifest.name });
       } catch (error) {
