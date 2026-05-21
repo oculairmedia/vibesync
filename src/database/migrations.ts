@@ -224,6 +224,36 @@ export function migrateBeadsIssueMirrorColumns(db: BetterSqlite3.Database): void
   }
 }
 
+/**
+ * Per-project runtime provider routing columns (vibesync-f5g / vibesync-8hk).
+ *
+ * Adds two nullable columns to the projects table so the orchestration
+ * plane can route formula dispatches to different Letta backends per
+ * project without a new join or a separate agents table:
+ *
+ *   letta_base_url  — override of LETTA_BASE_URL for this project's PM
+ *                     agent. NULL = use the global default.
+ *   provider_kind   — which RuntimeProvider implementation to use.
+ *                     NULL or absent = 'letta-teams' (legacy default).
+ *                     Recognized values today: 'letta-teams',
+ *                     'letta-code-subagent'.
+ *
+ * Backwards-compatible: existing rows read NULL/NULL and route to the
+ * default LettaTeamsProvider against the global LETTA_BASE_URL. The
+ * dispatcher only changes behavior when a row explicitly opts in.
+ */
+export function migrateProjectProviderRoutingColumns(db: BetterSqlite3.Database): void {
+  const columns = db.prepare('PRAGMA table_info(projects)').all() as ColumnInfo[];
+  const columnNames = columns.map((c) => c.name);
+
+  if (!columnNames.includes('letta_base_url')) {
+    db.exec('ALTER TABLE projects ADD COLUMN letta_base_url TEXT');
+  }
+  if (!columnNames.includes('provider_kind')) {
+    db.exec("ALTER TABLE projects ADD COLUMN provider_kind TEXT");
+  }
+}
+
 export function migrateIssueMutationIdempotencyTable(db: BetterSqlite3.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS issue_mutation_idempotency (
@@ -250,4 +280,5 @@ export function runAllMigrations(db: BetterSqlite3.Database): void {
   migrateProjectBeadsRemoteColumns(db);
   migrateBeadsIssueMirrorColumns(db);
   migrateIssueMutationIdempotencyTable(db);
+  migrateProjectProviderRoutingColumns(db);
 }

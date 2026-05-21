@@ -216,6 +216,10 @@ export class SyncDatabase {
   lookupByRepo(repo: string): unknown { return this.projects!.letta.lookupByRepo(repo); }
   getAllProjectsWithAgents(): unknown[] { return this.getAllWithAgents(); }
   lookupProjectByRepo(repo: string): unknown { return this.lookupByRepo(repo); }
+  getProjectProviderRouting(id: string) { return this.projects!.letta.getProjectProviderRouting(id); }
+  setProjectProviderRouting(id: string, routing: { lettaBaseUrl: string | null; providerKind: string | null }): boolean {
+    return this.projects!.letta.setProjectProviderRouting(id, routing);
+  }
 
   // Issue convenience proxies
   upsertIssue(issue: IssueUpsert): void { return this.issues!.upsertIssue(issue); }

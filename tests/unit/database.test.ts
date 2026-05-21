@@ -798,6 +798,73 @@ describe('SyncDatabase', () => {
       });
     });
 
+    describe('provider routing (vibesync-f5g)', () => {
+      it('returns nulls for a project with no override (default routing)', () => {
+        const routing = db.getProjectProviderRouting('TEST');
+        expect(routing).toEqual({ lettaBaseUrl: null, providerKind: null });
+      });
+
+      it('returns null when the project does not exist', () => {
+        const routing = db.getProjectProviderRouting('NOPE');
+        expect(routing).toBeNull();
+      });
+
+      it('round-trips both fields via setProjectProviderRouting', () => {
+        const ok = db.setProjectProviderRouting('TEST', {
+          lettaBaseUrl: 'http://192.168.50.90:8291',
+          providerKind: 'letta-code-subagent',
+        });
+        expect(ok).toBe(true);
+
+        const routing = db.getProjectProviderRouting('TEST');
+        expect(routing).toEqual({
+          lettaBaseUrl: 'http://192.168.50.90:8291',
+          providerKind: 'letta-code-subagent',
+        });
+      });
+
+      it('returns false when updating a missing project', () => {
+        const ok = db.setProjectProviderRouting('NOPE', {
+          lettaBaseUrl: 'http://example.test',
+          providerKind: 'letta-code-subagent',
+        });
+        expect(ok).toBe(false);
+      });
+
+      it('does not disturb other letta_* columns', () => {
+        db.setProjectLettaAgent('TEST', {
+          agentId: 'agent-routing',
+          folderId: 'folder-routing',
+          sourceId: 'source-routing',
+        });
+        db.setProjectProviderRouting('TEST', {
+          lettaBaseUrl: 'http://localhost:8291',
+          providerKind: 'letta-code-subagent',
+        });
+
+        const project = db.getProject('TEST');
+        expect(project.letta_agent_id).toBe('agent-routing');
+        expect(project.letta_folder_id).toBe('folder-routing');
+        expect(project.letta_source_id).toBe('source-routing');
+        expect(project.letta_base_url).toBe('http://localhost:8291');
+        expect(project.provider_kind).toBe('letta-code-subagent');
+      });
+
+      it('clears overrides when set back to null', () => {
+        db.setProjectProviderRouting('TEST', {
+          lettaBaseUrl: 'http://localhost:8291',
+          providerKind: 'letta-code-subagent',
+        });
+        db.setProjectProviderRouting('TEST', {
+          lettaBaseUrl: null,
+          providerKind: null,
+        });
+
+        const routing = db.getProjectProviderRouting('TEST');
+        expect(routing).toEqual({ lettaBaseUrl: null, providerKind: null });
+      });
+    });
+
     describe('Huly sync cursor operations', () => {
       it('should return null when no cursor exists', () => {
         const cursor = db.getHulySyncCursor('TEST');
