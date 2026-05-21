@@ -1,4 +1,4 @@
-import { FormulaDispatcher } from './dispatcher/index.js';
+import { FormulaDispatcher, installWritebackHook, type WritebackStore } from './dispatcher/index.js';
 import { EventBus } from './events/index.js';
 import { HealthPatrol } from './health/index.js';
 import { MoleculeWalker } from './molecule/index.js';
@@ -72,6 +72,18 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     eventBus: bus,
     ...(maxConcurrentMolecules === undefined ? {} : { maxConcurrentMolecules }),
   });
+
+  // Molecule → motivating-bead writeback hook (vibesync-0xo). Idempotent
+  // via a writeback stamp on the molecule_root metadata.
+  let unsubscribeWriteback: (() => void) | null = null;
+  if (hasWritebackStore(opts.dolt)) {
+    unsubscribeWriteback = installWritebackHook({
+      bus,
+      walker,
+      store: opts.dolt,
+    });
+  }
+
   let shutDown = false;
 
   return {
@@ -83,11 +95,17 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     async shutdown(): Promise<void> {
       if (shutDown) return;
       shutDown = true;
+      unsubscribeWriteback?.();
       patrol.stop();
       patrol.untrackDaemon(daemon.id);
       await daemon.stop();
     },
   };
+}
+
+function hasWritebackStore(dolt: unknown): dolt is WritebackStore {
+  const candidate = dolt as { appendNoteToBead?: unknown; recordMoleculeWriteback?: unknown };
+  return typeof candidate.appendNoteToBead === 'function' && typeof candidate.recordMoleculeWriteback === 'function';
 }
 
 function readMaxConcurrentMoleculesFromEnv(): number | undefined {

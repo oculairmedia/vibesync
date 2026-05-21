@@ -28,6 +28,7 @@ export function registerFormulaRoutes(app: App, deps: FormulaRoutesDeps): void {
             name: formula.name,
             pack: pack.manifest.name,
             description: formula.description,
+            whenToUse: formula.whenToUse,
             stepCount: formula.steps.length,
             roles: formula.steps.map((step) => step.role),
           })),

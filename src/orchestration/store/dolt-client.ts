@@ -559,6 +559,75 @@ export class DoltClient {
     }
   }
 
+  /**
+   * Append a structured note to a bead's `notes` column. Used by the
+   * dispatcher's writeback hook (vibesync-0xo) to tell a PM agent that
+   * the work it dispatched is done. Existing notes are preserved; the
+   * new block is appended after a blank-line separator when notes are
+   * non-empty.
+   *
+   * Throws when the bead does not exist — callers should check
+   * existence first when the bead may have been GC'd.
+   */
+  async appendNoteToBead(beadId: string, note: string): Promise<void> {
+    const conn = await this.pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [rows] = await conn.execute<mysql.RowDataPacket[]>(
+        `SELECT notes FROM issues WHERE id = ?`,
+        [beadId],
+      );
+      if (rows.length === 0) {
+        throw new Error(`appendNoteToBead: bead ${beadId} not found`);
+      }
+      const existing = typeof rows[0]?.['notes'] === 'string' ? (rows[0]['notes'] as string) : '';
+      const next = existing.length > 0 ? `${existing.trimEnd()}\n\n${note}` : note;
+      await conn.execute(`UPDATE issues SET notes = ? WHERE id = ?`, [next, beadId]);
+      await conn.commit();
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
+  }
+
+  /**
+   * Stamp `metadata.exec.writeback_status` on a molecule_root bead so a
+   * replayed dispatcher event does not double-append the writeback note.
+   * Returns the previous stamp value (undefined when first seen) so the
+   * caller can decide whether to short-circuit.
+   */
+  async recordMoleculeWriteback(rootId: string, status: 'completed' | 'failed'): Promise<string | undefined> {
+    const conn = await this.pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [rows] = await conn.execute<mysql.RowDataPacket[]>(
+        `SELECT metadata FROM issues WHERE id = ?`,
+        [rootId],
+      );
+      if (rows.length === 0) {
+        throw new Error(`recordMoleculeWriteback: molecule ${rootId} not found`);
+      }
+      const existing = rows[0]?.['metadata'];
+      const meta = typeof existing === 'string' ? JSON.parse(existing) : (existing ?? {});
+      const exec = typeof meta.exec === 'object' && meta.exec !== null ? meta.exec : {};
+      const previous = typeof exec.writeback_status === 'string' ? (exec.writeback_status as string) : undefined;
+      meta.exec = { ...exec, writeback_status: status };
+      await conn.execute(
+        `UPDATE issues SET metadata = CAST(? AS JSON) WHERE id = ?`,
+        [JSON.stringify(meta), rootId],
+      );
+      await conn.commit();
+      return previous;
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
+  }
+
   /** Read a single bead by id. */
   async getBead(id: string): Promise<BeadRow | null> {
     const [rows] = await this.pool.execute<mysql.RowDataPacket[]>(

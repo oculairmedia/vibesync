@@ -1,5 +1,10 @@
 import type { BeadRow, DependencyRow } from '../../src/orchestration/store/index.js';
 
+export interface BeadNote {
+  readonly beadId: string;
+  readonly note: string;
+}
+
 interface RootInsert {
   readonly id: string;
   readonly formulaName: string;
@@ -20,6 +25,7 @@ interface StepInsert {
 export class InMemoryDoltClient {
   readonly beads = new Map<string, BeadRow>();
   readonly dependencies: DependencyRow[] = [];
+  readonly notes: BeadNote[] = [];
 
   async getBead(id: string): Promise<BeadRow | null> {
     return this.beads.get(id) ?? null;
@@ -129,6 +135,23 @@ export class InMemoryDoltClient {
       closed_at: new Date(),
       metadata: mergeExec(row.metadata, { error_trace: errorTrace }),
     });
+  }
+
+  async appendNoteToBead(beadId: string, note: string): Promise<void> {
+    if (!this.beads.has(beadId)) throw new Error(`InMemoryDoltClient: unknown bead ${beadId}`);
+    this.notes.push({ beadId, note });
+  }
+
+  async recordMoleculeWriteback(rootId: string, status: 'completed' | 'failed'): Promise<string | undefined> {
+    const row = this.requireBead(rootId);
+    const exec = (row.metadata.exec && typeof row.metadata.exec === 'object'
+      ? (row.metadata.exec as Record<string, unknown>)
+      : {}) as Record<string, unknown>;
+    const previous = typeof exec.writeback_status === 'string' ? (exec.writeback_status as string) : undefined;
+    this.updateBead(rootId, {
+      metadata: { ...row.metadata, exec: { ...exec, writeback_status: status } },
+    });
+    return previous;
   }
 
   private blockingEdges(stepId: string): DependencyRow[] {

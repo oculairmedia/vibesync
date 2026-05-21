@@ -135,6 +135,100 @@ export class LettaToolService {
     catch (error) { if ((error as Error).message?.includes('already attached')) { console.log(`[Letta] search_folder_passages already attached to agent ${agentId}`); return true; } console.error('[Letta] Error attaching search_folder_passages:', (error as Error).message); return false; }
   }
 
+  /**
+   * Register or look up the `dispatch_molecule` Letta tool (vibesync-qen).
+   *
+   * The tool wraps `POST /formulas/:name/run` so a PM agent (or a
+   * spawned mayor) can fire a vibesync formula from inside a Letta
+   * conversation. The source is Python, lives at `tools/dispatch_molecule.py`,
+   * and is uploaded verbatim to Letta the first time. Subsequent calls
+   * resolve the existing tool by name and return its id.
+   *
+   * The tool reads `VIBESYNC_API_BASE_URL` (default http://localhost:3000)
+   * and an optional `VIBESYNC_ORCHESTRATION_TOKEN` from the agent's tool
+   * execution env at call time, so deployment can point it at the real
+   * API host without rewriting the source.
+   */
+  async ensureDispatchMoleculeTool(): Promise<string> {
+    const toolName = 'dispatch_molecule';
+    const { apiURL, password } = this.config;
+
+    try {
+      const response = await fetchWithPool(`${apiURL}/tools?name=${toolName}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${password}`, 'Content-Type': 'application/json' },
+      });
+      if (response.ok) {
+        const tools = await response.json() as unknown[];
+        if (Array.isArray(tools) && tools.length > 0) {
+          const first = tools[0] as Record<string, unknown> | undefined;
+          if (first && typeof first === 'object' && 'id' in first) {
+            console.log(`[Letta] dispatch_molecule tool exists: ${String(first.id)}`);
+            return String(first.id);
+          }
+        }
+      }
+
+      console.log('[Letta] Creating dispatch_molecule tool...');
+      const toolSourcePath = resolveFromAppRoot('tools', 'dispatch_molecule.py');
+      let sourceCode: string;
+      try {
+        sourceCode = fs.readFileSync(toolSourcePath, 'utf8');
+      } catch (readError) {
+        console.error(`[Letta] Could not read tool source from ${toolSourcePath}:`, (readError as Error).message);
+        throw new Error(`Tool source file not found: ${toolSourcePath}`);
+      }
+
+      const createResponse = await fetchWithPool(`${apiURL}/tools`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${password}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: toolName,
+          description: 'Dispatch a vibesync formula (multi-agent workflow) and return its molecule id. Call GET /formulas first to read the whenToUse catalog if you are unsure which formula matches the bead.',
+          source_code: sourceCode,
+          source_type: 'python',
+          tags: ['vibesync', 'orchestration', 'formula'],
+        }),
+      });
+
+      if (!createResponse.ok) {
+        const errorText = await createResponse.text();
+        throw new Error(`Failed to create dispatch_molecule tool: HTTP ${createResponse.status}: ${errorText}`);
+      }
+      const newTool = await createResponse.json() as Record<string, unknown>;
+      if (!newTool || typeof newTool !== 'object' || !('id' in newTool)) {
+        throw new Error('Failed to create dispatch_molecule tool: response did not include an id');
+      }
+      console.log(`[Letta] dispatch_molecule tool created: ${String(newTool.id)}`);
+      return String(newTool.id);
+    } catch (error) {
+      console.error('[Letta] Error ensuring dispatch_molecule tool:', (error as Error).message);
+      throw error;
+    }
+  }
+
+  /**
+   * Attach the `dispatch_molecule` tool to an agent. Returns true if the
+   * tool ended up attached (including the "already attached" case).
+   * Surfaces errors via console.error but never throws — same shape as
+   * `attachSearchFolderPassagesTool`.
+   */
+  async attachDispatchMoleculeTool(agentId: string): Promise<boolean> {
+    try {
+      const toolId = await this.ensureDispatchMoleculeTool();
+      await this.config.client.agents.tools.attach(agentId, toolId);
+      console.log(`[Letta] dispatch_molecule tool attached to agent ${agentId}`);
+      return true;
+    } catch (error) {
+      if ((error as Error).message?.includes('already attached')) {
+        console.log(`[Letta] dispatch_molecule already attached to agent ${agentId}`);
+        return true;
+      }
+      console.error('[Letta] Error attaching dispatch_molecule:', (error as Error).message);
+      return false;
+    }
+  }
+
   async setAgentIdEnvVar(agentId: string): Promise<boolean> {
     const { apiURL, password } = this.config;
     try {

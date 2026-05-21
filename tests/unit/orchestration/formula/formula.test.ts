@@ -34,6 +34,33 @@ role = "greeter"
     expect(f.steps[1]!.dependsOn).toEqual(['reviewer']);
     expect(f.steps[2]!.dependsOn).toEqual(['coder']);
     expect(f.steps[0]!.promptTemplate).toBe('prompts/reviewer-system.md');
+    // vibesync-cy4 catalog hint — PM agents read this to pick a formula
+    expect(f.whenToUse).toMatch(/when a bead represents a concrete code change/);
+  });
+
+  it('parses when_to_use catalog hint', () => {
+    const toml = `
+[formula.greet]
+description = "Say hi"
+when_to_use = "when the user wants a greeting"
+
+[[formula.greet.steps]]
+role = "greeter"
+`;
+    const formulas = parseFormulasFromToml(toml);
+    expect(formulas[0]!.whenToUse).toBe('when the user wants a greeting');
+  });
+
+  it('whenToUse defaults to empty string when omitted', () => {
+    const toml = `
+[formula.greet]
+description = "Say hi"
+
+[[formula.greet.steps]]
+role = "greeter"
+`;
+    const formulas = parseFormulasFromToml(toml);
+    expect(formulas[0]!.whenToUse).toBe('');
   });
 
   it('returns empty array when no [formula] table is present', () => {

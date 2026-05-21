@@ -14,6 +14,7 @@
  *
  *   [formula.<name>]
  *   description = "..."
+ *   when_to_use = "..."      # optional, agent-facing catalog hint
  *
  *   [[formula.<name>.steps]]
  *   role = "<role>"
@@ -23,7 +24,13 @@
  *   retries = 0              # optional, non-negative integer
  *   retry_backoff_ms = 1000  # optional, non-negative integer
  *
- * See vibesync-k6h.
+ * The `when_to_use` field (vibesync-cy4) is the catalog hint a PM /
+ * mayor agent reads via `GET /formulas` to pick the right formula for
+ * a given bead. It is OPTIONAL — formulas without it still parse, but
+ * are harder for an autonomous picker to choose. Keep it short, in
+ * imperative form: "when ...", not "this formula ...".
+ *
+ * See vibesync-k6h, vibesync-cy4.
  */
 
 import { readFileSync } from 'node:fs';
@@ -36,6 +43,14 @@ import type { StepSpec } from '../molecule/index.js';
 export interface Formula {
   readonly name: string;
   readonly description: string;
+  /**
+   * Agent-facing catalog hint that answers "when should this formula
+   * run?". Surfaced through GET /formulas and the dispatch_molecule
+   * tool's catalog so an autonomous PM agent can pick by matching its
+   * bead context to this text. Empty string when the TOML omits
+   * `when_to_use`. See vibesync-cy4.
+   */
+  readonly whenToUse: string;
   readonly steps: readonly StepSpec[];
 }
 
@@ -77,6 +92,7 @@ export function loadFormulasFromFile(path: string): Formula[] {
 
 function parseFormulaBody(name: string, body: Record<string, unknown>): Formula {
   const description = typeof body['description'] === 'string' ? body['description'] : '';
+  const whenToUse = typeof body['when_to_use'] === 'string' ? body['when_to_use'] : '';
   const stepsRaw = body['steps'];
   if (stepsRaw !== undefined && !Array.isArray(stepsRaw)) {
     throw new Error(`formula "${name}": steps must be an array of tables`);
@@ -91,7 +107,7 @@ function parseFormulaBody(name: string, body: Record<string, unknown>): Formula 
     steps.push(step);
     seenNames.add(step.name);
   }
-  return { name, description, steps };
+  return { name, description, whenToUse, steps };
 }
 
 function parseStep(

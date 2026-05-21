@@ -1,5 +1,6 @@
 [formula.code-review]
 description = "Review a code change with a reviewer → coder → tester loop. The reviewer reads the diff and produces a verdict; the coder applies fixes if requested; the tester verifies the result. Each step blocks on the previous."
+when_to_use = "when a bead represents a concrete code change that needs an objective second pass before merge — diff is already written, you want review + fix + verification in one pass. Do NOT use for ambiguous backlog items that need decomposition first; use onboard-feature for those."
 
 [[formula.code-review.steps]]
 role = "reviewer"

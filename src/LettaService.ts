@@ -114,6 +114,8 @@ export class LettaService {
   async _ensureMcpTool(name: string, url: string) { return this._tools._ensureMcpTool(name, url); }
   async ensureSearchFolderPassagesTool() { return this._tools.ensureSearchFolderPassagesTool(); }
   async attachSearchFolderPassagesTool(agentId: string) { return this._tools.attachSearchFolderPassagesTool(agentId); }
+  async ensureDispatchMoleculeTool() { return this._tools.ensureDispatchMoleculeTool(); }
+  async attachDispatchMoleculeTool(agentId: string) { return this._tools.attachDispatchMoleculeTool(agentId); }
   async setAgentIdEnvVar(agentId: string) { return this._tools.setAgentIdEnvVar(agentId); }
 
   async _updatePersonaBlock(agentId: string, personaContent: string) { this._syncRuntimeConfig(); return (this._memory as unknown as { _updatePersonaBlock: (a: string, c: string) => Promise<void> })._updatePersonaBlock(agentId, personaContent); }

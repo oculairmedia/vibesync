@@ -40,11 +40,14 @@ describe('bootOrchestrationPlane', () => {
 
     expect(handle.dispatcher).toBeDefined();
     expect(handle.provider.kind).toBe('letta-teams');
-    expect(handle.bus.subscriberCount()).toBe(0);
+    // One subscriber wired by default: the writeback hook (vibesync-0xo).
+    // Detaches on shutdown — see the assertion after shutdown below.
+    expect(handle.bus.subscriberCount()).toBe(1);
     expect(handle.patrol.daemonSnapshot()).toEqual([{ id: 'letta-teams-daemon', restartCount: 0, unhealthy: false }]);
     expect(handle.walker).toBeDefined();
 
     await handle.shutdown();
+    expect(handle.bus.subscriberCount()).toBe(0);
   });
 
   it('shutdown is idempotent', async () => {

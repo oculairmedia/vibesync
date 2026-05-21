@@ -1,5 +1,6 @@
 [formula.onboard-feature]
 description = "Take a feature request from intent → spec → implementation → review → verification. Mayor decomposes the work, coder implements, reviewer signs off, tester verifies."
+when_to_use = "when a bead represents a feature request or backlog item with no concrete diff yet — needs decomposition into spec + implementation. Mayor step decides architecture and ordering; subsequent steps execute. Use this for new work; use code-review when a change is already drafted."
 
 [[formula.onboard-feature.steps]]
 role = "mayor"

@@ -40,6 +40,21 @@ describe('formula routes', () => {
     }));
   });
 
+  it('GET /formulas exposes whenToUse catalog hint (vibesync-cy4)', async () => {
+    const harness = newHarness();
+    const route = harness.find('GET', '/formulas');
+
+    await route.handle(ctx('/formulas'));
+
+    const call = harness.sendJson.mock.calls.at(-1);
+    expect(call).toBeDefined();
+    const body = call![2] as { formulas: { name: string; whenToUse: string }[] };
+    const codeReview = body.formulas.find((f) => f.name === 'code-review');
+    expect(codeReview).toBeDefined();
+    expect(typeof codeReview!.whenToUse).toBe('string');
+    expect(codeReview!.whenToUse).toMatch(/when a bead represents a concrete code change/);
+  });
+
   it('POST /formulas/:name/run rejects missing input', async () => {
     const harness = newHarness();
     const route = harness.find('POST', '/formulas/code-review/run');
