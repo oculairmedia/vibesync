@@ -113,23 +113,25 @@ export interface LettaCodeSubagentProviderOptions {
 
 export class LettaCodeSubagentProvider implements RuntimeProvider {
   readonly kind = 'letta-code-subagent';
-  // Fields kept private so the impl can attach them later without changing
-  // the public surface.
-  // @ts-expect-error — field reserved for the impl
-  private readonly shimBaseUrl: string;
-  // @ts-expect-error — field reserved for the impl
-  private readonly password: string | undefined;
-  // @ts-expect-error — field reserved for the impl
-  private readonly taskTimeoutMs: number;
+  /**
+   * Resolved + defaulted options. Single grab-bag so adding a field to
+   * LettaCodeSubagentProviderOptions doesn't require touching the
+   * constructor or littering the class with per-field declarations
+   * (and the @ts-expect-error suppressions that come with them while
+   * the impl is a skeleton).
+   */
+  private readonly _opts: Required<LettaCodeSubagentProviderOptions>;
 
   constructor(opts: LettaCodeSubagentProviderOptions) {
-    this.shimBaseUrl = opts.shimBaseUrl;
-    this.password = opts.password;
-    this.taskTimeoutMs = opts.taskTimeoutMs ?? 5 * 60 * 1000;
+    this._opts = {
+      shimBaseUrl: opts.shimBaseUrl,
+      password: opts.password ?? '',
+      taskTimeoutMs: opts.taskTimeoutMs ?? 5 * 60 * 1000,
+    };
   }
 
   async start(_spec: SessionSpec): Promise<SessionHandle> {
-    throw new Error('LettaCodeSubagentProvider.start: not implemented (vibesync-573)');
+    throw new Error(`LettaCodeSubagentProvider.start: not implemented (vibesync-573, target=${this._opts.shimBaseUrl})`);
   }
 
   async stop(_handle: SessionHandle): Promise<void> {
@@ -144,8 +146,8 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
     // Task tool has its own scheduling — no-op by design.
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async *observe(_handle: SessionHandle): AsyncIterable<SessionEvent> {
+  // eslint-disable-next-line require-yield, @typescript-eslint/require-await
+  async *observe(_handle: SessionHandle): AsyncGenerator<SessionEvent> {
     throw new Error('LettaCodeSubagentProvider.observe: not implemented (vibesync-573)');
   }
 }
