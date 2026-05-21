@@ -760,6 +760,73 @@ describe('LettaTeamsProvider', () => {
       }
     });
 
+    it('emits runtime/teammate.delete.skipped on EVERY stop with a missing deleter (vibesync-03k)', async () => {
+      const bus = new EventBus({ noPersist: true });
+      const events: Event[] = [];
+      bus.subscribe((e) => {
+        if (e.kind === 'runtime/teammate.delete.skipped') events.push(e);
+      });
+      const provider = newProvider({ eventBus: bus }); // no teammateDeleter
+      // Silence the (intentional) one-shot console.warn so test output stays clean.
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const { runtime } = fakeRuntime({ agentId: 'agent-1' });
+        inject(provider, runtime);
+
+        const h1 = await provider.start({ role: 'coder', extra: { moleculeId: 'mol-1' } });
+        await provider.stop(h1);
+        const h2 = await provider.start({ role: 'reviewer', extra: { moleculeId: 'mol-2' } });
+        await provider.stop(h2);
+        const h3 = await provider.start({ role: 'tester' });
+        await provider.stop(h3);
+
+        // Three stops → three events. The whole point of vibesync-03k.
+        expect(events).toHaveLength(3);
+
+        // Envelope shape: layer=runtime, kind set, teammate carries the
+        // target, molecule_id carries through when supplied, agent_id
+        // surfaces in payload so dashboards can show which agent leaked.
+        expect(events[0]).toMatchObject({
+          layer: 'runtime',
+          kind: 'runtime/teammate.delete.skipped',
+          teammate: 'mol-1-coder',
+          molecule_id: 'mol-1',
+          payload: { reason: 'no_deleter', agent_id: 'agent-1', target: 'mol-1-coder' },
+        });
+        expect(events[1]).toMatchObject({
+          teammate: 'mol-2-reviewer',
+          molecule_id: 'mol-2',
+          payload: { agent_id: 'agent-1' },
+        });
+        // No moleculeId provided → no molecule_id on the envelope.
+        expect(events[2]!.teammate).toBe('tester');
+        expect(events[2]!.molecule_id).toBeUndefined();
+
+        // Console warn remains one-shot — bus event is the canonical
+        // per-leak signal, the warn just announces the wiring gap.
+        const ourWarns = warnSpy.mock.calls
+          .map((c) => c.map((p) => String(p)).join(' '))
+          .filter((m) => m.includes('teammateDeleter not wired'));
+        expect(ourWarns).toHaveLength(1);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('emits no delete.skipped event when no bus is wired', async () => {
+      const provider = newProvider(); // no bus, no deleter
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const { runtime } = fakeRuntime({ agentId: 'agent-1' });
+        inject(provider, runtime);
+        const h = await provider.start({ role: 'coder' });
+        // Should not throw; helper exits early when this.eventBus is undefined.
+        await expect(provider.stop(h)).resolves.toBeUndefined();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
     it('clears its session entry on stop so a re-spawn starts fresh', async () => {
       const del = vi.fn(async () => undefined);
       const provider = newProvider({ teammateDeleter: { delete: del } });

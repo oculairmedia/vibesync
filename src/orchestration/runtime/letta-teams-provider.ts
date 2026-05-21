@@ -430,6 +430,16 @@ export class LettaTeamsProvider implements RuntimeProvider {
 
     if (session?.agentId) {
       if (!this.teammateDeleter) {
+        // Bus event fires on EVERY missed-delete so operators retain
+        // visibility past the first occurrence (vibesync-03k). The
+        // console.warn stays one-shot to avoid log spam in long-lived
+        // providers; subscribers to runtime/teammate.delete.skipped are
+        // the canonical signal.
+        this.emitDeleteSkippedEvent({
+          target: h.target,
+          agentId: session.agentId,
+          ...(session.moleculeId !== undefined ? { moleculeId: session.moleculeId } : {}),
+        });
         if (!this.warnedAboutMissingDeleter) {
           // eslint-disable-next-line no-console
           console.warn(
@@ -680,6 +690,31 @@ export class LettaTeamsProvider implements RuntimeProvider {
       teammate: args.target,
       ...(args.moleculeId ? { molecule_id: args.moleculeId } : {}),
       payload: args.payload,
+    };
+    this.eventBus.emit(input);
+  }
+
+  /**
+   * Emit `runtime/teammate.delete.skipped` on every stop() that has a
+   * spawned agent id but no wired deleter. Fires per leak (not
+   * once-per-instance like the console.warn) so operator dashboards
+   * subscribed to the bus see a continuous signal even after the warn
+   * has been suppressed. See vibesync-03k.
+   *
+   * No-op when no bus is wired (unit tests rely on this).
+   */
+  private emitDeleteSkippedEvent(args: {
+    readonly target: string;
+    readonly agentId: string;
+    readonly moleculeId?: string;
+  }): void {
+    if (!this.eventBus) return;
+    const input: EventInput = {
+      layer: 'runtime',
+      kind: 'runtime/teammate.delete.skipped',
+      teammate: args.target,
+      ...(args.moleculeId ? { molecule_id: args.moleculeId } : {}),
+      payload: { reason: 'no_deleter', agent_id: args.agentId, target: args.target },
     };
     this.eventBus.emit(input);
   }
