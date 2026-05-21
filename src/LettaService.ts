@@ -101,7 +101,7 @@ export class LettaService {
     const result = await this._lifecycle.ensureAgent(projectIdentifier, projectName);
     this._syncControlAgentCache();
     if (result && typeof result === 'object' && typeof (result as { id?: unknown }).id === 'string') {
-      await this._finalizePmAgent((result as { id: string }).id);
+      await this._finalizePmAgent((result as { id: string }).id, projectIdentifier, projectName);
     }
     return result;
   }
@@ -113,14 +113,24 @@ export class LettaService {
    * but never throw; an undelivered tool or env var leaves the PM agent
    * usable for everything except formula dispatch, which is a soft
    * regression rather than a fatal one.
+   *
+   * The persona push (vibesync-3hj) is included here so existing agents
+   * (created before the Formula Dispatch Protocol was added to
+   * buildPersonaBlock) get the new content on the next ensureAgent
+   * call. _updatePersonaBlock is idempotent — it modifies the existing
+   * persona block if one exists, otherwise creates+attaches a new one.
    */
-  private async _finalizePmAgent(agentId: string): Promise<void> {
+  private async _finalizePmAgent(agentId: string, projectIdentifier: string, projectName: string): Promise<void> {
     try { await this._tools.attachDispatchMoleculeTool(agentId); }
     catch (err) { console.warn(`[Letta] _finalizePmAgent: attachDispatchMoleculeTool failed for ${agentId}: ${(err as Error).message}`); }
     try { await this._tools.attachListFormulasTool(agentId); }
     catch (err) { console.warn(`[Letta] _finalizePmAgent: attachListFormulasTool failed for ${agentId}: ${(err as Error).message}`); }
     try { await this._tools.syncPmAgentEnvVars(agentId); }
     catch (err) { console.warn(`[Letta] _finalizePmAgent: syncPmAgentEnvVars failed for ${agentId}: ${(err as Error).message}`); }
+    try {
+      const persona = this._lifecycle._buildPersonaBlock(projectIdentifier, projectName);
+      await this._memory._updatePersonaBlock(agentId, persona);
+    } catch (err) { console.warn(`[Letta] _finalizePmAgent: persona update failed for ${agentId}: ${(err as Error).message}`); }
   }
   async getAgent(agentId: string) { this._syncRuntimeConfig(); return this._lifecycle.getAgent(agentId); }
   async listAgents(filters: Record<string, unknown> = {}) { this._syncRuntimeConfig(); return this._lifecycle.listAgents(filters); }
