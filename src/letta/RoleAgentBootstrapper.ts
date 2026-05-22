@@ -1,5 +1,6 @@
 /**
- * RoleAgentBootstrapper (vibesync-mcz Phase B).
+ * RoleAgentBootstrapper (vibesync-mcz Phase B, refactored for
+ * vibesync-1ix to use @letta-ai/letta-code-sdk for provisioning).
  *
  * Materializes a per-(project, role) persistent Letta Code agent on
  * the local-backend shim's on-disk store, then records its identity
@@ -7,34 +8,42 @@
  * subsequent calls for the same (project, role), it short-circuits
  * and returns the cached binding — the agent is NOT recreated.
  *
- * The bootstrapped agent's `system` field is the verbatim contents
- * of `<packDir>/.letta/agents/<role>.md` (frontmatter + body). The
- * local-backend shim treats the file as the agent's pinned system
- * prompt; subsequent dispatches don't need to inline persona text in
- * the Agent-tool prompt, which is the whole point of this epic.
- *
- * Design notes:
+ * Design notes (post 1ix refactor):
  *   - Idempotent: a second call with the same (project, role) is a
  *     no-op modulo the touchRoleAgent timestamp bump that happens
  *     inside the repository's upsert.
- *   - No HTTP. The local backend's authority is the JSON file under
- *     `<storageDir>/agents/<b64url(id)>.json`. Writing the file is
- *     sufficient for the shim's GET /v1/agents/<id> to pick it up;
- *     a roundtrip through POST /v1/agents would be a second source
- *     of truth and a new failure mode.
- *   - Injectable clock + id generator + fs functions so unit tests
- *     can exercise the path without touching real disk.
- *   - Throws on persona-not-found. A missing persona is a config
- *     error, not a transient runtime degradation — same posture as
- *     `createDefaultPersonaLoader` in LettaCodeSubagentProvider.
- *   - Does NOT delete or overwrite existing on-disk JSON files when
- *     the repo already has a binding. Trust the table; never rewrite
- *     a live agent's system prompt out from under it.
+ *   - Provisioning goes through @letta-ai/letta-code-sdk's createAgent,
+ *     which spawns letta-code as a subprocess. The subprocess writes
+ *     the agent's on-disk JSON to the location pointed at by
+ *     LETTA_LOCAL_BACKEND_DIR — the SAME directory the shim reads.
+ *     That's how created agents become observable to the shim.
+ *   - We do NOT touch the on-disk JSON ourselves. The shape of that
+ *     file is the SDK's concern (Parnas: information hiding). We pass
+ *     persona/model/tags/memfs; the SDK owns the rest.
+ *   - storageDir is now a contract assertion: it must equal
+ *     process.env.LETTA_LOCAL_BACKEND_DIR. Mismatch is a config error,
+ *     not a recoverable runtime condition — fail loudly at boot.
+ *   - Concurrent ensureRoleAgent calls for the SAME (project, role)
+ *     are coalesced via an in-flight lock. Without it, two simultaneous
+ *     misses would both spawn the SDK subprocess and create two agents
+ *     (last write wins via upsert; orphan stays on disk).
+ *   - Drift guard: a cached row pointing at an agent the SDK can't
+ *     find on disk is a config incident, not transient. Today we
+ *     surface it as a thrown error rather than silently re-creating —
+ *     silent re-creation hides corruption.
+ *   - Injectable sdk + clock + id generator so unit tests can exercise
+ *     the path without spawning a real letta-code subprocess.
+ *   - Throws on persona-not-found. Same posture as createDefaultPersonaLoader
+ *     in LettaCodeSubagentProvider.
  */
 
-import { randomUUID } from 'node:crypto';
-import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+
+import {
+  createAgent as sdkCreateAgent,
+  type CreateAgentOptions,
+} from '@letta-ai/letta-code-sdk';
 
 import type { ProjectRoleAgentRecord } from '../database/repositories/ProjectRoleAgentRepository.js';
 
@@ -72,36 +81,59 @@ export interface RoleAgentBootstrapInput {
    */
   readonly lettaBaseUrl: string;
   /**
-   * Absolute path to the local-backend's on-disk store. Under this
-   * directory we write `agents/<b64url(id)>.json` to materialize the
-   * agent. In production: `/opt/stacks/letta-code-parallel/migrator/out`.
+   * Absolute path to the local-backend's on-disk store. Used as a
+   * contract assertion against process.env.LETTA_LOCAL_BACKEND_DIR
+   * — the SDK subprocess reads that env var to find the store. If
+   * the two disagree, the SDK would write to the wrong place; we
+   * refuse rather than silently corrupt routing. In production:
+   * `/opt/stacks/letta-code-parallel/migrator/out`.
    */
   readonly storageDir: string;
+}
+
+/**
+ * Narrow SDK boundary. The default impl delegates to
+ * @letta-ai/letta-code-sdk; tests inject a stub. Keeping the boundary
+ * narrow means we depend on the SDK's contract, not its module.
+ */
+export interface RoleAgentSdkAdapter {
+  /** Create a fresh agent. Returns the new agent's id. */
+  createAgent(options: CreateAgentOptions): Promise<string>;
+  /**
+   * Optional existence probe. When provided, the bootstrapper uses it
+   * to validate cached bindings — a cached row pointing at an agent
+   * the SDK can't find is a config incident and throws. If absent, we
+   * trust the cached row (today's behavior).
+   */
+  agentExists?(agentId: string): Promise<boolean>;
 }
 
 export interface RoleAgentBootstrapperDeps {
   /** Repository used to lookup + persist the (project, role) → agent_id binding. */
   readonly repo: RoleAgentRepository;
-  /** Defaults to crypto.randomUUID(). */
-  readonly idGenerator?: () => string;
+  /**
+   * SDK adapter for provisioning. Defaults to a thin wrapper around
+   * @letta-ai/letta-code-sdk's createAgent. Tests should pass a stub.
+   */
+  readonly sdk?: RoleAgentSdkAdapter;
   /** Defaults to Date.now(). */
   readonly now?: () => number;
   /**
-   * Defaults to node:fs/promises. Injectable so unit tests don't
-   * require a real disk. The shape is the named-export subset we
-   * actually call.
+   * Persona-file reader. Defaults to node:fs/promises.readFile. The
+   * persona file is OURS (under packs/), not the SDK's — so we still
+   * own this I/O. Injectable so unit tests skip disk.
    */
-  readonly fs?: {
-    readFile: typeof readFile;
-    writeFile: typeof writeFile;
-    mkdir: typeof mkdir;
-    access?: typeof access;
-  };
+  readonly readFile?: (path: string, encoding: BufferEncoding) => Promise<string>;
   /**
    * Default agent model when the persona frontmatter doesn't pin
    * one. Matches PM-vibesync's model on this backend.
    */
   readonly defaultModel?: string;
+  /**
+   * Defaults to () => process.env.LETTA_LOCAL_BACKEND_DIR. Injectable
+   * so tests can simulate boot-time env without process-global mutation.
+   */
+  readonly envBackendDir?: () => string | undefined;
 }
 
 /**
@@ -110,64 +142,45 @@ export interface RoleAgentBootstrapperDeps {
  */
 const DEFAULT_MODEL = 'anthropic/claude-opus-4-7';
 
-/**
- * Default model_settings — copied from PM-vibesync's on-disk JSON.
- * Kept narrow on purpose: anything not in this object is whatever
- * the shim's defaults are.
- */
-const DEFAULT_MODEL_SETTINGS = {
-  parallel_tool_calls: true,
-  provider_type: 'anthropic',
-  max_output_tokens: 128000,
-  max_tokens: 128000,
-} as const;
-
-interface OnDiskAgent {
-  readonly id: string;
-  readonly name: string;
-  readonly description: string;
-  readonly model: string;
-  readonly model_settings: Record<string, unknown>;
-  readonly tags: readonly string[];
-  readonly system: string;
-}
-
 export class RoleAgentBootstrapper {
   private readonly repo: RoleAgentRepository;
-  private readonly idGenerator: () => string;
+  private readonly sdk: RoleAgentSdkAdapter;
   private readonly now: () => number;
-  private readonly fs: Required<NonNullable<RoleAgentBootstrapperDeps['fs']>>;
+  private readonly readFile: (path: string, encoding: BufferEncoding) => Promise<string>;
   private readonly defaultModel: string;
+  private readonly envBackendDir: () => string | undefined;
+
+  /**
+   * In-flight lock keyed by `${project}::${role}`. Coalesces concurrent
+   * miss-path calls so the SDK subprocess is only spawned once per
+   * binding.
+   */
+  private readonly inflight = new Map<string, Promise<ProjectRoleAgentRecord>>();
 
   constructor(deps: RoleAgentBootstrapperDeps) {
     if (!deps.repo) {
       throw new Error('RoleAgentBootstrapper: deps.repo is required');
     }
     this.repo = deps.repo;
-    this.idGenerator = deps.idGenerator ?? (() => `agent-${randomUUID()}`);
+    this.sdk = deps.sdk ?? createDefaultSdkAdapter();
     this.now = deps.now ?? (() => Date.now());
-    this.fs = {
-      readFile: deps.fs?.readFile ?? readFile,
-      writeFile: deps.fs?.writeFile ?? writeFile,
-      mkdir: deps.fs?.mkdir ?? mkdir,
-      access: deps.fs?.access ?? access,
-    };
+    this.readFile = deps.readFile ?? ((p, enc) => readFile(p, enc));
     this.defaultModel = deps.defaultModel ?? DEFAULT_MODEL;
+    this.envBackendDir =
+      deps.envBackendDir ?? (() => process.env['LETTA_LOCAL_BACKEND_DIR']);
   }
 
   /**
    * Ensure a persistent agent exists for (project, role) and return
-   * the binding. First call materializes the agent JSON on disk and
-   * persists the row; subsequent calls are no-ops that return the
+   * the binding. First call materializes the agent via SDK createAgent
+   * and persists the row; subsequent calls are no-ops that return the
    * cached row.
    */
   async ensureRoleAgent(input: RoleAgentBootstrapInput): Promise<ProjectRoleAgentRecord> {
     this.validateInput(input);
+    this.assertEnvMatchesStorageDir(input.storageDir);
 
-    // Hit path: repo already knows about this (project, role) — trust
-    // it and return without touching disk. Cross-backend drift is
-    // surfaced as a thrown error so callers see the mismatch, rather
-    // than silently dispatching against the wrong shim.
+    // Hit path: repo already knows about this (project, role).
     const cached = this.repo.getRoleAgent(input.projectIdentifier, input.role);
     if (cached) {
       if (cached.lettaBaseUrl !== input.lettaBaseUrl) {
@@ -177,20 +190,65 @@ export class RoleAgentBootstrapper {
             `refusing to silently rebind`,
         );
       }
+      // Optional drift guard: if the SDK exposes an existence probe,
+      // verify the cached agent_id still resolves. A miss here is a
+      // config incident — fail loudly, don't silently re-create.
+      if (this.sdk.agentExists) {
+        const exists = await this.sdk.agentExists(cached.agentId);
+        if (!exists) {
+          throw new Error(
+            `RoleAgentBootstrapper: cached binding for ${input.projectIdentifier}/${input.role} ` +
+              `points at agent ${cached.agentId} which the SDK reports as nonexistent; ` +
+              `refusing to silently re-create — investigate backend storage drift`,
+          );
+        }
+      }
       return cached;
     }
 
-    // Miss path: read persona, mint id, write JSON, persist row.
-    const personaContent = await this.readPersona(input.packDir, input.role);
-    const agentId = this.idGenerator();
-    const agent = this.composeAgent({
-      agentId,
-      projectIdentifier: input.projectIdentifier,
-      role: input.role,
-      personaContent,
-    });
+    // Miss path: coalesce concurrent callers, then create.
+    const key = `${input.projectIdentifier}::${input.role}`;
+    const existing = this.inflight.get(key);
+    if (existing) return existing;
 
-    await this.writeAgentJson(input.storageDir, agent);
+    const promise = this.provision(input).finally(() => {
+      this.inflight.delete(key);
+    });
+    this.inflight.set(key, promise);
+    return promise;
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+
+  private async provision(input: RoleAgentBootstrapInput): Promise<ProjectRoleAgentRecord> {
+    const personaContent = await this.readPersona(input.packDir, input.role);
+
+    const options: CreateAgentOptions = {
+      // Use the full persona file (frontmatter + body) as the system
+      // prompt. This mirrors the pre-1ix on-disk shape where the
+      // markdown's verbatim contents lived in the `system` field.
+      systemPrompt: personaContent,
+      // memfs: persistent git-backed memory for the role agent so its
+      // notes accumulate across formula dispatches.
+      memfs: true,
+      // Model + tags carry forward from the previous hand-rolled JSON
+      // so identity and routing behavior are unchanged.
+      model: this.defaultModel,
+      tags: [
+        'vibesync',
+        `project:${input.projectIdentifier}`,
+        `role:${input.role}`,
+        'lc-local-backend',
+      ],
+    };
+
+    const agentId = await this.sdk.createAgent(options);
+    if (typeof agentId !== 'string' || agentId.length === 0) {
+      throw new Error(
+        `RoleAgentBootstrapper: SDK createAgent returned an invalid agent id ` +
+          `(${JSON.stringify(agentId)}) for ${input.projectIdentifier}/${input.role}`,
+      );
+    }
 
     return this.repo.upsertRoleAgent(
       input.projectIdentifier,
@@ -200,8 +258,6 @@ export class RoleAgentBootstrapper {
       this.now(),
     );
   }
-
-  // ────────────────────────────────────────────────────────────────────
 
   private validateInput(input: RoleAgentBootstrapInput): void {
     const required: Array<[keyof RoleAgentBootstrapInput, string]> = [
@@ -219,44 +275,56 @@ export class RoleAgentBootstrapper {
     }
   }
 
+  /**
+   * Contract: the storage dir the caller routes to must match the
+   * LETTA_LOCAL_BACKEND_DIR the SDK subprocess will see. Without this
+   * assertion, a misconfigured boot could route to /foo/migrator/out
+   * while the SDK writes to /bar — created agents would be invisible
+   * to the shim and dispatch would fail mysteriously.
+   */
+  private assertEnvMatchesStorageDir(storageDir: string): void {
+    const env = this.envBackendDir();
+    if (!env) {
+      throw new Error(
+        `RoleAgentBootstrapper: LETTA_LOCAL_BACKEND_DIR is not set in the environment; ` +
+          `it must be set to ${storageDir} so the SDK subprocess writes to the same store the shim reads`,
+      );
+    }
+    if (env !== storageDir) {
+      throw new Error(
+        `RoleAgentBootstrapper: LETTA_LOCAL_BACKEND_DIR=${env} does not match input.storageDir=${storageDir}; ` +
+          `refusing to provision into a different store than the caller routes against`,
+      );
+    }
+  }
+
   private async readPersona(packDir: string, role: string): Promise<string> {
     const path = join(packDir, '.letta', 'agents', `${role}.md`);
     try {
-      return await this.fs.readFile(path, 'utf8');
+      return await this.readFile(path, 'utf8');
     } catch (err) {
       throw new Error(
         `RoleAgentBootstrapper: persona for role "${role}" not found at ${path}: ${errorMessage(err)}`,
       );
     }
   }
+}
 
-  private composeAgent(args: {
-    readonly agentId: string;
-    readonly projectIdentifier: string;
-    readonly role: string;
-    readonly personaContent: string;
-  }): OnDiskAgent {
-    const name = `${capitalize(args.role)}-${args.projectIdentifier}`;
-    return {
-      id: args.agentId,
-      name,
-      description:
-        `${capitalize(args.role)} role agent for project ${args.projectIdentifier}. ` +
-        `Persistent subagent — accumulates memfs/recall across formula dispatches.`,
-      model: this.defaultModel,
-      model_settings: { ...DEFAULT_MODEL_SETTINGS },
-      tags: ['vibesync', `project:${args.projectIdentifier}`, `role:${args.role}`, 'lc-local-backend'],
-      system: args.personaContent,
-    };
-  }
+// ──────────────────────────────────────────────────────────────────────
+// Default SDK adapter
+// ──────────────────────────────────────────────────────────────────────
 
-  private async writeAgentJson(storageDir: string, agent: OnDiskAgent): Promise<void> {
-    const agentsDir = join(storageDir, 'agents');
-    await this.fs.mkdir(agentsDir, { recursive: true });
-    const filename = `${encodeAgentIdBase64Url(agent.id)}.json`;
-    const path = join(agentsDir, filename);
-    await this.fs.writeFile(path, JSON.stringify(agent, null, 2), 'utf8');
-  }
+function createDefaultSdkAdapter(): RoleAgentSdkAdapter {
+  return {
+    async createAgent(options: CreateAgentOptions): Promise<string> {
+      return sdkCreateAgent(options);
+    },
+    // agentExists intentionally omitted: the SDK v0.1.14 does not
+    // expose a synchronous existence probe, and listMessagesDirect
+    // spawns another subprocess per check — too expensive for the
+    // hit path. When the SDK adds a cheap existence check, wire it
+    // here and the bootstrapper's drift guard activates automatically.
+  };
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -266,14 +334,13 @@ export class RoleAgentBootstrapper {
 /**
  * Encode an agent id (e.g. 'agent-<uuid>') as base64url, matching
  * the local-backend shim's on-disk filename convention.
+ *
+ * Preserved as an exported helper so the persistent-role-agent-routing
+ * integration test (and any other observer) can compute the expected
+ * on-disk filename without re-implementing the encoding.
  */
 export function encodeAgentIdBase64Url(agentId: string): string {
   return Buffer.from(agentId, 'utf8').toString('base64url');
-}
-
-function capitalize(s: string): string {
-  if (s.length === 0) return s;
-  return s[0]!.toUpperCase() + s.slice(1);
 }
 
 function errorMessage(err: unknown): string {
