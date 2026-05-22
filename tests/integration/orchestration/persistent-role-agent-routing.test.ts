@@ -8,7 +8,11 @@ import { EventBus, type Event } from '../../../src/orchestration/events/index.js
 import { MoleculeWalker } from '../../../src/orchestration/molecule/index.js';
 import { buildProviderResolver, buildRoleAgentContextResolver } from '../../../src/orchestration/boot.js';
 import { LettaTeamsProvider } from '../../../src/orchestration/runtime/index.js';
-import { RoleAgentBootstrapper, encodeAgentIdBase64Url } from '../../../src/letta/RoleAgentBootstrapper.js';
+import {
+  RoleAgentBootstrapper,
+  encodeAgentIdBase64Url,
+  type RoleAgentSdkAdapter,
+} from '../../../src/letta/RoleAgentBootstrapper.js';
 import type { PersonaLoader } from '../../../src/orchestration/runtime/index.js';
 import type { Formula } from '../../../src/orchestration/formula/index.js';
 import type { Pack } from '../../../src/orchestration/packs/index.js';
@@ -16,7 +20,10 @@ import type {
   ProjectRoleAgentRecord,
   ProjectRoleAgentRepository,
 } from '../../../src/database/repositories/ProjectRoleAgentRepository.js';
+import type { CreateAgentOptions } from '@letta-ai/letta-code-sdk';
 import { InMemoryDoltClient } from '../../_fixtures/in-memory-dolt-client.js';
+
+import { writeFile as fsWriteFile, mkdir as fsMkdir } from 'node:fs/promises';
 
 /**
  * Hermetic end-to-end integration test for the persistent role-agent
@@ -194,6 +201,59 @@ function makePackOnDisk(): PackPaths {
   return { packDir, storageDir, pack };
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// SDK stub
+// ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Fake SDK adapter that mimics @letta-ai/letta-code-sdk's createAgent
+ * by writing the on-disk JSON file the real letta-code subprocess
+ * would write. We do this in the TEST so the existing disk-shape
+ * post-condition assertions (`agents/<b64url(id)>.json` exists, only
+ * one file after second dispatch) remain meaningful — they're now
+ * proving "the SDK contract produces the shim-readable file the
+ * bootstrapper expects".
+ *
+ * In production the real SDK + letta-code subprocess write the file.
+ * In the test we don't want a real subprocess, so the stub stands in.
+ */
+function makeFakeSdk(opts: {
+  readonly storageDir: string;
+  readonly idGenerator: () => string;
+}): RoleAgentSdkAdapter & {
+  readonly calls: CreateAgentOptions[];
+  readonly knownAgents: Set<string>;
+} {
+  const calls: CreateAgentOptions[] = [];
+  const knownAgents = new Set<string>();
+  return {
+    calls,
+    knownAgents,
+    async createAgent(options) {
+      calls.push(options);
+      const id = opts.idGenerator();
+      knownAgents.add(id);
+      // Mirror the on-disk shape the shim reads. We don't need the
+      // full schema — just enough that filename + presence assert
+      // correctly, which is what the shim cares about for listing.
+      const agentsDir = join(opts.storageDir, 'agents');
+      await fsMkdir(agentsDir, { recursive: true });
+      const filename = `${encodeAgentIdBase64Url(id)}.json`;
+      const payload = {
+        id,
+        system: typeof options.systemPrompt === 'string' ? options.systemPrompt : '',
+        model: options.model,
+        tags: options.tags ?? [],
+      };
+      await fsWriteFile(join(agentsDir, filename), JSON.stringify(payload, null, 2), 'utf8');
+      return id;
+    },
+    async agentExists(agentId: string) {
+      return knownAgents.has(agentId);
+    },
+  };
+}
+
 function makeFormula(): Formula {
   return {
     name: 'single-review',
@@ -237,9 +297,18 @@ function buildHarness(opts: {
   const dolt = new InMemoryDoltClient();
   const repo = new InMemoryRoleAgentRepo();
   const packPaths = makePackOnDisk();
+  // SDK stub: deterministic ids + writes the on-disk JSON the shim
+  // would read. envBackendDir is injected (not via process.env) so
+  // the test doesn't leak env state into other suites running in
+  // the same vitest worker.
+  const sdk = makeFakeSdk({
+    storageDir: packPaths.storageDir,
+    idGenerator: opts.idGenerator ?? (() => 'agent-stub-1'),
+  });
   const bootstrapper = new RoleAgentBootstrapper({
     repo,
-    ...(opts.idGenerator ? { idGenerator: opts.idGenerator } : {}),
+    sdk,
+    envBackendDir: () => packPaths.storageDir,
   });
 
   const routingStore = {
