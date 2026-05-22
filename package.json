@@ -53,6 +53,7 @@
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^8.5.0",
     "@letta-ai/letta-client": "^0.0.68665",
+    "@letta-ai/letta-code-sdk": "^0.1.14",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@temporalio/activity": "^1.11.0",
     "@temporalio/client": "^1.14.1",
