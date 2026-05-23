@@ -86,6 +86,15 @@ type CommandRunner = (
 
 type FetchImpl = (url: string, init?: RequestInit) => Promise<Response>;
 
+export interface RigPushEvent {
+  type: 'rig:push_status';
+  projectId: string;
+  status: 'success' | 'error';
+  remoteUrl?: string;
+  pushedAt?: string;
+  error?: string;
+}
+
 interface DoltHubServiceOptions {
   config?: Partial<DoltHubProvisioningConfig>;
   db?: DbProject | null;
@@ -93,6 +102,7 @@ interface DoltHubServiceOptions {
   fetchImpl?: FetchImpl;
   commandRunner?: CommandRunner;
   portSweeperDeps?: PortSweeperDeps;
+  onPushEvent?: (event: RigPushEvent) => void;
 }
 
 function trimTrailingSlash(value: string): string {
@@ -161,6 +171,7 @@ export class DoltHubProvisioningService {
   private fetchImpl: FetchImpl;
   private commandRunner: CommandRunner;
   private portSweeperDeps: PortSweeperDeps;
+  private onPushEvent?: (event: RigPushEvent) => void;
 
   constructor(options: DoltHubServiceOptions = {}) {
     const {
@@ -185,6 +196,7 @@ export class DoltHubProvisioningService {
     this.fetchImpl = fetchImpl;
     this.commandRunner = commandRunner || defaultCommandRunner;
     this.portSweeperDeps = portSweeperDeps ?? defaultPortSweeperDeps;
+    this.onPushEvent = options.onPushEvent;
   }
 
   get enabled(): boolean {
@@ -265,6 +277,10 @@ export class DoltHubProvisioningService {
         last_push_at: lastPushAt,
       });
 
+      if (remoteResult.pushed) {
+        this.onPushEvent?.({ type: 'rig:push_status', projectId: project.identifier, status: 'success', remoteUrl: plan.remoteUrl, pushedAt: new Date().toISOString() });
+      }
+
       return {
         success: true,
         status,
@@ -286,6 +302,7 @@ export class DoltHubProvisioningService {
     } catch (error) {
       const safeError = sanitizeErrorMessage(error);
       this.db?.projects?.setProjectBeadsRemoteError?.(project.identifier, safeError);
+      this.onPushEvent?.({ type: 'rig:push_status', projectId: project.identifier, status: 'error', error: safeError });
       (this.logger as { error?: (ctx: Record<string, unknown>, msg: string) => void })?.error?.(
         { err: error, project_identifier: project.identifier },
         'Beads remote provisioning failed',

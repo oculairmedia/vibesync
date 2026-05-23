@@ -190,6 +190,9 @@ if (config.doltHub?.enabled || config.doltHub?.dryRun) {
       config: config.doltHub,
       db,
       logger,
+      onPushEvent: (event: Record<string, unknown>) => {
+        broadcastSyncEvent(String(event.type || 'rig:push_status'), { ...event, timestamp: new Date().toISOString() });
+      },
     });
     logger.info(
       { dryRun: config.doltHub.dryRun, owner: config.doltHub.owner },
