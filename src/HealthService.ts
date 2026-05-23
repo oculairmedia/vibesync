@@ -3,8 +3,29 @@ import { Registry, Counter, Gauge, Histogram } from 'prom-client';
 import { formatDuration } from './utils';
 import { getPoolStats } from './http';
 import { logger } from './logger';
+import { auditRigs, summarizeRigHealth, type RigHealthSummary } from './rig/provisioner.js';
 
 const register = new Registry();
+
+const STACKS_DIR = process.env.STACKS_DIR || '/opt/stacks';
+const RIG_CACHE_TTL_MS = 5 * 60_000;
+let rigHealthCache: { summary: RigHealthSummary; updatedAt: number } | null = null;
+
+function getRigHealth(): RigHealthSummary {
+  const now = Date.now();
+  if (rigHealthCache && now - rigHealthCache.updatedAt < RIG_CACHE_TTL_MS) {
+    return rigHealthCache.summary;
+  }
+  try {
+    const statuses = auditRigs(STACKS_DIR);
+    const summary = summarizeRigHealth(statuses);
+    rigHealthCache = { summary, updatedAt: now };
+    return summary;
+  } catch (err) {
+    logger.warn({ err }, 'Rig health audit failed');
+    return rigHealthCache?.summary ?? { total: 0, healthy: 0, degraded: 0, noRig: 0, degradedProjects: [] };
+  }
+}
 
 export interface HealthStats {
   startTime: number;
@@ -68,6 +89,7 @@ export function getHealthMetrics(healthStats: HealthStats, config: HealthConfig)
     memory: { rss: `${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB`, heapUsed: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`, heapTotal: `${Math.round(process.memoryUsage().heapTotal / 1024 / 1024)}MB` },
     connectionPool: getPoolStats(),
     bookstack: healthStats.bookstack || { enabled: false },
+    rigs: getRigHealth(),
   };
 }
 

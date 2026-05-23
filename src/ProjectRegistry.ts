@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { logger as rootLogger } from './logger';
 import { stripUrlCredentials } from './utils';
+import { ensureRig } from './rig/provisioner.js';
 
 interface TechDetector {
   file: string;
@@ -257,5 +258,14 @@ export class ProjectRegistry {
     this.db.db
       .prepare(`UPDATE projects SET tech_stack = ?, last_scan_at = ?, mcp_enabled = COALESCE(mcp_enabled, 1) WHERE identifier = ?`)
       .run(techStack, now, identifier);
+
+    try {
+      const rig = ensureRig(dirPath);
+      if (rig.action !== 'none' && rig.action !== 'skipped') {
+        this.log.info({ dirPath, action: rig.action, message: rig.message }, 'Rig auto-provisioned');
+      }
+    } catch (err) {
+      this.log.warn({ err, dirPath }, 'Rig auto-provisioning failed');
+    }
   }
 }
