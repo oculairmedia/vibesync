@@ -263,9 +263,21 @@ export class ProjectRegistry {
       const rig = ensureRig(dirPath);
       if (rig.action !== 'none' && rig.action !== 'skipped') {
         this.log.info({ dirPath, action: rig.action, message: rig.message }, 'Rig auto-provisioned');
+        if (rig.ok && rig.remoteUrl) {
+          this.db.db
+            .prepare(`UPDATE projects SET beads_remote_status = ?, beads_remote_url = ?, beads_remote_provisioned_at = ? WHERE identifier = ?`)
+            .run('provisioned', rig.remoteUrl, now, identifier);
+        } else if (!rig.ok) {
+          this.db.db
+            .prepare(`UPDATE projects SET beads_remote_status = ?, beads_remote_last_error = ? WHERE identifier = ?`)
+            .run('error', rig.message, identifier);
+        }
       }
     } catch (err) {
       this.log.warn({ err, dirPath }, 'Rig auto-provisioning failed');
+      this.db.db
+        .prepare(`UPDATE projects SET beads_remote_status = ?, beads_remote_last_error = ? WHERE identifier = ?`)
+        .run('error', err instanceof Error ? err.message : String(err), identifier);
     }
   }
 }

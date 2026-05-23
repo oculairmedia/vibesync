@@ -104,7 +104,13 @@ export function summarizeRigHealth(statuses: RigStatus[]): RigHealthSummary {
   };
 }
 
-export function initRig(dir: string, prefixOverride?: string): { ok: boolean; message: string } {
+export interface RigResult {
+  ok: boolean;
+  message: string;
+  remoteUrl?: string;
+}
+
+export function initRig(dir: string, prefixOverride?: string): RigResult {
   dir = resolve(dir);
   if (!existsSync(dir)) return { ok: false, message: `directory ${dir} does not exist` };
   if (hasBeadsRig(dir)) return { ok: false, message: `rig already exists at ${dir}/.beads — use repairRig instead` };
@@ -122,10 +128,10 @@ export function initRig(dir: string, prefixOverride?: string): { ok: boolean; me
   if (!remote.ok) return { ok: false, message: `bd dolt remote add failed: ${remote.stderr}` };
 
   log.info({ dir, prefix, doltRemote }, 'Rig initialized');
-  return { ok: true, message: `initialized with prefix=${prefix} remote=${doltRemote}` };
+  return { ok: true, message: `initialized with prefix=${prefix} remote=${doltRemote}`, remoteUrl: doltRemote };
 }
 
-export function repairRig(dir: string): { ok: boolean; message: string } {
+export function repairRig(dir: string): RigResult {
   dir = resolve(dir);
   if (!hasBeadsRig(dir)) return { ok: false, message: `no rig at ${dir}/.beads` };
   if (hasDoltRemote(dir)) return { ok: true, message: 'already has remote' };
@@ -138,10 +144,17 @@ export function repairRig(dir: string): { ok: boolean; message: string } {
   if (!result.ok) return { ok: false, message: `bd dolt remote add failed: ${result.stderr}` };
 
   log.info({ dir, doltRemote }, 'Rig repaired — remote added');
-  return { ok: true, message: `remote added: ${doltRemote}` };
+  return { ok: true, message: `remote added: ${doltRemote}`, remoteUrl: doltRemote };
 }
 
-export function ensureRig(dir: string): { ok: boolean; action: 'none' | 'init' | 'repair' | 'skipped'; message: string } {
+export interface EnsureRigResult {
+  ok: boolean;
+  action: 'none' | 'init' | 'repair' | 'skipped';
+  message: string;
+  remoteUrl?: string;
+}
+
+export function ensureRig(dir: string): EnsureRigResult {
   dir = resolve(dir);
   if (!existsSync(dir)) return { ok: false, action: 'skipped', message: 'directory does not exist' };
 
@@ -150,12 +163,12 @@ export function ensureRig(dir: string): { ok: boolean; action: 'none' | 'init' |
 
   if (!hasBeadsRig(dir)) {
     const result = initRig(dir);
-    return { ok: result.ok, action: 'init', message: result.message };
+    return { ok: result.ok, action: 'init', message: result.message, remoteUrl: result.remoteUrl };
   }
 
   if (!hasDoltRemote(dir)) {
     const result = repairRig(dir);
-    return { ok: result.ok, action: 'repair', message: result.message };
+    return { ok: result.ok, action: 'repair', message: result.message, remoteUrl: result.remoteUrl };
   }
 
   return { ok: true, action: 'none', message: 'rig healthy' };
