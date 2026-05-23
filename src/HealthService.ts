@@ -10,6 +10,7 @@ const register = new Registry();
 const STACKS_DIR = process.env.STACKS_DIR || '/opt/stacks';
 const RIG_CACHE_TTL_MS = 5 * 60_000;
 let rigHealthCache: { summary: RigHealthSummary; updatedAt: number } | null = null;
+let previousDegradedSet: Set<string> = new Set();
 
 function getRigHealth(): RigHealthSummary {
   const now = Date.now();
@@ -25,6 +26,42 @@ function getRigHealth(): RigHealthSummary {
     logger.warn({ err }, 'Rig health audit failed');
     return rigHealthCache?.summary ?? { total: 0, healthy: 0, degraded: 0, noRig: 0, degradedProjects: [] };
   }
+}
+
+export type RigDegradationCallback = (data: { degradedProjects: string[]; newlyDegraded: string[]; total: number; healthy: number; degraded: number }) => void;
+
+let rigDegradationCallback: RigDegradationCallback | null = null;
+let rigDegradationTimer: ReturnType<typeof setInterval> | null = null;
+
+export function onRigDegradation(cb: RigDegradationCallback): void {
+  rigDegradationCallback = cb;
+}
+
+export function startRigDegradationWatch(intervalMs = 5 * 60_000): void {
+  if (rigDegradationTimer) return;
+  rigDegradationTimer = setInterval(() => checkRigDegradation(), intervalMs);
+}
+
+export function stopRigDegradationWatch(): void {
+  if (rigDegradationTimer) { clearInterval(rigDegradationTimer); rigDegradationTimer = null; }
+}
+
+function checkRigDegradation(): void {
+  const summary = getRigHealth();
+  const currentSet = new Set(summary.degradedProjects);
+  const newlyDegraded = summary.degradedProjects.filter(p => !previousDegradedSet.has(p));
+
+  if (newlyDegraded.length > 0 && rigDegradationCallback) {
+    rigDegradationCallback({
+      degradedProjects: summary.degradedProjects,
+      newlyDegraded,
+      total: summary.total,
+      healthy: summary.healthy,
+      degraded: summary.degraded,
+    });
+  }
+
+  previousDegradedSet = currentSet;
 }
 
 export interface HealthStats {

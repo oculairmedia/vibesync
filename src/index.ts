@@ -4,7 +4,7 @@ import 'dotenv/config';
 
 import { createSyncDatabase } from './database';
 import { loadConfig, getConfigSummary, isLettaEnabled } from './config';
-import { initializeHealthStats } from './HealthService';
+import { initializeHealthStats, onRigDegradation, startRigDegradationWatch } from './HealthService';
 import { createApiServer } from './ApiServer';
 import { createLettaService } from './LettaService';
 import { FileWatcher } from './FileWatcher';
@@ -12,7 +12,8 @@ import { CodePerceptionWatcher } from './CodePerceptionWatcher';
 import { createAstMemorySync } from './AstMemorySync';
 import { logger } from './logger';
 import { createBookStackWatcher } from './BookStackWatcher';
-import { ProjectRegistry } from './ProjectRegistry';
+import { ProjectRegistry, type RigEvent } from './ProjectRegistry';
+import { broadcastSyncEvent } from './ApiServer';
 import { bootOrchestrationPlane, type OrchestrationHandle } from './orchestration/boot.js';
 import { DoltClient } from './orchestration/store/index.js';
 import { sweepAll as sweepBeadsPorts, type SweeperProject } from './beads/PortSweeper.js';
@@ -82,7 +83,9 @@ try {
 
 let projectRegistry: ProjectRegistry | null = null;
 try {
-  projectRegistry = new ProjectRegistry({ db, logger } as never);
+  projectRegistry = new ProjectRegistry({ db, logger, onRigEvent: (event: RigEvent) => {
+    broadcastSyncEvent(event.type, { projectId: event.projectId, action: event.action, remoteUrl: event.remoteUrl, error: event.error, timestamp: new Date().toISOString() });
+  }} as never);
   const scanResult = projectRegistry.scanProjects();
   logger.info(
     { discovered: scanResult.discovered, updated: scanResult.updated },
@@ -94,6 +97,19 @@ try {
     'Failed to initialize ProjectRegistry, continuing without it',
   );
 }
+
+onRigDegradation((data) => {
+  broadcastSyncEvent('rig:degraded', {
+    degradedProjects: data.degradedProjects,
+    newlyDegraded: data.newlyDegraded,
+    total: data.total,
+    healthy: data.healthy,
+    degraded: data.degraded,
+    timestamp: new Date().toISOString(),
+  });
+  logger.warn({ newlyDegraded: data.newlyDegraded, totalDegraded: data.degraded }, 'New degraded rigs detected');
+});
+startRigDegradationWatch();
 
 // vibesync-52g: sweep Beads/Dolt port collisions BEFORE any code (BeadsIssueMirror,
 // DoltHubProvisioningService, orchestration) connects to a project's local Dolt
