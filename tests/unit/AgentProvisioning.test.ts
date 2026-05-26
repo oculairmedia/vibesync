@@ -61,6 +61,14 @@ function createMockActivities() {
       errors: [],
     }),
     recordProvisioningResult: vi.fn().mockResolvedValue(undefined),
+    updateProjectAgentsMd: vi.fn().mockResolvedValue({
+      success: true,
+      projectPath: '/mock/project/path',
+      sections: [
+        { section: 'project-info', action: 'updated' },
+        { section: 'reporting-hierarchy', action: 'updated' },
+      ],
+    }),
     cleanupFailedProvision: vi.fn().mockResolvedValue(undefined),
   };
 }
