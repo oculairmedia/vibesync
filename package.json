@@ -18,7 +18,7 @@
     "build:cli": "bun build --target=bun --outfile dist/vibesync-cli.js src/cli.ts",
     "temporal:worker": "bunx ts-node temporal/worker.ts",
     "temporal:build": "bunx tsc -p temporal/tsconfig.json",
-    "test": "bunx vitest run",
+    "test": "bun run build:openapi && bunx vitest run",
     "test:watch": "bunx vitest",
     "test:coverage": "bunx vitest run --coverage",
     "test:ui": "bunx vitest --ui",
