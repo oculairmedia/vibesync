@@ -73,6 +73,12 @@ export class BookStackService {
       pagesTracked: 0,
       apiExports: 0,
       archiverExports: 0,
+      importsCompleted: 0,
+      importsFailed: 0,
+      conflictsDetected: 0,
+      conflictsResolved: 0,
+      remoteDeleted: 0,
+      bidirectionalSyncs: 0,
     };
 
     // Defer sub-module binding to initialize or first use

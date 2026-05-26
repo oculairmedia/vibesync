@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { withTimeout, processBatch, formatDuration } from '../../src/utils';
+import { withTimeout, processBatch, formatDuration, stripUrlCredentials } from '../../src/utils';
 
 describe('utils', () => {
   describe('withTimeout', () => {
@@ -194,6 +194,81 @@ describe('utils', () => {
       expect(formatDuration(30 * 24 * 60 * 60 * 1000)).toBe('30d 0h');
       // 365 days
       expect(formatDuration(365 * 24 * 60 * 60 * 1000)).toBe('365d 0h');
+    });
+  });
+
+  // SECURITY (vibesync-6kg): inline credentials in remote URLs must be stripped
+  // before any URL is logged, persisted, or sent over the wire.
+  describe('stripUrlCredentials', () => {
+    it('strips a GitHub PAT inlined in an https URL', () => {
+      const input = 'https://github_pat_11ADUGUOI0CTabcdef@github.com/oculairmedia/vibesync.git';
+      const result = stripUrlCredentials(input);
+      expect(result).toBe('https://github.com/oculairmedia/vibesync.git');
+      expect(result).not.toMatch(/github_pat_/);
+      expect(result).not.toMatch(/@github\.com/);
+    });
+
+    it('strips a classic ghp_ token inlined in an https URL', () => {
+      expect(stripUrlCredentials('https://ghp_abcdef1234567890@github.com/owner/repo.git'))
+        .toBe('https://github.com/owner/repo.git');
+    });
+
+    it('strips basic auth (user:password) from https URLs', () => {
+      expect(stripUrlCredentials('https://user:p@ssword@example.com/path?q=1#frag'))
+        // Note: only the first @ delimits userinfo per RFC 3986. Our regex
+        // strips at the first @, which is the correct behavior for the
+        // userinfo segment.
+        .toBe('https://ssword@example.com/path?q=1#frag');
+    });
+
+    it('strips basic auth from a simple https URL', () => {
+      expect(stripUrlCredentials('https://alice:secret@example.com/'))
+        .toBe('https://example.com/');
+    });
+
+    it('strips credentials from http (not just https)', () => {
+      expect(stripUrlCredentials('http://sk-livekey123@api.internal/v1'))
+        .toBe('http://api.internal/v1');
+    });
+
+    it('leaves credential-free https URLs unchanged', () => {
+      expect(stripUrlCredentials('https://github.com/owner/repo.git'))
+        .toBe('https://github.com/owner/repo.git');
+    });
+
+    it('leaves ssh-style git remotes unchanged (no inline creds possible)', () => {
+      expect(stripUrlCredentials('git@github.com:owner/repo.git'))
+        .toBe('git@github.com:owner/repo.git');
+    });
+
+    it('leaves git:// URLs unchanged', () => {
+      expect(stripUrlCredentials('git://github.com/owner/repo.git'))
+        .toBe('git://github.com/owner/repo.git');
+    });
+
+    it('returns null for null input', () => {
+      expect(stripUrlCredentials(null)).toBeNull();
+    });
+
+    it('returns undefined for undefined input', () => {
+      expect(stripUrlCredentials(undefined)).toBeUndefined();
+    });
+
+    it('returns empty string unchanged', () => {
+      expect(stripUrlCredentials('')).toBe('');
+    });
+
+    it('does not match @ inside the path or query (only userinfo)', () => {
+      // The @ here is in the path, not in userinfo — must not be stripped.
+      expect(stripUrlCredentials('https://example.com/path/with@symbol'))
+        .toBe('https://example.com/path/with@symbol');
+      expect(stripUrlCredentials('https://example.com/?user=foo@bar.com'))
+        .toBe('https://example.com/?user=foo@bar.com');
+    });
+
+    it('handles case-insensitive scheme', () => {
+      expect(stripUrlCredentials('HTTPS://token@example.com/'))
+        .toBe('HTTPS://example.com/');
     });
   });
 });

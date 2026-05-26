@@ -173,8 +173,7 @@ sudo journalctl -u legacy-sync --since "1 minute ago" | grep "Bidirectional"
 - `/opt/stacks/legacy-sync-placeholders/` - Placeholder repos for projects without paths
 
 ### Documentation
-- `/opt/stacks/vibe-kanban/legacy-sync/VIBE_API_REFERENCE.md` - Complete API docs
-- `/opt/stacks/vibe-kanban/legacy-sync/BIDIRECTIONAL_SYNC_SUMMARY.md` - Implementation details
+- `docs/api/API.md` - Current Vibesync HTTP API reference
 - `/opt/stacks/vibe-kanban/legacy-sync/DEPLOYMENT_COMPLETE.md` - This file
 
 ## Logs Show Successful Operation

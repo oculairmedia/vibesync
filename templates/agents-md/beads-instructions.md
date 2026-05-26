@@ -19,6 +19,27 @@ bd close <id>         # Complete work
 - Close completed issues with `bd close <id>` and include a reason when helpful.
 - Use `bd remember` for durable project knowledge instead of ad-hoc memory files.
 
+### Preflight (vibesync-1sb, vibesync-v02)
+
+Before claiming work in any Beads-backed project, run the per-project preflight check:
+
+```bash
+bun /opt/stacks/vibesync/scripts/preflight/bd-preflight.ts $(pwd)
+```
+
+This reports:
+- `.beads` directory present + writable
+- Deprecated `.beads/dolt_server_port` ABSENT (presence = pre-migration shape; fix before working)
+- Current `.beads/dolt-server.port` present + valid port
+- `bd` and `dolt` binaries on PATH
+- `bd list --json` smoke check succeeds
+- `bd dolt status` reports a running server (when backend=dolt)
+- A Dolt remote is configured (warning only if absent — local-only is sometimes intentional)
+
+Exit codes: `0` = all clean, `1` = warnings (proceed with care), `2` = errors (fix before working).
+
+**Do NOT** mutate `.beads/dolt/` directly. All writes go through the `bd` CLI; reads can also go directly to the local Dolt MySQL port that `bd init` manages (this is the daemon-hot-path; see VibeSync's `src/orchestration/store/dolt-client.ts` for the pattern).
+
 ### Persistence
 
 - Beads state is local-first. If the repository has a remote, persist issue changes with the configured Beads sync command before ending a session.

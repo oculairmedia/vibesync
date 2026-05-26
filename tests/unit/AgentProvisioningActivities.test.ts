@@ -42,7 +42,7 @@ const {
   };
 });
 
-vi.mock('../../lib/database.js', () => ({
+vi.mock('../../src/database.js', () => ({
   createSyncDatabase: mockCreateSyncDatabase,
 }));
 

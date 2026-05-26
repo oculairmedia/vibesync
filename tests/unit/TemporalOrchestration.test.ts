@@ -57,7 +57,7 @@ async function runWorkflowTest(
     const worker = await Worker.create({
       connection: testEnv.nativeConnection,
       taskQueue: 'test-queue',
-      workflowsPath: path.resolve(__dirname, '../../temporal/dist/workflows/orchestration.js'),
+      workflowsPath: path.resolve(__dirname, '../../temporal/workflows/orchestration.ts'),
       activities: mockActivities,
     });
 

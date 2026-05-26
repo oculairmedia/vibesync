@@ -12,11 +12,11 @@ Welcome to the Vibesync documentation! This documentation is organized into the 
 
 ### [API Documentation](./api/)
 
-API references, specifications, and integration guides
+API references, specifications, and integration guides for the Beads-backed tracker and Letta integrations.
 
-- Vibe Kanban HTTP API Reference
-- MCP Server Specification
-- Letta MCP Tool Attachment
+- Beads-backed project, issue, ready-work, and mutation APIs
+- Formula orchestration controls backed by Beads molecule state
+- Letta PM-agent metadata, reporting, and MCP tool attachment
 
 ### [Architecture](./architecture/)
 
@@ -76,9 +76,8 @@ Critical issues, bug reports, and problem analysis
 
 ### [Features](./features/)
 
-Feature implementation documentation and status
+Feature implementation documentation and status.
 
-- [Bidirectional Sync](./features/bidirectional-sync/) - Bidirectional synchronization implementation
 - [Letta Integration](./features/letta-integration/) - Letta agent integration and analysis
 
 ### [Fixes](./fixes/)
@@ -110,7 +109,7 @@ Roadmaps, PRDs (Product Requirements Documents), and proposals
 Current status updates and progress reports
 
 - System Status
-- Sync Status Updates
+- Beads tracker and Letta orchestration status updates
 - Meridian Updates
 
 ---

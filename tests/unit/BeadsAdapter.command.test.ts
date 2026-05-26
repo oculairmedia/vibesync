@@ -45,6 +45,7 @@ describe('BeadsAdapter default command runner', () => {
         'list',
         '--status=open; echo pwned',
         '--assignee=alice $(id)',
+        '--limit=0',
         '--json',
       ],
       expect.objectContaining({
@@ -71,7 +72,7 @@ describe('BeadsAdapter default command runner', () => {
 
     expect(execFileSync).toHaveBeenCalledWith(
       'bd',
-      ['list', '--all', '--json'],
+      ['list', '--all', '--limit=0', '--json'],
       expect.objectContaining({
         maxBuffer: 50 * 1024 * 1024,
         timeout: 30_000,

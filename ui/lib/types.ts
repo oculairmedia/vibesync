@@ -209,13 +209,29 @@ export interface SSEHealthUpdatedEvent extends SSEEvent {
   data: HealthResponse;
 }
 
+export interface SSEOrchestrationEvent extends SSEEvent {
+  type: string;
+  data: {
+    id?: string;
+    ts?: string;
+    layer?: string;
+    kind?: string;
+    task_id?: string;
+    molecule_id?: string;
+    teammate?: string;
+    payload?: Record<string, unknown>;
+    timestamp?: string;
+  };
+}
+
 export type SSEEventType =
   | SSEConnectedEvent
   | SSESyncStartedEvent
   | SSESyncCompletedEvent
   | SSESyncErrorEvent
   | SSEConfigUpdatedEvent
-  | SSEHealthUpdatedEvent;
+  | SSEHealthUpdatedEvent
+  | SSEOrchestrationEvent;
 
 // ============================================================================
 // Error Types

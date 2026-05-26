@@ -14,6 +14,7 @@ import {
   SSESyncErrorEventSchema,
   SSEConfigUpdatedEventSchema,
   SSEHealthUpdatedEventSchema,
+  SSEOrchestrationEventSchema,
 } from '../schemas'
 
 interface UseRealtimeEventsOptions {
@@ -25,6 +26,35 @@ interface UseRealtimeEventsOptions {
   onHealthUpdated?: (data: any) => void
   onEvent?: (event: SSEEvent) => void
 }
+
+const ORCHESTRATION_EVENT_TYPES = [
+  'dispatcher/formula.started',
+  'dispatcher/formula.completed',
+  'dispatcher/formula.failed',
+  'dispatcher/formula.cancelled',
+  'dispatcher/formula.resume.paused',
+  'dispatcher/step.started',
+  'dispatcher/step.task_recorded',
+  'dispatcher/step.finished',
+  'dispatcher/step.failed',
+  'dispatcher/step.retry',
+  'dispatcher/step.cancelled',
+  'runtime/session.started',
+  'runtime/session.first_token',
+  'runtime/session.message_delta',
+  'runtime/session.tool_call',
+  'runtime/session.tool_result',
+  'runtime/session.usage',
+  'runtime/session.turn_done',
+  'runtime/session.error',
+  'runtime/session.stopped',
+  'runtime/provider.deprecated.instantiated',
+  'health-patrol/session.stalled',
+  'health-patrol/session.restarted',
+  'health-patrol/session.unhealthy',
+  'health-patrol/daemon.restarted',
+  'health-patrol/daemon.unhealthy',
+] as const
 
 export interface RealtimeEventsState {
   connected: boolean
@@ -53,6 +83,14 @@ export function useRealtimeEvents(options: UseRealtimeEventsOptions = {}) {
   })
 
   const [reconnectDelay, setReconnectDelay] = useState(1000) // Start with 1 second
+
+  const appendEvent = (event: SSEEvent) => {
+    setState(prev => ({
+      ...prev,
+      events: [event, ...prev.events].slice(0, 100),
+    }))
+    options.onEvent?.(event)
+  }
 
   /**
    * Connect to SSE stream
@@ -93,12 +131,7 @@ export function useRealtimeEvents(options: UseRealtimeEventsOptions = {}) {
             timestamp: new Date().toISOString(),
           }
 
-          setState(prev => ({
-            ...prev,
-            events: [event, ...prev.events].slice(0, 100), // Keep last 100 events
-          }))
-
-          options.onEvent?.(event)
+          appendEvent(event)
         } catch (error) {
           console.error('Failed to parse SSE message:', error)
         }
@@ -113,6 +146,7 @@ export function useRealtimeEvents(options: UseRealtimeEventsOptions = {}) {
             data: rawData,
             timestamp: new Date().toISOString(),
           })
+          appendEvent(event)
           options.onConnected?.(event.data.clientId)
         } catch (error) {
           console.error('Failed to validate connected event:', error)
@@ -127,6 +161,7 @@ export function useRealtimeEvents(options: UseRealtimeEventsOptions = {}) {
             data: rawData,
             timestamp: new Date().toISOString(),
           })
+          appendEvent(event)
           options.onSyncStarted?.(event.data)
         } catch (error) {
           console.error('Failed to validate sync:started event:', error)
@@ -141,6 +176,7 @@ export function useRealtimeEvents(options: UseRealtimeEventsOptions = {}) {
             data: rawData,
             timestamp: new Date().toISOString(),
           })
+          appendEvent(event)
           options.onSyncCompleted?.(event.data)
 
           // Invalidate health query to refetch updated stats
@@ -159,6 +195,7 @@ export function useRealtimeEvents(options: UseRealtimeEventsOptions = {}) {
             data: rawData,
             timestamp: new Date().toISOString(),
           })
+          appendEvent(event)
           options.onSyncError?.(event.data)
 
           // Invalidate health query to show error
@@ -176,6 +213,7 @@ export function useRealtimeEvents(options: UseRealtimeEventsOptions = {}) {
             data: rawData,
             timestamp: new Date().toISOString(),
           })
+          appendEvent(event)
           options.onConfigUpdated?.(event.data)
 
           // Invalidate config query to refetch
@@ -194,6 +232,7 @@ export function useRealtimeEvents(options: UseRealtimeEventsOptions = {}) {
             data: rawData,
             timestamp: new Date().toISOString(),
           })
+          appendEvent(event)
           options.onHealthUpdated?.(event.data)
 
           // Optionally update health cache directly
@@ -202,6 +241,28 @@ export function useRealtimeEvents(options: UseRealtimeEventsOptions = {}) {
           console.error('Failed to validate health:updated event:', error)
         }
       })
+
+      for (const eventType of ORCHESTRATION_EVENT_TYPES) {
+        eventSource.addEventListener(eventType, (e) => {
+          try {
+            const rawData = JSON.parse(e.data)
+            const event = SSEOrchestrationEventSchema.parse({
+              type: eventType,
+              data: rawData,
+              timestamp: new Date().toISOString(),
+            })
+            const payload = event.data.payload
+            const isDelta = eventType === 'runtime/session.message_delta'
+            const textLength = typeof payload?.textLength === 'number' ? payload.textLength : 0
+            if (!isDelta || textLength > 0) appendEvent(event)
+            if (eventType.startsWith('runtime/') || eventType.startsWith('dispatcher/') || eventType.startsWith('health-patrol/')) {
+              queryClient.invalidateQueries({ queryKey: ['orchestration'] })
+            }
+          } catch (error) {
+            console.error(`Failed to validate ${eventType} event:`, error)
+          }
+        })
+      }
 
       // Handle errors
       eventSource.onerror = (error) => {

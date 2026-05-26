@@ -12,6 +12,9 @@ import { registerFilesRoutes } from './api/routes/files.js';
 import { registerDocsRoutes } from './api/routes/docs.js';
 import { registerTemporalRoutes } from './api/routes/temporal.js';
 import { registerAgentRoutes } from './api/routes/agents.js';
+import { registerAgentsMdRoutes } from './api/routes/agentsMd.js';
+import { registerFormulaRoutes } from './api/routes/formulas.js';
+import { registerOpenApiRoutes } from './api/routes/openapi.js';
 import { sseManager } from './api/SSEManager.js';
 import { syncHistory } from './api/SyncHistoryStore.js';
 import { ConfigurationHandler } from './api/ConfigurationHandler.js';
@@ -25,6 +28,7 @@ import type {
   BeadsIssueServiceApi,
   DoltHubProvisionerApi,
   HandleContext,
+  OrchestrationApi,
   ProjectRegistryApi,
   RouteContext,
 } from './types/api.js';
@@ -72,6 +76,7 @@ interface ApiServerDeps {
   beadsIssueService?: BeadsIssueServiceApi | null;
   beadsAdapter?: BeadsAdapterApi | null;
   beadsIssueMirror?: BeadsIssueMirrorApi | null;
+  orchestration?: OrchestrationApi | null;
 }
 
 export function createApiServer(deps: ApiServerDeps): http.Server {
@@ -93,6 +98,9 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
   registerDocsRoutes(app);
   registerTemporalRoutes(app, routeDeps as never);
   registerAgentRoutes(app, routeDeps as never);
+  registerAgentsMdRoutes(app, routeDeps as never);
+  registerFormulaRoutes(app, routeDeps as never);
+  registerOpenApiRoutes(app, routeDeps as never);
 
   const mcpConfig = (deps.config as Record<string, Record<string, unknown>>)?.projectMcp || {};
   const mcpPath = (mcpConfig.path as string) || '/mcp';
@@ -150,14 +158,23 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
         availableEndpoints: [
           'GET /health', 'GET /metrics', 'GET /api/config', 'PATCH /api/config',
           'POST /api/sync/trigger', 'GET /api/sync/history', 'GET /api/sync/mappings',
-          'GET /api/events/stream', 'POST /webhook', 'GET /api/webhook/stats',
+          'GET /api/events', 'GET /api/events/stream', 'POST /webhook', 'GET /api/webhook/stats',
           'GET /api/temporal/schedule', 'POST /api/temporal/schedule/start',
           'POST /api/temporal/schedule/stop', 'PATCH /api/temporal/schedule',
           'POST /api/temporal/reconciliation/run', 'GET /api/temporal/workflows',
           'GET /api/agents', 'GET /api/agents/lookup?repo=<name>',
-          'GET /api/registry/projects', 'POST /api/registry/projects',
-          'PATCH /api/registry/projects/:id', 'GET /api/registry/projects/:id',
-          'POST /api/registry/projects/:id/scan', `POST ${mcpPath}`,
+          'GET /api/projects', 'GET /api/projects/:id', 'GET /api/projects/:id/issues',
+          'GET /api/projects/:id/ready-work', 'GET /api/projects/:id/work-items',
+          'GET /api/projects/:id/issue-analytics', 'GET /api/issues/:id',
+          'POST /api/issues/:id/claim', 'POST /api/issues/:id/unclaim',
+          'POST /api/issues/:id/close', 'POST /api/issues/:id/reopen',
+          'PATCH /api/issues/:id/status', 'POST /api/issues/:id/notes',
+          'POST /api/registry/projects', 'GET /api/registry/projects/:id',
+          'POST /api/projects/:id/beads-remote/provision', 'POST /api/admin/agents-md/refresh',
+          'GET /formulas', 'POST /formulas/:name/run', 'GET /molecules/:id', 'GET /molecules/:id/trace',
+          'POST /molecules/:id/resume', 'DELETE /molecules/:id', 'GET /molecules/:id/events',
+          'GET /openapi.json', 'GET /docs',
+          `POST ${mcpPath}`,
         ],
       });
     } catch (error) {

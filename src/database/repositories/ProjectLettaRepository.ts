@@ -1,9 +1,23 @@
 import type Database from 'better-sqlite3';
 
-interface LettaAgentInfo {
+export interface LettaAgentInfo {
   agentId: string;
   folderId?: string | null;
   sourceId?: string | null;
+}
+
+/**
+ * Per-project runtime provider routing config (vibesync-f5g / vibesync-8hk).
+ *
+ * Both fields are nullable. NULL means "use the boot-level default".
+ * As of vibesync-xosf the supported default is the letta-code local
+ * backend when VIBESYNC_ORCHESTRATION_PROVIDER=letta-code-subagent is
+ * configured. Removed provider values are read only so boot can reject
+ * or safely fall back from stale project rows.
+ */
+export interface ProjectProviderRouting {
+  readonly lettaBaseUrl: string | null;
+  readonly providerKind: string | null;
 }
 
 export class ProjectLettaRepository {
@@ -15,6 +29,47 @@ export class ProjectLettaRepository {
        FROM projects WHERE identifier = ?`,
     );
     return stmt.get(identifier) || null;
+  }
+
+  /**
+   * Read the provider routing config for a project. Returns null when
+   * the project doesn't exist; returns an object with both fields
+   * possibly null when the row exists but has no override.
+   */
+  getProjectProviderRouting(identifier: string): ProjectProviderRouting | null {
+    const stmt = this.db.prepare(
+      `SELECT letta_base_url, provider_kind FROM projects WHERE identifier = ?`,
+    );
+    const row = stmt.get(identifier) as
+      | { letta_base_url?: string | null; provider_kind?: string | null }
+      | undefined;
+    if (!row) return null;
+    return {
+      lettaBaseUrl: row.letta_base_url ?? null,
+      providerKind: row.provider_kind ?? null,
+    };
+  }
+
+  /**
+   * Set the provider routing config for a project. Idempotent upsert
+   * of the two routing columns; leaves all other project columns
+   * untouched. Returns true if the row exists and was updated, false
+   * if the project identifier wasn't found.
+   *
+   * Pass null for either field to clear the override (the dispatcher
+   * will then fall back to the global default for that field).
+   */
+  setProjectProviderRouting(
+    identifier: string,
+    routing: ProjectProviderRouting,
+  ): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE projects SET letta_base_url = ?, provider_kind = ?, updated_at = ?
+         WHERE identifier = ?`,
+      )
+      .run(routing.lettaBaseUrl, routing.providerKind, Date.now(), identifier);
+    return (result.changes ?? 0) > 0;
   }
 
   setProjectLettaAgent(identifier: string, lettaInfo: LettaAgentInfo): void {

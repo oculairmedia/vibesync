@@ -11,7 +11,7 @@
 ## Framework Comparison
 
 ### Original Spec Recommendation: `rmcp`
-The [VIBE_KANBAN_MCP_SPEC.md](./VIBE_KANBAN_MCP_SPEC.md) originally suggested using `rmcp` (lines 203-228) because:
+The retired Vibe Kanban MCP expansion spec originally suggested using `rmcp` because:
 - Matches existing Vibe Kanban Rust codebase
 - Already in use in Vibe Kanban's MCP implementation
 - HTTP transport via Supergateway

@@ -798,6 +798,154 @@ describe('SyncDatabase', () => {
       });
     });
 
+    describe('provider routing (vibesync-f5g)', () => {
+      it('returns nulls for a project with no override (default routing)', () => {
+        const routing = db.getProjectProviderRouting('TEST');
+        expect(routing).toEqual({ lettaBaseUrl: null, providerKind: null });
+      });
+
+      it('returns null when the project does not exist', () => {
+        const routing = db.getProjectProviderRouting('NOPE');
+        expect(routing).toBeNull();
+      });
+
+      it('round-trips both fields via setProjectProviderRouting', () => {
+        const ok = db.setProjectProviderRouting('TEST', {
+          lettaBaseUrl: 'http://192.168.50.90:8291',
+          providerKind: 'letta-code-subagent',
+        });
+        expect(ok).toBe(true);
+
+        const routing = db.getProjectProviderRouting('TEST');
+        expect(routing).toEqual({
+          lettaBaseUrl: 'http://192.168.50.90:8291',
+          providerKind: 'letta-code-subagent',
+        });
+      });
+
+      it('returns false when updating a missing project', () => {
+        const ok = db.setProjectProviderRouting('NOPE', {
+          lettaBaseUrl: 'http://example.test',
+          providerKind: 'letta-code-subagent',
+        });
+        expect(ok).toBe(false);
+      });
+
+      it('does not disturb other letta_* columns', () => {
+        db.setProjectLettaAgent('TEST', {
+          agentId: 'agent-routing',
+          folderId: 'folder-routing',
+          sourceId: 'source-routing',
+        });
+        db.setProjectProviderRouting('TEST', {
+          lettaBaseUrl: 'http://localhost:8291',
+          providerKind: 'letta-code-subagent',
+        });
+
+        const project = db.getProject('TEST');
+        expect(project.letta_agent_id).toBe('agent-routing');
+        expect(project.letta_folder_id).toBe('folder-routing');
+        expect(project.letta_source_id).toBe('source-routing');
+        expect(project.letta_base_url).toBe('http://localhost:8291');
+        expect(project.provider_kind).toBe('letta-code-subagent');
+      });
+
+      it('clears overrides when set back to null', () => {
+        db.setProjectProviderRouting('TEST', {
+          lettaBaseUrl: 'http://localhost:8291',
+          providerKind: 'letta-code-subagent',
+        });
+        db.setProjectProviderRouting('TEST', {
+          lettaBaseUrl: null,
+          providerKind: null,
+        });
+
+        const routing = db.getProjectProviderRouting('TEST');
+        expect(routing).toEqual({ lettaBaseUrl: null, providerKind: null });
+      });
+    });
+
+    describe('role agents (vibesync-mcz Phase A)', () => {
+      const BASE = 'http://192.168.50.90:8291';
+
+      it('returns null when no role agent has been bootstrapped', () => {
+        expect(db.getRoleAgent('TEST', 'reviewer')).toBeNull();
+      });
+
+      it('upserts and returns a role agent record with timestamps', () => {
+        const before = Date.now();
+        const rec = db.upsertRoleAgent('TEST', 'reviewer', 'agent-rev-1', BASE);
+        const after = Date.now();
+
+        expect(rec.projectIdentifier).toBe('TEST');
+        expect(rec.roleName).toBe('reviewer');
+        expect(rec.agentId).toBe('agent-rev-1');
+        expect(rec.lettaBaseUrl).toBe(BASE);
+        expect(rec.createdAt).toBeGreaterThanOrEqual(before);
+        expect(rec.createdAt).toBeLessThanOrEqual(after);
+        expect(rec.lastUsedAt).toBe(rec.createdAt);
+
+        const fetched = db.getRoleAgent('TEST', 'reviewer');
+        expect(fetched).toEqual(rec);
+      });
+
+      it('isolates rows by role name', () => {
+        db.upsertRoleAgent('TEST', 'reviewer', 'agent-rev-1', BASE);
+        db.upsertRoleAgent('TEST', 'coder', 'agent-cod-1', BASE);
+
+        const rev = db.getRoleAgent('TEST', 'reviewer');
+        const cod = db.getRoleAgent('TEST', 'coder');
+        expect(rev?.agentId).toBe('agent-rev-1');
+        expect(cod?.agentId).toBe('agent-cod-1');
+      });
+
+      it('upsert preserves created_at and bumps last_used_at on re-bootstrap', () => {
+        const first = db.upsertRoleAgent('TEST', 'reviewer', 'agent-rev-1', BASE, 1000);
+        expect(first.createdAt).toBe(1000);
+        expect(first.lastUsedAt).toBe(1000);
+
+        const second = db.upsertRoleAgent('TEST', 'reviewer', 'agent-rev-2', BASE, 5000);
+        expect(second.createdAt).toBe(1000); // preserved
+        expect(second.lastUsedAt).toBe(5000); // bumped
+        expect(second.agentId).toBe('agent-rev-2'); // new agent id wins
+      });
+
+      it('touchRoleAgent updates last_used_at without touching created_at or agent_id', () => {
+        const rec = db.upsertRoleAgent('TEST', 'reviewer', 'agent-rev-1', BASE, 1000);
+        expect(db.touchRoleAgent('TEST', 'reviewer', 7777)).toBe(true);
+
+        const after = db.getRoleAgent('TEST', 'reviewer');
+        expect(after?.createdAt).toBe(rec.createdAt);
+        expect(after?.lastUsedAt).toBe(7777);
+        expect(after?.agentId).toBe('agent-rev-1');
+      });
+
+      it('touchRoleAgent returns false for a missing row', () => {
+        expect(db.touchRoleAgent('TEST', 'reviewer')).toBe(false);
+      });
+
+      it('listRoleAgents returns rows for one project, ordered by role name', () => {
+        db.upsertRoleAgent('TEST', 'tester', 'agent-tst', BASE);
+        db.upsertRoleAgent('TEST', 'reviewer', 'agent-rev', BASE);
+        db.upsertRoleAgent('TEST', 'coder', 'agent-cod', BASE);
+
+        // Second project's rows must not leak in.
+        db.upsertProject({ identifier: 'OTHER', name: 'Other' });
+        db.upsertRoleAgent('OTHER', 'reviewer', 'agent-other-rev', BASE);
+
+        const rows = db.listRoleAgents('TEST');
+        expect(rows.map((r) => r.roleName)).toEqual(['coder', 'reviewer', 'tester']);
+        expect(rows.every((r) => r.projectIdentifier === 'TEST')).toBe(true);
+      });
+
+      it('deleteRoleAgent removes the row and is idempotent', () => {
+        db.upsertRoleAgent('TEST', 'reviewer', 'agent-rev', BASE);
+        expect(db.deleteRoleAgent('TEST', 'reviewer')).toBe(true);
+        expect(db.getRoleAgent('TEST', 'reviewer')).toBeNull();
+        expect(db.deleteRoleAgent('TEST', 'reviewer')).toBe(false);
+      });
+    });
+
     describe('Huly sync cursor operations', () => {
       it('should return null when no cursor exists', () => {
         const cursor = db.getHulySyncCursor('TEST');

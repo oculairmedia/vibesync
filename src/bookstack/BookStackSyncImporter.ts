@@ -3,6 +3,13 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { logger } from '../logger';
 
+type BookContentsChapters = { chapters?: { data?: Array<{ id: number; slug: string }> } | Array<{ id: number; slug: string }> };
+
+function getChapters(contents: BookContentsChapters): Array<{ id: number; slug: string }> {
+  if (Array.isArray(contents.chapters)) return contents.chapters;
+  return contents.chapters?.data ?? [];
+}
+
 export function createImportMethods(service: Record<string, unknown>) {
   return {
     detectLocalChanges: detectLocalChanges.bind(service),
@@ -82,7 +89,7 @@ export async function importPage(
       const chapterSlug = pathParts[pathParts.length - 2]!;
       if (chapterSlug !== bookSlug) {
         const contents = await apiClient.getBookContents(book.id);
-        const chapter = contents.chapters.data.find((c) => c.slug === chapterSlug);
+        const chapter = getChapters(contents).find((c) => c.slug === chapterSlug);
         if (chapter) {
           chapterId = chapter.id;
         } else {
@@ -133,7 +140,8 @@ export async function importSingleFile(
   const now = Date.now();
 
   if (tracked?.last_export_at && tracked.sync_direction === 'export') {
-    if (now - (tracked.last_export_at as number) < 60000) return { skipped: true, reason: 'echo_loop_guard' };
+    const timeSinceExport = now - (tracked.last_export_at as number);
+    if (timeSinceExport < 60000) return { skipped: true, reason: 'echo_loop_guard', timeSinceExport };
   }
 
   if (tracked && contentHash === tracked.content_hash) return { skipped: true, reason: 'no_change' };

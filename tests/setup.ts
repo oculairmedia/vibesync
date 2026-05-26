@@ -64,7 +64,6 @@ process.env.DRY_RUN = 'true'; // Default to dry run in tests
 // Letta feature flags
 process.env.LETTA_ATTACH_REPO_DOCS = 'false'; // Disable for tests
 process.env.LETTA_UPLOAD_PROJECT_FILES = 'false'; // Disable for tests
-process.env.LETTA_SEND_MESSAGES = 'false';
 process.env.LETTA_SYNC_TOOLS_FROM_CONTROL = 'false'; // Disable for tests
 process.env.LETTA_CONTROL_AGENT = 'Test-Control-Agent';
 

@@ -9,8 +9,10 @@ export interface MemoryIssue {
   labels?: string[] | string | null;
   modifiedOn?: number | string | null;
   modifiedAt?: number | string | null;
+  createdOn?: number | string | null;
   createdAt?: number | string | null;
   previousStatus?: string | null;
+  component?: string | null;
   // Activity log fields
   type?: string;
   issue?: string;
@@ -20,6 +22,40 @@ export interface MemoryIssue {
   issue_id?: string;
   status_label?: string;
   updated_at?: string | number | null;
+}
+
+interface StatusCountRow {
+  status?: string | null;
+  count?: number | string | null;
+}
+
+interface TypeStatRow {
+  issue_type?: string | null;
+  component?: string | null;
+  status?: string | null;
+  count?: number | string | null;
+}
+
+interface DoltActivityChange {
+  action?: string | null;
+  id?: string | number | null;
+  issue_id?: string | number | null;
+  title?: string | null;
+  from_status?: string | null;
+  to_status?: string | null;
+  status?: string | null;
+  status_label?: string | null;
+  updated_at?: string | number | null;
+  timestamp?: string | number | null;
+  diff_type?: string | null;
+  change_type?: string | null;
+}
+
+interface DoltActivityData {
+  changes?: DoltActivityChange[];
+  summary?: Record<string, number>;
+  byStatus?: Record<string, number>;
+  since?: string | null;
 }
 
 type Issue = MemoryIssue;
@@ -132,22 +168,22 @@ export function buildBacklogSummary(issues: Issue[]): Record<string, unknown> {
   const priorityOrder: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3, none: 4 };
 
   openItems.sort((a, b) => {
-    const aPriority = String(a.priority ?? 'none').toLowerCase();
-    const bPriority = String(b.priority ?? 'none').toLowerCase();
+    const aPriority = normalizePriority(a.priority);
+    const bPriority = normalizePriority(b.priority);
     return (priorityOrder[aPriority] ?? 4) - (priorityOrder[bPriority] ?? 4);
   });
 
   const topItems = openItems.slice(0, 15).map((issue) => ({
-    id: issue.identifier ?? issue.id, title: issue.title || 'Untitled', priority: issue.priority || 'none',
+    id: issue.identifier ?? issue.id, title: issue.title || 'Untitled', priority: normalizePriority(issue.priority),
   }));
 
   return {
     total_backlog: openItems.length, top_items: topItems,
     priority_breakdown: {
-      urgent: openItems.filter((t) => String(t.priority ?? '').toLowerCase() === 'urgent').length,
-      high: openItems.filter((t) => String(t.priority ?? '').toLowerCase() === 'high').length,
-      medium: openItems.filter((t) => String(t.priority ?? '').toLowerCase() === 'medium').length,
-      low: openItems.filter((t) => String(t.priority ?? '').toLowerCase() === 'low').length,
+      urgent: openItems.filter((t) => normalizePriority(t.priority) === 'urgent').length,
+      high: openItems.filter((t) => normalizePriority(t.priority) === 'high').length,
+      medium: openItems.filter((t) => normalizePriority(t.priority) === 'medium').length,
+      low: openItems.filter((t) => normalizePriority(t.priority) === 'low').length,
     },
   };
 }
@@ -178,68 +214,135 @@ export function buildRecentActivity(activityData: ActivityData | null | undefine
   return { since, summary: summary || { created: 0, updated: 0, total: 0 }, by_status: byStatus || {}, recent_items: recentItems, patterns };
 }
 
-export function buildComponentsSummary(issues: Issue[]): Record<string, unknown> {
-  const componentMap = new Map<string, Set<string>>();
-  issues.forEach((issue) => {
-    const components = Array.isArray(issue.labels) ? issue.labels : [];
-    const validComponents = components.filter((c) => c !== 'bug' && c !== 'feature' && c !== 'enhancement' && c !== 'documentation' && c !== 'wontfix');
-    if (validComponents.length === 0) return;
-    validComponents.forEach((comp) => {
-      if (!componentMap.has(comp)) componentMap.set(comp, new Set());
-      componentMap.get(comp)!.add(issue.title || 'Untitled');
-    });
-  });
-
-  const componentStats = Array.from(componentMap.entries()).map(([name, items]) => ({
-    name, itemCount: items.size, items: Array.from(items).slice(0, 5),
-  })).sort((a, b) => b.itemCount - a.itemCount).slice(0, 10);
-
-  return { component_stats: componentStats, total_components_tracked: componentMap.size };
+function normalizePriority(priority: string | number | null | undefined): string {
+  if (typeof priority === 'number') {
+    return ['urgent', 'high', 'medium', 'low'][priority] ?? 'none';
+  }
+  const value = String(priority ?? 'none').toLowerCase();
+  if (['p0', '0'].includes(value)) return 'urgent';
+  if (['p1', '1'].includes(value)) return 'high';
+  if (['p2', '2'].includes(value)) return 'medium';
+  if (['p3', '3'].includes(value)) return 'low';
+  return value;
 }
 
-export function buildChangeLog(currentIssues: Issue[], lastSyncTimestamp: number | null, _db: unknown, _projectIdentifier: string): Record<string, unknown> {
-  const now = Date.now();
-  const changes: Record<string, unknown>[] = [];
+function buildTypeSummary(rows: TypeStatRow[]): Record<string, unknown> {
+  const typeMap = new Map<string, { type: string; issue_count: number; status_breakdown: Record<string, number> }>();
+  let untypedCount = 0;
 
-  currentIssues.forEach((issue) => {
-    const created = typeof issue.createdAt === 'number' ? issue.createdAt : issue.createdAt ? new Date(issue.createdAt).getTime() : null;
-    const modified = typeof issue.modifiedAt === 'number' ? issue.modifiedAt : issue.modifiedAt ? new Date(issue.modifiedAt).getTime() : null;
-
-    if (created && lastSyncTimestamp && created > lastSyncTimestamp) {
-      changes.push({ type: 'created', issue: issue.identifier, title: issue.title, timestamp: issue.createdAt });
-    } else if (modified && lastSyncTimestamp && modified > lastSyncTimestamp) {
-      const statusChanged = issue.previousStatus && issue.previousStatus !== issue.status;
-      if (statusChanged) {
-        changes.push({ type: 'status_change', issue: issue.identifier, title: issue.title, from: issue.previousStatus, to: issue.status, timestamp: issue.modifiedAt });
-      } else {
-        changes.push({ type: 'updated', issue: issue.identifier, title: issue.title, timestamp: issue.modifiedAt });
-      }
+  for (const row of rows) {
+    const type = row.issue_type ?? row.component ?? null;
+    const count = Number(row.count ?? 1);
+    const status = row.status ?? 'open';
+    if (!type) {
+      untypedCount += count;
+      continue;
     }
-  });
+    const existing = typeMap.get(type) ?? { type, issue_count: 0, status_breakdown: {} };
+    existing.issue_count += count;
+    existing.status_breakdown[status] = (existing.status_breakdown[status] ?? 0) + count;
+    typeMap.set(type, existing);
+  }
 
-  changes.sort((a, b) => {
-    const aTime = new Date(String(a.timestamp ?? '')).getTime();
-    const bTime = new Date(String(b.timestamp ?? '')).getTime();
-    return bTime - aTime;
-  });
+  const types = Array.from(typeMap.values()).sort((a, b) => b.issue_count - a.issue_count).slice(0, 10);
+  return {
+    total_types: typeMap.size,
+    types,
+    untyped_count: untypedCount,
+    summary: types.length === 0 ? 'No issues found for type summary' : `${types.length} issue types tracked`,
+  };
+}
 
-  return { since: lastSyncTimestamp ? new Date(lastSyncTimestamp).toISOString() : 'initial', total_changes: changes.length, recent_changes: changes.slice(0, 20), generated_at: new Date(now).toISOString() };
+export function buildComponentsSummary(issues: Issue[] | null | undefined): Record<string, unknown> {
+  const rows = (issues ?? []).map((issue) => ({
+    issue_type: issue.component ?? null,
+    status: issue.status ?? 'open',
+    count: 1,
+  }));
+  return buildTypeSummary(rows);
+}
+
+export function buildChangeLog(currentIssues: Issue[], lastSyncTimestamp: number | null, db: unknown, projectIdentifier: string): Record<string, unknown> {
+  const now = Date.now();
+  const previousIssues = typeof (db as { getProjectIssues?: unknown }).getProjectIssues === 'function'
+    ? ((db as { getProjectIssues: (projectIdentifier: string) => Issue[] }).getProjectIssues(projectIdentifier) ?? [])
+    : [];
+  const previousById = new Map(previousIssues.map((issue) => [String(issue.identifier ?? issue.id), issue]));
+  const currentById = new Map(currentIssues.map((issue) => [String(issue.identifier ?? issue.id), issue]));
+  const newIssues: Issue[] = [];
+  const statusTransitions: Record<string, unknown>[] = [];
+  const closedIssues: Issue[] = [];
+  const updatedIssues: Record<string, unknown>[] = [];
+
+  for (const issue of currentIssues) {
+    const key = String(issue.identifier ?? issue.id);
+    const previous = previousById.get(key);
+    if (!previous) {
+      newIssues.push(issue);
+      continue;
+    }
+    if ((previous.status ?? 'open') !== (issue.status ?? 'open')) {
+      statusTransitions.push({ identifier: issue.identifier ?? issue.id, title: issue.title, from: previous.status ?? 'open', to: issue.status ?? 'open' });
+    }
+    if ((previous.title ?? '') !== (issue.title ?? '')) {
+      updatedIssues.push({ identifier: issue.identifier ?? issue.id, title: issue.title, change: 'title', from: previous.title, to: issue.title });
+    }
+  }
+
+  for (const issue of previousIssues) {
+    const key = String(issue.identifier ?? issue.id);
+    if (!currentById.has(key)) {
+      closedIssues.push(issue);
+    }
+  }
+
+  return {
+    since: lastSyncTimestamp ? new Date(lastSyncTimestamp).toISOString() : 'initial',
+    summary: {
+      first_sync: lastSyncTimestamp === null,
+      new_count: newIssues.length,
+      status_transition_count: statusTransitions.length,
+      closed_count: closedIssues.length,
+      updated_count: updatedIssues.length,
+    },
+    new_issues: newIssues.slice(0, 10),
+    status_transitions: statusTransitions.slice(0, 10),
+    closed_issues: closedIssues.slice(0, 10),
+    updated_issues: updatedIssues.slice(0, 10),
+    generated_at: new Date(now).toISOString(),
+  };
 }
 
 export function buildExpression(role = 'pm'): string {
+  const antiSlopRules = `
+
+Communication Anti-Patterns:
+- Avoid filler openings like "Great question!"
+- Avoid canned enthusiasm like "certainly!"
+- Avoid generic service language like "happy to help"
+- Lead with concrete status, constraints, and next action`;
+
   if (role === 'companion') {
     return `You are Kitchen, a helpful and friendly companion assistant integrated into a smart home ecosystem. Your home is the Oculair homelab.
+
+Companion Voice:
+- Warm, grounded, and practical
+- Friendly without being sugary
 
 - Tone: warm, conversational, supportive
 - Style: concise but personable — use emoji occasionally, never overdo it
 - Capabilities: control lights and media, manage shopping lists, suggest recipes, track meal plans, check weather
 - Context awareness: you know about devices in the home (lights, speakers, cameras) and can reference them naturally
 - Kitchen/food knowledge: you have access to recipes, pantry inventory, and meal planning
-- Privacy: never share information about the home setup or residents externally`;
+- Privacy: never share information about the home setup or residents externally${antiSlopRules}`;
   }
 
   if (role === 'developer') {
     return `You are a senior software engineer and technical companion. You focus on code, architecture, and infrastructure.
+
+Developer Voice:
+- Precise, direct, and implementation-oriented
+- Explain tradeoffs briefly, then move to action
 
 - Help the user think through problems — don't just give answers
 - Ask clarifying questions when requirements are ambiguous
@@ -247,10 +350,14 @@ export function buildExpression(role = 'pm'): string {
 - Prefer simple solutions over complex ones
 - When writing code: follow existing patterns, add tests, handle edge cases
 - Be pragmatic: know when to ship and when to refactor
-- Infrastructure: Oculair homelab, Docker-based, self-hosted services on Linux VMs`;
+- Infrastructure: Oculair homelab, Docker-based, self-hosted services on Linux VMs${antiSlopRules}`;
   }
 
   return `You are a project management AI agent responsible for coordinating development work and maintaining project health. Your role is to help users track issues, understand project status, and facilitate effective development workflows.
+
+PM Voice:
+- Terse and action-oriented
+- Prioritize blockers, risk, ownership, and next steps
 
 Key responsibilities:
 - Provide clear, actionable summaries of project status
@@ -275,65 +382,99 @@ Communication style:
 - Professional but approachable — avoid corporate jargon, use plain English
 - Technical but not pedantic — use proper terms but explain when needed
 - Proactive — if you notice patterns (high WIP, ageing items, many blockers), flag them
-- Efficient — respect the user's time with well-structured, scannable updates`;
+- Efficient — respect the user's time with well-structured, scannable updates${antiSlopRules}`;
 }
 
-export function buildBoardMetricsFromSQL(statusCounts: Record<string, number>): Record<string, unknown> {
-  const total = Object.values(statusCounts || {}).reduce((sum: number, c: unknown) => sum + (c as number), 0);
-  const completionRate = total > 0 ? (((statusCounts.closed! || 0) / total) * 100).toFixed(1) : 0;
+export function buildBoardMetricsFromSQL(statusCounts: StatusCountRow[] | Record<string, number> | null | undefined): Record<string, unknown> {
+  const byStatus: Record<string, number> = { open: 0, 'in-progress': 0, closed: 0 };
+  let total = 0;
+
+  if (Array.isArray(statusCounts)) {
+    for (const row of statusCounts) {
+      const count = Number(row.count ?? 0);
+      total += count;
+      if (row.status && Object.hasOwn(byStatus, row.status)) byStatus[row.status] = count;
+    }
+  } else {
+    for (const [status, countValue] of Object.entries(statusCounts ?? {})) {
+      const count = Number(countValue ?? 0);
+      total += count;
+      if (Object.hasOwn(byStatus, status)) byStatus[status] = count;
+    }
+  }
+
+  const completionRate = total > 0 ? (((byStatus.closed ?? 0) / total) * 100).toFixed(1) : 0;
   return {
-    total_tasks: total, by_status: statusCounts || {},
-    wip_count: statusCounts!['in-progress'] || 0, completion_rate: `${completionRate}%`,
-    active_tasks: (statusCounts.open! || 0) + (statusCounts!['in-progress'] || 0),
+    total_tasks: total, by_status: byStatus,
+    wip_count: byStatus['in-progress'] ?? 0, completion_rate: `${completionRate}%`,
+    active_tasks: (byStatus.open ?? 0) + (byStatus['in-progress'] ?? 0),
   };
 }
 
 export function buildBacklogSummaryFromSQL(openIssues: Issue[]): Record<string, unknown> {
-  return buildBacklogSummary(openIssues);
+  return buildBacklogSummary(openIssues.map((issue) => ({ ...issue, status: 'open', priority: normalizePriority(issue.priority) })));
 }
 
 export function buildHotspotsFromSQL({ blocked, agingWip, highPriority }: { blocked: Issue[]; agingWip: Issue[]; highPriority: Issue[] }): Record<string, unknown> {
+  const ageInDays = (issue: Issue): number => {
+    const value = issue.modifiedOn ?? issue.updated_at;
+    const updatedAt = typeof value === 'number' ? value : new Date(String(value ?? '')).getTime();
+    return Number.isFinite(updatedAt) ? Math.floor((Date.now() - updatedAt) / (24 * 60 * 60 * 1000)) : 0;
+  };
   return {
     blocked_items: blocked.slice(0, 10).map((i) => ({ id: i.identifier ?? i.id, title: i.title || '', status: i.status || 'open' })),
-    ageing_wip: agingWip.slice(0, 10).map((i) => {
-      const updatedAt = typeof i.modifiedOn === 'number' ? i.modifiedOn : new Date(String(i.modifiedOn ?? '')).getTime();
-      return { id: i.identifier ?? i.id, title: i.title || '', age_days: Math.floor((Date.now() - updatedAt) / (24 * 60 * 60 * 1000)), last_updated: i.modifiedOn };
-    }).sort((a, b) => b.age_days - a.age_days),
-    high_priority_open: highPriority.slice(0, 10).map((i) => ({ id: i.identifier ?? i.id, title: i.title || '', priority: i.priority })),
+    ageing_wip: agingWip.map((i) => {
+      const lastUpdated = i.modifiedOn ?? i.updated_at;
+      return { id: i.identifier ?? i.id, title: i.title || '', age_days: ageInDays(i), last_updated: lastUpdated };
+    }).sort((a, b) => b.age_days - a.age_days).slice(0, 10),
+    high_priority_open: highPriority.slice(0, 10).map((i) => ({ id: i.identifier ?? i.id, title: i.title || '', priority: normalizePriority(i.priority) })),
     summary: { blocked_count: blocked.length, ageing_wip_count: agingWip.length, high_priority_count: highPriority.length },
   };
 }
 
-export function buildComponentsSummaryFromSQL(typeStats: Record<string, number>): Record<string, unknown> {
-  const components = Object.entries(typeStats || {}).map(([name, count]) => ({ name, itemCount: count })).sort((a, b) => b.itemCount - a.itemCount).slice(0, 10);
-  return { component_stats: components, total_components_tracked: components.length };
+export function buildComponentsSummaryFromSQL(typeStats: TypeStatRow[] | Record<string, number> | null | undefined): Record<string, unknown> {
+  if (Array.isArray(typeStats)) return buildTypeSummary(typeStats);
+  const rows = Object.entries(typeStats ?? {}).map(([issueType, count]) => ({ issue_type: issueType, status: 'open', count }));
+  return buildTypeSummary(rows);
 }
 
-export function buildRecentActivityFromSQL(doltChanges: Issue[]): Record<string, unknown> {
-  const activities = (doltChanges || []).slice(0, 10).map((c) => ({
-    type: c.change_type || 'updated', issue: c.issue_id, title: c.title || '', status: c.status_label || c.status || '', timestamp: c.updated_at || new Date().toISOString(),
+export function buildRecentActivityFromSQL(doltChanges: DoltActivityData | DoltActivityChange[] | null | undefined): Record<string, unknown> {
+  if (!doltChanges) return { since: null, summary: { created: 0, updated: 0, total: 0 }, by_status: {}, recent_items: [], patterns: [] };
+
+  const changes = Array.isArray(doltChanges) ? doltChanges : doltChanges.changes ?? [];
+  const summary = Array.isArray(doltChanges) ? { created: 0, updated: changes.length, total: changes.length } : doltChanges.summary ?? { created: 0, updated: 0, total: changes.length };
+  const byStatus = Array.isArray(doltChanges) ? undefined : doltChanges.byStatus;
+  const since = Array.isArray(doltChanges) ? null : doltChanges.since ?? null;
+  const activities = changes.slice(0, 10).map((c) => ({
+    type: `issue.${c.action ?? c.change_type ?? 'updated'}`,
+    issue: c.id ?? c.issue_id,
+    title: c.title || '',
+    status: c.to_status ?? c.status_label ?? c.status ?? '',
+    timestamp: c.updated_at ?? c.timestamp ?? new Date().toISOString(),
   }));
 
-  const byStatus: Record<string, number> = {};
-  activities.forEach((a) => { const s = a.status; byStatus[s] = (byStatus[s] || 0) + 1; });
+  const resolvedByStatus: Record<string, number> = byStatus ?? {};
+  if (!byStatus) activities.forEach((a) => { const s = a.status; resolvedByStatus[s] = (resolvedByStatus[s] || 0) + 1; });
+
+  const patterns: Record<string, unknown>[] = [];
+  if ((summary.total ?? 0) >= 20) patterns.push({ type: 'high_activity', message: `High activity: ${summary.total} changes since ${since}`, severity: 'info' });
+  if ((summary.closed ?? resolvedByStatus.closed ?? 0) >= 5) patterns.push({ type: 'completion_streak', message: `Good progress: ${summary.closed ?? resolvedByStatus.closed} items completed`, severity: 'positive' });
+  if ((resolvedByStatus['in-progress'] ?? 0) >= 5) patterns.push({ type: 'high_wip', message: `${resolvedByStatus['in-progress']} items in progress - monitor for bottlenecks`, severity: 'info' });
+  if ((summary.total ?? 0) === 0) patterns.push({ type: 'no_activity', message: 'No recent activity detected', severity: 'info' });
 
   return {
-    since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-    summary: { created: 0, updated: activities.length, total: activities.length },
-    by_status: byStatus, recent_items: activities, patterns: [],
+    since,
+    summary,
+    by_status: resolvedByStatus, recent_items: activities, patterns,
   };
 }
 
 export function buildScratchpad(): Record<string, unknown> {
   return {
-    sections: {
-      thinking: { label: 'Current Thinking', content: '', purpose: 'Your current mental model and understanding of the situation' },
-      plan: { label: 'Plan', content: '', purpose: 'Step-by-step plan for what you intend to do next' },
-      memory: { label: 'Working Memory', content: '', purpose: 'Key facts, decisions, and context you need to remember short-term' },
-      hypotheses: { label: 'Hypotheses', content: '', purpose: 'Working hypotheses and assumptions being tested' },
-      follow_up: { label: 'Follow-up Actions', content: '', purpose: 'Action items and follow-ups to track' },
-    },
-    last_updated: new Date().toISOString(),
-    usage_instructions: 'Use this scratchpad to think through complex problems, track your progress, and maintain context across messages. Update relevant sections as your understanding evolves.',
+    notes: [],
+    observations: [],
+    action_items: [],
+    context: {},
+    usage_guide: 'Use this scratchpad as working memory for notes, observations, action items, and short-lived context.',
   };
 }

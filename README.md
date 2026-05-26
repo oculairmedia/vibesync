@@ -1,14 +1,14 @@
 # Vibesync Service
 
-Project registry, Beads issue workflow guidance, and PM-agent coordination service for Oculair project workspaces.
+Beads-backed project tracker and Letta PM-agent coordination service for Oculair project workspaces.
 
 ## Current Scope
 
 - Project registry API for discovering and managing workspace projects.
-- Android-friendly project summary endpoints for lightweight mobile clients.
-- Generic work-item API surfaces backed by the repository state database.
-- Beads (`bd`) as the source of truth for local issue tracking.
-- Letta PM-agent metadata and reporting integrations.
+- Beads-backed issue, ready-work, mutation, and remote-provisioning APIs.
+- Android-friendly project and issue endpoints for lightweight mobile clients.
+- Letta PM-agent metadata, reporting, and orchestration integrations.
+- Formula orchestration controls for Beads-backed project work.
 - Dockerized runtime with health checks and optional Temporal workers.
 
 ## Quick Start
@@ -59,10 +59,9 @@ See `.env.example` for supported settings. Core settings include:
 
 ```bash
 VIBE_MCP_URL=http://192.168.50.90:9717/mcp
-SYNC_INTERVAL=10000
-PARALLEL_SYNC=true
-MAX_WORKERS=5
-DRY_RUN=false
+LETTA_BASE_URL=http://localhost:8283
+ENABLE_ORCHESTRATION=true
+VIBESYNC_ORCHESTRATION_TOKEN=
 ```
 
 ## Project Registry API
@@ -220,7 +219,7 @@ npm run vibesync -- project-provision-beads-remote HVSYN --no-push
 
 ## Beads Workflow
 
-Use Beads for issue tracking in this repository:
+Use Beads for issue tracking in this repository. Vibesync reads and mutates project work through Beads:
 
 ```bash
 bd ready

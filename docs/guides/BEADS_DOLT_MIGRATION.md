@@ -98,6 +98,83 @@ PY
 
 Do not read or mutate `.beads/dolt` internals directly. Use the `bd` CLI.
 
+## Fleet-wide port ownership audit
+
+When more than one project reports repeated `.beads/issues.jsonl` auto-imports,
+empty `bd list` output, or a port-in-use error, run the registry audit before
+repairing projects one by one:
+
+```bash
+bun scripts/preflight/bd-registry-audit.ts --drift-only
+bun scripts/preflight/bd-registry-audit.ts --json --drift-only
+```
+
+The audit uses `VIBESYNC_DB_PATH` when set and otherwise defaults to the service
+database at `logs/sync-state.db`; pass `--db /path/to/sync-state.db` for an
+explicit registry snapshot.
+
+The audit enumerates registered Vibesync projects and classifies any project
+whose `.beads/dolt-server.port` is owned by a different project's Dolt process
+as `port-owner-conflict`. This uses the same `/proc/<pid>/cwd` verification as
+`bd-preflight`, so the reported owner PID, owner cwd, expected project, and
+expected cwd are the source of truth for remediation.
+
+Safe fleet repair policy:
+
+1. Fix `port-owner-conflict` rows first; they can cause writes to target the
+   wrong empty database and repeatedly re-import JSONL.
+2. Never kill a Dolt process by port alone. Confirm the owner cwd from the audit
+   or with `readlink -f /proc/<pid>/cwd`.
+3. Stop only the stale/wrong owner process after confirming it is unrelated to
+   the project being repaired.
+4. From the intended project directory, run `bd list --json` or
+   `bd dolt status` so `bd` restarts that project's server and rewrites managed
+   `.beads/dolt-server.port` / `.beads/dolt-server.pid` files.
+5. Re-run both `bd-preflight` for the repaired project and
+   `bd-registry-audit --drift-only` for the fleet.
+6. Only after ownership is clean, address lower-risk categories such as
+   `no-dolt-remote`, legacy pre-migration stores, and registry path drift.
+
+If a project still conflicts after restart, assign it a free port using bd's
+normal Dolt/server configuration path and let `bd` own the resulting port files;
+do not manually edit `.beads/dolt` contents.
+
+For centralized allocation, use the fleet repair helper. It defaults to dry-run
+and chooses free ports from VibeSync's high allocation range (`32000-60999`):
+
+```bash
+bun scripts/preflight/bd-fleet-port-repair.ts --json
+bun scripts/preflight/bd-fleet-port-repair.ts --project letta-mobile --apply
+```
+
+The helper applies changes only through supported `bd` commands:
+`bd dolt set port <N>`, `bd dolt start`, then `bd-preflight` verification.
+
+### Shared-server port ownership must match the project
+
+A valid `.beads/dolt-server.port` file is not enough: the port may be
+listening because a different project's Dolt server owns it. When that happens,
+`bd` can appear to serve an empty database, repeatedly auto-import
+`.beads/issues.jsonl`, or fail `bd dolt start` with a port-in-use error.
+
+`scripts/preflight/bd-preflight.ts` now checks the listening process for the
+configured port and compares `/proc/<pid>/cwd` with the expected project Dolt
+data directory. A mismatch is reported with the owner PID, inferred owner
+project path, actual cwd, expected path, and recovery guidance.
+
+Safe recovery remains bd-managed:
+
+1. Confirm the owner with the preflight report before stopping anything.
+2. Stop only the stale owner whose cwd is known and unrelated to the target
+   project.
+3. Restart or re-run `bd` from the intended project so it starts the correct
+   Dolt server.
+4. Repair registry/config drift if the path mismatch reflects a moved project
+   or a HOME-shadowed shared-server directory.
+
+Do not manually edit or delete `.beads/dolt` contents to resolve a port
+collision.
+
 ## Migration batches
 
 ### Batch A: already Dolt/server-backed, verify and harden
@@ -227,9 +304,9 @@ These projects are advertised as Beads-backed by Vibesync, but the configured fi
 
 ## Related Vibesync Beads issues
 
-- `huly-vibe-sync-bxe` — Plan Beads/Dolt migration for all registered projects
-- `huly-vibe-sync-8sz` — Migrate legacy Beads stores to Dolt server mode
-- `huly-vibe-sync-bi3` — Resolve registry drift for Beads projects without local `.beads` stores
-- `huly-vibe-sync-1sb` — Add Beads/Dolt preflight diagnostics before project work
-- `huly-vibe-sync-y9b` — Verify DoltHub remotes for migrated Beads projects
-- `huly-vibe-sync-v02` — Add project AGENTS.md Beads preflight guidance during migration
+- `vibesync-bxe` — Plan Beads/Dolt migration for all registered projects
+- `vibesync-8sz` — Migrate legacy Beads stores to Dolt server mode
+- `vibesync-bi3` — Resolve registry drift for Beads projects without local `.beads` stores
+- `vibesync-1sb` — Add Beads/Dolt preflight diagnostics before project work
+- `vibesync-y9b` — Verify DoltHub remotes for migrated Beads projects
+- `vibesync-v02` — Add project AGENTS.md Beads preflight guidance during migration

@@ -126,4 +126,4 @@ Once the Letta SDK supports MCP tool management, the `attachMcpTools()` method i
 ## Related Documentation
 - [Letta MCP Integration](../LETTA_CODE_INTEGRATION_ANALYSIS.md)
 - [System Engineering Review](../SYSTEM_ENGINEERING_REVIEW_LETTA_INTEGRATION.md)
-- [Vibe API Reference](../VIBE_API_REFERENCE.md)
+- [Vibesync HTTP API Reference](./API.md)

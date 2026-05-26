@@ -187,19 +187,22 @@ export class SyncDatabase {
 
   // Convenience proxies — tests call these directly on SyncDatabase
   upsertProject(project: ProjectUpsert): void { return this.projects!.upsertProject(project); }
-  getProject(identifier: string): ProjectRow | null { return this.projects!.getProject(identifier); }
+  getProject(identifier: string): ProjectRow | undefined { return this.projects!.getProject(identifier) ?? undefined; }
   getProjectByVibeId(vibeId: number): ProjectRow | null { return this.projects!.getProjectByVibeId(vibeId); }
   updateProject(identifier: string, updates: ProjectUpdate): ProjectRow | null { return this.projects!.updateProject(identifier, updates); }
   archiveProject(identifier: string): ProjectRow | null { return this.projects!.archiveProject(identifier); }
   deleteProject(identifier: string): boolean { return this.projects!.deleteProject(identifier); }
   getAllProjects(): ProjectRow[] { return this.projects!.getAllProjects(); }
-  getProjectsToSync(now?: number, stale?: number): ProjectRow[] { return this.projects!.getProjectsToSync(now, stale); }
+  getProjectsToSync(staleThreshold?: number, descriptionHashes?: Record<string, string | null>): ProjectRow[] { return this.projects!.getProjectsToSync(staleThreshold, descriptionHashes); }
   getActiveProjects(): ProjectRow[] { return this.projects!.getActiveProjects(); }
   updateProjectActivity(id: string, count: number, at?: number): void { return this.projects!.updateProjectActivity(id, count, at); }
   getProjectsWithFilesystemPath(): ProjectRow[] { return this.projects!.getProjectsWithFilesystemPath(); }
   getProjectFilesystemPath(id: string): string | null { return this.projects!.getProjectFilesystemPath(id); }
-  getProjectByFolderName(name: string): ProjectRow | null { return this.projects!.getProjectByFolderName(name); }
+  getProjectByFolderName(name: string | null): string | null { return this.projects!.getProjectByFolderName(name ?? '')?.identifier ?? null; }
   resolveProjectIdentifier(input: string | null): string | null { return this.projects!.resolveProjectIdentifier(input); }
+  getHulySyncCursor(id: string): string | null { return this.projects!.getHulySyncCursor(id); }
+  setHulySyncCursor(id: string, cursor: string): void { return this.projects!.setHulySyncCursor(id, cursor); }
+  clearHulySyncCursor(id: string): void { return this.projects!.clearHulySyncCursor(id); }
   setProjectBeadsRemote(id: string, remote: BeadsRemoteSnapshot): void { return this.projects!.setProjectBeadsRemote(id, remote); }
   getProjectsWithLettaFolders(): ProjectRow[] { return this.projects!.getProjectsWithLettaFolders(); }
 
@@ -211,6 +214,29 @@ export class SyncDatabase {
   setProjectLettaSyncAt(id: string, ts: number): void { return this.projects!.letta.setProjectLettaSyncAt(id, ts); }
   getAllWithAgents(): unknown[] { return this.projects!.letta.getAllWithAgents(); }
   lookupByRepo(repo: string): unknown { return this.projects!.letta.lookupByRepo(repo); }
+  getAllProjectsWithAgents(): unknown[] { return this.getAllWithAgents(); }
+  lookupProjectByRepo(repo: string): unknown { return this.lookupByRepo(repo); }
+  getProjectProviderRouting(id: string) { return this.projects!.letta.getProjectProviderRouting(id); }
+  setProjectProviderRouting(id: string, routing: { lettaBaseUrl: string | null; providerKind: string | null }): boolean {
+    return this.projects!.letta.setProjectProviderRouting(id, routing);
+  }
+
+  // Project role-agent convenience proxies (vibesync-mcz Phase A)
+  getRoleAgent(projectIdentifier: string, roleName: string) {
+    return this.projects!.roleAgents.getRoleAgent(projectIdentifier, roleName);
+  }
+  upsertRoleAgent(projectIdentifier: string, roleName: string, agentId: string, lettaBaseUrl: string, now?: number) {
+    return this.projects!.roleAgents.upsertRoleAgent(projectIdentifier, roleName, agentId, lettaBaseUrl, now);
+  }
+  touchRoleAgent(projectIdentifier: string, roleName: string, now?: number): boolean {
+    return this.projects!.roleAgents.touchRoleAgent(projectIdentifier, roleName, now);
+  }
+  listRoleAgents(projectIdentifier: string) {
+    return this.projects!.roleAgents.listRoleAgents(projectIdentifier);
+  }
+  deleteRoleAgent(projectIdentifier: string, roleName: string): boolean {
+    return this.projects!.roleAgents.deleteRoleAgent(projectIdentifier, roleName);
+  }
 
   // Issue convenience proxies
   upsertIssue(issue: IssueUpsert): void { return this.issues!.upsertIssue(issue); }
@@ -219,7 +245,7 @@ export class SyncDatabase {
   getBeadsMirrorSyncedAt(pid: string): number | null { return this.projects!.getBeadsMirrorSyncedAt(pid); }
   setBeadsMirrorSyncedAt(pid: string, ts: number, err: string | null = null): void { return this.projects!.setBeadsMirrorSyncedAt(pid, ts, err); }
   getProjectIssues(pid: string): IssueRow[] { return this.issues!.getProjectIssues(pid); }
-  getIssue(identifier: string): IssueRow | null { return this.issues!.getIssue(identifier); }
+  getIssue(identifier: string): IssueRow | undefined { return this.issues!.getIssue(identifier) ?? undefined; }
   getIssueByVibeTaskId(pid: string, vid: number): IssueRow | null { return this.issues!.getIssueByVibeTaskId(pid, vid); }
   markDeletedFromHuly(id: string) { return this.issues!.markDeletedFromHuly(id); }
   isDeletedFromHuly(id: string): boolean { return this.issues!.isDeletedFromHuly(id); }
@@ -254,20 +280,35 @@ export class SyncDatabase {
     if (data.lastSync) this.setLastSync(data.lastSync as number);
     if (data.projectActivity && this.projects) {
       for (const [id, entry] of Object.entries(data.projectActivity)) {
-        this.projects.upsertProject({ identifier: id, name: id, ...(entry as Record<string, unknown>) });
+        const activity = entry as { issueCount?: number; issue_count?: number; lastChecked?: number; last_checked_at?: number };
+        this.projects.upsertProject({
+          identifier: id,
+          name: id,
+          issue_count: activity.issueCount ?? activity.issue_count ?? 0,
+          last_checked_at: activity.lastChecked ?? activity.last_checked_at ?? Date.now(),
+        });
+      }
+    }
+    if (data.projectTimestamps && this.projects) {
+      for (const [id, timestamp] of Object.entries(data.projectTimestamps)) {
+        this.projects.updateProject(id, { last_sync_at: Number(timestamp), last_checked_at: Number(timestamp) });
       }
     }
   }
 
   getStats() {
+    const projects = this.getAllProjects();
     return {
-      totalProjects: (this.getAllProjects() as unknown[]).length,
-      totalIssues: (this.getAllIssues() as unknown[]).length,
+      totalProjects: projects.length,
+      activeProjects: projects.filter((project) => project.issue_count > 0).length,
+      emptyProjects: projects.filter((project) => project.issue_count === 0).length,
+      totalIssues: this.getAllIssues().length,
+      lastSync: this.getLastSync(),
     };
   }
 
   getProjectSummary() {
-    return this.getAllProjects();
+    return [...this.getAllProjects()].sort((a, b) => b.issue_count - a.issue_count || a.name.localeCompare(b.name));
   }
 }
 
@@ -280,19 +321,11 @@ export function createSyncDatabase(dbPath: string): SyncDatabase {
 export function migrateFromJSON(db: SyncDatabase, jsonFilePath: string): boolean {
   if (!fs.existsSync(jsonFilePath)) return false;
   try {
+    if (db.getLastSync() || db.getAllProjects().length > 0 || db.getAllIssues().length > 0) return false;
     const data = JSON.parse(fs.readFileSync(jsonFilePath, 'utf-8'));
     if (!data || !db.db) return false;
-    if (data.lastSync) db.setLastSync(data.lastSync);
-    if (data.projectActivity && db.projects) {
-      for (const [identifier, count] of Object.entries(data.projectActivity)) {
-        db.projects.updateProjectActivity(identifier, count as number);
-      }
-    }
-    if (data.projectTimestamps && db.projects) {
-      for (const [identifier, ts] of Object.entries(data.projectTimestamps)) {
-        db.projects.updateProject(identifier, { last_checked_at: ts as number });
-      }
-    }
+    db.importFromJSON(data as Record<string, unknown>);
+    fs.renameSync(jsonFilePath, `${jsonFilePath}.backup-${Date.now()}`);
     console.log('[Migration] ✓ Imported sync state from JSON');
     return true;
   } catch (err) {

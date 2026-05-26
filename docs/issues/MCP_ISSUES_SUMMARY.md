@@ -8,7 +8,7 @@
 **Total Issues Created**: 37
 **Date**: 2025-10-27
 
-This document summarizes all issues created for the comprehensive MCP server expansion based on [VIBE_KANBAN_MCP_SPEC.md](./VIBE_KANBAN_MCP_SPEC.md) and [FRAMEWORK_DECISION.md](./FRAMEWORK_DECISION.md).
+This historical document summarizes issues created for the former Vibe Kanban MCP server expansion and should not be treated as the current Vibesync API specification. Current API documentation lives in [../api/API.md](../api/API.md); the framework comparison remains in [FRAMEWORK_DECISION.md](./FRAMEWORK_DECISION.md).
 
 ---
 
@@ -220,12 +220,12 @@ This tool enables agents to:
 
 ## Reference Documents
 
-1. **Specification**: [VIBE_KANBAN_MCP_SPEC.md](./VIBE_KANBAN_MCP_SPEC.md)
-   - Comprehensive tool catalog
-   - Priority rationale
-   - Implementation patterns
+1. **Current Vibesync API Reference**: [../api/API.md](../api/API.md)
+   - Active HTTP route catalog
+   - Beads-backed project and issue APIs
+   - Formula and molecule orchestration endpoints
 
-2. **Framework Decision**: [FRAMEWORK_DECISION.md](./FRAMEWORK_DECISION.md)
+2. **Historical Framework Decision**: [FRAMEWORK_DECISION.md](./FRAMEWORK_DECISION.md)
    - TurboMCP vs rmcp comparison
    - Implementation approach
    - Code examples and patterns

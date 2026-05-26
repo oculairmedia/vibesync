@@ -1,7 +1,6 @@
 import path from 'path';
 import { ApplicationFailure } from '@temporalio/activity';
-
-const { createSyncDatabase } = require(path.join(process.cwd(), 'lib', 'database.js'));
+import { createSyncDatabase } from '../../src/database.js';
 
 export type ReconciliationAction = 'mark_deleted' | 'hard_delete';
 

@@ -26,7 +26,7 @@ vi.mock('../../src/logger.js', () => ({
     debug: vi.fn(),
   },
 }));
-vi.mock('../../lib/HealthService.js', () => ({
+vi.mock('../../src/HealthService.js', () => ({
   recordApiLatency: vi.fn(),
 }));
 
@@ -36,8 +36,8 @@ const { BookStackExporter, createBookStackExporter } = await import(
 const { execSync } = await import('child_process');
 const fs = (await import('fs')).default;
 const crypto = (await import('crypto')).default;
-const { logger } = await import('../../lib/logger.js');
-const { recordApiLatency } = await import('../../lib/HealthService.js');
+const { logger } = await import('../../src/logger.js');
+const { recordApiLatency } = await import('../../src/HealthService.js');
 
 function createTestConfig(overrides = {}) {
   return {

@@ -6,16 +6,15 @@ This directory contains API references, specifications, and integration guides f
 
 ### API References
 - **API.md** - Core API reference and specifications
-- **VIBE_API_REFERENCE.md** - Vibe Kanban HTTP API reference with detailed endpoint documentation
+- Project, issue, ready-work, Beads remote provisioning, and formula orchestration endpoints are the active API surface.
 
 ### MCP Integration
-- **VIBE_KANBAN_MCP_SPEC.md** - Comprehensive MCP (Model Context Protocol) server specification
 - **LETTA_MCP_TOOL_ATTACHMENT.md** - Letta MCP tool integration guide
 
 ## Usage
 
 These documents provide the technical specifications needed to:
-- Integrate with the Vibe Kanban API
+- Integrate with Vibesync's Beads-backed project tracker APIs
 - Implement MCP server functionality
 - Attach tools to Letta agents
 - Understand API endpoints and data structures
