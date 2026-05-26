@@ -1,6 +1,6 @@
 # TypeScript Conversion Playbook
 
-Migration phases follow the dependency chain under `huly-vibe-sync-kdb`.
+Migration phases follow the dependency chain under `vibesync-kdb`.
 
 ## File-move pattern
 

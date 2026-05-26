@@ -1,0 +1,4 @@
+[pack]
+name = "gastown"
+version = "0.1.0"
+description = "Gas Town role catalog adapted for VibeSync. Ships Mayor, Refinery, Reviewer, Coder, Tester teammates + formulas demonstrating multi-agent coordination patterns. See docs/architecture/gastown-role-catalog.md for the design rationale."

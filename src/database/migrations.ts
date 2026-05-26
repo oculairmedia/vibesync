@@ -224,6 +224,35 @@ export function migrateBeadsIssueMirrorColumns(db: BetterSqlite3.Database): void
   }
 }
 
+/**
+ * Per-project runtime provider routing columns (vibesync-f5g / vibesync-8hk).
+ *
+ * Adds two nullable columns to the projects table so the orchestration
+ * plane can route formula dispatches to different Letta backends per
+ * project without a new join or a separate agents table:
+ *
+ *   letta_base_url  — override of LETTA_BASE_URL for this project's PM
+ *                     agent. NULL = use the global default.
+ *   provider_kind   — which RuntimeProvider implementation to use.
+ *                     NULL or absent = boot-level default.
+ *                     Recognized values today: 'letta-code-subagent'.
+ *
+ * Backwards-compatible: existing rows read NULL/NULL and route to the
+ * boot-level letta-code local backend provider. The dispatcher only
+ * changes behavior when a row explicitly opts in.
+ */
+export function migrateProjectProviderRoutingColumns(db: BetterSqlite3.Database): void {
+  const columns = db.prepare('PRAGMA table_info(projects)').all() as ColumnInfo[];
+  const columnNames = columns.map((c) => c.name);
+
+  if (!columnNames.includes('letta_base_url')) {
+    db.exec('ALTER TABLE projects ADD COLUMN letta_base_url TEXT');
+  }
+  if (!columnNames.includes('provider_kind')) {
+    db.exec("ALTER TABLE projects ADD COLUMN provider_kind TEXT");
+  }
+}
+
 export function migrateIssueMutationIdempotencyTable(db: BetterSqlite3.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS issue_mutation_idempotency (
@@ -241,6 +270,57 @@ export function migrateIssueMutationIdempotencyTable(db: BetterSqlite3.Database)
   `);
 }
 
+/**
+ * Per-project, per-role persistent subagent identity (vibesync-mcz Phase A).
+ *
+ * Each row binds a (project_identifier, role_name) pair to a single
+ * persistent Letta Code agent_id that lives on a specific backend.
+ * The orchestration plane uses this mapping so that, e.g., every
+ * dispatch of the `reviewer` role for project `vibesync` reuses the
+ * same Reviewer-vibesync agent — preserving its memfs, recall, and
+ * accumulated learning across runs.
+ *
+ * Schema:
+ *   project_identifier  — FK-equivalent to projects.identifier (no hard
+ *                         FK; the routing table is intentionally
+ *                         decoupled from project lifecycle).
+ *   role_name           — pack-defined role (reviewer, coder, tester,
+ *                         refinery, …).
+ *   agent_id            — the persistent Letta Code agent id (string
+ *                         like 'agent-<uuid>'). Authoritative — the
+ *                         provider dispatches against this id.
+ *   letta_base_url      — the backend that owns this agent (typically
+ *                         the local letta-code shim at
+ *                         http://192.168.50.90:8291). Recorded so we
+ *                         can detect cross-backend mismatches and
+ *                         migrate or re-bootstrap cleanly.
+ *   created_at          — bootstrap timestamp (ms).
+ *   last_used_at        — touched on every dispatch; useful for
+ *                         eviction policies / refinery scheduling.
+ *
+ * Backwards compat: pure additive table. When no row exists for a
+ * (project, role) pair, the provider falls back to its existing
+ * inline-persona path (see LettaCodeSubagentProvider).
+ */
+export function migrateProjectRoleAgentsTable(db: BetterSqlite3.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS project_role_agents (
+      project_identifier TEXT NOT NULL,
+      role_name TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      letta_base_url TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      last_used_at INTEGER NOT NULL,
+      PRIMARY KEY (project_identifier, role_name)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_project_role_agents_project
+      ON project_role_agents(project_identifier);
+    CREATE INDEX IF NOT EXISTS idx_project_role_agents_agent
+      ON project_role_agents(agent_id);
+  `);
+}
+
 export function runAllMigrations(db: BetterSqlite3.Database): void {
   migrateParentChildColumns(db);
   migrateBookStackTables(db);
@@ -250,4 +330,6 @@ export function runAllMigrations(db: BetterSqlite3.Database): void {
   migrateProjectBeadsRemoteColumns(db);
   migrateBeadsIssueMirrorColumns(db);
   migrateIssueMutationIdempotencyTable(db);
+  migrateProjectProviderRoutingColumns(db);
+  migrateProjectRoleAgentsTable(db);
 }

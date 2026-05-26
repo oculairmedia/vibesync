@@ -94,7 +94,7 @@ describe('project registry API routes', () => {
             tech_stack: 'node',
             issue_count: 5,
             filesystem_path: updates.filesystem_path || beadsProjectPath,
-            git_url: updates.git_url || 'https://github.com/oculairmedia/project-a.git',
+            git_url: updates.git_url || 'https://github.com/oulairmedia/project-a.git',
           };
         }
         if (identifier === 'NEWPROJ') {
@@ -105,7 +105,7 @@ describe('project registry API routes', () => {
             tech_stack: 'node',
             issue_count: 0,
             filesystem_path: '/opt/stacks/new-project',
-            git_url: updates.git_url || 'https://github.com/oculairmedia/new-project.git',
+            git_url: updates.git_url || 'https://github.com/oulairmedia/new-project.git',
           };
         }
         return null;
@@ -155,7 +155,7 @@ describe('project registry API routes', () => {
           tech_stack: 'node',
           issue_count: 2,
           filesystem_path: beadsProjectPath,
-          git_url: 'https://github.com/oculairmedia/vibesync.git',
+          git_url: 'https://github.com/oulairmedia/vibesync.git',
           last_sync_at: 1700000000000,
           last_checked_at: 1700000100000,
           updated_at: 1700000200000,
@@ -167,7 +167,7 @@ describe('project registry API routes', () => {
           tech_stack: 'node',
           issue_count: 2,
           filesystem_path: beadsProjectPath,
-          git_url: 'https://github.com/oculairmedia/project-a.git',
+          git_url: 'https://github.com/oulairmedia/project-a.git',
           letta_agent_id: 'agent-project-a',
           letta_folder_id: 'folder-project-a',
           letta_source_id: 'source-project-a',
@@ -186,7 +186,7 @@ describe('project registry API routes', () => {
             tech_stack: 'node',
             issue_count: 2,
             filesystem_path: beadsProjectPath,
-            git_url: 'https://github.com/oculairmedia/vibesync.git',
+            git_url: 'https://github.com/oulairmedia/vibesync.git',
             last_sync_at: 1700000000000,
             last_checked_at: 1700000100000,
             updated_at: 1700000200000,
@@ -200,7 +200,7 @@ describe('project registry API routes', () => {
           tech_stack: 'node',
           issue_count: 2,
           filesystem_path: beadsProjectPath,
-          git_url: 'https://github.com/oculairmedia/project-a.git',
+          git_url: 'https://github.com/oulairmedia/project-a.git',
           letta_agent_id: 'agent-project-a',
           letta_folder_id: 'folder-project-a',
           letta_source_id: 'source-project-a',
@@ -444,7 +444,7 @@ describe('project registry API routes', () => {
         }),
       );
       expect(project.repo.remote_url).toBe(
-        'https://github.com/oculairmedia/project-a.git',
+        'https://github.com/oulairmedia/project-a.git',
       );
       expect(project.agents.default_agent_id).toBe('agent-project-a');
       expect(project.tracker.provider).toBe('beads');
@@ -477,7 +477,7 @@ describe('project registry API routes', () => {
           tech_stack: 'node',
           issue_count: 7,
           filesystem_path: '/opt/stacks/beads-project',
-          git_url: 'https://github.com/oculairmedia/beads-project.git',
+          git_url: 'https://github.com/oulairmedia/beads-project.git',
           letta_agent_id: 'agent-beads-project',
           letta_folder_id: 'folder-beads-project',
           letta_source_id: 'source-beads-project',
@@ -501,7 +501,7 @@ describe('project registry API routes', () => {
           }),
         );
         expect(res.body.projects[0].repo.remote_url).toBe(
-          'https://github.com/oculairmedia/beads-project.git',
+          'https://github.com/oulairmedia/beads-project.git',
         );
         expect(res.body.projects[0].agents.default_agent_id).toBe('agent-beads-project');
         expect(res.body.projects[0].tracker.summary.total_known).toBe(7);
@@ -624,6 +624,44 @@ describe('project registry API routes', () => {
         expect.objectContaining({ identifier: 'PROJ-A' }),
         { push: true },
       );
+    });
+
+    it('should correct all existing filesystem projects when available, not only missing remotes', async () => {
+      mockDoltHubProvisioner.provisionProject.mockClear();
+      mockDb.getProjectsWithFilesystemPath = vi.fn(() => [
+        {
+          identifier: 'PROVISIONED',
+          name: 'Already Provisioned',
+          status: 'active',
+          filesystem_path: beadsProjectPath,
+          beads_remote_status: 'provisioned',
+          beads_remote_url: 'https://doltremoteapi.dolthub.com/oulair/already_provisioned',
+        },
+        {
+          identifier: 'MISSING',
+          name: 'Missing Remote',
+          status: 'active',
+          filesystem_path: beadsProjectPath,
+          beads_remote_status: null,
+          beads_remote_url: null,
+        },
+      ]);
+
+      const res = await makeRequest(port, 'POST', '/api/projects/beads-remote/provision', {
+        push: false,
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body.summary).toEqual(expect.objectContaining({ succeeded: 2, failed: 0 }));
+      expect(mockDoltHubProvisioner.provisionProject).toHaveBeenCalledWith(
+        expect.objectContaining({ identifier: 'PROVISIONED' }),
+        { push: false },
+      );
+      expect(mockDoltHubProvisioner.provisionProject).toHaveBeenCalledWith(
+        expect.objectContaining({ identifier: 'MISSING' }),
+        { push: false },
+      );
+      delete mockDb.getProjectsWithFilesystemPath;
     });
 
     it('should skip projects without an accessible Beads database', async () => {
@@ -1356,7 +1394,7 @@ describe('project registry API routes', () => {
     it('should register a project from filesystem path', async () => {
       const res = await makeRequest(port, 'POST', '/api/registry/projects', {
         filesystem_path: '/opt/stacks/new-project',
-        git_url: 'https://github.com/oculairmedia/new-project.git',
+        git_url: 'https://github.com/oulairmedia/new-project.git',
       });
 
       expect(res.statusCode).toBe(201);
@@ -1364,7 +1402,7 @@ describe('project registry API routes', () => {
       expect(mockProjectRegistry.registerProject).toHaveBeenCalledWith('/opt/stacks/new-project');
       expect(mockProjectRegistry.updateProject).toHaveBeenCalledWith(
         'NEWPROJ',
-        expect.objectContaining({ git_url: 'https://github.com/oculairmedia/new-project.git' }),
+        expect.objectContaining({ git_url: 'https://github.com/oulairmedia/new-project.git' }),
       );
     });
 
@@ -1387,7 +1425,7 @@ describe('project registry API routes', () => {
     it('should update filesystem_path and git_url', async () => {
       const res = await makeRequest(port, 'PATCH', '/api/registry/projects/PROJ-A', {
         filesystem_path: '/opt/stacks/project-a-renamed',
-        git_url: 'https://github.com/oculairmedia/project-a-renamed.git',
+        git_url: 'https://github.com/oulairmedia/project-a-renamed.git',
       });
 
       expect(res.statusCode).toBe(200);
@@ -1397,7 +1435,7 @@ describe('project registry API routes', () => {
 
     it('should return 404 for nonexistent project', async () => {
       const res = await makeRequest(port, 'PATCH', '/api/registry/projects/NONEXISTENT', {
-        git_url: 'https://github.com/oculairmedia/none.git',
+        git_url: 'https://github.com/oulairmedia/none.git',
       });
 
       expect(res.statusCode).toBe(404);

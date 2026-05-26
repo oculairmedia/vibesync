@@ -8,10 +8,7 @@
 import path from 'path';
 import { handleOrchestratorError } from './orchestration-letta';
 import type { HulyProject } from './orchestration';
-
-function appRootModule(modulePath: string): string {
-  return path.join(process.cwd(), modulePath);
-}
+import { createSyncDatabase } from '../../src/database.js';
 
 // ============================================================
 // PROJECT FETCHING ACTIVITIES
@@ -27,7 +24,6 @@ export async function fetchRegistryProjects(): Promise<HulyProject[]> {
   console.log('[Temporal:Orchestration] Fetching projects from registry');
 
   try {
-    const { createSyncDatabase } = await import(appRootModule('lib/database.js'));
     const dbPath = process.env.DB_PATH || path.join(process.cwd(), 'logs', 'sync-state.db');
     const db = createSyncDatabase(dbPath);
 

@@ -4,7 +4,7 @@ import 'dotenv/config';
 
 import { createSyncDatabase } from './database';
 import { loadConfig, getConfigSummary, isLettaEnabled } from './config';
-import { initializeHealthStats } from './HealthService';
+import { initializeHealthStats, onRigDegradation, startRigDegradationWatch } from './HealthService';
 import { createApiServer } from './ApiServer';
 import { createLettaService } from './LettaService';
 import { FileWatcher } from './FileWatcher';
@@ -12,7 +12,12 @@ import { CodePerceptionWatcher } from './CodePerceptionWatcher';
 import { createAstMemorySync } from './AstMemorySync';
 import { logger } from './logger';
 import { createBookStackWatcher } from './BookStackWatcher';
-import { ProjectRegistry } from './ProjectRegistry';
+import { ProjectRegistry, type RigEvent } from './ProjectRegistry';
+import { broadcastSyncEvent } from './ApiServer';
+import { bootOrchestrationPlane, type OrchestrationHandle } from './orchestration/boot.js';
+import { DoltClient } from './orchestration/store/index.js';
+import { sweepAll as sweepBeadsPorts, type SweeperProject } from './beads/PortSweeper.js';
+import { startPeriodicPortSweep } from './beads/startPeriodicPortSweep.js';
 
 import { createSyncController } from './SyncController';
 import { createEventHandlers } from './EventHandlers';
@@ -28,11 +33,13 @@ function formatError(err: unknown): string {
 
 let temporalOrchestration: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null;
 const USE_TEMPORAL_ORCHESTRATION = process.env.USE_TEMPORAL_ORCHESTRATION === 'true';
+const ENABLE_ORCHESTRATION = process.env.ENABLE_ORCHESTRATION === 'true';
 
 async function getTemporalOrchestration(): Promise<Record<string, (...args: unknown[]) => Promise<unknown>> | null> {
   if (!temporalOrchestration && USE_TEMPORAL_ORCHESTRATION) {
     try {
-      const temporalModule = (await import('../temporal/dist/client.js')) as Record<string, unknown>;
+      const temporalClientPath = '../temporal/client.js';
+      const temporalModule = (await import(/* @vite-ignore */ temporalClientPath)) as Record<string, unknown>;
 
       if (await (temporalModule.isTemporalAvailable as () => Promise<boolean>)()) {
         temporalOrchestration = {
@@ -76,7 +83,9 @@ try {
 
 let projectRegistry: ProjectRegistry | null = null;
 try {
-  projectRegistry = new ProjectRegistry({ db, logger } as never);
+  projectRegistry = new ProjectRegistry({ db, logger, onRigEvent: (event: RigEvent) => {
+    broadcastSyncEvent(event.type, { projectId: event.projectId, action: event.action, remoteUrl: event.remoteUrl, error: event.error, timestamp: new Date().toISOString() });
+  }} as never);
   const scanResult = projectRegistry.scanProjects();
   logger.info(
     { discovered: scanResult.discovered, updated: scanResult.updated },
@@ -89,6 +98,88 @@ try {
   );
 }
 
+onRigDegradation((data) => {
+  broadcastSyncEvent('rig:degraded', {
+    degradedProjects: data.degradedProjects,
+    newlyDegraded: data.newlyDegraded,
+    total: data.total,
+    healthy: data.healthy,
+    degraded: data.degraded,
+    timestamp: new Date().toISOString(),
+  });
+  logger.warn({ newlyDegraded: data.newlyDegraded, totalDegraded: data.degraded }, 'New degraded rigs detected');
+});
+startRigDegradationWatch();
+
+// vibesync-52g: sweep Beads/Dolt port collisions BEFORE any code (BeadsIssueMirror,
+// DoltHubProvisioningService, orchestration) connects to a project's local Dolt
+// server. After a host reboot two projects can race for the same TCP port; without
+// this sweep, the loser silently reads the winner's database with no error surfaced
+// to bd. Repair uses only supported bd subcommands (bd dolt set port / bd dolt start).
+try {
+  const sweepRegistry: SweeperProject[] = (db.getAllProjects?.() ?? []).map((row) => ({
+    identifier: row.identifier,
+    filesystem_path: row.filesystem_path,
+  }));
+  const sweepReport = await sweepBeadsPorts(sweepRegistry, undefined, { apply: true });
+  logger.info(
+    {
+      scanned: sweepReport.scanned,
+      conflicts: sweepReport.conflicts.length,
+      repaired: sweepReport.repairs.filter((r) => r.ok).length,
+      failed: sweepReport.repairs.filter((r) => !r.ok).length,
+      details: sweepReport.conflicts.map((c) => ({
+        project: c.project.identifier,
+        kind: c.kind,
+        port: c.currentPort,
+        detail: c.detail,
+      })),
+    },
+    'Beads/Dolt port-collision sweep complete',
+  );
+  for (const repair of sweepReport.repairs.filter((r) => !r.ok)) {
+    logger.warn(
+      { project: repair.project.identifier, oldPort: repair.oldPort, newPort: repair.newPort, err: repair.error },
+      'Beads/Dolt port repair failed — project may read the wrong database',
+    );
+  }
+} catch (sweepError) {
+  logger.warn(
+    { err: sweepError },
+    'Beads/Dolt port-collision sweep failed — proceeding without repair',
+  );
+}
+
+// vibesync-1ue: post-boot self-healing. The boot-time sweep above catches
+// the host-reboot case; this recurring sweep catches mid-session races
+// (a project's dolt server crashes, a sibling steals the port on restart).
+// Default 120s cadence, override via VIBESYNC_PORT_SWEEP_INTERVAL_MS=0 to
+// disable entirely (useful in tests).
+const periodicSweepIntervalMs = Number.parseInt(
+  process.env.VIBESYNC_PORT_SWEEP_INTERVAL_MS ?? '',
+  10,
+);
+if (Number.isFinite(periodicSweepIntervalMs) && periodicSweepIntervalMs === 0) {
+  logger.info('Periodic Beads/Dolt port sweep disabled via VIBESYNC_PORT_SWEEP_INTERVAL_MS=0');
+} else {
+  const sweepDeps: Parameters<typeof startPeriodicPortSweep>[0] = {
+    listProjects: () =>
+      (db.getAllProjects?.() ?? []).map((row) => ({
+        identifier: row.identifier,
+        filesystem_path: row.filesystem_path,
+      })),
+    logger,
+  };
+  if (Number.isFinite(periodicSweepIntervalMs) && periodicSweepIntervalMs > 0) {
+    (sweepDeps as { intervalMs?: number }).intervalMs = periodicSweepIntervalMs;
+  }
+  const handle = startPeriodicPortSweep(sweepDeps);
+  // Keep the handle reachable via process so SIGTERM handlers can call
+  // handle.stop() if needed. Wire-up of graceful shutdown is out of scope
+  // for vibesync-1ue.
+  void handle;
+}
+
 let doltHubProvisioner: unknown = null;
 if (config.doltHub?.enabled || config.doltHub?.dryRun) {
   try {
@@ -99,6 +190,9 @@ if (config.doltHub?.enabled || config.doltHub?.dryRun) {
       config: config.doltHub,
       db,
       logger,
+      onPushEvent: (event: Record<string, unknown>) => {
+        broadcastSyncEvent(String(event.type || 'rig:push_status'), { ...event, timestamp: new Date().toISOString() });
+      },
     });
     logger.info(
       { dryRun: config.doltHub.dryRun, owner: config.doltHub.owner },
@@ -299,6 +393,27 @@ async function main(): Promise<void> {
     }
   }
 
+  let orchestration: OrchestrationHandle | null = null;
+  if (ENABLE_ORCHESTRATION) {
+    try {
+      const dolt = new DoltClient();
+      orchestration = await bootOrchestrationPlane({
+        dolt,
+      });
+      logger.info(
+        { provider: orchestration.provider.kind },
+        'Orchestration plane initialized',
+      );
+    } catch (orchestrationError) {
+      logger.warn(
+        { err: orchestrationError },
+        'Failed to initialize orchestration plane, continuing without it',
+      );
+    }
+  } else {
+    logger.info('Orchestration plane disabled (ENABLE_ORCHESTRATION is not true)');
+  }
+
   createApiServer({
     config,
     healthStats,
@@ -312,6 +427,7 @@ async function main(): Promise<void> {
     beadsIssueService,
     beadsAdapter,
     beadsIssueMirror,
+    orchestration,
   } as never);
 
   await syncController.runSyncWithTimeout();

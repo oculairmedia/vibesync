@@ -36,6 +36,7 @@ html/
 
 # Build artifacts
 /dist/
+temporal/dist/
 .*.bun-build
 *.working
 *.backup
@@ -63,3 +64,6 @@ logs/*.db
 
 # Rust analyzer output (IDE)
 target/
+
+# Removed Teams runtime project-scoped task store (legacy runtime state)
+.lteams/

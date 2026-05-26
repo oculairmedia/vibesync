@@ -2,6 +2,13 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { logger as defaultLogger } from './logger';
+import {
+  defaultDeps as defaultPortSweeperDeps,
+  detectConflict as detectPortConflict,
+  pickFreePort,
+  type PortSweeperDeps,
+  type SweeperProject,
+} from './beads/PortSweeper';
 import type {
   DoltHubProvisioningConfig,
   DoltHubProvisioningResult,
@@ -58,8 +65,14 @@ interface BeadsProject {
   name?: string;
 }
 
+interface RegistryProject {
+  identifier: string;
+  filesystem_path?: string | null;
+}
+
 interface DbProject {
   projects?: {
+    getAllProjects?: () => RegistryProject[];
     setProjectBeadsRemote?: (identifier: string, data: Record<string, unknown>) => void;
     setProjectBeadsRemoteError?: (identifier: string, error: string) => void;
   };
@@ -73,12 +86,23 @@ type CommandRunner = (
 
 type FetchImpl = (url: string, init?: RequestInit) => Promise<Response>;
 
+export interface RigPushEvent {
+  type: 'rig:push_status';
+  projectId: string;
+  status: 'success' | 'error';
+  remoteUrl?: string;
+  pushedAt?: string;
+  error?: string;
+}
+
 interface DoltHubServiceOptions {
   config?: Partial<DoltHubProvisioningConfig>;
   db?: DbProject | null;
   logger?: { child?: (ctx: Record<string, unknown>) => unknown; error?: (ctx: Record<string, unknown>, msg: string) => void; info?: (ctx: Record<string, unknown>, msg: string) => void };
   fetchImpl?: FetchImpl;
   commandRunner?: CommandRunner;
+  portSweeperDeps?: PortSweeperDeps;
+  onPushEvent?: (event: RigPushEvent) => void;
 }
 
 function trimTrailingSlash(value: string): string {
@@ -127,6 +151,14 @@ function parseRemoteList(output: string): BeadsRemote[] {
     .filter((r): r is BeadsRemote => r !== null);
 }
 
+function parseConfigValue(output: string, key: string): string | null {
+  const trimmed = String(output || '').trim();
+  if (!trimmed || trimmed.includes('(not set')) return null;
+  const assignment = trimmed.match(new RegExp(`^${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*=\\s*(.+)$`, 'm'));
+  if (assignment) return assignment[1]!.trim();
+  return trimmed;
+}
+
 async function defaultCommandRunner(
   command: string,
   args: string[],
@@ -146,6 +178,8 @@ export class DoltHubProvisioningService {
   private logger: DoltHubServiceOptions['logger'];
   private fetchImpl: FetchImpl;
   private commandRunner: CommandRunner;
+  private portSweeperDeps: PortSweeperDeps;
+  private onPushEvent?: (event: RigPushEvent) => void;
 
   constructor(options: DoltHubServiceOptions = {}) {
     const {
@@ -154,6 +188,7 @@ export class DoltHubProvisioningService {
       logger = defaultLogger,
       fetchImpl = globalThis.fetch as FetchImpl,
       commandRunner,
+      portSweeperDeps,
     } = options;
     this.config = {
       enabled: Boolean(config.enabled),
@@ -168,6 +203,8 @@ export class DoltHubProvisioningService {
     this.logger = logger;
     this.fetchImpl = fetchImpl;
     this.commandRunner = commandRunner || defaultCommandRunner;
+    this.portSweeperDeps = portSweeperDeps ?? defaultPortSweeperDeps;
+    if (options.onPushEvent) this.onPushEvent = options.onPushEvent;
   }
 
   get enabled(): boolean {
@@ -228,6 +265,7 @@ export class DoltHubProvisioningService {
     const commands: string[] = [];
 
     try {
+      await this.ensureUniqueBeadsPort(project, commands);
       const createResult = await this.createDoltHubDatabase(project, plan);
       const remoteResult = await this.configureBeadsRemote(
         project.filesystem_path,
@@ -246,6 +284,10 @@ export class DoltHubProvisioningService {
         visibility: plan.visibility,
         last_push_at: lastPushAt,
       });
+
+      if (remoteResult.pushed) {
+        this.onPushEvent?.({ type: 'rig:push_status', projectId: project.identifier, status: 'success', remoteUrl: plan.remoteUrl, pushedAt: new Date().toISOString() });
+      }
 
       return {
         success: true,
@@ -268,6 +310,7 @@ export class DoltHubProvisioningService {
     } catch (error) {
       const safeError = sanitizeErrorMessage(error);
       this.db?.projects?.setProjectBeadsRemoteError?.(project.identifier, safeError);
+      this.onPushEvent?.({ type: 'rig:push_status', projectId: project.identifier, status: 'error', error: safeError });
       (this.logger as { error?: (ctx: Record<string, unknown>, msg: string) => void })?.error?.(
         { err: error, project_identifier: project.identifier },
         'Beads remote provisioning failed',
@@ -330,9 +373,21 @@ export class DoltHubProvisioningService {
     options: { commands: string[]; push?: boolean },
   ): Promise<RemoteConfigResult> {
     const commands = options.commands || [];
+    const federationRemote = await this.readBeadsConfig(projectPath, 'federation.remote', commands);
+    const syncRemote = await this.readBeadsConfig(projectPath, 'sync.remote', commands);
     const remotes = await this.listBeadsRemotes(projectPath, commands);
     const existing = remotes.find((remote) => remote.name === plan.remoteName);
     let changed = false;
+
+    if (federationRemote !== plan.remoteUrl) {
+      await this.runBd(projectPath, ['config', 'set', 'federation.remote', plan.remoteUrl], commands);
+      changed = true;
+    }
+
+    if (syncRemote === plan.remoteUrl) {
+      await this.runBd(projectPath, ['config', 'unset', 'sync.remote'], commands);
+      changed = true;
+    }
 
     if (existing && existing.url !== plan.remoteUrl) {
       await this.runBd(projectPath, ['dolt', 'remote', 'remove', plan.remoteName], commands);
@@ -371,12 +426,38 @@ export class DoltHubProvisioningService {
     return { changed, pushed };
   }
 
+  private async ensureUniqueBeadsPort(project: BeadsProject, commands: string[]): Promise<void> {
+    const registry: readonly SweeperProject[] = (this.db?.projects?.getAllProjects?.() ?? []).map(
+      (entry) => ({ identifier: entry.identifier, filesystem_path: entry.filesystem_path ?? null }),
+    );
+    const sweeperProject: SweeperProject = {
+      identifier: project.identifier,
+      filesystem_path: project.filesystem_path,
+    };
+
+    const conflict = detectPortConflict(sweeperProject, registry, this.portSweeperDeps);
+    if (!conflict) return;
+
+    const nextPort = pickFreePort(registry, this.portSweeperDeps);
+    await this.runBd(project.filesystem_path, ['dolt', 'set', 'port', String(nextPort)], commands);
+    await this.runBd(project.filesystem_path, ['dolt', 'start'], commands);
+  }
+
   private async listBeadsRemotes(
     projectPath: string,
     commands: string[],
   ): Promise<BeadsRemote[]> {
     const result = await this.runBd(projectPath, ['dolt', 'remote', 'list'], commands);
     return parseRemoteList(result.stdout);
+  }
+
+  private async readBeadsConfig(
+    projectPath: string,
+    key: string,
+    commands: string[],
+  ): Promise<string | null> {
+    const result = await this.runBd(projectPath, ['config', 'get', key], commands);
+    return parseConfigValue(result.stdout, key);
   }
 
   private async runBd(
@@ -398,6 +479,7 @@ export class DoltHubProvisioningService {
     });
   }
 }
+
 
 export function createDoltHubProvisioningService(
   options: DoltHubServiceOptions,

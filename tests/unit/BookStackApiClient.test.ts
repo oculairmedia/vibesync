@@ -11,13 +11,13 @@ vi.mock('../../src/logger.js', () => ({
     debug: vi.fn(),
   },
 }));
-vi.mock('../../lib/HealthService.js', () => ({
+vi.mock('../../src/HealthService.js', () => ({
   recordApiLatency: vi.fn(),
 }));
 
 const { BookStackApiClient } = await import('../../src/BookStackApiClient.js');
 const { fetchWithPool } = await import('../../lib/http.js');
-const { recordApiLatency } = await import('../../lib/HealthService.js');
+const { recordApiLatency } = await import('../../src/HealthService.js');
 
 function createTestConfig(overrides = {}) {
   return {

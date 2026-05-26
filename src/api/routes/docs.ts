@@ -17,8 +17,37 @@ Health & Metrics:
   GET  /api/stats                    - Human-readable statistics (includes database stats)
 
 Projects & Issues:
-  GET  /api/projects                 - Get all projects with issue counts
-  GET  /api/projects/:id/issues      - Get issues for a specific project
+  GET  /api/projects                 - List registered projects
+  GET  /api/projects/:id             - Get project detail
+  GET  /api/projects/:id/issues      - List Beads-backed project issues
+  GET  /api/projects/:id/ready-work  - List ready, unblocked project work
+  GET  /api/projects/:id/work-items  - List compact project work items
+  GET  /api/projects/:id/issue-analytics - Get issue analytics
+  GET  /api/issues/:id               - Get full issue detail
+  POST /api/issues/:id/claim         - Claim an issue (Idempotency-Key required)
+  POST /api/issues/:id/unclaim       - Unclaim an issue (Idempotency-Key required)
+  POST /api/issues/:id/close         - Close an issue (Idempotency-Key required)
+  POST /api/issues/:id/reopen        - Reopen an issue (Idempotency-Key required)
+  PATCH /api/issues/:id/status       - Update issue status (Idempotency-Key required)
+  POST /api/issues/:id/notes         - Add an issue note (Idempotency-Key required)
+
+Project Registry & Remotes:
+  POST /api/registry/projects        - Register a local project path
+  GET  /api/registry/projects/:id    - Get a registry project
+  POST /api/projects/:id/beads-remote/provision - Configure/push Beads DoltHub remote
+
+Letta Agents:
+  GET  /api/agents                   - List projects with Letta agent metadata
+  GET  /api/agents/lookup?repo=<name> - Lookup project agent metadata by repo
+  POST /api/admin/agents-md/refresh  - Re-render AGENTS.md from templates
+
+Formula Orchestration:
+  GET  /formulas                     - List available formulas
+  POST /formulas/:name/run           - Start a formula run (token protected when configured)
+  GET  /molecules/:id                - Get molecule status
+  POST /molecules/:id/resume         - Resume a molecule
+  DELETE /molecules/:id              - Cancel a molecule
+  GET  /molecules/:id/events         - Stream molecule events
 
 Configuration:
   GET  /api/config                   - Get current configuration
@@ -50,7 +79,16 @@ Temporal Schedule Management:
   POST /api/temporal/schedule/start  - Start scheduled sync workflow
   POST /api/temporal/schedule/stop   - Stop scheduled sync workflow
   PATCH /api/temporal/schedule       - Update schedule interval
+  POST /api/temporal/reconciliation/run - Run data reconciliation
   GET  /api/temporal/workflows       - List sync workflows
+
+MCP:
+  POST /mcp                          - Project MCP server (path configurable)
+
+Reference:
+  GET  /openapi.json                  - OpenAPI 3.1 specification
+  GET  /docs                          - Interactive Scalar API reference
+  docs/api/API.md                    - Current human-maintained API reference
 
 Event Types (SSE):
     - connected                  - Client connected

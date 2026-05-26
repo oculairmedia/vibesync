@@ -8,7 +8,7 @@ import { LettaFolderSourceService } from './letta/LettaFolderSourceService.js';
 
 export class LettaService {
   _config: LettaConfig;
-  client: LettaClient;
+  private _client: LettaClient;
   baseURL: string;
   apiURL: string;
   password: string;
@@ -38,7 +38,7 @@ export class LettaService {
     const cfg = config as unknown as Record<string, unknown>;
 
     this._config = config;
-    this.client = client;
+    this._client = client;
     this.baseURL = config.baseURL;
     this.apiURL = config.apiURL;
     this.password = config.password;
@@ -65,13 +65,75 @@ export class LettaService {
     this.fileService = (this._folders as unknown as { fileService: unknown }).fileService;
   }
 
+  get client(): LettaClient { return this._client; }
+
+  set client(client: LettaClient) {
+    this._client = client;
+    this._config.client = client;
+    const configClient = client as unknown as Record<string, unknown>;
+    this._memory.config.client = configClient;
+    this._lifecycle.config.client = configClient;
+    this._tools.config.client = configClient;
+    this._folders.config.client = client as unknown as typeof this._folders.config.client;
+  }
+
+  private _syncRuntimeConfig(): void {
+    this._config.controlAgentName = this.controlAgentName;
+    this._config.sharedHumanBlockId = this.sharedHumanBlockId;
+    if (this.sharedHumanBlockId) this._memory.config.sharedHumanBlockId = this.sharedHumanBlockId;
+    else delete this._memory.config.sharedHumanBlockId;
+    this._lifecycle.config.controlAgentName = this.controlAgentName;
+    const lifecycleCache = this._lifecycle as unknown as { _controlAgentCache?: unknown };
+    lifecycleCache._controlAgentCache = this._controlAgentCache;
+  }
+
+  private _syncControlAgentCache(): void {
+    const lifecycleCache = this._lifecycle as unknown as { _controlAgentCache?: unknown };
+    this._controlAgentCache = lifecycleCache._controlAgentCache ?? null;
+  }
+
   clearCache(): void { this._folders.clearCache(); this._lifecycle.clearControlAgentCache(); this._controlAgentCache = null; console.log('[Letta] Cache cleared'); }
 
-  async ensureControlAgent() { return this._lifecycle.ensureControlAgent(); }
-  async getControlAgentConfig(agentId: string | null = null) { return this._lifecycle.getControlAgentConfig(agentId); }
-  async ensureAgent(projectIdentifier: string, projectName: string) { return this._lifecycle.ensureAgent(projectIdentifier, projectName); }
-  async getAgent(agentId: string) { return this._lifecycle.getAgent(agentId); }
-  async listAgents(filters: Record<string, unknown> = {}) { return this._lifecycle.listAgents(filters); }
+  async ensureControlAgent() { this._syncRuntimeConfig(); const result = await this._lifecycle.ensureControlAgent(); this._syncControlAgentCache(); return result; }
+  async getControlAgentConfig(agentId: string | null = null) { this._syncRuntimeConfig(); const result = await this._lifecycle.getControlAgentConfig(agentId); this._syncControlAgentCache(); return result; }
+  async ensureAgent(projectIdentifier: string, projectName: string) {
+    this._syncRuntimeConfig();
+    const result = await this._lifecycle.ensureAgent(projectIdentifier, projectName);
+    this._syncControlAgentCache();
+    if (result && typeof result === 'object' && typeof (result as { id?: unknown }).id === 'string') {
+      await this._finalizePmAgent((result as { id: string }).id, projectIdentifier, projectName);
+    }
+    return result;
+  }
+
+  /**
+   * Post-spawn wiring shared by every ensureAgent return path
+   * (vibesync-rgx). Idempotent — every step ends up in the
+   * already-attached / already-set state on re-run. Failures are logged
+   * but never throw; an undelivered tool or env var leaves the PM agent
+   * usable for everything except formula dispatch, which is a soft
+   * regression rather than a fatal one.
+   *
+   * The persona push (vibesync-3hj) is included here so existing agents
+   * (created before the Formula Dispatch Protocol was added to
+   * buildPersonaBlock) get the new content on the next ensureAgent
+   * call. _updatePersonaBlock is idempotent — it modifies the existing
+   * persona block if one exists, otherwise creates+attaches a new one.
+   */
+  private async _finalizePmAgent(agentId: string, projectIdentifier: string, projectName: string): Promise<void> {
+    try { await this._tools.attachDispatchMoleculeTool(agentId); }
+    catch (err) { console.warn(`[Letta] _finalizePmAgent: attachDispatchMoleculeTool failed for ${agentId}: ${(err as Error).message}`); }
+    try { await this._tools.attachListFormulasTool(agentId); }
+    catch (err) { console.warn(`[Letta] _finalizePmAgent: attachListFormulasTool failed for ${agentId}: ${(err as Error).message}`); }
+    try { await this._tools.syncPmAgentEnvVars(agentId); }
+    catch (err) { console.warn(`[Letta] _finalizePmAgent: syncPmAgentEnvVars failed for ${agentId}: ${(err as Error).message}`); }
+    try {
+      const persona = this._lifecycle._buildPersonaBlock(projectIdentifier, projectName);
+      await this._memory._updatePersonaBlock(agentId, persona);
+    } catch (err) { console.warn(`[Letta] _finalizePmAgent: persona update failed for ${agentId}: ${(err as Error).message}`); }
+  }
+  async getAgent(agentId: string) { this._syncRuntimeConfig(); return this._lifecycle.getAgent(agentId); }
+  async listAgents(filters: Record<string, unknown> = {}) { this._syncRuntimeConfig(); return this._lifecycle.listAgents(filters); }
   _buildPersonaBlock(projectIdentifier: string, projectName: string) { return this._lifecycle._buildPersonaBlock(projectIdentifier, projectName); }
 
   _loadAgentState() { return (this._persistence as unknown as { _loadAgentState: () => unknown })._loadAgentState(); }
@@ -81,17 +143,22 @@ export class LettaService {
   saveAgentIdToProjectFolder(projectPath: string, agentId: string, projectInfo?: Record<string, unknown>) { return (this._persistence as unknown as { saveAgentIdToProjectFolder: (p: string, a: string, i?: Record<string, unknown>) => unknown }).saveAgentIdToProjectFolder(projectPath, agentId, projectInfo); }
   updateAgentsMdWithProjectInfo(projectPath: string, agentId: string, projectInfo: Record<string, unknown>) { return (this._persistence as unknown as { updateAgentsMdWithProjectInfo: (p: string, a: string, i: Record<string, unknown>) => unknown }).updateAgentsMdWithProjectInfo(projectPath, agentId, projectInfo); }
 
-  async attachPmTools(agentId: string) { return this._tools.attachPmTools(agentId); }
-  async syncToolsFromControl(agentId: string, forceSync?: boolean) { return this._tools.syncToolsFromControl(agentId, forceSync); }
-  async attachMcpTools(agentId: string) { return this._tools.attachMcpTools(agentId); }
+  async attachPmTools(agentId: string) { this._syncRuntimeConfig(); return this._tools.attachPmTools(agentId); }
+  async syncToolsFromControl(agentId: string, forceSync?: boolean) { this._syncRuntimeConfig(); return this._tools.syncToolsFromControl(agentId, forceSync); }
+  async attachMcpTools(agentId: string) { this._syncRuntimeConfig(); return this._tools.attachMcpTools(agentId); }
   async _ensureMcpTool(name: string, url: string) { return this._tools._ensureMcpTool(name, url); }
   async ensureSearchFolderPassagesTool() { return this._tools.ensureSearchFolderPassagesTool(); }
   async attachSearchFolderPassagesTool(agentId: string) { return this._tools.attachSearchFolderPassagesTool(agentId); }
+  async ensureDispatchMoleculeTool() { return this._tools.ensureDispatchMoleculeTool(); }
+  async attachDispatchMoleculeTool(agentId: string) { return this._tools.attachDispatchMoleculeTool(agentId); }
+  async ensureListFormulasTool() { return this._tools.ensureListFormulasTool(); }
+  async attachListFormulasTool(agentId: string) { return this._tools.attachListFormulasTool(agentId); }
   async setAgentIdEnvVar(agentId: string) { return this._tools.setAgentIdEnvVar(agentId); }
+  async syncPmAgentEnvVars(agentId: string, extra: Record<string, string> = {}) { return this._tools.syncPmAgentEnvVars(agentId, extra); }
 
-  async _updatePersonaBlock(agentId: string, personaContent: string) { return (this._memory as unknown as { _updatePersonaBlock: (a: string, c: string) => Promise<void> })._updatePersonaBlock(agentId, personaContent); }
-  async _ensureTemplateBlocks(agentId: string, opts: Record<string, unknown>) { return (this._memory as unknown as { _ensureTemplateBlocks: (a: string, o: Record<string, unknown>) => Promise<void> })._ensureTemplateBlocks(agentId, opts); }
-  async _attachSharedHumanBlock(agentId: string) { return (this._memory as unknown as { _attachSharedHumanBlock: (a: string) => Promise<void> })._attachSharedHumanBlock(agentId); }
+  async _updatePersonaBlock(agentId: string, personaContent: string) { this._syncRuntimeConfig(); return (this._memory as unknown as { _updatePersonaBlock: (a: string, c: string) => Promise<void> })._updatePersonaBlock(agentId, personaContent); }
+  async _ensureTemplateBlocks(agentId: string, opts: Record<string, unknown>) { this._syncRuntimeConfig(); return (this._memory as unknown as { _ensureTemplateBlocks: (a: string, o: Record<string, unknown>) => Promise<void> })._ensureTemplateBlocks(agentId, opts); }
+  async _attachSharedHumanBlock(agentId: string) { this._syncRuntimeConfig(); return (this._memory as unknown as { _attachSharedHumanBlock: (a: string) => Promise<void> })._attachSharedHumanBlock(agentId); }
   async upsertMemoryBlocks(agentId: string, blocks: { label: string; value: unknown }[]) { return this._memory.upsertMemoryBlocks(agentId, blocks); }
   _hashContent(content: string) { return this._memory._hashContent(content); }
   async initializeScratchpad(agentId: string) { return this._memory.initializeScratchpad(agentId); }

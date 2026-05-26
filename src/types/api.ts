@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http';
+import type { OrchestrationHandle } from '../orchestration/boot.js';
 import type { ProjectRow, IssueRow } from './db.js';
 import type { NormalizedBeadsIssue } from './beads.js';
 
@@ -122,6 +123,8 @@ export interface DoltHubProvisionerApi {
     opts: Record<string, unknown>,
   ) => Promise<Record<string, unknown>>;
 }
+
+export type OrchestrationApi = OrchestrationHandle;
 
 export interface SerializedIssueSummary {
   id: string;

@@ -1,6 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { logger as rootLogger } from './logger';
+import { stripUrlCredentials } from './utils';
+import { ensureRig, type EnsureRigResult } from './rig/provisioner.js';
+
+export interface RigEvent {
+  type: 'rig:provisioned' | 'rig:error';
+  projectId: string;
+  action: EnsureRigResult['action'];
+  remoteUrl?: string;
+  error?: string;
+}
 
 interface TechDetector {
   file: string;
@@ -58,6 +68,7 @@ interface RegistryOptions {
   db: ProjectDB;
   baseDir?: string;
   logger?: typeof rootLogger;
+  onRigEvent?: (event: RigEvent) => void;
 }
 
 const TECH_STACK_DETECTORS: TechDetector[] = [
@@ -88,12 +99,14 @@ export class ProjectRegistry {
   private db: ProjectDB;
   private baseDir: string;
   private log: ReturnType<typeof rootLogger.child>;
+  private onRigEvent?: (event: RigEvent) => void;
 
   constructor(opts: RegistryOptions | null = null) {
     if (!opts?.db) throw new Error('ProjectRegistry requires a db instance');
     this.db = opts.db;
     this.baseDir = opts.baseDir || process.env.STACKS_DIR || '/opt/stacks';
     this.log = (opts.logger || rootLogger).child({ module: 'project-registry' });
+    if (opts.onRigEvent) this.onRigEvent = opts.onRigEvent;
   }
 
   scanProjects(): ScanResults {
@@ -225,7 +238,10 @@ export class ProjectRegistry {
       if (!fs.existsSync(gitConfigPath)) return null;
       const content = fs.readFileSync(gitConfigPath, 'utf8');
       const match = content.match(/url\s*=\s*(.+)/);
-      return match?.[1]?.trim() ?? null;
+      // SECURITY (vibesync-6kg): strip any inline credential before persisting.
+      // git config can carry `https://<token>@host/...` if the remote was added
+      // with credentials inline. We must NEVER let that reach the database.
+      return stripUrlCredentials(match?.[1]?.trim() ?? null);
     } catch {
       return null;
     }
@@ -253,5 +269,30 @@ export class ProjectRegistry {
     this.db.db
       .prepare(`UPDATE projects SET tech_stack = ?, last_scan_at = ?, mcp_enabled = COALESCE(mcp_enabled, 1) WHERE identifier = ?`)
       .run(techStack, now, identifier);
+
+    try {
+      const rig = ensureRig(dirPath);
+      if (rig.action !== 'none' && rig.action !== 'skipped') {
+        this.log.info({ dirPath, action: rig.action, message: rig.message }, 'Rig auto-provisioned');
+        if (rig.ok && rig.remoteUrl) {
+          this.db.db
+            .prepare(`UPDATE projects SET beads_remote_status = ?, beads_remote_url = ?, beads_remote_provisioned_at = ? WHERE identifier = ?`)
+            .run('provisioned', rig.remoteUrl, now, identifier);
+          this.onRigEvent?.({ type: 'rig:provisioned', projectId: identifier, action: rig.action, remoteUrl: rig.remoteUrl });
+        } else if (!rig.ok) {
+          this.db.db
+            .prepare(`UPDATE projects SET beads_remote_status = ?, beads_remote_last_error = ? WHERE identifier = ?`)
+            .run('error', rig.message, identifier);
+          this.onRigEvent?.({ type: 'rig:error', projectId: identifier, action: rig.action, error: rig.message });
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log.warn({ err, dirPath }, 'Rig auto-provisioning failed');
+      this.db.db
+        .prepare(`UPDATE projects SET beads_remote_status = ?, beads_remote_last_error = ? WHERE identifier = ?`)
+        .run('error', msg, identifier);
+      this.onRigEvent?.({ type: 'rig:error', projectId: identifier, action: 'init', error: msg });
+    }
   }
 }

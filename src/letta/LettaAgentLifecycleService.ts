@@ -114,7 +114,7 @@ export class LettaAgentLifecycleService {
 
       if (pmAgents.length > 0) {
         if (pmAgents.length > 1) {
-          console.warn(`[Letta] DUPLICATE AGENTS: Found ${pmAgents.length} agents with name "${agentName}"!`);
+          console.warn(`[Letta] DUPLICATE AGENTS DETECTED: Found ${pmAgents.length} agents with name "${agentName}"!`);
           pmAgents.forEach((agent, idx) => { console.warn(`[Letta]   ${idx + 1}. ${agent.id} (created: ${agent.created_at || 'unknown'})`); });
           const sorted = pmAgents.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
           const existing = sorted[0]!;

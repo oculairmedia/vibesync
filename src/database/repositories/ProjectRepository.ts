@@ -1,6 +1,8 @@
 import type Database from 'better-sqlite3';
 import { ProjectLettaRepository } from './ProjectLettaRepository';
+import { ProjectRoleAgentRepository } from './ProjectRoleAgentRepository';
 import type { ProjectRow } from '../../types/db.js';
+import type { LettaAgentInfo } from './ProjectLettaRepository';
 
 export interface ProjectUpsert {
   identifier: string;
@@ -23,6 +25,7 @@ export interface ProjectUpdate {
   git_url?: string | null;
   status?: string | null;
   last_checked_at?: number | null;
+  last_sync_at?: number | null;
 }
 
 export interface BeadsRemoteSnapshot {
@@ -39,9 +42,11 @@ export interface BeadsRemoteSnapshot {
 
 export class ProjectRepository {
   public letta: ProjectLettaRepository;
+  public roleAgents: ProjectRoleAgentRepository;
 
   constructor(private db: Database.Database) {
     this.letta = new ProjectLettaRepository(db);
+    this.roleAgents = new ProjectRoleAgentRepository(db);
   }
 
   upsertProject(project: ProjectUpsert): void {
@@ -73,8 +78,8 @@ export class ProjectRepository {
     const row = this.db
       .prepare(
         `SELECT p.*, COALESCE(issue_counts.actual_issue_count, 0) AS actual_issue_count,
-         CASE WHEN COALESCE(issue_counts.actual_issue_count, 0) > p.issue_count
-              THEN issue_counts.actual_issue_count ELSE p.issue_count END AS issue_count
+         CASE WHEN COALESCE(issue_counts.actual_issue_count, 0) > COALESCE(p.issue_count, 0)
+              THEN issue_counts.actual_issue_count ELSE COALESCE(p.issue_count, 0) END AS issue_count
          FROM projects p LEFT JOIN (
            SELECT project_identifier, COUNT(*) AS actual_issue_count FROM issues GROUP BY project_identifier
          ) issue_counts ON issue_counts.project_identifier = p.identifier
@@ -97,11 +102,13 @@ export class ProjectRepository {
     const nextFilesystemPath = updates.filesystem_path ?? existing.filesystem_path;
     const nextGitUrl = updates.git_url ?? existing.git_url;
     const nextStatus = updates.status ?? existing.status;
+    const nextLastCheckedAt = updates.last_checked_at ?? existing.last_checked_at;
+    const nextLastSyncAt = updates.last_sync_at ?? existing.last_sync_at;
     const now = Date.now();
 
     this.db
-      .prepare('UPDATE projects SET name = ?, filesystem_path = ?, git_url = ?, status = ?, updated_at = ? WHERE identifier = ?')
-      .run(nextName, nextFilesystemPath, nextGitUrl, nextStatus, now, identifier);
+      .prepare('UPDATE projects SET name = ?, filesystem_path = ?, git_url = ?, status = ?, last_checked_at = ?, last_sync_at = ?, updated_at = ? WHERE identifier = ?')
+      .run(nextName, nextFilesystemPath, nextGitUrl, nextStatus, nextLastCheckedAt, nextLastSyncAt, now, identifier);
 
     return this.getProject(identifier);
   }
@@ -122,6 +129,7 @@ export class ProjectRepository {
     const deleteProject = this.db.transaction((projectIdentifier: string) => {
       this.db.prepare('DELETE FROM issues WHERE project_identifier = ?').run(projectIdentifier);
       this.db.prepare('DELETE FROM project_files WHERE project_identifier = ?').run(projectIdentifier);
+      this.db.prepare('DELETE FROM bookstack_pages WHERE project_identifier = ?').run(projectIdentifier);
       this.db.prepare('DELETE FROM projects WHERE identifier = ?').run(projectIdentifier);
     }) as (...args: unknown[]) => void;
 
@@ -130,19 +138,31 @@ export class ProjectRepository {
   }
 
   getAllProjects(): ProjectRow[] {
-    return this.db.prepare('SELECT * FROM projects ORDER BY name').all() as ProjectRow[];
+    return this.db.prepare(
+      `SELECT p.*, COALESCE(issue_counts.actual_issue_count, 0) AS actual_issue_count,
+       CASE WHEN COALESCE(issue_counts.actual_issue_count, 0) > COALESCE(p.issue_count, 0)
+            THEN issue_counts.actual_issue_count ELSE COALESCE(p.issue_count, 0) END AS issue_count
+       FROM projects p LEFT JOIN (
+         SELECT project_identifier, COUNT(*) AS actual_issue_count FROM issues GROUP BY project_identifier
+       ) issue_counts ON issue_counts.project_identifier = p.identifier
+       ORDER BY name`,
+    ).all() as ProjectRow[];
   }
 
-  getProjectsToSync(now = Date.now(), staleThreshold = 3600000): ProjectRow[] {
-    return this.db.prepare(
-      `SELECT * FROM projects WHERE status = 'active'
-       AND (last_checked_at IS NULL OR ? - last_checked_at > ?)
-       ORDER BY name`,
-    ).all(now, staleThreshold) as ProjectRow[];
+  getProjectsToSync(staleThreshold = 3600000, descriptionHashes: Record<string, string | null> = {}, now = Date.now()): ProjectRow[] {
+    const projects = this.getAllProjects().filter((project) => project.status === 'active');
+    return projects.filter((project) => {
+      const externalHash = descriptionHashes[project.identifier];
+      if (externalHash !== undefined && project.description_hash !== externalHash) return true;
+      if (project.last_checked_at == null) return true;
+      return now - project.last_checked_at > staleThreshold;
+    });
   }
 
   getActiveProjects(): ProjectRow[] {
-    return this.db.prepare('SELECT * FROM projects WHERE status = ? ORDER BY name').all('active') as ProjectRow[];
+    return this.getAllProjects()
+      .filter((project) => project.status === 'active' && project.issue_count > 0)
+      .sort((a, b) => b.issue_count - a.issue_count || a.name.localeCompare(b.name));
   }
 
   updateProjectActivity(identifier: string, issueCount: number, checkedAt: number = Date.now()): void {
@@ -166,14 +186,32 @@ export class ProjectRepository {
 
   getProjectByFolderName(folderName: string): ProjectRow | null {
     if (!folderName) return null;
+    const normalizedInput = folderName.replace(/\\/g, '/').toLowerCase();
+    const basename = normalizedInput.split('/').filter(Boolean).pop() || normalizedInput;
     const row = this.db
       .prepare(
         `SELECT * FROM projects
-         WHERE LOWER(filesystem_path) = LOWER(?) OR LOWER(filesystem_path) LIKE LOWER(?) ESCAPE '\\'
+         WHERE LOWER(REPLACE(filesystem_path, '\\', '/')) = ?
+            OR LOWER(REPLACE(filesystem_path, '\\', '/')) LIKE ? ESCAPE '\\'
          LIMIT 1`,
       )
-      .get(folderName, `%${folderName}`) as ProjectRow | undefined;
+      .get(normalizedInput, `%/${basename}`) as ProjectRow | undefined;
     return row ?? null;
+  }
+
+  getHulySyncCursor(identifier: string): string | null {
+    const row = this.db.prepare('SELECT huly_sync_cursor FROM projects WHERE identifier = ?')
+      .get(identifier) as { huly_sync_cursor?: string | null } | undefined;
+    return row?.huly_sync_cursor ?? null;
+  }
+
+  setHulySyncCursor(identifier: string, cursor: string | null): void {
+    this.db.prepare('UPDATE projects SET huly_sync_cursor = ?, updated_at = ? WHERE identifier = ?')
+      .run(cursor, Date.now(), identifier);
+  }
+
+  clearHulySyncCursor(identifier: string): void {
+    this.setHulySyncCursor(identifier, null);
   }
 
   resolveProjectIdentifier(input: string | null): string | null {
@@ -201,6 +239,34 @@ export class ProjectRepository {
     return this.db.prepare(
       'SELECT * FROM projects WHERE filesystem_path IS NOT NULL AND letta_folder_id IS NOT NULL AND status = ? ORDER BY name',
     ).all('active') as ProjectRow[];
+  }
+
+  getProjectLettaInfo(identifier: string) {
+    return this.letta.getProjectLettaInfo(identifier);
+  }
+
+  setProjectLettaAgent(identifier: string, lettaInfo: LettaAgentInfo): void {
+    this.letta.setProjectLettaAgent(identifier, lettaInfo);
+  }
+
+  setProjectLettaFolderId(identifier: string, folderId: string): void {
+    this.letta.setProjectLettaFolderId(identifier, folderId);
+  }
+
+  setProjectLettaSourceId(identifier: string, sourceId: string): void {
+    this.letta.setProjectLettaSourceId(identifier, sourceId);
+  }
+
+  setProjectLettaSyncAt(identifier: string, timestamp: number): void {
+    this.letta.setProjectLettaSyncAt(identifier, timestamp);
+  }
+
+  getAllWithAgents(): unknown[] {
+    return this.letta.getAllWithAgents();
+  }
+
+  lookupByRepo(repo: string): unknown {
+    return this.letta.lookupByRepo(repo);
   }
 
   getBeadsMirrorSyncedAt(identifier: string): number | null {

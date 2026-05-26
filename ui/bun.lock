@@ -2,7 +2,7 @@
   "lockfileVersion": 1,
   "workspaces": {
     "": {
-      "name": "huly-vibe-sync-ui",
+      "name": "vibesync-ui",
       "dependencies": {
         "@tanstack/react-query": "^5.28.0",
         "class-variance-authority": "^0.7.0",

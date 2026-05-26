@@ -61,6 +61,14 @@ function createMockActivities() {
       errors: [],
     }),
     recordProvisioningResult: vi.fn().mockResolvedValue(undefined),
+    updateProjectAgentsMd: vi.fn().mockResolvedValue({
+      success: true,
+      projectPath: '/mock/project/path',
+      sections: [
+        { section: 'project-info', action: 'updated' },
+        { section: 'reporting-hierarchy', action: 'updated' },
+      ],
+    }),
     cleanupFailedProvision: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -255,7 +263,7 @@ describe('ProvisionAgentsWorkflow', () => {
         taskQueue: 'test-queue',
         workflowsPath: path.resolve(
           __dirname,
-          '../../temporal/dist/workflows/agent-provisioning.js'
+          '../../temporal/workflows/agent-provisioning.ts'
         ),
         activities: mockActs,
       });
@@ -387,7 +395,7 @@ describe('ProvisionSingleAgentWorkflow', () => {
         taskQueue: 'test-queue',
         workflowsPath: path.resolve(
           __dirname,
-          '../../temporal/dist/workflows/agent-provisioning.js'
+          '../../temporal/workflows/agent-provisioning.ts'
         ),
         activities: mockActs,
       });
@@ -463,7 +471,7 @@ describe('CleanupFailedProvisionsWorkflow', () => {
         taskQueue: 'test-queue',
         workflowsPath: path.resolve(
           __dirname,
-          '../../temporal/dist/workflows/agent-provisioning.js'
+          '../../temporal/workflows/agent-provisioning.ts'
         ),
         activities: mockActs,
       });

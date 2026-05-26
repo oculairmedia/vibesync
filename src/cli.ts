@@ -2,6 +2,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import fetch from 'node-fetch';
+import { request } from 'undici';
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -100,6 +101,84 @@ function toRecord(value: unknown): Record<string, unknown> {
 
 function toArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+function preview(value: unknown, max = 80): string {
+  const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function compactPayload(value: unknown): string {
+  const payload = toRecord(value);
+  const entries = Object.entries(payload).filter(([, v]) => v !== undefined && v !== null);
+  return entries.map(([k, v]) => `${k}=${preview(v, 60)}`).join(' ');
+}
+
+async function watchMoleculeEvents(moleculeId: string): Promise<number> {
+  const { apiUrl, timeout } = getGlobalOpts();
+  const controller = new AbortController();
+  let interrupted = false;
+  const onSigint = (): void => {
+    interrupted = true;
+    controller.abort();
+  };
+  process.once('SIGINT', onSigint);
+  try {
+    const { body } = await request(`${apiUrl}/molecules/${encodeURIComponent(moleculeId)}/events`, {
+      method: 'GET',
+      signal: controller.signal,
+      bodyTimeout: 0,
+      headersTimeout: timeout,
+    });
+    let buffer = '';
+    let eventType = 'message';
+    let exitCode = 0;
+    for await (const chunk of body) {
+      buffer += Buffer.from(chunk).toString('utf8');
+      let boundary = buffer.indexOf('\n\n');
+      while (boundary >= 0) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const parsed = parseSseFrame(frame, eventType);
+        eventType = 'message';
+        if (parsed) {
+          eventType = parsed.nextEventType;
+          if (parsed.data) {
+            const event = toRecord(parsed.data);
+            const kind = String(event.kind ?? parsed.eventType);
+            const ts = event.ts ? new Date(String(event.ts)).toLocaleTimeString() : new Date().toLocaleTimeString();
+            console.log(`${ts} ${kind} ${compactPayload(event.payload)}`.trim());
+            if (kind === 'dispatcher/formula.failed') exitCode = 1;
+            if (kind === 'dispatcher/formula.completed' || kind === 'dispatcher/formula.failed') return exitCode;
+          }
+        }
+        boundary = buffer.indexOf('\n\n');
+      }
+    }
+    return exitCode;
+  } catch (error) {
+    if (interrupted) return 130;
+    throw error;
+  } finally {
+    process.removeListener('SIGINT', onSigint);
+  }
+}
+
+function parseSseFrame(frame: string, currentEventType: string): { eventType: string; nextEventType: string; data: unknown } | null {
+  let eventType = currentEventType;
+  const dataLines: string[] = [];
+  for (const rawLine of frame.split('\n')) {
+    const line = rawLine.trimEnd();
+    if (line.startsWith('event:')) eventType = line.slice('event:'.length).trim();
+    else if (line.startsWith('data:')) dataLines.push(line.slice('data:'.length).trimStart());
+  }
+  if (dataLines.length === 0) return { eventType, nextEventType: eventType, data: null };
+  const dataRaw = dataLines.join('\n');
+  try {
+    return { eventType, nextEventType: eventType, data: JSON.parse(dataRaw) };
+  } catch {
+    return { eventType, nextEventType: eventType, data: dataRaw };
+  }
 }
 
 // ── Program ────────────────────────────────────────────────────────
@@ -502,7 +581,6 @@ program
         );
         if (!Object.keys(data).length) {
           die('No identifier given and full scan endpoint not available.');
-          return;
         }
       }
 
@@ -566,6 +644,77 @@ program
         ];
       });
       console.log(formatTable(['Agent Name', 'Agent ID', 'Project'], rows as never));
+    } catch (err) {
+      die((err as Error)?.message || String(err));
+    }
+  });
+
+// ── refresh-agents-md ──────────────────────────────────────────────
+
+program
+  .command('refresh-agents-md')
+  .description('Re-render AGENTS.md from global templates across the project registry')
+  .option('--project-id <id>', 'Refresh only the project with this identifier')
+  .option('--all', 'Refresh every registered project (default when no --project-id)')
+  .option('--dry-run', 'Compute the changes but do not write files')
+  .action(async (opts: Record<string, unknown>) => {
+    const { json: jsonOut } = getGlobalOpts();
+    if (opts.projectId && opts.all) {
+      die('Pass --project-id OR --all, not both');
+    }
+    const body: Record<string, unknown> = {};
+    if (opts.projectId) body.projectId = String(opts.projectId);
+    if (opts.dryRun) body.dryRun = true;
+    try {
+      const result = toRecord(
+        await fetchJson('/api/admin/agents-md/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          timeoutMs: 60_000,
+        }),
+      );
+      if (jsonOut) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      const total = Number(result.total ?? 0);
+      const updated = Number(result.updated ?? 0);
+      const dryRunCount = Number(result.dryRun ?? 0);
+      const skipped = Number(result.skipped ?? 0);
+      const errors = Number(result.errors ?? 0);
+      console.log(
+        chalk.bold(
+          `AGENTS.md refresh: ${total} project${total === 1 ? '' : 's'} — ` +
+            chalk.green(`${updated} updated`) +
+            (dryRunCount > 0 ? `, ${chalk.cyan(`${dryRunCount} dry-run`)}` : '') +
+            (skipped > 0 ? `, ${chalk.yellow(`${skipped} skipped`)}` : '') +
+            (errors > 0 ? `, ${chalk.red(`${errors} errors`)}` : ''),
+        ),
+      );
+      const results = toArray(result.results);
+      if (!results.length) {
+        console.log(chalk.yellow('No projects in scope. Check --project-id or registry contents.'));
+        return;
+      }
+      const rows = results.map((r: unknown) => {
+        const row = toRecord(r);
+        const status = String(row.status ?? '');
+        const colored =
+          status === 'updated' ? chalk.green(status) :
+          status === 'dry-run' ? chalk.cyan(status) :
+          status === 'skipped' ? chalk.yellow(status) :
+          status === 'error' ? chalk.red(status) : status;
+        const detail =
+          status === 'error' ? String(row.error ?? '') :
+          status === 'skipped' ? String(row.reason ?? '') :
+          toArray(row.changes).map((c: unknown) => {
+            const ch = toRecord(c);
+            return `${ch.section}:${ch.action}`;
+          }).join(', ');
+        return [String(row.identifier ?? ''), String(row.name ?? ''), colored, detail];
+      });
+      console.log(formatTable(['Project', 'Name', 'Status', 'Detail'], rows as never));
     } catch (err) {
       die((err as Error)?.message || String(err));
     }
@@ -790,6 +939,140 @@ program
         console.log(`    ${chalk.gray('No active workflows')}`);
       }
       console.log();
+    } catch (err) {
+      die((err as Error)?.message || String(err));
+    }
+  });
+
+// ── formula ────────────────────────────────────────────────────────
+
+const formula = program.command('formula').description('Formula orchestration commands');
+
+formula
+  .command('list')
+  .description('List available orchestration formulas')
+  .action(async () => {
+    const { json: jsonOut } = getGlobalOpts();
+    try {
+      const data = toRecord(await fetchJson('/formulas'));
+      const formulas = toArray(data.formulas);
+      if (jsonOut) {
+        console.log(JSON.stringify(data, null, 2));
+        return;
+      }
+      if (!formulas.length) {
+        console.log(chalk.yellow('No formulas found.'));
+        return;
+      }
+      const rows = formulas.map((item) => {
+        const f = toRecord(item);
+        return [f.pack, f.name, f.description, f.stepCount];
+      });
+      console.log(formatTable(['Pack', 'Name', 'Description', 'Steps'], rows as never));
+    } catch (err) {
+      die((err as Error)?.message || String(err));
+    }
+  });
+
+formula
+  .command('run <name>')
+  .description('Run an orchestration formula')
+  .requiredOption('--input <text>', 'Top-level input for the formula')
+  .option('--pack <name>', 'Pack name', 'gastown')
+  .option('--motivating-bead <id>', 'Motivating Beads issue id')
+  .option('--watch', 'Stream molecule events after starting')
+  .action(async (name: string, opts: Record<string, unknown>) => {
+    const { json: jsonOut } = getGlobalOpts();
+    try {
+      const body: Record<string, unknown> = { input: String(opts.input), pack: String(opts.pack || 'gastown') };
+      if (opts.motivatingBead) body.motivatingBeadId = String(opts.motivatingBead);
+      const data = toRecord(await fetchJson(`/formulas/${encodeURIComponent(name)}/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }));
+      if (jsonOut) console.log(JSON.stringify(data, null, 2));
+      else {
+        console.log(`moleculeId: ${chalk.green(String(data.moleculeId ?? ''))}`);
+        console.log(`path: /molecules/${String(data.moleculeId ?? '')}`);
+      }
+      if (opts.watch && typeof data.moleculeId === 'string') {
+        const code = await watchMoleculeEvents(data.moleculeId);
+        process.exitCode = code;
+      }
+    } catch (err) {
+      die((err as Error)?.message || String(err));
+    }
+  });
+
+formula
+  .command('status <moleculeId>')
+  .description('Show formula molecule status')
+  .action(async (moleculeId: string) => {
+    const { json: jsonOut } = getGlobalOpts();
+    try {
+      const data = toRecord(await fetchJson(`/molecules/${encodeURIComponent(moleculeId)}`));
+      if (jsonOut) {
+        console.log(JSON.stringify(data, null, 2));
+        return;
+      }
+      console.log(chalk.bold(`\nMolecule: ${String(data.moleculeId ?? moleculeId)} (${String(data.status ?? 'unknown')})\n`));
+      const rows = toArray(data.steps).map((item) => {
+        const step = toRecord(item);
+        return [step.stepName, step.role, step.status, preview(step.output, 60)];
+      });
+      console.log(formatTable(['Step', 'Role', 'Status', 'Output'], rows as never));
+      console.log();
+    } catch (err) {
+      die((err as Error)?.message || String(err));
+    }
+  });
+
+formula
+  .command('resume <moleculeId>')
+  .description('Re-attach to running formula molecule tasks after restart')
+  .option('--watch', 'Stream molecule events after resuming')
+  .action(async (moleculeId: string, opts: Record<string, unknown>) => {
+    const { json: jsonOut } = getGlobalOpts();
+    try {
+      const data = toRecord(await fetchJson(`/molecules/${encodeURIComponent(moleculeId)}/resume`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      }));
+      if (jsonOut) console.log(JSON.stringify(data, null, 2));
+      else console.log(`resumed: ${chalk.green(String(data.moleculeId ?? moleculeId))}`);
+      if (opts.watch) {
+        const code = await watchMoleculeEvents(String(data.moleculeId ?? moleculeId));
+        process.exitCode = code;
+      }
+    } catch (err) {
+      die((err as Error)?.message || String(err));
+    }
+  });
+
+formula
+  .command('cancel <moleculeId>')
+  .description('Cancel a running formula molecule')
+  .action(async (moleculeId: string) => {
+    const { json: jsonOut } = getGlobalOpts();
+    try {
+      const data = toRecord(await fetchJson(`/molecules/${encodeURIComponent(moleculeId)}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+      }));
+      if (jsonOut) console.log(JSON.stringify(data, null, 2));
+      else console.log(`cancelled: ${chalk.green(String(data.moleculeId ?? moleculeId))}`);
+    } catch (err) {
+      die((err as Error)?.message || String(err));
+    }
+  });
+
+formula
+  .command('events <moleculeId>')
+  .description('Stream formula molecule events')
+  .action(async (moleculeId: string) => {
+    try {
+      process.exitCode = await watchMoleculeEvents(moleculeId);
     } catch (err) {
       die((err as Error)?.message || String(err));
     }

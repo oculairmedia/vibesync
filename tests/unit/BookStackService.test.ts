@@ -24,10 +24,7 @@ vi.mock('../../src/logger.js', () => ({
     child: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })),
   },
 }));
-vi.mock('../../lib/HealthService.js', () => ({
-  recordApiLatency: vi.fn(),
-}));
-vi.mock('../../lib/HealthService.js', () => ({
+vi.mock('../../src/HealthService.js', () => ({
   recordApiLatency: vi.fn(),
 }));
 
@@ -750,7 +747,7 @@ describe('BookStackService', () => {
       });
 
       it('resolves conflict with BookStack wins when both changed', async () => {
-        const { logger } = await import('../../lib/logger.js');
+        const { logger } = await import('../../src/logger.js');
         setupApiClient({
           getPage: vi.fn().mockResolvedValue({
             id: 100,
@@ -814,7 +811,7 @@ describe('BookStackService', () => {
       });
 
       it('warns and counts unchanged when local deleted and remote unchanged', async () => {
-        const { logger } = await import('../../lib/logger.js');
+        const { logger } = await import('../../src/logger.js');
         setupApiClient();
         const tracked = makeTrackedPage();
         db.getBookStackPages.mockReturnValue([tracked]);
@@ -896,7 +893,7 @@ describe('BookStackService', () => {
       });
 
       it('skips untracked local files without # Title heading', async () => {
-        const { logger } = await import('../../lib/logger.js');
+        const { logger } = await import('../../src/logger.js');
         setupApiClient();
         db.getBookStackPages.mockReturnValue([]);
         fs.existsSync.mockReturnValue(true);

@@ -1,624 +1,393 @@
-# Legacy REST API Documentation
+# Vibesync HTTP API Reference
 
 ## Overview
 
-The Legacy REST API provides high-performance HTTP endpoints for interacting with the Legacy platform, bypassing the MCP protocol for better performance in bulk operations and batch issue fetching.
+Vibesync exposes a Bun/Node HTTP API for project registry discovery, Beads-backed issue tracking, Letta PM-agent metadata, file access for remote agents, legacy sync telemetry, Temporal schedule controls, and formula/molecule orchestration.
 
-**Base URL:** `http://192.168.50.90:3458`
+**Default base URL:** `http://localhost:3099`
 
-**Version:** 1.0.0
+The listen port is controlled by `HEALTH_PORT`; when unset, the service uses `3099`.
 
-**Authentication:** Currently using workspace-level authentication (configured via environment variables)
+## Authentication
 
----
+Most local service endpoints are unauthenticated today and are intended for trusted internal network use. Formula and molecule control endpoints are optionally protected: when `VIBESYNC_ORCHESTRATION_TOKEN` is set, send `Authorization: Bearer <token>` to all endpoints under `/formulas` and `/molecules` except `GET /formulas`.
 
-## Table of Contents
+## Common response shape
 
-- [Getting Started](#getting-started)
-- [Health Check](#health-check)
-- [Projects](#projects)
-- [Issues](#issues)
-- [Status Mapping](#status-mapping)
-- [Priority Mapping](#priority-mapping)
-- [Error Handling](#error-handling)
-- [Examples](#examples)
+JSON responses are pretty-printed and include permissive CORS headers. Errors use this general shape:
 
----
-
-## Getting Started
-
-### Configuration
-
-The API requires the following environment variables:
-
-```bash
-PORT=3458                                    # API server port
-LEGACY_URL=https://pm.oculair.ca              # Legacy platform URL
-LEGACY_EMAIL=your-email@example.com           # Authentication email
-LEGACY_PASSWORD=your-password                 # Authentication password
-LEGACY_WORKSPACE=your-workspace               # Target workspace name
-```
-
-### Running the API
-
-```bash
-# Using Docker Compose (recommended)
-docker-compose up -d legacy-rest-api
-
-# Using Node.js directly
-cd legacy-rest-api
-npm install
-node server.js
-```
-
----
-
-## Health Check
-
-### GET /health
-
-Check if the API server is running and connected to Legacy.
-
-**Response:**
 ```json
 {
-  "status": "ok",
-  "connected": true,
-  "timestamp": "2025-10-27T22:47:10.123Z"
+  "error": "Endpoint not found",
+  "statusCode": 404,
+  "timestamp": "2026-05-18T12:00:00.000Z",
+  "details": {}
 }
 ```
 
-**Example:**
-```bash
-curl http://192.168.50.90:3458/health
-```
+Some older route handlers return route-specific errors with the same `error` field but fewer metadata fields.
 
----
+## Health and metrics
 
-## Projects
+### `GET /health`
 
-### GET /api/projects
+Returns the service health snapshot from `HealthService`, including uptime, sync, memory, and connection-pool fields.
 
-List all projects in the workspace.
+### `GET /metrics`
 
-**Query Parameters:** None
+Returns Prometheus metrics using the registry content type.
 
-**Response:**
+### `GET /api/stats`
+
+Returns a compact operational stats object including health metrics, SSE client count, sync history counts, and database stats when the database is available.
+
+## Project registry and project views
+
+### `GET /api/projects`
+
+Lists registered projects.
+
+Query parameters:
+
+- `status`: `active` or `archived`.
+- `tech_stack`: filter by stored tech stack.
+- `mcp_enabled`: `true` or `false`.
+- `cursor`: enables cursor pagination.
+- `limit`: page size; maximum `100`.
+
+Response includes `total`, `projects`, `timestamp`, and `page`.
+
+### `GET /api/projects/:id`
+
+Returns a project summary and project `etag` for the given project identifier.
+
+### `POST /api/registry/projects`
+
+Registers a project from a local git repository path.
+
+Request body:
+
 ```json
 {
-  "projects": [
-    {
-      "identifier": "HULLY",
-      "name": "Legacy MCP Server",
-      "description": "Model Context Protocol server for Legacy integration",
-      "issueCount": 27,
-      "private": false,
-      "archived": false
-    },
-    {
-      "identifier": "LMS",
-      "name": "Letta MCP Server",
-      "description": "MCP tools for Letta agent management",
-      "issueCount": 46,
-      "private": false,
-      "archived": false
-    }
-  ],
-  "count": 2
+  "filesystem_path": "/opt/stacks/vibesync"
 }
 ```
 
-**Example:**
-```bash
-curl http://192.168.50.90:3458/api/projects
+`filesystem_path` is required, must be absolute, and must exist.
+
+### `GET /api/registry/projects/:id`
+
+Returns the registry record for a project identifier.
+
+## Beads-backed issue APIs
+
+### `GET /api/projects/:id/issues`
+
+Lists compact issues for a project. The route prefers the Beads mirror and falls back to database rows or direct Beads hydration depending on availability.
+
+Query parameters:
+
+- `status`: comma-separated normalized statuses (`open`, `in_progress`, `blocked`, `deferred`, `closed`).
+- `priority`: comma-separated priorities.
+- `type`: issue type.
+- `assignee`: passed to Beads hydration filters when direct Beads hydration is needed.
+- `ready`: `true` or `false`.
+- `q`: text search over title and description.
+- `updatedSince` or `updated_since`: numeric timestamp filter.
+- `sort`: `priority`, `updated`, or `created`; default is `priority`.
+- `cursor`: cursor from a previous response.
+- `limit`: page size; maximum `100`.
+
+Response includes `projectId`, `project`, `issues`, `tracker_stats`, `data_freshness`, and `page`.
+
+### `GET /api/projects/:id/ready-work`
+
+Android-friendly equivalent of `bd ready`. Returns open, actionable, unblocked work for the project.
+
+Query parameters:
+
+- `cursor`
+- `limit`
+
+Response fields: `projectId`, `ready_work`, and `page`.
+
+### `GET /api/projects/:id/work-items`
+
+Returns list-optimized work items for a project.
+
+Query parameters:
+
+- `status`
+- `priority`
+- `cursor`: offset cursor returned by the endpoint.
+- `limit`: page size; maximum `100`.
+
+Response includes `project_identifier`, `provider`, `work_items`, `page`, `etag`, `data_freshness`, and `timestamp`.
+
+### `GET /api/projects/:id/issue-analytics`
+
+Returns issue analytics for a date range. Range parsing is implemented in `src/api/routes/issueAnalytics.ts`.
+
+Response includes schema version, range metadata, created/completed buckets, summary, timeline pagination, freshness, and generated timestamp.
+
+### `GET /api/issues/:id`
+
+Returns full issue detail by stable issue ID. The response includes normalized status, blocker references, timestamps, labels, metadata, `etag`, notes/comments placeholders, and validation warnings.
+
+### Issue mutation endpoints
+
+All mutation endpoints require an `Idempotency-Key` header. Conflict-aware mutation services may also use `If-Match` or body-level etag fields depending on the configured Beads service implementation.
+
+- `POST /api/issues/:id/claim`
+- `POST /api/issues/:id/unclaim`
+- `POST /api/issues/:id/close`
+- `POST /api/issues/:id/reopen`
+- `PATCH /api/issues/:id/status`
+- `POST /api/issues/:id/notes`
+
+`PATCH /api/issues/:id/status` requires a JSON body with `status`.
+
+`POST /api/issues/:id/notes` requires a JSON body with `content`.
+
+Example:
+
+```http
+POST /api/issues/vibesync-2ge/claim
+Idempotency-Key: mobile-queue-42
+Content-Type: application/json
+
+{
+  "assignee": "emmanuel"
+}
 ```
 
----
+## Beads remote provisioning
 
-## Issues
+### `POST /api/projects/:id/beads-remote/provision`
 
-### GET /api/projects/:identifier/issues
+Creates or reuses a project-scoped DoltHub database, configures the project's Beads remote, and pushes by default.
 
-List all issues in a specific project with optional timestamp filtering for incremental sync.
+Request body:
 
-**Path Parameters:**
-- `identifier` (string, required) - Project identifier (e.g., "HULLY", "LMS")
-
-**Query Parameters:**
-- `modifiedAfter` (string, optional) - ISO 8601 timestamp to fetch only issues modified after this time
-- `limit` (number, optional) - Maximum number of issues to return (default: 1000)
-
-**Response:**
 ```json
 {
-  "project": "HULLY",
-  "issues": [
-    {
-      "identifier": "HULLY-27",
-      "title": "Add bidirectional sync support",
-      "description": "Implement status sync from Vibe Kanban back to Legacy",
-      "status": "In Progress",
-      "priority": "High",
-      "component": "Sync Engine",
-      "milestone": "v1.0",
-      "assignee": "user@example.com",
-      "createdOn": 1698765432000,
-      "modifiedOn": 1698852432000,
-      "number": 27,
-      "project": "HULLY"
-    }
-  ],
-  "count": 1,
-  "filtered": true
+  "push": true
 }
 ```
 
-**Examples:**
+Set `push` to `false` to configure the remote without pushing immediately.
 
-```bash
-# Get all issues in a project
-curl http://192.168.50.90:3458/api/projects/HULLY/issues
+## Letta agent metadata and AGENTS.md refresh
 
-# Get only issues modified after a specific timestamp (incremental sync)
-curl "http://192.168.50.90:3458/api/projects/HULLY/issues?modifiedAfter=2025-10-27T18:00:00.000Z"
+### `GET /api/agents`
 
-# Limit the number of results
-curl "http://192.168.50.90:3458/api/projects/HULLY/issues?limit=50"
-```
+Lists registered projects that have Letta PM-agent metadata.
 
----
+### `GET /api/agents/lookup?repo=<name>`
 
-### GET /api/issues/:identifier
+Finds the Letta agent metadata associated with a repository name.
 
-Get detailed information about a single issue.
+### `POST /api/admin/agents-md/refresh`
 
-**Path Parameters:**
-- `identifier` (string, required) - Issue identifier (e.g., "HULLY-27")
+Re-renders AGENTS.md content from the configured templates.
 
-**Response:**
+Request body:
+
 ```json
 {
-  "identifier": "HULLY-27",
-  "title": "Add bidirectional sync support",
-  "description": "Implement status sync from Vibe Kanban back to Legacy",
-  "status": "In Progress",
-  "priority": "High",
-  "component": "Sync Engine",
-  "milestone": "v1.0",
-  "assignee": "user@example.com",
-  "createdOn": 1698765432000,
-  "modifiedOn": 1698852432000,
-  "number": 27,
-  "project": "HULLY"
+  "projectId": "HVSYN",
+  "dryRun": true
 }
 ```
 
-**Example:**
-```bash
-curl http://192.168.50.90:3458/api/issues/HULLY-27
-```
+`projectId` is optional. When omitted, all registry projects are targeted. `dryRun` defaults to `false`.
 
----
+## Formula and molecule orchestration
 
-### POST /api/issues
+These endpoints operate on Beads-backed formula runs and molecule state. If `VIBESYNC_ORCHESTRATION_TOKEN` is configured, include `Authorization: Bearer <token>`.
 
-Create a new issue in a project.
+### `GET /formulas`
 
-**Request Body:**
+Lists available formulas from the default `gastown` pack and discovered packs.
+
+### `POST /formulas/:name/run`
+
+Starts a formula run and returns `202 Accepted` with the molecule ID.
+
+Request body:
+
 ```json
 {
-  "project_identifier": "HULLY",
-  "title": "Fix authentication bug",
-  "description": "Users are unable to log in with SSO credentials",
-  "priority": "High",
-  "component": "Auth",
-  "milestone": "v1.1"
+  "input": "Review the current diff",
+  "pack": "gastown",
+  "motivatingBeadId": "vibesync-2ge"
 }
 ```
 
-**Required Fields:**
-- `project_identifier` (string) - Project identifier
-- `title` (string) - Issue title
+`input` is required. `pack` defaults to `gastown`; `motivatingBeadId` is optional.
 
-**Optional Fields:**
-- `description` (string) - Issue description (supports Markdown)
-- `priority` (string) - Priority level (see [Priority Mapping](#priority-mapping))
-- `component` (string) - Component label
-- `milestone` (string) - Milestone label
+### `GET /molecules/:id`
 
-**Response:**
+Returns molecule status and serialized step outputs.
+
+### `POST /molecules/:id/resume`
+
+Resumes a resumable molecule through the orchestration dispatcher and returns accepted outputs.
+
+### `DELETE /molecules/:id`
+
+Cancels a cancellable molecule. Returns `409` if the molecule is not cancellable.
+
+### `GET /molecules/:id/events`
+
+Streams Server-Sent Events for dispatcher events scoped to a molecule. The stream closes on formula completion or failure.
+
+## Configuration
+
+### `GET /api/config`
+
+Returns current runtime configuration.
+
+### `PATCH /api/config`
+
+Applies configuration updates through `ConfigurationHandler`.
+
+### `POST /api/config/reset`
+
+Resets configuration to defaults through `ConfigurationHandler`.
+
+## Legacy sync telemetry and controls
+
+These endpoints remain for compatibility with the service's historical sync subsystem. New domain state should use Beads-backed project and issue APIs.
+
+### `POST /api/sync/trigger`
+
+Triggers manual sync. Optional request body:
+
 ```json
 {
-  "identifier": "HULLY-28",
-  "title": "Fix authentication bug",
-  "project": "HULLY",
-  "status": "Backlog",
-  "priority": "High"
+  "projectId": "HVSYN"
 }
 ```
 
-**Example:**
-```bash
-curl -X POST http://192.168.50.90:3458/api/issues \
-  -H "Content-Type: application/json" \
-  -d '{
-    "project_identifier": "HULLY",
-    "title": "Fix authentication bug",
-    "description": "Users are unable to log in with SSO credentials",
-    "priority": "High"
-  }'
-```
+Returns `202 Accepted` when the trigger is queued.
 
----
+### `GET /api/sync/history?limit=20&offset=0`
 
-### PUT /api/issues/:identifier
+Returns sync history events from the in-memory sync history store.
 
-Update a specific field of an issue.
+### `GET /api/sync/history/:id`
 
-**Path Parameters:**
-- `identifier` (string, required) - Issue identifier (e.g., "HULLY-27")
+Returns one sync history event.
 
-**Request Body:**
+### `GET /api/sync/mappings`
+
+Returns recorded legacy issue mappings.
+
+### `GET /api/sync/mappings/:id`
+
+Returns one legacy issue mapping.
+
+## Real-time events
+
+### `GET /api/events/stream`
+
+Opens the general Server-Sent Events stream managed by `SSEManager`.
+
+## Remote agent file operations
+
+File paths are resolved under `config.stacks.baseDir` or `/opt/stacks` by default.
+
+### `POST /api/files/read`
+
+Request body:
+
 ```json
 {
-  "field": "status",
-  "value": "In Progress"
+  "file_path": "vibesync/README.md",
+  "start_line": 1,
+  "max_lines": 200
 }
 ```
 
-**Supported Fields:**
-- `title` (string) - Update issue title
-- `description` (string) - Update issue description (supports Markdown)
-- `status` (string) - Update issue status (see [Status Mapping](#status-mapping))
-- `priority` (string) - Update priority level (see [Priority Mapping](#priority-mapping))
+Returns the requested line window plus path metadata.
 
-**Response:**
+### `POST /api/files/edit`
+
+Request body:
+
 ```json
 {
-  "identifier": "HULLY-27",
-  "field": "status",
-  "value": "In Progress",
-  "updated": true
+  "file_path": "vibesync/README.md",
+  "start_line": 10,
+  "end_line": 12,
+  "new_content": "replacement text"
 }
 ```
 
-**Examples:**
+Replaces the inclusive line range and returns edit counts.
 
-```bash
-# Update issue status
-curl -X PUT http://192.168.50.90:3458/api/issues/HULLY-27 \
-  -H "Content-Type: application/json" \
-  -d '{
-    "field": "status",
-    "value": "In Progress"
-  }'
+### `POST /api/files/info`
 
-# Update issue title
-curl -X PUT http://192.168.50.90:3458/api/issues/HULLY-27 \
-  -H "Content-Type: application/json" \
-  -d '{
-    "field": "title",
-    "value": "Updated title for the issue"
-  }'
+Request body:
 
-# Update issue priority
-curl -X PUT http://192.168.50.90:3458/api/issues/HULLY-27 \
-  -H "Content-Type: application/json" \
-  -d '{
-    "field": "priority",
-    "value": "Urgent"
-  }'
-```
-
----
-
-## Status Mapping
-
-The API supports the following status values for issues:
-
-| Status Name | Description | Common Transitions |
-|-------------|-------------|-------------------|
-| `Backlog` | Not yet started, in backlog | → To Do, In Progress |
-| `To Do` | Planned for current iteration | → In Progress |
-| `In Progress` | Currently being worked on | → In Review, Done |
-| `In Review` | Under review/testing | → Done, In Progress |
-| `Done` | Completed | Final state |
-| `Canceled` | Canceled/won't do | Final state |
-
-**Note:** Available statuses may vary by project. If an invalid status is provided, the API will return an error with a list of available statuses for that project.
-
----
-
-## Priority Mapping
-
-The API supports the following priority values:
-
-| Priority | Numeric Value | Description |
-|----------|--------------|-------------|
-| `NoPriority` | 0 | No priority set (default) |
-| `Urgent` | 1 | Highest priority, needs immediate attention |
-| `High` | 2 | Important, should be addressed soon |
-| `Medium` | 3 | Normal priority |
-| `Low` | 4 | Can be deferred |
-
-**Example:** When creating or updating an issue, use the string value (e.g., `"High"`, `"Urgent"`).
-
----
-
-## Error Handling
-
-The API uses standard HTTP status codes and returns error messages in JSON format.
-
-### Common Error Responses
-
-**400 Bad Request:**
 ```json
 {
-  "error": "project_identifier and title are required"
+  "file_path": "vibesync/README.md"
 }
 ```
 
-**404 Not Found:**
-```json
-{
-  "error": "Project INVALID not found"
-}
-```
-
-**500 Internal Server Error:**
-```json
-{
-  "error": "Failed to connect to Legacy platform"
-}
-```
-
-**503 Service Unavailable:**
-```json
-{
-  "error": "Legacy client not initialized"
-}
-```
-
-### Status-Specific Errors
-
-When updating an issue with an invalid status:
-```json
-{
-  "error": "Status 'Invalid Status' not found",
-  "availableStatuses": ["Backlog", "To Do", "In Progress", "In Review", "Done", "Canceled"]
-}
-```
+Returns existence, size, timestamps, line count, and extension metadata.
 
----
+## Temporal controls
 
-## Examples
+Temporal endpoints return an unavailable response when Temporal is not configured.
 
-### Complete Workflow Example
+### `GET /api/temporal/schedule`
 
-```bash
-# 1. Check API health
-curl http://192.168.50.90:3458/health
+Returns the active scheduled sync status.
 
-# 2. List all projects
-curl http://192.168.50.90:3458/api/projects
+### `POST /api/temporal/schedule/start`
 
-# 3. Get all issues in a project
-curl http://192.168.50.90:3458/api/projects/HULLY/issues
+Starts scheduled sync.
 
-# 4. Create a new issue
-curl -X POST http://192.168.50.90:3458/api/issues \
-  -H "Content-Type: application/json" \
-  -d '{
-    "project_identifier": "HULLY",
-    "title": "Implement new feature",
-    "description": "Add support for bulk operations",
-    "priority": "High"
-  }'
+Request body fields:
 
-# 5. Update issue status to "In Progress"
-curl -X PUT http://192.168.50.90:3458/api/issues/HULLY-28 \
-  -H "Content-Type: application/json" \
-  -d '{
-    "field": "status",
-    "value": "In Progress"
-  }'
+- `intervalMinutes`: optional; defaults from config.
+- `dryRun`: optional; defaults from config.
 
-# 6. Get issue details
-curl http://192.168.50.90:3458/api/issues/HULLY-28
+### `POST /api/temporal/schedule/stop`
 
-# 7. Mark issue as done
-curl -X PUT http://192.168.50.90:3458/api/issues/HULLY-28 \
-  -H "Content-Type: application/json" \
-  -d '{
-    "field": "status",
-    "value": "Done"
-  }'
-```
+Stops scheduled sync if active.
 
-### Incremental Sync Example
+### `PATCH /api/temporal/schedule`
 
-For syncing systems that need to fetch only recently modified issues:
+Restarts the schedule with a new interval. `intervalMinutes` is required and must be at least `1`.
 
-```bash
-# 1. First sync - get all issues
-curl "http://192.168.50.90:3458/api/projects/HULLY/issues" > initial_sync.json
+### `POST /api/temporal/reconciliation/run`
 
-# Store the timestamp of this sync
-LAST_SYNC=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
+Runs the Temporal data reconciliation workflow.
 
-# 2. Wait for changes...
+Request body fields:
 
-# 3. Incremental sync - get only issues modified since last sync
-curl "http://192.168.50.90:3458/api/projects/HULLY/issues?modifiedAfter=${LAST_SYNC}" > incremental_sync.json
-```
+- `projectIdentifier`
+- `action`
+- `dryRun`
 
-### Batch Status Update Example
+### `GET /api/temporal/workflows?limit=20`
 
-Update multiple issues programmatically:
-
-```bash
-# Update issue statuses in a loop
-for issue_id in HULLY-1 HULLY-2 HULLY-3; do
-  curl -X PUT "http://192.168.50.90:3458/api/issues/${issue_id}" \
-    -H "Content-Type: application/json" \
-    -d '{"field": "status", "value": "In Review"}'
-  echo ""
-done
-```
+Lists recent sync workflows.
 
----
+## MCP endpoint
 
-## Performance Considerations
+### `POST /mcp`
 
-### Batch Operations
+Hosts the project MCP server over Streamable HTTP when `config.projectMcp.enabled !== false`. The path defaults to `/mcp` and can be changed with `config.projectMcp.path`.
 
-The REST API is optimized for batch operations:
+`GET` and `DELETE` on the MCP path return JSON-RPC method-not-allowed errors.
 
-- **Full Project Fetch**: ~500-900ms for 50-100 issues with full details
-- **Incremental Fetch**: ~100-300ms for 0-10 modified issues
-- **Single Issue Update**: ~50-100ms per update
+## Documentation readiness notes
 
-### Rate Limiting
+Vibesync now generates an OpenAPI 3.1 document from Zod route schemas during `bun run build:openapi` and serves it at `GET /openapi.json`. Interactive Scalar documentation is available at `GET /docs` and reads from that generated spec.
 
-Currently, there is no rate limiting implemented. Best practices:
-
-- Batch related operations together when possible
-- Use incremental sync (`modifiedAfter`) for regular polling
-- Add small delays (50-100ms) between bulk updates
-
-### Caching
-
-The API fetches fresh data from Legacy on each request. For high-frequency reads, consider implementing client-side caching based on the `modifiedOn` timestamp.
-
----
-
-## Integration Examples
-
-### JavaScript/Node.js
-
-```javascript
-const axios = require('axios');
-
-const LEGACY_API = 'http://192.168.50.90:3458';
-
-async function listProjects() {
-  const response = await axios.get(`${LEGACY_API}/api/projects`);
-  return response.data.projects;
-}
-
-async function getIssues(projectId, modifiedAfter = null) {
-  const params = modifiedAfter ? { modifiedAfter } : {};
-  const response = await axios.get(
-    `${LEGACY_API}/api/projects/${projectId}/issues`,
-    { params }
-  );
-  return response.data.issues;
-}
-
-async function updateIssueStatus(issueId, status) {
-  const response = await axios.put(
-    `${LEGACY_API}/api/issues/${issueId}`,
-    { field: 'status', value: status }
-  );
-  return response.data;
-}
-
-// Usage
-(async () => {
-  const projects = await listProjects();
-  console.log('Projects:', projects);
-
-  const issues = await getIssues('HULLY');
-  console.log(`Found ${issues.length} issues`);
-
-  await updateIssueStatus('HULLY-27', 'In Progress');
-  console.log('Status updated');
-})();
-```
-
-### Python
-
-```python
-import requests
-from datetime import datetime
-
-LEGACY_API = 'http://192.168.50.90:3458'
-
-def list_projects():
-    response = requests.get(f'{LEGACY_API}/api/projects')
-    return response.json()['projects']
-
-def get_issues(project_id, modified_after=None):
-    params = {'modifiedAfter': modified_after} if modified_after else {}
-    response = requests.get(
-        f'{LEGACY_API}/api/projects/{project_id}/issues',
-        params=params
-    )
-    return response.json()['issues']
-
-def update_issue_status(issue_id, status):
-    response = requests.put(
-        f'{LEGACY_API}/api/issues/{issue_id}',
-        json={'field': 'status', 'value': status}
-    )
-    return response.json()
-
-# Usage
-projects = list_projects()
-print(f'Projects: {projects}')
-
-issues = get_issues('HULLY')
-print(f'Found {len(issues)} issues')
-
-update_issue_status('HULLY-27', 'In Progress')
-print('Status updated')
-```
-
----
-
-## Troubleshooting
-
-### Common Issues
-
-**Problem:** API returns `503 Service Unavailable`
-```
-Solution: The API client may not be connected to Legacy. Check:
-- LEGACY_URL is correct
-- LEGACY_EMAIL and LEGACY_PASSWORD are valid
-- LEGACY_WORKSPACE exists
-- Legacy platform is accessible
-```
-
-**Problem:** Issues have empty descriptions
-```
-Solution: Descriptions are fetched from Legacy's blob storage. Ensure:
-- Network connectivity to Legacy platform
-- Sufficient permissions to read issue content
-```
-
-**Problem:** Status update fails with "Status not found"
-```
-Solution: Each project may have different available statuses.
-Use the error message's `availableStatuses` field to see valid options.
-```
-
-### Debug Mode
-
-Enable debug logging by checking the container logs:
-
-```bash
-docker-compose logs -f legacy-rest-api
-```
-
-Look for messages like:
-- `[Legacy REST] Successfully connected to Legacy platform` - Connection OK
-- `[Legacy REST] Fetching issues for project XXX` - API requests
-- `[Legacy REST] Error fetching issues:` - Errors with details
-
----
-
-## Support and Feedback
-
-For issues, questions, or feature requests related to the Legacy REST API, please contact the development team or file an issue in the project repository.
-
-**Last Updated:** 2025-10-27
+This Markdown file remains a human-maintained narrative reference; endpoint schemas should be kept current in `src/openapi/` so `/openapi.json` and `/docs` stay aligned with the runtime API.

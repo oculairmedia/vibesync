@@ -151,12 +151,27 @@ export async function syncExportViaArchive(
   return { ...result, method: 'archive' };
 }
 
-export function _flattenBookPages(contents: { chapters?: { data?: Array<{ pages?: unknown[] }> }; pages?: { data?: unknown[] } }): unknown[] {
+type BookContents = {
+  chapters?: { data?: Array<{ pages?: unknown[] }> } | Array<{ pages?: unknown[] }>;
+  pages?: { data?: unknown[] } | unknown[];
+};
+
+function getChapters(contents: BookContents): Array<{ pages?: unknown[] }> {
+  if (Array.isArray(contents.chapters)) return contents.chapters;
+  return contents.chapters?.data ?? [];
+}
+
+function getStandalonePages(contents: BookContents): unknown[] {
+  if (Array.isArray(contents.pages)) return contents.pages;
+  return contents.pages?.data ?? [];
+}
+
+export function _flattenBookPages(contents: BookContents): unknown[] {
   const pages: unknown[] = [];
-  for (const item of contents.chapters?.data || []) {
+  for (const item of getChapters(contents)) {
     if (item.pages) pages.push(...item.pages);
   }
-  for (const item of contents.pages?.data || []) {
+  for (const item of getStandalonePages(contents)) {
     pages.push(item);
   }
   return pages;
@@ -178,8 +193,9 @@ export async function _exportRemotePage(
 
   let chapterSlug: string | null = null;
   if (remotePage.chapter_id) {
-    const contents = await apiClient.getBookContents(book.id);
-    const ch = contents.chapters.data.find((c) => c.id === remotePage.chapter_id);
+    const contents = await apiClient.getBookContents(book.id) as unknown as { chapters?: { data?: Array<{ id: number; slug: string }> } | Array<{ id: number; slug: string }> };
+    const chapters = Array.isArray(contents.chapters) ? contents.chapters : (contents.chapters?.data ?? []);
+    const ch = chapters.find((c) => c.id === remotePage.chapter_id);
     chapterSlug = ch?.slug ?? null;
   }
 

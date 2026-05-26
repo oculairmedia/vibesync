@@ -1,10 +1,8 @@
 import path from 'path';
+import { createSyncDatabase } from '../../src/database.js';
+import { computeIssueContentHash } from '../../src/database/utils.js';
 
 type NullableNumber = number | null | undefined;
-
-function appRootModule(modulePath: string): string {
-  return path.join(process.cwd(), modulePath);
-}
 
 export interface PersistIssueStateInput {
   identifier: string;
@@ -38,50 +36,16 @@ function resolveDbPath(): string {
   return process.env.DB_PATH || path.join(process.cwd(), 'logs', 'sync-state.db');
 }
 
-type CreateSyncDatabaseFn = (dbPath: string) => any;
-type ComputeIssueContentHashFn = (input: {
-  title: string;
-  description: string;
-  status: string;
-  priority: string;
-}) => string;
-
-let createSyncDatabaseCached: CreateSyncDatabaseFn | null = null;
-let computeIssueContentHashCached: ComputeIssueContentHashFn | null = null;
 let dbInstance: any = null;
-let dbInitPromise: Promise<any> | null = null;
 let isDbClosed = false;
 
 export async function getDb(): Promise<any> {
   if (dbInstance && !isDbClosed) {
     return dbInstance;
   }
-
-  if (dbInitPromise) {
-    return dbInitPromise;
-  }
-
-  dbInitPromise = (async () => {
-    if (!createSyncDatabaseCached) {
-      const databaseModule = await import(appRootModule('lib/database.js'));
-      createSyncDatabaseCached = databaseModule.createSyncDatabase;
-    }
-
-    if (!computeIssueContentHashCached) {
-      const utilsModule = await import(appRootModule('lib/database/utils.js'));
-      computeIssueContentHashCached = utilsModule.computeIssueContentHash;
-    }
-
-    dbInstance = createSyncDatabaseCached!(resolveDbPath());
-    isDbClosed = false;
-    return dbInstance;
-  })();
-
-  try {
-    return await dbInitPromise;
-  } finally {
-    dbInitPromise = null;
-  }
+  dbInstance = createSyncDatabase(resolveDbPath());
+  isDbClosed = false;
+  return dbInstance;
 }
 
 async function closeDb(): Promise<void> {
@@ -101,7 +65,6 @@ async function closeDb(): Promise<void> {
 /** Reset DB singleton — for testing only */
 export async function resetDb(): Promise<void> {
   await closeDb();
-  dbInitPromise = null;
 }
 
 process.on('exit', () => {
@@ -170,7 +133,7 @@ export async function hasIssueContentChanged(input: {
     const storedHash = existing.content_hash;
     if (!storedHash) return true;
 
-    const newHash = computeIssueContentHashCached!({
+    const newHash = computeIssueContentHash({
       title: input.title,
       description: input.description || '',
       status: input.status,

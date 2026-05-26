@@ -85,7 +85,11 @@ export async function syncBidirectional(
         continue;
       }
 
-      if (localDeleted && !remoteChanged) { results.unchanged++; continue; }
+      if (localDeleted && !remoteChanged) {
+        logger.warn({ pageId: remotePage.id, path: tracked.local_path }, 'Local file deleted but remote unchanged; not deleting from BookStack.');
+        results.unchanged++;
+        continue;
+      }
       if (!remoteChanged && !localChanged) { results.unchanged++; continue; }
 
       if (remoteChanged && !localChanged) {

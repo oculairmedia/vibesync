@@ -98,7 +98,7 @@ export async function MemoryUpdateWorkflow(input: MemoryUpdateInput): Promise<Me
       agentId,
       blockLabel,
       attempts,
-      previousValue: result.previousValue,
+      ...(result.previousValue !== undefined ? { previousValue: result.previousValue } : {}),
     };
 
   } catch (error) {
@@ -143,7 +143,7 @@ export interface BatchMemoryUpdateResult {
 export async function BatchMemoryUpdateWorkflow(
   input: BatchMemoryUpdateInput
 ): Promise<BatchMemoryUpdateResult> {
-  const { updates, source = 'batch' } = input;
+  const { updates } = input;
 
   console.log(`[BatchMemoryUpdateWorkflow] Starting batch of ${updates.length} updates`);
 

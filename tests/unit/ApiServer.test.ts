@@ -48,7 +48,7 @@ vi.mock('child_process', () => ({
 }));
 
 const temporalClientUrl = vi.hoisted(
-  () => new URL('../../temporal/dist/client.js', import.meta.url).href
+  () => new URL('../../temporal/client.ts', import.meta.url).href
 );
 
 vi.mock(temporalClientUrl, () => ({
@@ -1394,8 +1394,8 @@ describe('createApiServer - HTTP Routes', () => {
     it('should return Prometheus metrics', async () => {
       const res = await makeRequest(port, 'GET', '/metrics');
       expect(res.statusCode).toBe(200);
-      // body is text 'metrics', not JSON
-      expect(res.body).toBe('metrics');
+      // body is Prometheus text, not JSON
+      expect(res.body).toContain('# HELP');
     });
   });
 

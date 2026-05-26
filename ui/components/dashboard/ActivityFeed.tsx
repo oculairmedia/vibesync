@@ -48,6 +48,45 @@ function getEventBadgeProps(type: string): {
         className: 'bg-gray-100 text-gray-800 border-gray-200',
         label: 'health:updated',
       }
+    case 'dispatcher/formula.started':
+    case 'dispatcher/step.started':
+      return {
+        className: 'bg-sky-100 text-sky-800 border-sky-200',
+        label: type,
+      }
+    case 'dispatcher/formula.completed':
+    case 'dispatcher/step.finished':
+      return {
+        className: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+        label: type,
+      }
+    case 'dispatcher/formula.failed':
+    case 'dispatcher/step.failed':
+    case 'runtime/session.error':
+    case 'health-patrol/session.unhealthy':
+    case 'health-patrol/daemon.unhealthy':
+      return {
+        className: 'bg-red-100 text-red-800 border-red-200',
+        label: type,
+      }
+    case 'runtime/session.tool_call':
+    case 'runtime/session.tool_result':
+      return {
+        className: 'bg-amber-100 text-amber-800 border-amber-200',
+        label: type,
+      }
+    case 'runtime/session.turn_done':
+      return {
+        className: 'bg-indigo-100 text-indigo-800 border-indigo-200',
+        label: type,
+      }
+    case 'health-patrol/session.stalled':
+    case 'dispatcher/formula.resume.paused':
+    case 'runtime/provider.deprecated.instantiated':
+      return {
+        className: 'bg-orange-100 text-orange-800 border-orange-200',
+        label: type,
+      }
     case 'connected':
       return {
         className: 'bg-green-100 text-green-800 border-green-200',
@@ -94,8 +133,32 @@ function getEventDetails(event: SSEEvent): string | null {
     case 'connected':
       return data.clientId ? `Client: ${data.clientId}` : null
     default:
+      if (type.startsWith('dispatcher/') || type.startsWith('runtime/') || type.startsWith('health-patrol/')) {
+        return orchestrationEventDetails(event)
+      }
       return null
   }
+}
+
+function orchestrationEventDetails(event: SSEEvent): string | null {
+  const data = event.data as {
+    molecule_id?: string
+    task_id?: string
+    teammate?: string
+    payload?: Record<string, unknown>
+  }
+  const payload = data.payload ?? {}
+  const parts = [
+    typeof data.molecule_id === 'string' ? `molecule ${data.molecule_id}` : null,
+    typeof payload.stepName === 'string' ? `step ${payload.stepName}` : null,
+    typeof payload.role === 'string' ? `role ${payload.role}` : typeof data.teammate === 'string' ? `role ${data.teammate}` : null,
+    typeof payload.tool === 'string' ? `tool ${payload.tool}` : null,
+    typeof payload.stopReason === 'string' ? `stop ${payload.stopReason}` : null,
+    typeof payload.message === 'string' ? String(payload.message).slice(0, 120) : null,
+    typeof payload.reason === 'string' ? String(payload.reason).slice(0, 120) : null,
+    typeof payload.outputLength === 'number' ? `output ${payload.outputLength} chars` : null,
+  ].filter((part): part is string => Boolean(part))
+  return parts.length > 0 ? parts.join(' · ') : null
 }
 
 /**
