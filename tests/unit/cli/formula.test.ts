@@ -131,7 +131,7 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
 function runCli(args: readonly string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn('bun', ['src/cli.ts', '--api-url', baseUrl, ...args], {
-      cwd: '/opt/stacks/vibesync',
+      cwd: process.cwd(),
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, FORCE_COLOR: '0' },
     });

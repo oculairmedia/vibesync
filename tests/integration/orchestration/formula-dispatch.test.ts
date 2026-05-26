@@ -14,7 +14,7 @@ import { loadPack } from '../../../src/orchestration/packs/index.js';
  * formula declared.
  */
 
-const BEADS_ROOT = '/opt/stacks/vibesync';
+const BEADS_ROOT = process.cwd();
 const PORT_FILE = join(BEADS_ROOT, '.beads', 'dolt-server.port');
 const RUN = existsSync(PORT_FILE);
 

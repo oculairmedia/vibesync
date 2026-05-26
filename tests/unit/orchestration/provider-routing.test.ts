@@ -84,7 +84,7 @@ describe('buildProviderResolver', () => {
     expect(await resolver.resolve(inputFor('vibesync'))).toBeNull();
   });
 
-  it('returns null for provider_kind=letta-teams (avoids spinning a second teams provider)', async () => {
+  it('returns null for removed provider_kind=letta-teams rows', async () => {
     const resolver = buildProviderResolver({
       store: fakeStore({ 'legacy': { providerKind: 'letta-teams', lettaBaseUrl: null } }),
       personaLoader: fakePersonaLoader(),

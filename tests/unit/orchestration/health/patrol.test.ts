@@ -37,7 +37,9 @@ function fakeProvider(): { provider: RuntimeProvider; startCount: () => number; 
     async stop(_handle: SessionHandle): Promise<void> {
       stops++;
     },
-    async prompt(): Promise<void> {},
+    async prompt() {
+      return {};
+    },
     async nudge(): Promise<void> {},
     observe(): AsyncIterable<SessionEvent> {
       // eslint-disable-next-line require-yield
@@ -195,8 +197,8 @@ describe('HealthPatrol', () => {
       let stops = 0;
       let running = typeof opts.running === 'function' ? opts.running() : opts.running;
       const supervisor: DaemonSupervisor = {
-        id: 'letta-teams-daemon',
-        providerKind: 'letta-teams',
+        id: 'local-runtime-daemon',
+        providerKind: 'letta-code-subagent',
         async isRunning() {
           if (opts.throwOnIsRunning) throw new Error('probe failed');
           return running;

@@ -65,5 +65,5 @@ logs/*.db
 # Rust analyzer output (IDE)
 target/
 
-# letta-teams-sdk project-scoped task store (runtime state)
+# Removed Teams runtime project-scoped task store (legacy runtime state)
 .lteams/

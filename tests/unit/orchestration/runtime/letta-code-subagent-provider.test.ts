@@ -61,7 +61,7 @@ function makeFakeFetch(opts: {
   readonly conversationBody?: unknown;
 }): { fetchImpl: typeof fetch; calls: FakeFetchCall[] } {
   const calls: FakeFetchCall[] = [];
-  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  const fetchImpl = (async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     calls.push({ url, init });
     if (url.endsWith('/v1/conversations')) {
@@ -110,7 +110,6 @@ describe('LettaCodeSubagentProvider', () => {
       expect(() =>
         new LettaCodeSubagentProvider({
           shimBaseUrl: 'http://localhost:8291',
-          // @ts-expect-error — intentionally missing for the negative test
           personaLoader: undefined,
         }),
       ).toThrow(/personaLoader is required/);
@@ -363,7 +362,7 @@ describe('LettaCodeSubagentProvider', () => {
       });
       await expect(
         provider.prompt(
-          { id: 'foreign:1', providerKind: 'letta-teams' },
+          { id: 'foreign:1', providerKind: 'foreign-provider' },
           [{ type: 'text', text: 'hi' }],
         ),
       ).rejects.toThrow(/wrong provider/);

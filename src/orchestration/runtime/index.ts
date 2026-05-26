@@ -31,17 +31,6 @@ export type {
   AgentIdResolver,
 } from './letta-code-subagent-provider.js';
 
-export { LettaTeamsProvider } from './letta-teams-provider.js';
-export type {
-  LettaTeamsProviderOptions,
-  MemoryBlockInput,
-  MemoryBlockSeedOptions,
-  MemoryBlockSeeder,
-  ToolAttacher,
-  ToolAttachResult,
-  TeammateDeleter,
-} from './letta-teams-provider.js';
-
 export { A2UIProvider } from './a2ui-provider.js';
 export type { A2uiCapability } from './a2ui-provider.js';
 

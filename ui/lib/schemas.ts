@@ -259,6 +259,21 @@ export const SSEHealthUpdatedEventSchema = BaseSSEEventSchema.extend({
   data: HealthResponseSchema,
 })
 
+export const SSEOrchestrationEventSchema = BaseSSEEventSchema.extend({
+  type: z.string(),
+  data: z.object({
+    id: z.string().optional(),
+    ts: z.string().optional(),
+    layer: z.string().optional(),
+    kind: z.string().optional(),
+    task_id: z.string().optional(),
+    molecule_id: z.string().optional(),
+    teammate: z.string().optional(),
+    payload: z.record(z.string(), z.unknown()).optional(),
+    timestamp: z.string().optional(),
+  }).passthrough(),
+})
+
 /**
  * All SSE Event Types Schema (discriminated union)
  */

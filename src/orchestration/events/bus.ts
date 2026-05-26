@@ -47,7 +47,6 @@ export interface Event {
     | 'formula'
     | 'dispatcher'
     | 'molecule'
-    | 'council'
     | 'health-patrol'
     | 'pm-agent';
   readonly kind: string;

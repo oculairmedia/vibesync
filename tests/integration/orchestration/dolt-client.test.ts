@@ -7,8 +7,7 @@ import { DoltClient } from '../../../src/orchestration/store/index.js';
  * the direct-SQL client, then verify bd's CLI view sees the same data.
  *
  * Marked `.skipIf(...)` so CI without a running bd/dolt server skips
- * silently. Locally, run from /opt/stacks/vibesync with bd already
- * initialized.
+ * silently. Locally, run from the repository root with bd already initialized.
  *
  * huly-vibe-sync-w5z acceptance: "daemon inserts a molecule root, queries
  * it back via the bd CLI to confirm bd sees the same data". The bd CLI
@@ -19,7 +18,7 @@ import { DoltClient } from '../../../src/orchestration/store/index.js';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-const BEADS_ROOT = '/opt/stacks/vibesync';
+const BEADS_ROOT = process.cwd();
 const PORT_FILE = join(BEADS_ROOT, '.beads', 'dolt-server.port');
 const RUN = existsSync(PORT_FILE);
 

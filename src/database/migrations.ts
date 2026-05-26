@@ -234,13 +234,12 @@ export function migrateBeadsIssueMirrorColumns(db: BetterSqlite3.Database): void
  *   letta_base_url  — override of LETTA_BASE_URL for this project's PM
  *                     agent. NULL = use the global default.
  *   provider_kind   — which RuntimeProvider implementation to use.
- *                     NULL or absent = 'letta-teams' (legacy default).
- *                     Recognized values today: 'letta-teams',
- *                     'letta-code-subagent'.
+ *                     NULL or absent = boot-level default.
+ *                     Recognized values today: 'letta-code-subagent'.
  *
  * Backwards-compatible: existing rows read NULL/NULL and route to the
- * default LettaTeamsProvider against the global LETTA_BASE_URL. The
- * dispatcher only changes behavior when a row explicitly opts in.
+ * boot-level letta-code local backend provider. The dispatcher only
+ * changes behavior when a row explicitly opts in.
  */
 export function migrateProjectProviderRoutingColumns(db: BetterSqlite3.Database): void {
   const columns = db.prepare('PRAGMA table_info(projects)').all() as ColumnInfo[];

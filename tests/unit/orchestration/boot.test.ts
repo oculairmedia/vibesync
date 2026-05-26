@@ -1,49 +1,18 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { bootOrchestrationPlane } from '../../../src/orchestration/boot.js';
 import { InMemoryDoltClient } from '../../_fixtures/in-memory-dolt-client.js';
-
-const daemon = {
-  ensureRunning: vi.fn(async () => undefined),
-  isRunning: vi.fn(() => true),
-  stop: vi.fn(async () => true),
-};
-
-vi.mock('letta-teams-sdk', () => ({
-  createTeamsRuntime: () => ({
-    daemon,
-    teammates: {
-      exists: vi.fn(async () => false),
-      spawn: vi.fn(async (input: { name: string; role: string }) => ({
-        name: input.name,
-        role: input.role,
-        agentId: `agent-${input.name}`,
-      })),
-      get: vi.fn(async (name: string) => ({ name, role: name, agentId: `agent-${name}` })),
-      remove: vi.fn(async () => true),
-    },
-    tasks: {
-      dispatch: vi.fn(async (input: { target: string }) => ({ taskId: `task-${input.target}` })),
-      get: vi.fn(async (id: string) => ({
-        id,
-        status: 'done',
-        createdAt: '2026-05-18T00:00:00.000Z',
-        completedAt: '2026-05-18T00:00:01.000Z',
-      })),
-    },
-  }),
-}));
 
 describe('bootOrchestrationPlane', () => {
   it('returns a wired orchestration handle', async () => {
     const handle = await bootForTest();
 
     expect(handle.dispatcher).toBeDefined();
-    expect(handle.provider.kind).toBe('letta-teams');
+    expect(handle.provider.kind).toBe('letta-code-subagent');
     // One subscriber wired by default: the writeback hook (vibesync-0xo).
     // Detaches on shutdown — see the assertion after shutdown below.
     expect(handle.bus.subscriberCount()).toBe(1);
-    expect(handle.patrol.daemonSnapshot()).toEqual([{ id: 'letta-teams-daemon', restartCount: 0, unhealthy: false }]);
+    expect(handle.patrol.daemonSnapshot()).toEqual([]);
     expect(handle.walker).toBeDefined();
 
     await handle.shutdown();
@@ -51,13 +20,11 @@ describe('bootOrchestrationPlane', () => {
   });
 
   it('shutdown is idempotent', async () => {
-    daemon.stop.mockClear();
     const handle = await bootForTest();
 
     await handle.shutdown();
     await handle.shutdown();
-
-    expect(daemon.stop).toHaveBeenCalledTimes(1);
+    expect(handle.bus.subscriberCount()).toBe(0);
   });
 
   it('construct and shutdown leaves no tracked daemon behind', async () => {
@@ -67,13 +34,29 @@ describe('bootOrchestrationPlane', () => {
 
     expect(handle.patrol.daemonSnapshot()).toEqual([]);
   });
+
+  it('rejects the removed letta-teams provider kind', async () => {
+    await expect(bootForTest({ VIBESYNC_ORCHESTRATION_PROVIDER: 'letta-teams' })).rejects.toThrow('Letta Teams was removed');
+  });
 });
 
-async function bootForTest() {
+async function bootForTest(env: Record<string, string> = {}) {
   const previousApiKey = process.env.LETTA_API_KEY;
   const previousPassword = process.env.LETTA_PASSWORD;
+  const previousProvider = process.env.VIBESYNC_ORCHESTRATION_PROVIDER;
+  const previousShim = process.env.VIBESYNC_LETTA_CODE_SHIM_URL;
+  const previousParent = process.env.VIBESYNC_LETTA_CODE_PARENT_AGENT_ID;
   process.env.LETTA_API_KEY = 'test-key';
   delete process.env.LETTA_PASSWORD;
+  delete process.env.VIBESYNC_ORCHESTRATION_PROVIDER;
+  delete process.env.VIBESYNC_LETTA_CODE_SHIM_URL;
+  delete process.env.VIBESYNC_LETTA_CODE_PARENT_AGENT_ID;
+  Object.assign(process.env, {
+    VIBESYNC_ORCHESTRATION_PROVIDER: 'letta-code-subagent',
+    VIBESYNC_LETTA_CODE_SHIM_URL: 'http://shim:8291',
+    VIBESYNC_LETTA_CODE_PARENT_AGENT_ID: 'agent-parent',
+    ...env,
+  });
   try {
     return await bootOrchestrationPlane({
       dolt: new InMemoryDoltClient() as never,
@@ -85,5 +68,11 @@ async function bootForTest() {
     else process.env.LETTA_API_KEY = previousApiKey;
     if (previousPassword === undefined) delete process.env.LETTA_PASSWORD;
     else process.env.LETTA_PASSWORD = previousPassword;
+    if (previousProvider === undefined) delete process.env.VIBESYNC_ORCHESTRATION_PROVIDER;
+    else process.env.VIBESYNC_ORCHESTRATION_PROVIDER = previousProvider;
+    if (previousShim === undefined) delete process.env.VIBESYNC_LETTA_CODE_SHIM_URL;
+    else process.env.VIBESYNC_LETTA_CODE_SHIM_URL = previousShim;
+    if (previousParent === undefined) delete process.env.VIBESYNC_LETTA_CODE_PARENT_AGENT_ID;
+    else process.env.VIBESYNC_LETTA_CODE_PARENT_AGENT_ID = previousParent;
   }
 }

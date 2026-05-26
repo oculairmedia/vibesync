@@ -3,12 +3,14 @@
  *
  * Mirrors Gas City's `runtime.Provider` interface (internal/runtime/) so
  * higher layers (formulas, molecules, dispatch) don't need to know which
- * agent runtime backs a session. Today there's one implementation:
+ * agent runtime backs a session. Today the primary implementation is:
  *
- *   - LettaPMAgentProvider — wraps src/letta/ (persistent PM-agent path)
- *   - LettaTeamsProvider — consumes letta-teams-sdk; the path for
- *     spawned Gastown role sessions (mayor / coder / reviewer /
- *     refinery / tester). Decision codified in vibesync-brd.
+ *   - LettaCodeSubagentProvider — drives the letta-code local backend
+ *     for spawned Gastown role sessions (mayor / coder / reviewer /
+ *     refinery / tester).
+ *
+ * The persistent PM-agent path remains a separate Letta integration above
+ * this seam; spawned role sessions route through the local backend.
  *
  * Future implementations will plug in alongside without changing this
  * interface:
@@ -115,7 +117,7 @@ export type SessionEvent =
  * Letta-specific service that the provider's implementation calls.
  */
 export interface RuntimeProvider {
-  /** Provider identifier (e.g. "letta-pm-agent", "letta-teams", "acp"). */
+  /** Provider identifier (e.g. "letta-code-subagent", "letta-pm-agent", "acp"). */
   readonly kind: string;
 
   /**
@@ -139,9 +141,9 @@ export interface RuntimeProvider {
   prompt(handle: SessionHandle, content: readonly ContentBlock[]): Promise<PromptResult>;
 
   /**
-   * Wake a session that may have gone idle. Many providers (Letta REST,
-   * letta-teams-sdk) treat this as a no-op; subprocess-based providers
-   * (ACP) use it to send a no-op JSON-RPC ping.
+   * Wake a session that may have gone idle. Many providers treat this as
+   * a no-op; subprocess-based providers (ACP) use it to send a no-op
+   * JSON-RPC ping.
    */
   nudge(handle: SessionHandle): Promise<void>;
 

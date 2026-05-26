@@ -163,12 +163,12 @@ export function ensureRig(dir: string): EnsureRigResult {
 
   if (!hasBeadsRig(dir)) {
     const result = initRig(dir);
-    return { ok: result.ok, action: 'init', message: result.message, remoteUrl: result.remoteUrl };
+    return { ok: result.ok, action: 'init', message: result.message, ...(result.remoteUrl ? { remoteUrl: result.remoteUrl } : {}) };
   }
 
   if (!hasDoltRemote(dir)) {
     const result = repairRig(dir);
-    return { ok: result.ok, action: 'repair', message: result.message, remoteUrl: result.remoteUrl };
+    return { ok: result.ok, action: 'repair', message: result.message, ...(result.remoteUrl ? { remoteUrl: result.remoteUrl } : {}) };
   }
 
   return { ok: true, action: 'none', message: 'rig healthy' };

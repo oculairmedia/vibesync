@@ -397,21 +397,11 @@ async function main(): Promise<void> {
   if (ENABLE_ORCHESTRATION) {
     try {
       const dolt = new DoltClient();
-      // vibesync-cmc: wire the default LettaService-backed ToolAttacher so
-      // role-pack teammates spawned by the dispatcher (reviewer/coder/tester
-      // formula steps) automatically get role.tools attached at spawn time.
-      // No-op when lettaService is null — the provider falls back to emitting
-      // tool_attach.skipped events.
-      const { buildDefaultToolAttacher } = await import('./letta/LettaServiceToolAttacher.js');
-      const toolAttacher = lettaService
-        ? buildDefaultToolAttacher(lettaService as unknown as Parameters<typeof buildDefaultToolAttacher>[0])
-        : undefined;
       orchestration = await bootOrchestrationPlane({
         dolt,
-        ...(toolAttacher ? { toolAttacher } : {}),
       });
       logger.info(
-        { toolAttacher: Boolean(toolAttacher) },
+        { provider: orchestration.provider.kind },
         'Orchestration plane initialized',
       );
     } catch (orchestrationError) {

@@ -13,8 +13,8 @@ import {
  * docs/architecture/gastown-role-catalog.md.
  */
 
-const PACK_ROOT = '/opt/stacks/vibesync/packs/gastown';
-const PROJECT_ROOT = '/opt/stacks/vibesync';
+const PROJECT_ROOT = process.cwd();
+const PACK_ROOT = join(PROJECT_ROOT, 'packs', 'gastown');
 
 describe('gastown pack', () => {
   it('validatePackPath reports ok:true', () => {

@@ -698,6 +698,7 @@ type ExtendedRouteDb = RouteDb & {
   updateProjectActivity?: (id: string, count: number) => void;
   getRecentSyncs?: (limit: number) => Array<Record<string, unknown>>;
   getProjectFilesystemPath?: (id: string) => string | null;
+  getProjectsWithFilesystemPath?: () => ProjectLike[];
   projects?: {
     getProjectLettaInfo?: (id: string) => Record<string, unknown>;
     getProjectsNeedingBeadsRemote?: () => ProjectLike[];
@@ -734,7 +735,7 @@ function getBeadsRemoteBatchProjects(db: ExtendedRouteDb, body: Record<string, u
       if (!project) missing.push(identifier);
       return project ? [project] : [];
     })
-    : db.projects?.getProjectsNeedingBeadsRemote?.() ?? [];
+    : db.getProjectsWithFilesystemPath?.() ?? db.projects?.getProjectsNeedingBeadsRemote?.() ?? [];
   const projects = candidates.filter((project) => {
     if (hasAccessibleBeadsDatabase(project)) return true;
     skipped.push({

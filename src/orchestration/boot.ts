@@ -11,18 +11,15 @@ import { HealthPatrol } from './health/index.js';
 import { MoleculeWalker } from './molecule/index.js';
 import {
   LettaCodeSubagentProvider,
-  LettaTeamsProvider,
   createDefaultPersonaLoader,
 } from './runtime/index.js';
-import type { PersonaLoader, RuntimeProvider, ToolAttacher } from './runtime/index.js';
+import type { PersonaLoader, RuntimeProvider } from './runtime/index.js';
 import type { DoltClient } from './store/index.js';
-import { LettaTeamsBackendConfig } from '../letta/LettaTeamsBackendConfig.js';
 import { installLettaClientValidationFilter } from '../letta/LettaClientValidationFilter.js';
-import { assertLettaTeamsVersionMatch } from '../letta/LettaTeamsVersionCheck.js';
 
 export interface OrchestrationHandle {
   readonly dispatcher: FormulaDispatcher;
-  readonly provider: LettaTeamsProvider;
+  readonly provider: RuntimeProvider;
   readonly bus: EventBus;
   readonly patrol: HealthPatrol;
   readonly walker: MoleculeWalker;
@@ -34,14 +31,6 @@ export interface BootOrchestrationPlaneOptions {
   readonly persistEvents?: boolean;
   readonly runDriftAuditOnBoot?: boolean;
   readonly maxConcurrentMolecules?: number;
-  /**
-   * Optional adapter that resolves role-declared tool names (from
-   * roleConfig.tools, threaded through dispatcher → extra.tools) to
-   * attach calls on the spawned teammate's Letta agent. When omitted,
-   * declared tools are skipped with a single `runtime/teammate.tool_attach.skipped`
-   * event per spawn (reason='no_attacher'). See vibesync-cs2.
-   */
-  readonly toolAttacher?: ToolAttacher;
   /**
    * Per-project provider routing (vibesync-f5g / vibesync-8hk).
    * When supplied with a routingStore, the dispatcher consults the
@@ -124,16 +113,6 @@ export interface BootOrchestrationProviderRoutingOptions {
 }
 
 export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions): Promise<OrchestrationHandle> {
-  const backend = new LettaTeamsBackendConfig();
-  backend.applyToProcessEnv();
-
-  // Boot-time SDK ↔ CLI version pin (vibesync-3dz). Refuses to start the
-  // dispatcher on major/minor skew with an actionable error. Also
-  // resolves LETTA_TEAMS_CLI_ENTRY so the SDK does not fall back to
-  // process.argv[1] (vibesync's own entrypoint), which was the original
-  // bring-up failure mode.
-  assertLettaTeamsVersionMatch();
-
   // Opt-in silence of @letta-ai/letta-client "Failed to validate." spam
   // (vibesync-vkp). No-op unless LETTA_SILENCE_VALIDATION_SPAM is set.
   installLettaClientValidationFilter();
@@ -145,17 +124,9 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   }
 
   const bus = new EventBus({ noPersist: opts.persistEvents === false });
-  const provider = new LettaTeamsProvider({
-    eventBus: bus,
-    memoryBlockSeeder: backend.buildSeeder(),
-    teammateDeleter: backend.buildDeleter(),
-    ...(opts.toolAttacher ? { toolAttacher: opts.toolAttacher } : {}),
-  });
+  const provider = buildDefaultRuntimeProvider();
   const patrol = new HealthPatrol(bus);
-  const daemon = provider.daemonSupervisor();
-  patrol.trackDaemon(daemon);
   patrol.start();
-  await provider.ensureDaemonRunning();
 
   if (opts.runDriftAuditOnBoot !== false) {
     bus.emit({
@@ -206,10 +177,24 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
       shutDown = true;
       unsubscribeWriteback?.();
       patrol.stop();
-      patrol.untrackDaemon(daemon.id);
-      await daemon.stop();
     },
   };
+}
+
+function buildDefaultRuntimeProvider(): RuntimeProvider {
+  const providerKind = process.env['VIBESYNC_ORCHESTRATION_PROVIDER'] ?? 'letta-code-subagent';
+  if (providerKind !== 'letta-code-subagent') {
+    throw new Error(`Unsupported orchestration provider "${providerKind}". Letta Teams was removed; use VIBESYNC_ORCHESTRATION_PROVIDER=letta-code-subagent.`);
+  }
+  const shimBaseUrl = process.env['VIBESYNC_LETTA_CODE_SHIM_URL'] ?? process.env['LETTA_CODE_SHIM_URL'];
+  const parentAgentId = process.env['VIBESYNC_LETTA_CODE_PARENT_AGENT_ID'] ?? process.env['LETTA_CODE_PARENT_AGENT_ID'];
+  if (!shimBaseUrl || !parentAgentId) {
+    throw new Error('letta-code orchestration requires VIBESYNC_LETTA_CODE_SHIM_URL and VIBESYNC_LETTA_CODE_PARENT_AGENT_ID');
+  }
+  return wrapWithParentAgentId(new LettaCodeSubagentProvider({
+    shimBaseUrl,
+    personaLoader: createDefaultPersonaLoader('packs/gastown'),
+  }), parentAgentId);
 }
 
 function hasWritebackStore(dolt: unknown): dolt is WritebackStore {
@@ -223,7 +208,7 @@ function hasWritebackStore(dolt: unknown): dolt is WritebackStore {
  * dispatch's projectIdentifier, and either returns a cached
  * provider for that shim or constructs a fresh one. Returns null
  * when the project has no override — the dispatcher then falls
- * back to the default LettaTeamsProvider wired in boot.
+ * back to the boot-level letta-code local backend provider.
  *
  * Exported for unit tests; production callers go through
  * bootOrchestrationPlane.
@@ -237,10 +222,19 @@ export function buildProviderResolver(opts: BootOrchestrationProviderRoutingOpti
       const projectId = input.projectIdentifier;
       if (!projectId) return null;
       const row = opts.store.getProjectProviderRouting(projectId);
-      if (!row || !row.providerKind || row.providerKind === 'letta-teams') {
-        // No override or explicitly the default — let the dispatcher
-        // use its default provider. (Avoids spinning up a redundant
-        // LettaTeamsProvider per project.)
+      if (!row || !row.providerKind) {
+        // No override — let the dispatcher use its boot-level local
+        // backend provider.
+        return null;
+      }
+      if (row.providerKind === 'letta-teams') {
+        // Legacy rows are no longer executable. Falling back to the
+        // boot-level local backend keeps formulas running while making
+        // the stale config visible in logs.
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[boot] provider routing: project ${projectId} requested removed provider_kind='letta-teams' — using letta-code-subagent default`,
+        );
         return null;
       }
       if (row.providerKind === 'letta-code-subagent') {
@@ -288,10 +282,9 @@ export function buildProviderResolver(opts: BootOrchestrationProviderRoutingOpti
 
 /**
  * vibesync-mcz Phase D — construct the dispatcher's persistent
- * role-agent bootstrap context resolver. Returns null when the
- * project isn't on the letta-code-subagent path or when the
- * bootstrapper/pack-dir/storage-dir mapping isn't supplied (full
- * backwards-compat fall-through to today's inline-persona path).
+  * role-agent bootstrap context resolver. Returns null when the project
+  * is not on the letta-code-subagent path or when the
+  * bootstrapper/pack-dir/storage-dir mapping isn't supplied.
  *
  * Exported for unit tests; production callers go through
  * bootOrchestrationPlane.
@@ -303,9 +296,6 @@ export function buildRoleAgentContextResolver(
     resolve(input) {
       const projectId = input.projectIdentifier;
       if (!projectId) return null;
-      // Only letta-code-subagent projects get persistent role agents
-      // in this epic. LettaTeamsProvider projects keep their existing
-      // teammate-pool flow.
       const row = opts.store.getProjectProviderRouting(projectId);
       if (!row || row.providerKind !== 'letta-code-subagent') return null;
       const bootstrapper = opts.roleAgentBootstrapper;

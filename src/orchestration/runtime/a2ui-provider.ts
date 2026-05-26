@@ -11,7 +11,7 @@
  *
  * Composition over inheritance: an A2UIProvider is constructed AROUND
  * another RuntimeProvider (typically LettaPMAgentProvider or
- * LettaTeamsProvider). The inner provider answers the agent's
+ * LettaCodeSubagentProvider). The inner provider answers the agent's
  * thinking; A2UIProvider negotiates the UI capability with the client
  * and maps stream events to A2UI surface updates.
  *

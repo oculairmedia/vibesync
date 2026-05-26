@@ -160,7 +160,10 @@ describe('DoltHubProvisioningService', () => {
     });
 
     expect(result.commands).toEqual([
+      'bd config get federation.remote',
+      'bd config get sync.remote',
       'bd dolt remote list',
+      'bd config set federation.remote https://doltremoteapi.dolthub.com/oulair/letta_mobile',
       'bd dolt remote remove origin',
       'bd dolt remote add origin https://doltremoteapi.dolthub.com/oulair/letta_mobile',
       'bd dolt remote list',
@@ -168,6 +171,48 @@ describe('DoltHubProvisioningService', () => {
     ]);
     expect(result.remote_changed).toBe(true);
     expect(result.pushed).toBe(true);
+  });
+
+  it('declares federation.remote and removes matching legacy sync.remote during provisioning', async () => {
+    commandRunner.mockImplementation(async (_command, args) => {
+      if (args.join(' ') === 'config get federation.remote') {
+        return { stdout: 'federation.remote (not set in config.yaml)', stderr: '' };
+      }
+      if (args.join(' ') === 'config get sync.remote') {
+        return { stdout: 'sync.remote = https://doltremoteapi.dolthub.com/oulair/letta_mobile', stderr: '' };
+      }
+      if (args.join(' ') === 'dolt remote list') {
+        return { stdout: 'origin https://doltremoteapi.dolthub.com/oulair/letta_mobile\n', stderr: '' };
+      }
+      return { stdout: 'ok', stderr: '' };
+    });
+
+    const result = await service.provisionProject({
+      identifier: 'LETTA',
+      name: 'Letta Mobile',
+      filesystem_path: '/tmp/letta-mobile',
+    });
+
+    expect(result.commands).toEqual([
+      'bd config get federation.remote',
+      'bd config get sync.remote',
+      'bd dolt remote list',
+      'bd config set federation.remote https://doltremoteapi.dolthub.com/oulair/letta_mobile',
+      'bd config unset sync.remote',
+      'bd dolt remote list',
+      'bd dolt push origin main',
+    ]);
+    expect(commandRunner).toHaveBeenCalledWith(
+      'bd',
+      ['config', 'set', 'federation.remote', 'https://doltremoteapi.dolthub.com/oulair/letta_mobile'],
+      expect.objectContaining({ cwd: '/tmp/letta-mobile' }),
+    );
+    expect(commandRunner).toHaveBeenCalledWith(
+      'bd',
+      ['config', 'unset', 'sync.remote'],
+      expect.objectContaining({ cwd: '/tmp/letta-mobile' }),
+    );
+    expect(result.remote_changed).toBe(true);
   });
 
   it('supports dry runs without calling DoltHub or executing bd commands', async () => {

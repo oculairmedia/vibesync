@@ -75,8 +75,8 @@ export function tryExec(cmd: string): ExecResult {
   }
 }
 
-function whichOk(binary: string): boolean {
-  return tryExec(`which ${binary}`).ok;
+function whichOk(binary: string, deps: PreflightDeps = defaultDeps): boolean {
+  return deps.tryExec(`which ${binary}`).ok;
 }
 
 export function inspectDoltServerPortOwner(port: number, expectedDoltData: string, deps: PreflightDeps = defaultDeps): CheckResult {
@@ -212,21 +212,21 @@ export function preflight(projectRoot: string, deps: PreflightDeps = defaultDeps
   }
 
   // 7. bd binary on PATH
-  if (whichOk('bd')) {
+  if (whichOk('bd', deps)) {
     checks.push({ name: 'bd-binary', level: 'ok', detail: 'on PATH' });
   } else {
     checks.push({ name: 'bd-binary', level: 'error', detail: 'bd CLI not on PATH — install before working' });
   }
 
   // 8. dolt binary on PATH (needed for bd dolt subcommands)
-  if (whichOk('dolt')) {
+  if (whichOk('dolt', deps)) {
     checks.push({ name: 'dolt-binary', level: 'ok', detail: 'on PATH' });
   } else {
     checks.push({ name: 'dolt-binary', level: 'warn', detail: 'dolt CLI not on PATH — bd dolt operations will fail' });
   }
 
   // 9. bd list --json works (the smoke check)
-  const listResult = tryExec(`bd --db ${beadsDir} list --json --status open --limit 1 2>&1 || cd ${projectRoot} && bd list --json --status open --limit 1`);
+  const listResult = deps.tryExec(`bd --db ${beadsDir} list --json --status open --limit 1 2>&1 || cd ${projectRoot} && bd list --json --status open --limit 1`);
   if (listResult.ok) {
     checks.push({ name: 'bd-list-json', level: 'ok', detail: 'bd list --json --status open --limit 1 succeeded' });
   } else {
@@ -239,7 +239,7 @@ export function preflight(projectRoot: string, deps: PreflightDeps = defaultDeps
 
   // 10. bd dolt status (if dolt backend)
   if (existsSync(doltData)) {
-    const status = tryExec(`cd ${projectRoot} && bd dolt status`);
+    const status = deps.tryExec(`cd ${projectRoot} && bd dolt status`);
     if (status.ok) {
       const running = /running/.test(status.stdout);
       checks.push({
@@ -255,7 +255,7 @@ export function preflight(projectRoot: string, deps: PreflightDeps = defaultDeps
   }
 
   // 11. Remote configured (DoltHub or similar)
-  const remoteCheck = tryExec(`cd ${projectRoot} && bd dolt remote 2>&1`);
+  const remoteCheck = deps.tryExec(`cd ${projectRoot} && bd dolt remote 2>&1`);
   if (remoteCheck.ok && remoteCheck.stdout.trim().length > 0) {
     checks.push({
       name: 'dolt-remote-configured',

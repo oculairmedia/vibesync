@@ -9,10 +9,11 @@ export interface LettaAgentInfo {
 /**
  * Per-project runtime provider routing config (vibesync-f5g / vibesync-8hk).
  *
- * Both fields are nullable. NULL on either means "use the global
- * default": LETTA_BASE_URL for the URL, 'letta-teams' for the kind.
- * The dispatcher only swaps providers when `kind` is set to an
- * explicit non-default value (today: 'letta-code-subagent').
+ * Both fields are nullable. NULL means "use the boot-level default".
+ * As of vibesync-xosf the supported default is the letta-code local
+ * backend when VIBESYNC_ORCHESTRATION_PROVIDER=letta-code-subagent is
+ * configured. Removed provider values are read only so boot can reject
+ * or safely fall back from stale project rows.
  */
 export interface ProjectProviderRouting {
   readonly lettaBaseUrl: string | null;
@@ -33,8 +34,7 @@ export class ProjectLettaRepository {
   /**
    * Read the provider routing config for a project. Returns null when
    * the project doesn't exist; returns an object with both fields
-   * possibly null when the row exists but has no override (the common
-   * case for projects on the legacy letta-teams path).
+   * possibly null when the row exists but has no override.
    */
   getProjectProviderRouting(identifier: string): ProjectProviderRouting | null {
     const stmt = this.db.prepare(

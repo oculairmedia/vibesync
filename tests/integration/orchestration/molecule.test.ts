@@ -15,7 +15,7 @@ import { MoleculeWalker } from '../../../src/orchestration/molecule/index.js';
  * → coder)".
  */
 
-const BEADS_ROOT = '/opt/stacks/vibesync';
+const BEADS_ROOT = process.cwd();
 const PORT_FILE = join(BEADS_ROOT, '.beads', 'dolt-server.port');
 const RUN = existsSync(PORT_FILE);
 

@@ -12,6 +12,10 @@ import type { SessionEvent, SessionSpec } from '../../../../src/orchestration/ru
 import { newFakeProvider } from '../../../_fixtures/fake-provider.js';
 import { InMemoryDoltClient } from '../../../_fixtures/in-memory-dolt-client.js';
 
+function isDispatcherEvent(event: Event): boolean {
+  return event.layer === 'dispatcher';
+}
+
 describe('FormulaDispatcher', () => {
   it('runs a three-step formula, closes step beads, and emits dispatcher events in order', async () => {
     const { dispatcher, store, events } = newHarness({
@@ -32,7 +36,7 @@ describe('FormulaDispatcher', () => {
         },
       });
     }
-    expect(events.map((event) => event.kind)).toEqual([
+    expect(events.filter(isDispatcherEvent).map((event) => event.kind)).toEqual([
       'dispatcher/formula.started',
       'dispatcher/step.started',
       'dispatcher/step.task_recorded',
@@ -46,6 +50,14 @@ describe('FormulaDispatcher', () => {
       'dispatcher/formula.completed',
     ]);
     expect(events.every((event) => event.molecule_id === result.moleculeId)).toBe(true);
+    expect(events.filter((event) => event.kind.startsWith('runtime/session.')).map((event) => event.kind)).toContain('runtime/session.message_delta');
+    expect(events.find((event) => event.kind === 'runtime/session.message_delta')?.payload).toMatchObject({
+      stepName: 'reviewer',
+      role: 'reviewer',
+      providerKind: 'fake-runtime',
+      sessionId: expect.stringContaining('fake-runtime:'),
+      text: 'review output',
+    });
   });
 
   it('threads predecessor output into successor prompt context', async () => {
@@ -270,7 +282,7 @@ describe('FormulaDispatcher', () => {
     expect((await store.getBead(stepId))?.metadata).toMatchObject({
       exec: { output_payload: { output: 'recovered task-recovered-1', resumed: true } },
     });
-    expect(events.map((event) => event.kind)).toEqual([
+    expect(events.filter(isDispatcherEvent).map((event) => event.kind)).toEqual([
       'dispatcher/formula.resumed',
       'dispatcher/step.reattached',
       'dispatcher/step.finished',

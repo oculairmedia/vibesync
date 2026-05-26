@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { join } from 'node:path';
 
 import {
   loadFormulasFromFile,
@@ -26,7 +27,9 @@ role = "greeter"
   });
 
   it('parses the reference code-review formula', () => {
-    const formulas = loadFormulasFromFile('/opt/stacks/vibesync/packs/gastown/formulas/code-review.toml');
+    const formulas = loadFormulasFromFile(
+      join(process.cwd(), 'packs', 'gastown', 'formulas', 'code-review.toml'),
+    );
     expect(formulas).toHaveLength(1);
     const f = formulas[0]!;
     expect(f.name).toBe('code-review');

@@ -57,9 +57,9 @@
  * # Lifecycle
  *
  * Subagent processes are owned by Letta Code's Task runtime — we do
- * NOT call DELETE on any agent during stop(). The leak surface that
- * motivated TeammateDeleter on LettaTeamsProvider (vibesync-6zj) does
- * not apply here because we don't spawn separate Letta agents.
+ * NOT call DELETE on any agent during stop(). The leak surface from the
+ * removed Teams-backed provider (vibesync-6zj) does not apply here
+ * because we don't spawn separate Letta agents.
  *
  * # SessionSpec.extra
  *
@@ -133,8 +133,7 @@ export interface AgentIdResolver {
 export interface LettaCodeSubagentProviderOptions {
   /**
    * Base URL of the local-backend shim (e.g. http://localhost:8291).
-   * Distinct from LETTA_BASE_URL — the legacy remote Letta lives at a
-   * different host and uses the LettaTeamsProvider path.
+   * Distinct from LETTA_BASE_URL, which points at the PM-agent Letta API.
    */
   readonly shimBaseUrl: string;
   /** Bearer token. Optional if the shim doesn't enforce auth. */

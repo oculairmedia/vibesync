@@ -5,7 +5,7 @@ import type { Formula } from '../formula/index.js';
 import type { MoleculeWalker } from '../molecule/index.js';
 import type { BeadRow } from '../store/index.js';
 import type { Pack, RoleConfig } from '../packs/index.js';
-import type { RuntimeProvider, SessionHandle } from '../runtime/index.js';
+import type { RuntimeProvider, SessionEvent, SessionHandle } from '../runtime/index.js';
 import { renderTemplate } from './render.js';
 
 /**
@@ -35,7 +35,7 @@ export interface DispatchInput {
    * Per-project routing key (vibesync-f5g / vibesync-8hk). When set,
    * the dispatcher consults its ProviderResolver to pick the right
    * RuntimeProvider for this run (e.g. LettaCodeSubagentProvider for
-   * vibesync, LettaTeamsProvider for legacy projects). When omitted,
+   * local-backend projects). When omitted,
    * the dispatcher uses the default provider supplied at construction
    * time — preserving backwards-compatibility with every existing
    * caller / test that pre-dates the routing path.
@@ -643,6 +643,19 @@ export class FormulaDispatcher {
       }
       for await (const event of args.provider.observe(handle)) {
         eventCount++;
+        this.emitRuntimeSessionEvent(event, {
+          moleculeId: args.moleculeId,
+          stepId: args.stepId,
+          stepName: args.stepName,
+          role: args.role,
+          attempt: args.attempt,
+          providerKind: handle.providerKind,
+          sessionId: handle.id,
+          ...(promptResult.taskId ? { taskId: promptResult.taskId } : {}),
+          ...(conversationId ? { conversationId } : {}),
+          ...(bootstrappedAgentId ? { agentId: bootstrappedAgentId } : {}),
+          ...(args.projectIdentifier ? { projectIdentifier: args.projectIdentifier } : {}),
+        });
         if (event.kind === 'message-delta') output += event.text;
         if (event.kind === 'error') throw new Error(event.message);
         if (event.kind === 'stopped') throw new Error('runtime stopped before turn completion');
@@ -692,6 +705,16 @@ export class FormulaDispatcher {
       });
       for await (const event of this.provider.observe(handle)) {
         eventCount++;
+        this.emitRuntimeSessionEvent(event, {
+          moleculeId: args.moleculeId,
+          stepId: args.step.id,
+          stepName,
+          role,
+          providerKind: handle.providerKind,
+          sessionId: handle.id,
+          taskId,
+          resumed: true,
+        });
         if (event.kind === 'message-delta') output += event.text;
         if (event.kind === 'error') throw new Error(event.message);
         if (event.kind === 'stopped') throw new Error('runtime stopped before turn completion');
@@ -729,6 +752,66 @@ export class FormulaDispatcher {
       ...(taskId ? { task_id: taskId } : {}),
       payload,
     });
+  }
+
+  private emitRuntimeSessionEvent(event: SessionEvent, context: RuntimeSessionEventContext): void {
+    this.eventBus.emit({
+      layer: 'runtime',
+      kind: `runtime/session.${event.kind.replace(/-/g, '_')}`,
+      molecule_id: context.moleculeId,
+      ...(context.taskId ? { task_id: context.taskId } : {}),
+      teammate: context.role,
+      payload: {
+        ...sessionEventPayload(event),
+        stepId: context.stepId,
+        stepName: context.stepName,
+        role: context.role,
+        providerKind: context.providerKind,
+        sessionId: context.sessionId,
+        ...(context.attempt ? { attempt: context.attempt } : {}),
+        ...(context.taskId ? { taskId: context.taskId } : {}),
+        ...(context.conversationId ? { conversationId: context.conversationId } : {}),
+        ...(context.agentId ? { agentId: context.agentId } : {}),
+        ...(context.projectIdentifier ? { projectIdentifier: context.projectIdentifier } : {}),
+        ...(context.resumed ? { resumed: true } : {}),
+      },
+    });
+  }
+}
+
+interface RuntimeSessionEventContext {
+  readonly moleculeId: string;
+  readonly stepId: string;
+  readonly stepName: string;
+  readonly role: string;
+  readonly providerKind: string;
+  readonly sessionId: string;
+  readonly attempt?: number;
+  readonly taskId?: string;
+  readonly conversationId?: string;
+  readonly agentId?: string;
+  readonly projectIdentifier?: string;
+  readonly resumed?: boolean;
+}
+
+function sessionEventPayload(event: SessionEvent): Readonly<Record<string, unknown>> {
+  switch (event.kind) {
+    case 'started':
+    case 'first-token':
+    case 'stopped':
+      return { eventKind: event.kind, ts: event.ts };
+    case 'message-delta':
+      return { eventKind: event.kind, ts: event.ts, text: event.text, textLength: event.text.length };
+    case 'tool-call':
+      return { eventKind: event.kind, ts: event.ts, tool: event.tool, args: event.args };
+    case 'tool-result':
+      return { eventKind: event.kind, ts: event.ts, tool: event.tool, result: event.result, ok: event.ok };
+    case 'usage':
+      return { eventKind: event.kind, ts: event.ts, prompt: event.prompt, completion: event.completion };
+    case 'turn-done':
+      return { eventKind: event.kind, ts: event.ts, ...(event.stopReason ? { stopReason: event.stopReason } : {}) };
+    case 'error':
+      return { eventKind: event.kind, ts: event.ts, code: event.code, message: event.message };
   }
 }
 

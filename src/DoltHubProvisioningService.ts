@@ -151,6 +151,14 @@ function parseRemoteList(output: string): BeadsRemote[] {
     .filter((r): r is BeadsRemote => r !== null);
 }
 
+function parseConfigValue(output: string, key: string): string | null {
+  const trimmed = String(output || '').trim();
+  if (!trimmed || trimmed.includes('(not set')) return null;
+  const assignment = trimmed.match(new RegExp(`^${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*=\\s*(.+)$`, 'm'));
+  if (assignment) return assignment[1]!.trim();
+  return trimmed;
+}
+
 async function defaultCommandRunner(
   command: string,
   args: string[],
@@ -196,7 +204,7 @@ export class DoltHubProvisioningService {
     this.fetchImpl = fetchImpl;
     this.commandRunner = commandRunner || defaultCommandRunner;
     this.portSweeperDeps = portSweeperDeps ?? defaultPortSweeperDeps;
-    this.onPushEvent = options.onPushEvent;
+    if (options.onPushEvent) this.onPushEvent = options.onPushEvent;
   }
 
   get enabled(): boolean {
@@ -365,9 +373,21 @@ export class DoltHubProvisioningService {
     options: { commands: string[]; push?: boolean },
   ): Promise<RemoteConfigResult> {
     const commands = options.commands || [];
+    const federationRemote = await this.readBeadsConfig(projectPath, 'federation.remote', commands);
+    const syncRemote = await this.readBeadsConfig(projectPath, 'sync.remote', commands);
     const remotes = await this.listBeadsRemotes(projectPath, commands);
     const existing = remotes.find((remote) => remote.name === plan.remoteName);
     let changed = false;
+
+    if (federationRemote !== plan.remoteUrl) {
+      await this.runBd(projectPath, ['config', 'set', 'federation.remote', plan.remoteUrl], commands);
+      changed = true;
+    }
+
+    if (syncRemote === plan.remoteUrl) {
+      await this.runBd(projectPath, ['config', 'unset', 'sync.remote'], commands);
+      changed = true;
+    }
 
     if (existing && existing.url !== plan.remoteUrl) {
       await this.runBd(projectPath, ['dolt', 'remote', 'remove', plan.remoteName], commands);
@@ -429,6 +449,15 @@ export class DoltHubProvisioningService {
   ): Promise<BeadsRemote[]> {
     const result = await this.runBd(projectPath, ['dolt', 'remote', 'list'], commands);
     return parseRemoteList(result.stdout);
+  }
+
+  private async readBeadsConfig(
+    projectPath: string,
+    key: string,
+    commands: string[],
+  ): Promise<string | null> {
+    const result = await this.runBd(projectPath, ['config', 'get', key], commands);
+    return parseConfigValue(result.stdout, key);
   }
 
   private async runBd(

@@ -158,7 +158,7 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
         availableEndpoints: [
           'GET /health', 'GET /metrics', 'GET /api/config', 'PATCH /api/config',
           'POST /api/sync/trigger', 'GET /api/sync/history', 'GET /api/sync/mappings',
-          'GET /api/events/stream', 'POST /webhook', 'GET /api/webhook/stats',
+          'GET /api/events', 'GET /api/events/stream', 'POST /webhook', 'GET /api/webhook/stats',
           'GET /api/temporal/schedule', 'POST /api/temporal/schedule/start',
           'POST /api/temporal/schedule/stop', 'PATCH /api/temporal/schedule',
           'POST /api/temporal/reconciliation/run', 'GET /api/temporal/workflows',
@@ -171,7 +171,7 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
           'PATCH /api/issues/:id/status', 'POST /api/issues/:id/notes',
           'POST /api/registry/projects', 'GET /api/registry/projects/:id',
           'POST /api/projects/:id/beads-remote/provision', 'POST /api/admin/agents-md/refresh',
-          'GET /formulas', 'POST /formulas/:name/run', 'GET /molecules/:id',
+          'GET /formulas', 'POST /formulas/:name/run', 'GET /molecules/:id', 'GET /molecules/:id/trace',
           'POST /molecules/:id/resume', 'DELETE /molecules/:id', 'GET /molecules/:id/events',
           'GET /openapi.json', 'GET /docs',
           `POST ${mcpPath}`,

@@ -53,8 +53,8 @@ interface TrackedSession {
 }
 
 /**
- * Supervisor target for a singleton background process (e.g. the
- * letta-teams-sdk daemon). Mirrors the small piece of the daemon
+ * Supervisor target for a singleton background process. Mirrors the small
+ * piece of the daemon
  * surface HealthPatrol needs without coupling the patrol to a
  * specific provider's internals — implementations live next to the
  * provider that owns the daemon.
@@ -64,7 +64,7 @@ interface TrackedSession {
  * behind the supervisor.
  */
 export interface DaemonSupervisor {
-  /** Stable id used in bus payloads (e.g. 'letta-teams-daemon'). */
+  /** Stable id used in bus payloads. */
   readonly id: string;
   /** Provider kind that owns this daemon, mirrored onto bus payloads. */
   readonly providerKind: string;
@@ -151,7 +151,7 @@ export class HealthPatrol {
     this.sessions.delete(handleId);
   }
 
-  /** Begin supervising a singleton daemon (e.g. the letta-teams daemon). */
+  /** Begin supervising a singleton daemon. */
   trackDaemon(supervisor: DaemonSupervisor): void {
     this.daemons.set(supervisor.id, {
       supervisor,

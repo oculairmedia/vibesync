@@ -106,7 +106,7 @@ export class ProjectRegistry {
     this.db = opts.db;
     this.baseDir = opts.baseDir || process.env.STACKS_DIR || '/opt/stacks';
     this.log = (opts.logger || rootLogger).child({ module: 'project-registry' });
-    this.onRigEvent = opts.onRigEvent;
+    if (opts.onRigEvent) this.onRigEvent = opts.onRigEvent;
   }
 
   scanProjects(): ScanResults {

@@ -59,7 +59,7 @@ describe('buildRoleAgentContextResolver (vibesync-mcz Phase D)', () => {
     expect(result).toBeNull();
   });
 
-  it('returns null when the project routes to letta-teams (legacy)', async () => {
+  it('returns null when the project routes to removed provider_kind=letta-teams rows', async () => {
     const resolver = buildRoleAgentContextResolver({
       store: fakeStore({ [PROJECT]: { providerKind: 'letta-teams', lettaBaseUrl: null } }),
       roleAgentBootstrapper: fakeBootstrapper(),

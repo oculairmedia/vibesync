@@ -60,13 +60,10 @@ HealthPatrol events — not a role.
 **Translation per Gas City:** An operating mode (scalable session
 config), not a hard type.
 
-**Maps to VibeSync:** Use letta-teams-sdk teammate fork semantics
-(`name/fork-name`) for ephemeral worker conversations against a
-persistent root teammate. Polecats are short-lived teammate forks
-dispatched via the same `LettaTeamsProvider` — not a separate
-provider. (The earlier proposal to use a dedicated
-`LettaCodeSubagentProvider` for short-lived workers was retired in
-`vibesync-brd`; one provider, one chokepoint.)
+**Maps to VibeSync:** Use `LettaCodeSubagentProvider` sessions for
+ephemeral worker conversations. Polecats are short-lived runtime
+sessions dispatched through the same provider chokepoint as other
+Gastown role work, not a separate provider.
 
 **Recommendation:** Polecats are a pattern, not a role. Add a `polecat`
 formula that wraps "spawn an ephemeral worker, dispatch one message,
