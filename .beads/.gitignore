@@ -42,3 +42,6 @@ beads.right.meta.json
 # (per vibesync-1rx: causes constant PR conflicts, no info not already in Dolt)
 issues.jsonl
 export-state.json
+
+# Meridian tool audit log — runtime operational telemetry, not source
+meridian-audit.jsonl
