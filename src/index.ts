@@ -399,6 +399,9 @@ async function main(): Promise<void> {
       const dolt = new DoltClient();
       orchestration = await bootOrchestrationPlane({
         dolt,
+        providerRouting: {
+          store: { getProjectProviderRouting: db.getProjectProviderRouting.bind(db) },
+        },
       });
       logger.info(
         { provider: orchestration.provider.kind },
