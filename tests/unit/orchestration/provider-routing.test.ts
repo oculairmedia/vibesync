@@ -34,12 +34,13 @@ import type { DispatchInput } from '../../../src/orchestration/dispatcher/index.
 function fakeStore(routings: Record<string, {
   readonly providerKind?: string | null;
   readonly lettaBaseUrl?: string | null;
+  readonly parentAgentId?: string | null;
 } | null>): ProjectProviderRoutingStore {
   return {
     getProjectProviderRouting(projectIdentifier) {
       const v = routings[projectIdentifier];
       if (v === undefined) return null;
-      return v as { readonly providerKind: string | null; readonly lettaBaseUrl: string | null };
+      return v as { readonly providerKind: string | null; readonly lettaBaseUrl: string | null; readonly parentAgentId?: string | null };
     },
   };
 }
@@ -95,10 +96,9 @@ describe('buildProviderResolver', () => {
   it('returns a LettaCodeSubagentProvider for provider_kind=letta-code-subagent', async () => {
     const resolver = buildProviderResolver({
       store: fakeStore({
-        'vibesync': { providerKind: 'letta-code-subagent', lettaBaseUrl: 'http://localhost:8291' },
+        'vibesync': { providerKind: 'letta-code-subagent', lettaBaseUrl: 'http://localhost:8291', parentAgentId: 'agent-pm' },
       }),
       personaLoader: fakePersonaLoader(),
-      parentAgentIds: { vibesync: 'agent-pm' },
     });
     const provider = await resolver.resolve(inputFor('vibesync'));
     expect(provider).not.toBeNull();
@@ -108,12 +108,24 @@ describe('buildProviderResolver', () => {
   it('falls back to default when letta_base_url is missing for a subagent row', async () => {
     const resolver = buildProviderResolver({
       store: fakeStore({
-        'vibesync': { providerKind: 'letta-code-subagent', lettaBaseUrl: null },
+        'vibesync': { providerKind: 'letta-code-subagent', lettaBaseUrl: null, parentAgentId: 'agent-pm' },
+      }),
+      personaLoader: fakePersonaLoader(),
+    });
+    expect(await resolver.resolve(inputFor('vibesync'))).toBeNull();
+  });
+
+  it('uses the legacy parentAgentIds map when the routing row has no parent id', async () => {
+    const resolver = buildProviderResolver({
+      store: fakeStore({
+        'vibesync': { providerKind: 'letta-code-subagent', lettaBaseUrl: 'http://localhost:8291' },
       }),
       personaLoader: fakePersonaLoader(),
       parentAgentIds: { vibesync: 'agent-pm' },
     });
-    expect(await resolver.resolve(inputFor('vibesync'))).toBeNull();
+    const provider = await resolver.resolve(inputFor('vibesync'));
+    expect(provider).not.toBeNull();
+    expect(provider!.kind).toBe('letta-code-subagent');
   });
 
   it('falls back to default when no parent agent id is wired for the project', async () => {
@@ -140,10 +152,9 @@ describe('buildProviderResolver', () => {
   it('caches the per-shim provider across consecutive resolves', async () => {
     const resolver = buildProviderResolver({
       store: fakeStore({
-        'vibesync': { providerKind: 'letta-code-subagent', lettaBaseUrl: 'http://localhost:8291' },
+        'vibesync': { providerKind: 'letta-code-subagent', lettaBaseUrl: 'http://localhost:8291', parentAgentId: 'agent-pm' },
       }),
       personaLoader: fakePersonaLoader(),
-      parentAgentIds: { vibesync: 'agent-pm' },
     });
     const first = await resolver.resolve(inputFor('vibesync'));
     const second = await resolver.resolve(inputFor('vibesync'));

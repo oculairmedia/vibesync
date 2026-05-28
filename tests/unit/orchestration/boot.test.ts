@@ -38,9 +38,36 @@ describe('bootOrchestrationPlane', () => {
   it('rejects the removed letta-teams provider kind', async () => {
     await expect(bootForTest({ VIBESYNC_ORCHESTRATION_PROVIDER: 'letta-teams' })).rejects.toThrow('Letta Teams was removed');
   });
+
+  it('boots with provider routing even when the global default parent env is absent', async () => {
+    const handle = await bootForTest(
+      { VIBESYNC_LETTA_CODE_PARENT_AGENT_ID: '' },
+      {
+        providerRouting: {
+          store: {
+            getProjectProviderRouting(projectIdentifier) {
+              if (projectIdentifier !== 'vibesync') return null;
+              return {
+                lettaBaseUrl: 'http://shim:8291',
+                providerKind: 'letta-code-subagent',
+                parentAgentId: 'agent-project-parent',
+              };
+            },
+          },
+        },
+      },
+    );
+
+    expect(handle.provider.kind).toBe('letta-code-subagent');
+
+    await handle.shutdown();
+  });
 });
 
-async function bootForTest(env: Record<string, string> = {}) {
+async function bootForTest(
+  env: Record<string, string> = {},
+  opts: Partial<Parameters<typeof bootOrchestrationPlane>[0]> = {},
+) {
   const previousApiKey = process.env.LETTA_API_KEY;
   const previousPassword = process.env.LETTA_PASSWORD;
   const previousProvider = process.env.VIBESYNC_ORCHESTRATION_PROVIDER;
@@ -62,6 +89,7 @@ async function bootForTest(env: Record<string, string> = {}) {
       dolt: new InMemoryDoltClient() as never,
       persistEvents: false,
       runDriftAuditOnBoot: false,
+      ...opts,
     });
   } finally {
     if (previousApiKey === undefined) delete process.env.LETTA_API_KEY;

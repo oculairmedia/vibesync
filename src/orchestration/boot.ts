@@ -61,6 +61,7 @@ export interface ProjectProviderRoutingStore {
   getProjectProviderRouting(projectIdentifier: string): {
     readonly lettaBaseUrl: string | null;
     readonly providerKind: string | null;
+    readonly parentAgentId?: string | null;
   } | null;
 }
 
@@ -70,14 +71,9 @@ export interface BootOrchestrationProviderRoutingOptions {
   /** Persona loader for letta-code-subagent. Default reads packs/gastown. */
   readonly personaLoader?: PersonaLoader;
   /**
-   * Map of agent ids to use for each project that routes to
-   * letta-code-subagent. Required because the routing row holds the
-   * shim URL but not the PM agent id — boot wires that mapping from
-   * the projects.letta_agent_id column at boot time (or a caller-
-   * supplied static map for tests).
-   *
-   * The shape is { [projectIdentifier]: agentId }. Missing entries
-   * fall back to the default provider.
+   * Legacy/static fallback map for tests and non-database callers.
+   * Production routing reads the PM parent id from projects.letta_agent_id
+   * via ProjectProviderRoutingStore.parentAgentId.
    */
   readonly parentAgentIds?: Readonly<Record<string, string>>;
   /**
@@ -124,7 +120,9 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   }
 
   const bus = new EventBus({ noPersist: opts.persistEvents === false });
-  const provider = buildDefaultRuntimeProvider();
+  const provider = buildDefaultRuntimeProvider({
+    allowUnavailable: opts.providerRouting !== undefined,
+  });
   const patrol = new HealthPatrol(bus);
   patrol.start();
 
@@ -181,7 +179,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   };
 }
 
-function buildDefaultRuntimeProvider(): RuntimeProvider {
+function buildDefaultRuntimeProvider(opts: { readonly allowUnavailable?: boolean } = {}): RuntimeProvider {
   const providerKind = process.env['VIBESYNC_ORCHESTRATION_PROVIDER'] ?? 'letta-code-subagent';
   if (providerKind !== 'letta-code-subagent') {
     throw new Error(`Unsupported orchestration provider "${providerKind}". Letta Teams was removed; use VIBESYNC_ORCHESTRATION_PROVIDER=letta-code-subagent.`);
@@ -189,12 +187,37 @@ function buildDefaultRuntimeProvider(): RuntimeProvider {
   const shimBaseUrl = process.env['VIBESYNC_LETTA_CODE_SHIM_URL'] ?? process.env['LETTA_CODE_SHIM_URL'];
   const parentAgentId = process.env['VIBESYNC_LETTA_CODE_PARENT_AGENT_ID'] ?? process.env['LETTA_CODE_PARENT_AGENT_ID'];
   if (!shimBaseUrl || !parentAgentId) {
+    if (opts.allowUnavailable) {
+      // Per-project routing can still supply both the shim URL and PM
+      // parent id from the projects row. Keep boot alive so routed
+      // dispatches work; unrouted dispatches fail at start with the
+      // same actionable configuration message.
+      return buildUnavailableDefaultProvider(
+        'letta-code orchestration requires VIBESYNC_LETTA_CODE_SHIM_URL and VIBESYNC_LETTA_CODE_PARENT_AGENT_ID for default-project dispatch',
+      );
+    }
     throw new Error('letta-code orchestration requires VIBESYNC_LETTA_CODE_SHIM_URL and VIBESYNC_LETTA_CODE_PARENT_AGENT_ID');
   }
   return wrapWithParentAgentId(new LettaCodeSubagentProvider({
     shimBaseUrl,
     personaLoader: createDefaultPersonaLoader('packs/gastown'),
   }), parentAgentId);
+}
+
+function buildUnavailableDefaultProvider(message: string): RuntimeProvider {
+  const fail = async (): Promise<never> => {
+    throw new Error(message);
+  };
+  return {
+    kind: 'letta-code-subagent',
+    start: fail,
+    stop: async () => {},
+    prompt: fail,
+    nudge: async () => {},
+    async *observe() {
+      yield { kind: 'error', ts: new Date().toISOString(), code: 'provider-unavailable', message };
+    },
+  };
 }
 
 function hasWritebackStore(dolt: unknown): dolt is WritebackStore {
@@ -250,7 +273,7 @@ export function buildProviderResolver(opts: BootOrchestrationProviderRoutingOpti
           );
           return null;
         }
-        const parentAgentId = opts.parentAgentIds?.[projectId];
+        const parentAgentId = row.parentAgentId ?? opts.parentAgentIds?.[projectId];
         if (!parentAgentId) {
           // eslint-disable-next-line no-console
           console.warn(
