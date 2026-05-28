@@ -9,7 +9,7 @@ export interface LettaAgentInfo {
 /**
  * Per-project runtime provider routing config (vibesync-f5g / vibesync-8hk).
  *
- * Both fields are nullable. NULL means "use the boot-level default".
+ * Fields are nullable. NULL means "use the boot-level default".
  * As of vibesync-xosf the supported default is the letta-code local
  * backend when VIBESYNC_ORCHESTRATION_PROVIDER=letta-code-subagent is
  * configured. Removed provider values are read only so boot can reject
@@ -18,6 +18,7 @@ export interface LettaAgentInfo {
 export interface ProjectProviderRouting {
   readonly lettaBaseUrl: string | null;
   readonly providerKind: string | null;
+  readonly parentAgentId?: string | null;
 }
 
 export class ProjectLettaRepository {
@@ -33,20 +34,21 @@ export class ProjectLettaRepository {
 
   /**
    * Read the provider routing config for a project. Returns null when
-   * the project doesn't exist; returns an object with both fields
+   * the project doesn't exist; returns an object with routing fields
    * possibly null when the row exists but has no override.
    */
   getProjectProviderRouting(identifier: string): ProjectProviderRouting | null {
     const stmt = this.db.prepare(
-      `SELECT letta_base_url, provider_kind FROM projects WHERE identifier = ?`,
+      `SELECT letta_base_url, provider_kind, letta_agent_id FROM projects WHERE identifier = ?`,
     );
     const row = stmt.get(identifier) as
-      | { letta_base_url?: string | null; provider_kind?: string | null }
+      | { letta_base_url?: string | null; provider_kind?: string | null; letta_agent_id?: string | null }
       | undefined;
     if (!row) return null;
     return {
       lettaBaseUrl: row.letta_base_url ?? null,
       providerKind: row.provider_kind ?? null,
+      parentAgentId: row.letta_agent_id ?? null,
     };
   }
 
