@@ -19,6 +19,7 @@ import { sseManager } from './api/SSEManager.js';
 import { syncHistory } from './api/SyncHistoryStore.js';
 import { ConfigurationHandler } from './api/ConfigurationHandler.js';
 import { createProjectMcpServer } from './mcp/ProjectMcpServer.js';
+import { registerMeridianTools } from './mcp/MeridianTools.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { SyncDatabase } from './database.js';
 import type {
@@ -130,6 +131,7 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
             for await (const chunk of req) body += (chunk || '').toString();
             const parsed = body ? JSON.parse(body) : {};
             const mcpServer = createProjectMcpServer({ db: deps.db as never, logger, registry: deps.projectRegistry as never });
+            registerMeridianTools(mcpServer);
             const transport = new StreamableHTTPServerTransport({} as never);
             await mcpServer.connect(transport);
             await transport.handleRequest(req, res, parsed);

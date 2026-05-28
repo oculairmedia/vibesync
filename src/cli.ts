@@ -1078,4 +1078,295 @@ formula
     }
   });
 
+// ── rig ───────────────────────────────────────────────────────────
+
+import {
+  queryRigStatus, queryBeads, showDispatch,
+  dispatchMolecule, assignBead, reviewDispatch, verifyPr, requestMerge,
+  type ReviewDecision,
+} from './rig/queries.js';
+
+const rig = program.command('rig').description('Cross-rig visibility: health, beads, dispatches');
+
+rig
+  .command('status')
+  .description('Rig health + active dispatches across all rigs')
+  .option('--rig <name>', 'Filter to a specific rig name')
+  .action(async (opts: Record<string, unknown>) => {
+    const { json: jsonOut } = getGlobalOpts();
+    try {
+      const result = await queryRigStatus('/opt/stacks', opts.rig as string | undefined);
+      if (jsonOut) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(chalk.bold('\nRig Health\n'));
+      console.log(`  Total: ${result.health.total}  Healthy: ${chalk.green(String(result.health.healthy))}  Degraded: ${chalk.yellow(String(result.health.degraded))}  No rig: ${result.health.noRig}`);
+      if (result.health.degradedProjects.length) {
+        console.log(`  Degraded: ${result.health.degradedProjects.join(', ')}`);
+      }
+      if (result.rigs.length && opts.rig) {
+        console.log(chalk.bold('\n  Rig Detail'));
+        for (const r of result.rigs) {
+          console.log(`    ${r.name}  remote=${r.hasRemote ? chalk.green('yes') : chalk.red('no')}  git=${r.hasGitRemote ? chalk.green('yes') : chalk.red('no')}  prefix=${r.issuePrefix || '—'}`);
+        }
+      }
+      if (result.activeDispatches.length) {
+        console.log(chalk.bold('\n  Active Dispatches'));
+        for (const d of result.activeDispatches) {
+          for (const b of d.beads as Record<string, unknown>[]) {
+            console.log(`    ${d.rig}  ${chalk.cyan(String(b.id))}  ${b.title}`);
+          }
+        }
+      } else {
+        console.log(chalk.gray('\n  No active dispatches'));
+      }
+      if (result.recentActivity.length) {
+        console.log(chalk.bold('\n  Recent Open Beads'));
+        for (const a of result.recentActivity) {
+          for (const b of a.beads as Record<string, unknown>[]) {
+            console.log(`    ${a.rig}  ${chalk.cyan(String(b.id))}  ${b.title}`);
+          }
+        }
+      }
+      console.log();
+    } catch (err) {
+      die((err as Error)?.message || String(err));
+    }
+  });
+
+rig
+  .command('query')
+  .description('Cross-rig bead search with filters')
+  .option('--rigs <names>', 'Comma-separated rig names')
+  .option('--status <statuses>', 'Comma-separated statuses (default: open,in_progress)')
+  .option('--search <term>', 'Free-text search in titles, descriptions, labels')
+  .option('--type <type>', 'Filter by issue_type: task, bug, feature, epic, molecule_root')
+  .option('--limit <n>', 'Max beads per rig (default 20)')
+  .action(async (opts: Record<string, unknown>) => {
+    const { json: jsonOut } = getGlobalOpts();
+    try {
+      const rigs = opts.rigs ? String(opts.rigs).split(',').map(s => s.trim()) : undefined;
+      const status = opts.status ? String(opts.status).split(',').map(s => s.trim()) : undefined;
+      const limit = opts.limit ? Number.parseInt(String(opts.limit), 10) : undefined;
+      const result = await queryBeads('/opt/stacks', {
+        rigs, status,
+        search: opts.search as string | undefined,
+        type: opts.type as string | undefined,
+        limit,
+      });
+      if (jsonOut) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(chalk.bold(`\nBeads query — ${result.total} result${result.total === 1 ? '' : 's'}\n`));
+      if (!result.results.length) {
+        console.log(chalk.yellow('  No matching beads.'));
+      }
+      for (const r of result.results) {
+        console.log(chalk.bold(`  ${r.rig}`));
+        for (const b of r.beads) {
+          const pri = `P${b.priority ?? '?'}`;
+          console.log(`    ${chalk.cyan(String(b.id))} ${pri} [${b.issue_type}] ${b.title}`);
+        }
+      }
+      console.log();
+    } catch (err) {
+      die((err as Error)?.message || String(err));
+    }
+  });
+
+rig
+  .command('show-dispatch <dispatchId>')
+  .description('Inspect a molecule dispatch: root bead, step state, provider info')
+  .option('--rig <name>', 'Rig name (searches all if omitted)')
+  .action(async (dispatchId: string, opts: Record<string, unknown>) => {
+    const { json: jsonOut } = getGlobalOpts();
+    try {
+      const result = await showDispatch('/opt/stacks', dispatchId, opts.rig as string | undefined);
+      if (jsonOut) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      const d = result.dispatch;
+      console.log(chalk.bold(`\nDispatch: ${d.id} (${d.status})\n`));
+      console.log(`  Rig:      ${result.rig}`);
+      console.log(`  Formula:  ${d.formula || '—'}`);
+      console.log(`  Type:     ${d.issue_type}`);
+      console.log(`  Created:  ${d.created_at}`);
+      if (d.motivating_bead) console.log(`  Motivating bead: ${d.motivating_bead}`);
+      if (d.writeback_status) console.log(`  Writeback: ${d.writeback_status}`);
+      if (result.steps.length) {
+        console.log(chalk.bold('\n  Steps'));
+        console.log(`    Total: ${result.stepSummary.total}  Open: ${result.stepSummary.open}  Running: ${result.stepSummary.in_progress}  Done: ${result.stepSummary.closed}`);
+        for (const s of result.steps) {
+          const statusColor = s.status === 'closed' ? chalk.green : s.status === 'in_progress' ? chalk.yellow : chalk.gray;
+          const outputInfo = s.output_length !== undefined ? ` (${s.output_length} chars)` : '';
+          console.log(`    ${statusColor(String(s.status).padEnd(12))} ${s.step}  provider=${s.provider_kind || '—'}${outputInfo}`);
+          if (s.error_trace) console.log(`      ${chalk.red(`error: ${String(s.error_trace).slice(0, 120)}`)}`);
+        }
+      }
+      console.log();
+    } catch (err) {
+      die((err as Error)?.message || String(err));
+    }
+  });
+
+// ── rig dispatch (Tier 2) ────────────────────────────────────────
+
+rig
+  .command('dispatch <formula>')
+  .description('Fire a formula (molecule) against a rig. Requires --rig and --input.')
+  .requiredOption('--rig <name>', 'Target rig name')
+  .requiredOption('--input <text>', 'Top-level input for the formula')
+  .option('--pack <name>', 'Pack name (default: gastown)')
+  .option('--motivating-bead <id>', 'Motivating bead ID')
+  .option('--watch', 'Stream molecule events after starting')
+  .action(async (formulaName: string, opts: Record<string, unknown>) => {
+    const { json: jsonOut, apiUrl } = getGlobalOpts();
+    try {
+      const result = await dispatchMolecule(apiUrl, {
+        rig: String(opts.rig),
+        formula: formulaName,
+        input: String(opts.input),
+        pack: opts.pack as string | undefined,
+        motivating_bead: opts.motivatingBead as string | undefined,
+        stacksDir: '/opt/stacks',
+      });
+      if (jsonOut) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(`moleculeId: ${chalk.green(result.moleculeId)}`);
+        console.log(`formula:    ${result.formulaName}`);
+        console.log(`rig:        ${result.rig}`);
+        console.log(`path:       /molecules/${result.moleculeId}`);
+      }
+      if (opts.watch && result.moleculeId) {
+        const code = await watchMoleculeEvents(result.moleculeId);
+        process.exitCode = code;
+      }
+    } catch (err) {
+      die((err as Error)?.message || String(err));
+    }
+  });
+
+rig
+  .command('assign <beadId>')
+  .description('Assign a bead to a role-agent or user and claim it')
+  .requiredOption('--rig <name>', 'Rig where the bead lives')
+  .requiredOption('--assignee <name>', 'Assignee name')
+  .option('--no-claim', 'Assign without claiming (leave status unchanged)')
+  .action(async (beadId: string, opts: Record<string, unknown>) => {
+    const { json: jsonOut } = getGlobalOpts();
+    try {
+      const result = await assignBead('/opt/stacks', {
+        bead_id: beadId,
+        rig: String(opts.rig),
+        assignee: String(opts.assignee),
+        claim: opts.claim !== false,
+      });
+      if (jsonOut) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(chalk.green(`Assigned ${result.bead_id} → ${result.assignee}`));
+        if (result.claimed) console.log(`  Status: in_progress (claimed)`);
+      }
+    } catch (err) {
+      die((err as Error)?.message || String(err));
+    }
+  });
+
+rig
+  .command('review <dispatchId>')
+  .description('Review a dispatch: accept, reject, or request changes')
+  .requiredOption('--decision <decision>', 'Review decision: accept, reject, changes_requested')
+  .requiredOption('--notes <text>', 'Review notes')
+  .option('--rig <name>', 'Rig name (searches all if omitted)')
+  .action(async (dispatchId: string, opts: Record<string, unknown>) => {
+    const { json: jsonOut } = getGlobalOpts();
+    const decision = String(opts.decision) as ReviewDecision;
+    if (!['accept', 'reject', 'changes_requested'].includes(decision)) {
+      die(`Invalid decision "${decision}". Must be: accept, reject, changes_requested`);
+    }
+    try {
+      const result = await reviewDispatch('/opt/stacks', {
+        dispatch_id: dispatchId,
+        rig: opts.rig as string | undefined,
+        decision,
+        notes: String(opts.notes),
+      });
+      if (jsonOut) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        const color = decision === 'accept' ? chalk.green : decision === 'reject' ? chalk.red : chalk.yellow;
+        console.log(color(`Review: ${decision}`));
+        console.log(`  Dispatch: ${result.dispatch_id}`);
+        console.log(`  Rig:      ${result.rig}`);
+        if (result.dispatch_closed) console.log(`  Dispatch closed: yes`);
+      }
+    } catch (err) {
+      die((err as Error)?.message || String(err));
+    }
+  });
+
+// ── rig verify / merge (Tier 3) ─────────────────────────────────
+
+rig
+  .command('verify-pr <prNumber>')
+  .description('Run verification suite against a rig (typecheck, test, lint)')
+  .requiredOption('--rig <name>', 'Rig name to verify')
+  .option('--suite <name>', 'Suite: typecheck (default), test, lint')
+  .action(async (prNumberStr: string, opts: Record<string, unknown>) => {
+    const { json: jsonOut } = getGlobalOpts();
+    const prNumber = Number.parseInt(prNumberStr, 10);
+    if (Number.isNaN(prNumber)) die('PR number must be an integer');
+    try {
+      const result = await verifyPr('/opt/stacks', {
+        rig: String(opts.rig),
+        pr_number: prNumber,
+        suite: opts.suite as string | undefined,
+      });
+      if (jsonOut) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        const icon = result.passed ? chalk.green('PASS') : chalk.red('FAIL');
+        console.log(`${icon}  ${result.suite}  rig=${result.rig}  pr=#${result.pr_number}  exit=${result.exit_code}`);
+        if (!result.passed) {
+          console.log(chalk.gray('\n--- output (last 4000 chars) ---'));
+          console.log(result.output);
+        }
+      }
+    } catch (err) {
+      die((err as Error)?.message || String(err));
+    }
+  });
+
+rig
+  .command('request-merge <prNumber>')
+  .description('Queue a PR merge for human approval (does NOT merge directly)')
+  .requiredOption('--rig <name>', 'Rig name')
+  .requiredOption('--justification <text>', 'Why this PR should be merged')
+  .action(async (prNumberStr: string, opts: Record<string, unknown>) => {
+    const { json: jsonOut } = getGlobalOpts();
+    const prNumber = Number.parseInt(prNumberStr, 10);
+    if (Number.isNaN(prNumber)) die('PR number must be an integer');
+    try {
+      const result = await requestMerge('/opt/stacks', {
+        rig: String(opts.rig),
+        pr_number: prNumber,
+        justification: String(opts.justification),
+      });
+      if (jsonOut) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(chalk.green(`Merge request queued for human approval`));
+        console.log(`  Bead: ${result.merge_request_bead}`);
+        console.log(`  PR:   #${result.pr_number}`);
+        console.log(`  Rig:  ${result.rig}`);
+      }
+    } catch (err) {
+      die((err as Error)?.message || String(err));
+    }
+  });
+
 program.parse();
