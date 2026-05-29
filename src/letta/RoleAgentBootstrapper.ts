@@ -140,7 +140,19 @@ export interface RoleAgentBootstrapperDeps {
  * Default model — PM-vibesync runs on this so role agents should too
  * (same backend, same proxy, same approvals.json semantics).
  */
-const DEFAULT_MODEL = 'anthropic/claude-opus-4-7';
+// vibesync-0u15: role subagents previously defaulted to
+// 'anthropic/claude-opus-4-7', a reasoning-enabled handle. When the
+// general-purpose subagent (model: auto) inherited a reasoning model,
+// the local backend built an Anthropic `thinking: { type: "enabled" }`
+// block without budget_tokens, which Anthropic rejects with
+// `thinking.enabled.budget_tokens: Field required`, failing every
+// nested subagent dispatch. Default to an available Sonnet handle in
+// the shim's served `lmstudio/*` namespace (same convention the
+// working primary agents use, which resolve with enable_reasoner=false)
+// so no reasoning/thinking block is constructed. Override with
+// VIBESYNC_ROLE_AGENT_MODEL if a deployment wants a different model.
+const DEFAULT_MODEL =
+  process.env['VIBESYNC_ROLE_AGENT_MODEL'] ?? 'lmstudio/sonnet-4-5';
 
 export class RoleAgentBootstrapper {
   private readonly repo: RoleAgentRepository;
