@@ -13,6 +13,7 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import {
   RoleAgentBootstrapper,
   encodeAgentIdBase64Url,
+  createHttpShimAdapter,
   type RoleAgentRepository,
   type RoleAgentSdkAdapter,
 } from '../../../src/letta/RoleAgentBootstrapper.js';
@@ -223,7 +224,11 @@ describe('RoleAgentBootstrapper (vibesync-1ix: SDK-based provisioning)', () => {
 
     it('passes the default model so role agents match PM-vibesync on the same backend', async () => {
       await h.bootstrapper.ensureRoleAgent(defaultInput);
-      expect(h.sdk.calls[0]?.model).toBe('anthropic/claude-opus-4-7');
+      // vibesync-0u15: default is a non-reasoning Sonnet handle (was
+      // anthropic/claude-opus-4-7, which made the general-purpose subagent
+      // build an Anthropic thinking:{type:enabled} block without budget and
+      // fail). Sonnet resolves with no thinking block.
+      expect(h.sdk.calls[0]?.model).toBe('lmstudio/sonnet-4-5');
     });
 
     it('tags the agent for vibesync/project/role/backend lookup', async () => {
@@ -474,6 +479,53 @@ describe('RoleAgentBootstrapper (vibesync-1ix: SDK-based provisioning)', () => {
       const id = 'agent-a9db7a7a-0ca7-4a3a-b124-11e8ab7fd7e1';
       const encoded = encodeAgentIdBase64Url(id);
       expect(encoded).toBe('YWdlbnQtYTlkYjdhN2EtMGNhNy00YTNhLWIxMjQtMTFlOGFiN2ZkN2Ux');
+    });
+  });
+
+  // vibesync-tr3e/razp: the default adapter creates agents via the shim's
+  // POST /v1/agents (HTTP), not the letta-code createAgent CLI (which the
+  // bundled letta.js 0.26.3 rejects with --system-custom ambiguous).
+  describe('createHttpShimAdapter (razp)', () => {
+    it('POSTs to <lettaBaseUrl>/v1/agents and returns the created id', async () => {
+      const calls: Array<{ url: string; body: Record<string, unknown> | undefined }> = [];
+      const fakeFetch = (async (url: unknown, init?: unknown) => {
+        const i = init as { body?: string } | undefined;
+        calls.push({ url: String(url), body: i?.body ? JSON.parse(i.body) : undefined });
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({ id: 'agent-http-created-1' }),
+          text: async () => '',
+        } as Response;
+      }) as unknown as typeof fetch;
+
+      const adapter = createHttpShimAdapter(fakeFetch);
+      const id = await adapter.createAgent({
+        systemPrompt: 'role persona',
+        model: 'lmstudio/sonnet-4-5',
+        tags: ['vibesync', 'role:reviewer'],
+        lettaBaseUrl: 'http://localhost:8291',
+      } as CreateAgentOptions & { lettaBaseUrl?: string });
+
+      expect(id).toBe('agent-http-created-1');
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.url).toBe('http://localhost:8291/v1/agents');
+      expect(calls[0]!.body).toMatchObject({
+        system: 'role persona',
+        model: 'lmstudio/sonnet-4-5',
+        tags: ['vibesync', 'role:reviewer'],
+      });
+    });
+
+    it('throws when the shim returns a non-ok status', async () => {
+      const fakeFetch = (async () =>
+        ({ ok: false, status: 500, json: async () => ({}), text: async () => 'boom' }) as Response) as unknown as typeof fetch;
+      const adapter = createHttpShimAdapter(fakeFetch);
+      await expect(
+        adapter.createAgent({
+          lettaBaseUrl: 'http://localhost:8291',
+        } as CreateAgentOptions & { lettaBaseUrl?: string }),
+      ).rejects.toThrow(/shim POST \/v1\/agents failed \(500\)/);
     });
   });
 });
