@@ -191,6 +191,13 @@ interface SessionState {
    */
   readonly agentId: string | null;
   conversationId: string | null;
+  /**
+   * vibesync-ctla: tracks whether the conversation has been created on
+   * the shim store yet. A dispatcher-minted conversationId is present
+   * but not yet created; we must POST /v1/conversations (with that id)
+   * before sending the first message, or the message POST 404s.
+   */
+  conversationCreated: boolean;
   stopped: boolean;
   activeTaskId: string | null;
   /**
@@ -281,6 +288,7 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
       personaContent,
       agentId: resolvedAgentId,
       conversationId,
+      conversationCreated: false,
       stopped: false,
       activeTaskId: null,
       events: [],
@@ -326,8 +334,21 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
     // events on the observe() stream (the contract documented in
     // vibesync-f5g), not as synchronous throws from prompt().
     state.promptDone = (async () => {
-      if (!state.conversationId) {
-        state.conversationId = await this.createConversation(state.parentAgentId);
+      // vibesync-ctla: always ensure the conversation exists on the shim
+      // before sending. If the dispatcher minted a per-step conversationId,
+      // create it WITH that id (the shim honors a client-supplied id);
+      // otherwise create a fresh server-assigned one. Previously this only
+      // created a conversation when state.conversationId was empty, so a
+      // caller-supplied (never-created) id 404'd on the first message.
+      if (!state.conversationCreated) {
+        const desiredId = state.conversationId;
+        const createdId = await this.createConversation(state.parentAgentId, desiredId);
+        // When we asked for a specific id (dispatcher-minted per-step conv),
+        // keep it authoritative — the shim honors the supplied id even if a
+        // given backend doesn't echo it back. Otherwise adopt the
+        // server-assigned id.
+        state.conversationId = desiredId ?? createdId;
+        state.conversationCreated = true;
       }
       await this.runPromptStream(state, puppet);
     })().catch((err: unknown) => {
@@ -408,12 +429,20 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
   // Internals
   // ──────────────────────────────────────────────────────────────────
 
-  private async createConversation(parentAgentId: string): Promise<string> {
+  private async createConversation(parentAgentId: string, desiredId?: string | null): Promise<string> {
     const url = `${this.opts.shimBaseUrl}/v1/conversations`;
+    // vibesync-ctla: when the dispatcher mints a per-step conversation_id
+    // (Phase D isolation), the shim store has no such conversation yet, so
+    // POSTing the turn to /v1/conversations/<id>/messages 404s. The shim's
+    // POST /v1/conversations accepts a client-supplied `id`, so create the
+    // conversation with the desired id up front. Without a desiredId, the
+    // shim assigns one.
+    const body: Record<string, unknown> = { agent_id: parentAgentId };
+    if (desiredId) body['id'] = desiredId;
     const res = await this.opts.fetchImpl(url, {
       method: 'POST',
       headers: this.headers({ json: true }),
-      body: JSON.stringify({ agent_id: parentAgentId }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       const body = await safeReadText(res);

@@ -268,8 +268,20 @@ describe('LettaCodeSubagentProvider', () => {
       await provider.prompt(handle, [{ type: 'text', text: 'pick up where we left off' }]);
       await drain(provider, handle);
 
-      expect(calls.find((c) => c.url.endsWith('/v1/conversations'))).toBeUndefined();
-      expect(calls[0]!.url).toBe('http://localhost:8291/v1/conversations/conv-resume/messages');
+      // vibesync-ctla: a caller-supplied conversationId is created WITH that
+      // id on the shim before the first message, otherwise the message POST
+      // 404s (the shim store has no such conversation yet). The shim honors
+      // a client-supplied `id`, so we POST /v1/conversations { agent_id, id }
+      // and then send to /v1/conversations/<id>/messages.
+      const createCall = calls.find((c) => c.url.endsWith('/v1/conversations'));
+      expect(createCall).toBeDefined();
+      expect(JSON.parse(createCall!.init!.body as string)).toMatchObject({
+        agent_id: 'agent-pm',
+        id: 'conv-resume',
+      });
+      expect(calls[calls.length - 1]!.url).toBe(
+        'http://localhost:8291/v1/conversations/conv-resume/messages',
+      );
     });
   });
 
@@ -577,10 +589,18 @@ describe('LettaCodeSubagentProvider', () => {
       await provider.prompt(handle, [{ type: 'text', text: 'go' }]);
       await drain(provider, handle);
 
-      // No conversation creation roundtrip (we already have the id).
-      expect(calls.find((c) => c.url.endsWith('/v1/conversations'))).toBeUndefined();
-      // First call must be the message POST against the supplied conv id.
-      expect(calls[0]!.url).toBe('http://localhost:8291/v1/conversations/conv-iso-7/messages');
+      // vibesync-ctla: the supplied per-dispatch conversation id is created
+      // on the shim WITH that id before sending, then the message POSTs
+      // against it. (Previously creation was skipped, which 404'd because
+      // the dispatcher-minted conversation did not exist in the shim store.)
+      const createCall = calls.find((c) => c.url.endsWith('/v1/conversations'));
+      expect(createCall).toBeDefined();
+      expect(JSON.parse(createCall!.init!.body as string)).toMatchObject({
+        id: 'conv-iso-7',
+      });
+      expect(calls[calls.length - 1]!.url).toBe(
+        'http://localhost:8291/v1/conversations/conv-iso-7/messages',
+      );
     });
 
     it('resolver receives null projectIdentifier when extra.projectIdentifier is omitted', async () => {
