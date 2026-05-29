@@ -397,10 +397,22 @@ async function main(): Promise<void> {
   if (ENABLE_ORCHESTRATION) {
     try {
       const dolt = new DoltClient();
+      const { RoleAgentBootstrapper } = await import('./letta/RoleAgentBootstrapper.js');
+      const roleAgentBootstrapper = new RoleAgentBootstrapper({
+        repo: {
+          getRoleAgent: db.getRoleAgent.bind(db),
+          upsertRoleAgent: db.upsertRoleAgent.bind(db),
+        },
+        defaultModel: 'lmstudio/sonnet-4-5',
+        // memfs: true is the default in RoleAgentBootstrapper, no need to pass
+      });
       orchestration = await bootOrchestrationPlane({
         dolt,
         providerRouting: {
           store: { getProjectProviderRouting: db.getProjectProviderRouting.bind(db) },
+          roleAgentBootstrapper,
+          packDirsByProject: { 'letta-code-parallel': 'packs/gastown' },
+          storageDirsByProject: { 'letta-code-parallel': '/root/.letta/lc-local-backend' },
         },
       });
       logger.info(

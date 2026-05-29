@@ -62,6 +62,40 @@ describe('bootOrchestrationPlane', () => {
 
     await handle.shutdown();
   });
+
+  it('wires roleAgentBootstrapper when all deps are present', async () => {
+    const fakeBootstrapper = {
+      async ensureRoleAgent() {
+        return { agentId: 'agent-test-role' } as never;
+      },
+    };
+    const handle = await bootForTest(
+      {},
+      {
+        providerRouting: {
+          store: {
+            getProjectProviderRouting(projectIdentifier) {
+              if (projectIdentifier !== 'test-project') return null;
+              return {
+                lettaBaseUrl: 'http://shim:8291',
+                providerKind: 'letta-code-subagent',
+                parentAgentId: 'agent-project-parent',
+              };
+            },
+          },
+          roleAgentBootstrapper: fakeBootstrapper,
+          packDirsByProject: { 'test-project': '/packs/test' },
+          storageDirsByProject: { 'test-project': '/storage/test' },
+        },
+      },
+    );
+
+    expect(handle.dispatcher).toBeDefined();
+    // The dispatcher should have a roleAgentContextResolver wired
+    expect((handle.dispatcher as never as { roleAgentContextResolver?: unknown }).roleAgentContextResolver).toBeDefined();
+
+    await handle.shutdown();
+  });
 });
 
 async function bootForTest(
