@@ -286,12 +286,19 @@ describe('LettaCodeSubagentProvider', () => {
   });
 
   describe('approval halt tolerance', () => {
-    it('surfaces stop_reason=requires_approval as a turn-done event, not an error', async () => {
+    it('treats requires_approval as non-terminal; turn ends on the real terminal stop (vibesync-ltrf)', async () => {
+      // Under the shim's bypassPermissions mode the PM's Agent/tool call
+      // emits stop_reason=requires_approval, the shim auto-approves, and the
+      // turn continues to a real terminal stop (end_turn). The provider must
+      // NOT surface the intermediate requires_approval as turn-done, or the
+      // dispatcher ends the step on an intermediate event and the uuas guard
+      // fails it spuriously (the tester-step flake).
       const { fetchImpl } = makeFakeFetch({
         conversationId: 'conv-approval',
         sseFrames: [
           frame({ type: 'tool_call', tool_name: 'Agent' }),
           frame({ type: 'stop', stop_reason: 'requires_approval' }),
+          frame({ type: 'stop', stop_reason: 'end_turn' }),
         ],
       });
       const provider = new LettaCodeSubagentProvider({
@@ -306,11 +313,22 @@ describe('LettaCodeSubagentProvider', () => {
       await provider.prompt(handle, [{ type: 'text', text: 'pls review' }]);
       const events = await drain(provider, handle);
 
-      const last = events[events.length - 1]!;
-      expect(last.kind).toBe('turn-done');
-      const td = last as Extract<SessionEvent, { kind: 'turn-done' }>;
-      expect(td.stopReason).toBe('requires_approval');
+      // Exactly one turn-done, and it is the terminal end_turn — not the
+      // intermediate requires_approval.
+      const turnDones = events.filter(
+        (e) => e.kind === 'turn-done',
+      ) as Array<Extract<SessionEvent, { kind: 'turn-done' }>>;
+      expect(turnDones).toHaveLength(1);
+      expect(turnDones[0]!.stopReason).toBe('end_turn');
       expect(events.find((e) => e.kind === 'error')).toBeUndefined();
+      // No turn-done should carry requires_approval.
+      expect(
+        events.some(
+          (e) =>
+            e.kind === 'turn-done' &&
+            (e as Extract<SessionEvent, { kind: 'turn-done' }>).stopReason === 'requires_approval',
+        ),
+      ).toBe(false);
     });
   });
 
@@ -779,14 +797,19 @@ describe('translateShimEvent', () => {
     }
   });
 
-  it('passes stop_reason through to turn-done', () => {
-    const out = translateShimEvent({ type: 'stop', data: { stop_reason: 'requires_approval' } });
+  it('passes a terminal stop_reason through to turn-done', () => {
+    const out = translateShimEvent({ type: 'stop', data: { stop_reason: 'end_turn' } });
     expect(out.events).toHaveLength(1);
     const ev = out.events[0]!;
     expect(ev.kind).toBe('turn-done');
     if (ev.kind === 'turn-done') {
-      expect(ev.stopReason).toBe('requires_approval');
+      expect(ev.stopReason).toBe('end_turn');
     }
+  });
+
+  it('does NOT emit turn-done for requires_approval (non-terminal under bypassPermissions; vibesync-ltrf)', () => {
+    const out = translateShimEvent({ type: 'stop', data: { stop_reason: 'requires_approval' } });
+    expect(out.events).toHaveLength(0);
   });
 
   it('passes vanilla stop_reason frames through to turn-done', () => {

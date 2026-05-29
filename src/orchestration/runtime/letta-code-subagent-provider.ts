@@ -802,6 +802,20 @@ export function translateShimEvent(frame: ShimFrameEvent): TranslatedFrame {
     case 'message_stop':
     case 'stop_reason': {
       const reason = readString(data['stop_reason']) ?? readString(data['reason']) ?? undefined;
+      // vibesync-ltrf: `requires_approval` is NOT a terminal stop under the
+      // shim's bypassPermissions mode — the PM's Agent/tool call emits it,
+      // then the shim immediately follows with an `auto_approval` frame and
+      // the turn continues to a real terminal stop (`end_turn`). Emitting a
+      // turn-done here makes the dispatcher's observe loop end the step on
+      // an intermediate event (a race against the real end_turn), and the
+      // uuas guard then fails the step even though work continued. Treat it
+      // as a non-terminal intermediate: emit nothing and wait for the real
+      // terminal stop_reason. A genuinely un-approved halt (no auto_approval,
+      // e.g. permissionMode=default with no approver) still terminates via
+      // the SSE stream close -> the consumeSseBody turn-done fallback.
+      if (reason === 'requires_approval') {
+        return { events: [] };
+      }
       return { events: [reason ? { kind: 'turn-done', ts, stopReason: reason } : { kind: 'turn-done', ts }] };
     }
     case 'done':
