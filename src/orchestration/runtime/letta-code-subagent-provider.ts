@@ -441,7 +441,12 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
       res = await this.opts.fetchImpl(url, {
         method: 'POST',
         headers: this.headers({ json: true, sse: true }),
-        body: JSON.stringify({ role: 'user', content: puppet }),
+        // admin-shim's /v1/conversations/:id/messages handler accepts
+        // `input`, `text`, or Letta-style `messages[]`, but NOT a bare
+        // top-level { role, content } envelope. Sending `input` keeps the
+        // provider aligned with the shim's accepted contract and avoids
+        // 400 {"detail":"missing user text"} failures on dispatch.
+        body: JSON.stringify({ input: puppet }),
         signal: ac.signal,
       });
     } catch (err) {
