@@ -37,3 +37,17 @@ Produce a numbered plan with one step per role-hand-off. For each step:
 
 If the request is unclear, ask one targeted clarifying question
 instead of guessing.
+
+## Concrete task input
+
+This is the actual user/request payload for this dispatch. Treat it as
+the work to plan; do not ask for the task again unless this section is
+empty or contradictory.
+
+```
+${input}
+```
+
+## Prior step outputs
+
+${prior_outputs}

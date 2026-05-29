@@ -829,11 +829,22 @@ function sessionEventPayload(event: SessionEvent): Readonly<Record<string, unkno
 }
 
 function renderContext(input: string, outputs: Readonly<Record<string, string>>): Readonly<Record<string, string | number | boolean>> {
-  const context: Record<string, string> = { input };
+  const context: Record<string, string> = {
+    input,
+    prior_outputs: formatPriorOutputs(outputs),
+  };
   for (const [stepName, output] of Object.entries(outputs)) {
     context[`prior_${stepName}`] = output;
   }
   return context;
+}
+
+function formatPriorOutputs(outputs: Readonly<Record<string, string>>): string {
+  const entries = Object.entries(outputs);
+  if (entries.length === 0) return 'No prior step outputs yet.';
+  return entries
+    .map(([stepName, output]) => [`## ${stepName}`, output.trim() || '(empty output)'].join('\n'))
+    .join('\n\n');
 }
 
 function readStepName(row: BeadRow): string {
