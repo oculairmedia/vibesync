@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { SyncDatabase } from '../../src/database';
 import fs from 'fs';
 import path from 'path';
+import { randomUUID } from 'crypto';
 
 describe('SyncDatabase', () => {
   let db;
@@ -15,7 +16,7 @@ describe('SyncDatabase', () => {
 
   beforeEach(() => {
     // Create unique test database for each test
-    testDbPath = path.join(process.env.DB_PATH.replace('.db', `-${Date.now()}.db`));
+    testDbPath = process.env.DB_PATH.replace('.db', `-${process.pid}-${Date.now()}-${randomUUID()}.db`);
     db = new SyncDatabase(testDbPath);
     db.initialize();
   });
