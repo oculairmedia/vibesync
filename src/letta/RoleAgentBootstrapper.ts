@@ -140,7 +140,19 @@ export interface RoleAgentBootstrapperDeps {
  * Default model — PM-vibesync runs on this so role agents should too
  * (same backend, same proxy, same approvals.json semantics).
  */
-const DEFAULT_MODEL = 'anthropic/claude-opus-4-7';
+// vibesync-0u15: role subagents previously defaulted to
+// 'anthropic/claude-opus-4-7', a reasoning-enabled handle. When the
+// general-purpose subagent (model: auto) inherited a reasoning model,
+// the local backend built an Anthropic `thinking: { type: "enabled" }`
+// block without budget_tokens, which Anthropic rejects with
+// `thinking.enabled.budget_tokens: Field required`, failing every
+// nested subagent dispatch. Default to an available Sonnet handle in
+// the shim's served `lmstudio/*` namespace (same convention the
+// working primary agents use, which resolve with enable_reasoner=false)
+// so no reasoning/thinking block is constructed. Override with
+// VIBESYNC_ROLE_AGENT_MODEL if a deployment wants a different model.
+const DEFAULT_MODEL =
+  process.env['VIBESYNC_ROLE_AGENT_MODEL'] ?? 'lmstudio/sonnet-4-5';
 
 export class RoleAgentBootstrapper {
   private readonly repo: RoleAgentRepository;
@@ -242,7 +254,14 @@ export class RoleAgentBootstrapper {
       ],
     };
 
-    const agentId = await this.sdk.createAgent(options);
+    // vibesync-tr3e/razp: the HTTP adapter needs to know which shim to POST
+    // to. CreateAgentOptions has no base-url field, so pass it through an
+    // adapter-private extension the shim adapter reads and the SDK adapter
+    // ignores. (lettaBaseUrl is the per-project shim, e.g. http://localhost:8291.)
+    const agentId = await this.sdk.createAgent({
+      ...options,
+      lettaBaseUrl: input.lettaBaseUrl,
+    } as CreateAgentOptions & { lettaBaseUrl?: string });
     if (typeof agentId !== 'string' || agentId.length === 0) {
       throw new Error(
         `RoleAgentBootstrapper: SDK createAgent returned an invalid agent id ` +
@@ -314,7 +333,72 @@ export class RoleAgentBootstrapper {
 // Default SDK adapter
 // ──────────────────────────────────────────────────────────────────────
 
+/**
+ * vibesync-tr3e/razp: default adapter creates the agent via the admin-shim's
+ * POST /v1/agents endpoint (HTTP) instead of spawning letta-code's createAgent
+ * CLI. The CLI path invoked --system-custom, which the bundled letta.js 0.26.3
+ * rejects as ambiguous; and it duplicated letta-code-spawn responsibility in
+ * vibesync. The shim is the single store owner — it writes the agent record
+ * directly. We map CreateAgentOptions -> the shim's create body.
+ *
+ * Falls back to the SDK createAgent only if no lettaBaseUrl is supplied
+ * (preserves the old behavior for callers/tests that don't route through a shim).
+ */
+export function createHttpShimAdapter(
+  fetchImpl: typeof fetch = fetch,
+): RoleAgentSdkAdapter {
+  return {
+    async createAgent(
+      options: CreateAgentOptions & { lettaBaseUrl?: string },
+    ): Promise<string> {
+      const baseUrl = options.lettaBaseUrl;
+      if (!baseUrl) {
+        // No shim target — fall back to the SDK spawn path.
+        return sdkCreateAgent(options);
+      }
+      const url = `${baseUrl.replace(/\/+$/, '')}/v1/agents`;
+      const body: Record<string, unknown> = {
+        ...(options.model ? { model: options.model } : {}),
+        ...(typeof options.systemPrompt === 'string'
+          ? { system: options.systemPrompt }
+          : {}),
+        ...(Array.isArray(options.tags) ? { tags: options.tags } : {}),
+      };
+      const res = await fetchImpl(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(
+          `RoleAgentBootstrapper: shim POST /v1/agents failed (${res.status}): ${text}`,
+        );
+      }
+      const json = (await res.json()) as { id?: string };
+      if (!json.id) {
+        throw new Error(
+          `RoleAgentBootstrapper: shim POST /v1/agents returned no id (body=${JSON.stringify(json)})`,
+        );
+      }
+      return json.id;
+    },
+  };
+}
+
 function createDefaultSdkAdapter(): RoleAgentSdkAdapter {
+  // Default to the HTTP shim adapter (razp). Kept callable for explicit
+  // SDK-spawn use if a deployment wants it.
+  return createHttpShimAdapter();
+}
+
+/**
+ * Explicit SDK-spawn adapter (the pre-razp behavior). Exported as an escape
+ * hatch for deployments that genuinely want vibesync to spawn letta-code's
+ * createAgent CLI directly rather than route through the shim's HTTP create.
+ * Not the default — see createDefaultSdkAdapter (HTTP shim adapter).
+ */
+export function createSdkSpawnAdapter(): RoleAgentSdkAdapter {
   return {
     async createAgent(options: CreateAgentOptions): Promise<string> {
       return sdkCreateAgent(options);

@@ -40,3 +40,21 @@ coder to iterate.
 
 Keep the detail tight. The coder will read the relevant test files
 directly if needed.
+
+## Concrete task input
+
+This is the original user/request payload for this dispatch. It gives
+the feature/change intent and repository context; do not ask for the
+task again unless it is empty or contradictory.
+
+```
+${input}
+```
+
+## Prior step outputs / handoff
+
+Use these outputs to decide what to verify. For code-review this usually
+means coder's changes; for onboard-feature this is the full chain from
+Mayor through Reviewer.
+
+${prior_outputs}

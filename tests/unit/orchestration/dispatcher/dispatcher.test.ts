@@ -73,6 +73,45 @@ describe('FormulaDispatcher', () => {
     expect(coderPrompt?.type === 'text' ? coderPrompt.text : '').toContain('Input: top-level task');
   });
 
+  it('threads all prior outputs into the generic prior_outputs prompt context', async () => {
+    const formula: Formula = {
+      name: 'handoff-chain',
+      description: 'Handoff chain',
+      whenToUse: '',
+      steps: [
+        { name: 'mayor', role: 'mayor', promptTemplate: 'prompts/mayor.md', waitFor: 'completion' },
+        { name: 'coder', role: 'coder', promptTemplate: 'prompts/coder.md', dependsOn: ['mayor'], waitFor: 'completion' },
+        { name: 'reviewer', role: 'reviewer', promptTemplate: 'prompts/reviewer.md', dependsOn: ['coder'], waitFor: 'completion' },
+      ],
+    };
+    const pack = newPack({
+      roles: ['mayor', 'coder', 'reviewer'],
+      prompts: {
+        'prompts/mayor.md': 'Task: ${input}\nPrior: ${prior_outputs}',
+        'prompts/coder.md': 'Task: ${input}\nHandoff:\n${prior_outputs}',
+        'prompts/reviewer.md': 'Task: ${input}\nHandoff:\n${prior_outputs}',
+      },
+    });
+    const { dispatcher, provider } = newHarness({
+      script: scriptByRole({
+        mayor: 'mayor spec',
+        coder: 'coder patch summary',
+        reviewer: 'review verdict',
+      }),
+    });
+
+    await dispatcher.run({ formula, pack, input: 'build concrete feature' });
+
+    const mayorPrompt = provider.recorder.prompts[0]?.content[0];
+    const coderPrompt = provider.recorder.prompts[1]?.content[0];
+    const reviewerPrompt = provider.recorder.prompts[2]?.content[0];
+    expect(mayorPrompt?.type === 'text' ? mayorPrompt.text : '').toContain('No prior step outputs yet.');
+    expect(coderPrompt?.type === 'text' ? coderPrompt.text : '').toContain('## mayor\nmayor spec');
+    expect(coderPrompt?.type === 'text' ? coderPrompt.text : '').toContain('Task: build concrete feature');
+    expect(reviewerPrompt?.type === 'text' ? reviewerPrompt.text : '').toContain('## mayor\nmayor spec');
+    expect(reviewerPrompt?.type === 'text' ? reviewerPrompt.text : '').toContain('## coder\ncoder patch summary');
+  });
+
   it('fails the current step and does not start successors when the provider emits an error', async () => {
     const { dispatcher, store, provider } = newHarness({
       script: (spec) => eventScript(spec.role === 'reviewer' ? [{ kind: 'error', message: 'review exploded' }] : []),

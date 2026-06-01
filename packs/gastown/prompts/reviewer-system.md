@@ -38,3 +38,19 @@ violations, unsafe patterns.
 ```
 
 If there's nothing to flag, just output the verdict line.
+
+## Concrete task input
+
+This is the original user/request payload for this dispatch. It is the
+change or task context you are reviewing; do not ask for the task again
+unless it is empty or contradictory.
+
+```
+${input}
+```
+
+## Prior step outputs / handoff
+
+Use these outputs to identify what changed and what should be reviewed.
+
+${prior_outputs}

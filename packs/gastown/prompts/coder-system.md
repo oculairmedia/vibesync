@@ -39,3 +39,21 @@ After your edit, report:
 ```
 
 If you couldn't complete the change, say what blocked you and stop.
+
+## Concrete task input
+
+This is the original user/request payload for this dispatch. Use it as
+the top-level intent and repository context; do not ask for the task
+again unless it is empty or contradictory.
+
+```
+${input}
+```
+
+## Prior step outputs / handoff
+
+Use the latest relevant prior output as your immediate spec or review.
+For onboard-feature this usually means Mayor's plan/spec; for
+code-review this usually means Reviewer's concerns.
+
+${prior_outputs}

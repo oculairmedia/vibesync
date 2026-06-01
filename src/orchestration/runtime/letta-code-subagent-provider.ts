@@ -38,13 +38,12 @@
  * # Subagent output extraction
  *
  * The dispatcher concatenates `message-delta.text` events to build the
- * step output (see FormulaDispatcher.runStepAttempt). The PM's
- * assistant_message is too noisy — it includes the PM's preamble
- * around the subagent's reply. We extract the subagent's actual
- * output from the Agent tool's `tool_return` payload (the field is
- * the subagent's stdout/final response) and emit that as a single
- * message-delta. The PM's assistant_message is treated as scaffolding
- * and not added to the output.
+ * step output (see FormulaDispatcher.runStepAttempt). Prefer Agent
+ * tool-return payloads when the shim sends them, because they are the
+ * cleanest representation of the subagent's final response. Newer SDK
+ * shim streams can omit `tool_return_message` and carry the role output
+ * as an `assistant_message` instead, so assistant content is accepted as
+ * a fallback rather than being dropped as scaffolding.
  *
  * # Approval halts
  *
@@ -192,6 +191,13 @@ interface SessionState {
    */
   readonly agentId: string | null;
   conversationId: string | null;
+  /**
+   * vibesync-ctla: tracks whether the conversation has been created on
+   * the shim store yet. A dispatcher-minted conversationId is present
+   * but not yet created; we must POST /v1/conversations (with that id)
+   * before sending the first message, or the message POST 404s.
+   */
+  conversationCreated: boolean;
   stopped: boolean;
   activeTaskId: string | null;
   /**
@@ -282,6 +288,7 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
       personaContent,
       agentId: resolvedAgentId,
       conversationId,
+      conversationCreated: false,
       stopped: false,
       activeTaskId: null,
       events: [],
@@ -327,8 +334,21 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
     // events on the observe() stream (the contract documented in
     // vibesync-f5g), not as synchronous throws from prompt().
     state.promptDone = (async () => {
-      if (!state.conversationId) {
-        state.conversationId = await this.createConversation(state.parentAgentId);
+      // vibesync-ctla: always ensure the conversation exists on the shim
+      // before sending. If the dispatcher minted a per-step conversationId,
+      // create it WITH that id (the shim honors a client-supplied id);
+      // otherwise create a fresh server-assigned one. Previously this only
+      // created a conversation when state.conversationId was empty, so a
+      // caller-supplied (never-created) id 404'd on the first message.
+      if (!state.conversationCreated) {
+        const desiredId = state.conversationId;
+        const createdId = await this.createConversation(state.parentAgentId, desiredId);
+        // When we asked for a specific id (dispatcher-minted per-step conv),
+        // keep it authoritative — the shim honors the supplied id even if a
+        // given backend doesn't echo it back. Otherwise adopt the
+        // server-assigned id.
+        state.conversationId = desiredId ?? createdId;
+        state.conversationCreated = true;
       }
       await this.runPromptStream(state, puppet);
     })().catch((err: unknown) => {
@@ -409,12 +429,20 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
   // Internals
   // ──────────────────────────────────────────────────────────────────
 
-  private async createConversation(parentAgentId: string): Promise<string> {
+  private async createConversation(parentAgentId: string, desiredId?: string | null): Promise<string> {
     const url = `${this.opts.shimBaseUrl}/v1/conversations`;
+    // vibesync-ctla: when the dispatcher mints a per-step conversation_id
+    // (Phase D isolation), the shim store has no such conversation yet, so
+    // POSTing the turn to /v1/conversations/<id>/messages 404s. The shim's
+    // POST /v1/conversations accepts a client-supplied `id`, so create the
+    // conversation with the desired id up front. Without a desiredId, the
+    // shim assigns one.
+    const body: Record<string, unknown> = { agent_id: parentAgentId };
+    if (desiredId) body['id'] = desiredId;
     const res = await this.opts.fetchImpl(url, {
       method: 'POST',
       headers: this.headers({ json: true }),
-      body: JSON.stringify({ agent_id: parentAgentId }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       const body = await safeReadText(res);
@@ -441,7 +469,12 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
       res = await this.opts.fetchImpl(url, {
         method: 'POST',
         headers: this.headers({ json: true, sse: true }),
-        body: JSON.stringify({ role: 'user', content: puppet }),
+        // admin-shim's /v1/conversations/:id/messages handler accepts
+        // `input`, `text`, or Letta-style `messages[]`, but NOT a bare
+        // top-level { role, content } envelope. Sending `input` keeps the
+        // provider aligned with the shim's accepted contract and avoids
+        // 400 {"detail":"missing user text"} failures on dispatch.
+        body: JSON.stringify({ input: puppet }),
         signal: ac.signal,
       });
     } catch (err) {
@@ -576,18 +609,20 @@ export function buildPuppetMessage(args: {
 }): string {
   if (args.agentId) {
     return [
-      `[orchestration/subagent-dispatch]`,
+      `[ORCHESTRATION_SUBAGENT_DISPATCH]`,
       ``,
-      `Call the Agent tool exactly once with these arguments:`,
+      `You MUST call the Agent tool exactly once with these arguments.`,
+      `Copy the complete text between <<<TASK_PROMPT_BEGIN>>> and`,
+      `<<<TASK_PROMPT_END>>> into the Agent prompt argument verbatim.`,
       `  subagent_type: ${JSON.stringify(args.subagentType)}`,
       `  agent_id: ${JSON.stringify(args.agentId)}`,
       `  description: ${JSON.stringify(`${args.role} role`)}`,
       `  prompt: |-`,
-      `<<<PROMPT_BEGIN>>>`,
+      `<<<TASK_PROMPT_BEGIN>>>`,
       `# Task`,
       ``,
       `${args.input.trim()}`,
-      `<<<PROMPT_END>>>`,
+      `<<<TASK_PROMPT_END>>>`,
       ``,
       `The subagent at agent_id ${JSON.stringify(args.agentId)} already`,
       `knows its role identity from its persistent system prompt — do`,
@@ -599,13 +634,15 @@ export function buildPuppetMessage(args: {
     ].join('\n');
   }
   return [
-    `[orchestration/subagent-dispatch]`,
+    `[ORCHESTRATION_SUBAGENT_DISPATCH]`,
     ``,
-    `Call the Agent tool exactly once with these arguments:`,
+    `You MUST call the Agent tool exactly once with these arguments.`,
+    `Copy the complete text between <<<TASK_PROMPT_BEGIN>>> and`,
+    `<<<TASK_PROMPT_END>>> into the Agent prompt argument verbatim.`,
     `  subagent_type: ${JSON.stringify(args.subagentType)}`,
     `  description: ${JSON.stringify(`${args.role} role`)}`,
     `  prompt: |-`,
-    `<<<PROMPT_BEGIN>>>`,
+    `<<<TASK_PROMPT_BEGIN>>>`,
     `# Role: ${args.role}`,
     ``,
     `${args.personaContent.trim()}`,
@@ -613,7 +650,7 @@ export function buildPuppetMessage(args: {
     `# Task`,
     ``,
     `${args.input.trim()}`,
-    `<<<PROMPT_END>>>`,
+    `<<<TASK_PROMPT_END>>>`,
     ``,
     `Return ONLY the subagent's final output verbatim. Do not summarize,`,
     `reformat, prefix, or comment on it. The dispatcher consumes your`,
@@ -683,13 +720,14 @@ interface TranslatedFrame {
  * 2026-05-21 against agent-a9db7a7a):
  *
  *   - `message_start` / `start` → started
- *   - `tool_call` → tool-call (also surfaces Agent calls as first-token)
- *   - `tool_return` (Agent) → message-delta with the subagent's output
+ *   - `tool_call` / `tool_call_message` → tool-call (also surfaces
+ *     Agent calls as first-token)
+ *   - `tool_return` / `tool_return_message` (Agent) → message-delta with the subagent's output
  *     (this is THE output the dispatcher concatenates)
  *   - `tool_return` (non-Agent) → tool-result
- *   - `assistant_message` / `assistant_message_delta` → ignored (PM
- *     scaffolding; subagent output is the source of truth)
- *   - `stop` / `message_stop` with stop_reason → turn-done
+ *   - `assistant_message` / `assistant_message_delta` → fallback
+ *     message-delta for SDK shim streams that omit tool-return payloads
+ *   - `stop` / `message_stop` / `stop_reason` with stop_reason → turn-done
  *   - `done` (the [DONE] sentinel) → turn-done if not already emitted
  *   - `error` → error event
  *
@@ -699,7 +737,8 @@ interface TranslatedFrame {
 export function translateShimEvent(frame: ShimFrameEvent): TranslatedFrame {
   const ts = nowIso();
   const data = (frame.data ?? {}) as Record<string, unknown>;
-  switch (frame.type) {
+  const frameType = readString(data['message_type']) ?? frame.type;
+  switch (frameType) {
     case 'start':
     case 'message_start': {
       const taskId = readString(data['id']) ?? readString(data['message_id']);
@@ -708,6 +747,16 @@ export function translateShimEvent(frame: ShimFrameEvent): TranslatedFrame {
     case 'tool_call': {
       const tool = readString(data['tool_name']) ?? readString(data['name']) ?? 'unknown';
       const args = data['args'] ?? data['input'] ?? null;
+      const events: SessionEvent[] = [{ kind: 'tool-call', ts, tool, args }];
+      if (tool === 'Agent' || tool === 'Task') {
+        events.unshift({ kind: 'first-token', ts });
+      }
+      return { events };
+    }
+    case 'tool_call_message': {
+      const toolCall = isRecord(data['tool_call']) ? data['tool_call'] : null;
+      const tool = readString(data['tool_name']) ?? readString(data['name']) ?? readString(toolCall?.['name']) ?? 'unknown';
+      const args = data['args'] ?? data['input'] ?? toolCall?.['arguments'] ?? null;
       const events: SessionEvent[] = [{ kind: 'tool-call', ts, tool, args }];
       if (tool === 'Agent' || tool === 'Task') {
         events.unshift({ kind: 'first-token', ts });
@@ -728,9 +777,45 @@ export function translateShimEvent(frame: ShimFrameEvent): TranslatedFrame {
       }
       return { events };
     }
+    case 'tool_return_message': {
+      const toolReturns = Array.isArray(data['tool_returns']) ? data['tool_returns'] : [];
+      const firstReturn = isRecord(toolReturns[0]) ? toolReturns[0] : null;
+      const tool = readString(data['tool_name']) ?? readString(data['name']) ?? readString(firstReturn?.['name']) ?? 'unknown';
+      const status = readString(data['status']) ?? readString(firstReturn?.['status']);
+      const ok = status !== 'error' && data['is_err'] !== true;
+      const result = data['tool_return'] ?? firstReturn?.['func_response'] ?? data['result'] ?? data['output'] ?? data['content'] ?? null;
+      const events: SessionEvent[] = [];
+      if (tool === 'Agent' || tool === 'Task') {
+        const text = extractSubagentText(result);
+        if (text.length > 0) events.push({ kind: 'message-delta', ts, text });
+      } else {
+        events.push({ kind: 'tool-result', ts, tool, result, ok });
+      }
+      return { events };
+    }
+    case 'assistant_message':
+    case 'assistant_message_delta': {
+      const text = extractSubagentText(data['content'] ?? data['delta'] ?? data['text'] ?? '');
+      return text.length > 0 ? { events: [{ kind: 'message-delta', ts, text }] } : { events: [] };
+    }
     case 'stop':
-    case 'message_stop': {
+    case 'message_stop':
+    case 'stop_reason': {
       const reason = readString(data['stop_reason']) ?? readString(data['reason']) ?? undefined;
+      // vibesync-ltrf: `requires_approval` is NOT a terminal stop under the
+      // shim's bypassPermissions mode — the PM's Agent/tool call emits it,
+      // then the shim immediately follows with an `auto_approval` frame and
+      // the turn continues to a real terminal stop (`end_turn`). Emitting a
+      // turn-done here makes the dispatcher's observe loop end the step on
+      // an intermediate event (a race against the real end_turn), and the
+      // uuas guard then fails the step even though work continued. Treat it
+      // as a non-terminal intermediate: emit nothing and wait for the real
+      // terminal stop_reason. A genuinely un-approved halt (no auto_approval,
+      // e.g. permissionMode=default with no approver) still terminates via
+      // the SSE stream close -> the consumeSseBody turn-done fallback.
+      if (reason === 'requires_approval') {
+        return { events: [] };
+      }
       return { events: [reason ? { kind: 'turn-done', ts, stopReason: reason } : { kind: 'turn-done', ts }] };
     }
     case 'done':
@@ -813,6 +898,10 @@ function readStringExtra(spec: SessionSpec, key: string): string | undefined {
 
 function readString(v: unknown): string | null {
   return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
 function contentToText(content: readonly ContentBlock[]): string {

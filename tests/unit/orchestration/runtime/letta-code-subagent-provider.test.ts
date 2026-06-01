@@ -204,13 +204,15 @@ describe('LettaCodeSubagentProvider', () => {
 
       // Second HTTP call: POST .../messages with the puppet body
       expect(calls[1]!.url).toBe('http://localhost:8291/v1/conversations/conv-abc/messages');
-      const messageBody = JSON.parse(calls[1]!.init!.body as string) as { role: string; content: string };
-      expect(messageBody.role).toBe('user');
-      expect(messageBody.content).toContain('orchestration/subagent-dispatch');
-      expect(messageBody.content).toContain('"general-purpose"');
-      expect(messageBody.content).toContain('# Role: reviewer');
-      expect(messageBody.content).toContain('# Task');
-      expect(messageBody.content).toContain('review commit abc');
+      const messageBody = JSON.parse(calls[1]!.init!.body as string) as { input: string };
+      expect(messageBody.input).toContain('[ORCHESTRATION_SUBAGENT_DISPATCH]');
+      expect(messageBody.input).toContain('"general-purpose"');
+      expect(messageBody.input).toContain('You MUST call the Agent tool exactly once');
+      expect(messageBody.input).toContain('<<<TASK_PROMPT_BEGIN>>>');
+      expect(messageBody.input).toContain('<<<TASK_PROMPT_END>>>');
+      expect(messageBody.input).toContain('# Role: reviewer');
+      expect(messageBody.input).toContain('# Task');
+      expect(messageBody.input).toContain('review commit abc');
 
       // Events: started → first-token + tool-call → message-delta → turn-done
       const kinds = events.map((e) => e.kind);
@@ -266,18 +268,37 @@ describe('LettaCodeSubagentProvider', () => {
       await provider.prompt(handle, [{ type: 'text', text: 'pick up where we left off' }]);
       await drain(provider, handle);
 
-      expect(calls.find((c) => c.url.endsWith('/v1/conversations'))).toBeUndefined();
-      expect(calls[0]!.url).toBe('http://localhost:8291/v1/conversations/conv-resume/messages');
+      // vibesync-ctla: a caller-supplied conversationId is created WITH that
+      // id on the shim before the first message, otherwise the message POST
+      // 404s (the shim store has no such conversation yet). The shim honors
+      // a client-supplied `id`, so we POST /v1/conversations { agent_id, id }
+      // and then send to /v1/conversations/<id>/messages.
+      const createCall = calls.find((c) => c.url.endsWith('/v1/conversations'));
+      expect(createCall).toBeDefined();
+      expect(JSON.parse(createCall!.init!.body as string)).toMatchObject({
+        agent_id: 'agent-pm',
+        id: 'conv-resume',
+      });
+      expect(calls[calls.length - 1]!.url).toBe(
+        'http://localhost:8291/v1/conversations/conv-resume/messages',
+      );
     });
   });
 
   describe('approval halt tolerance', () => {
-    it('surfaces stop_reason=requires_approval as a turn-done event, not an error', async () => {
+    it('treats requires_approval as non-terminal; turn ends on the real terminal stop (vibesync-ltrf)', async () => {
+      // Under the shim's bypassPermissions mode the PM's Agent/tool call
+      // emits stop_reason=requires_approval, the shim auto-approves, and the
+      // turn continues to a real terminal stop (end_turn). The provider must
+      // NOT surface the intermediate requires_approval as turn-done, or the
+      // dispatcher ends the step on an intermediate event and the uuas guard
+      // fails it spuriously (the tester-step flake).
       const { fetchImpl } = makeFakeFetch({
         conversationId: 'conv-approval',
         sseFrames: [
           frame({ type: 'tool_call', tool_name: 'Agent' }),
           frame({ type: 'stop', stop_reason: 'requires_approval' }),
+          frame({ type: 'stop', stop_reason: 'end_turn' }),
         ],
       });
       const provider = new LettaCodeSubagentProvider({
@@ -292,11 +313,22 @@ describe('LettaCodeSubagentProvider', () => {
       await provider.prompt(handle, [{ type: 'text', text: 'pls review' }]);
       const events = await drain(provider, handle);
 
-      const last = events[events.length - 1]!;
-      expect(last.kind).toBe('turn-done');
-      const td = last as Extract<SessionEvent, { kind: 'turn-done' }>;
-      expect(td.stopReason).toBe('requires_approval');
+      // Exactly one turn-done, and it is the terminal end_turn — not the
+      // intermediate requires_approval.
+      const turnDones = events.filter(
+        (e) => e.kind === 'turn-done',
+      ) as Array<Extract<SessionEvent, { kind: 'turn-done' }>>;
+      expect(turnDones).toHaveLength(1);
+      expect(turnDones[0]!.stopReason).toBe('end_turn');
       expect(events.find((e) => e.kind === 'error')).toBeUndefined();
+      // No turn-done should carry requires_approval.
+      expect(
+        events.some(
+          (e) =>
+            e.kind === 'turn-done' &&
+            (e as Extract<SessionEvent, { kind: 'turn-done' }>).stopReason === 'requires_approval',
+        ),
+      ).toBe(false);
     });
   });
 
@@ -438,12 +470,12 @@ describe('LettaCodeSubagentProvider', () => {
       await drain(provider, handle);
 
       const messagePost = calls.find((c) => c.url.includes('/messages'))!;
-      const body = JSON.parse(messagePost.init!.body as string) as { content: string };
+      const body = JSON.parse(messagePost.init!.body as string) as { input: string };
       // Today's contract: persona is inlined under '# Role: reviewer'.
-      expect(body.content).toContain('# Role: reviewer');
-      expect(body.content).toContain('You are the reviewer. Be skeptical.');
+      expect(body.input).toContain('# Role: reviewer');
+      expect(body.input).toContain('You are the reviewer. Be skeptical.');
       // And the puppet must NOT smuggle an agent_id arg.
-      expect(body.content).not.toContain('agent_id');
+      expect(body.input).not.toContain('agent_id');
     });
 
     it('falls back to inline-persona path when resolver returns null', async () => {
@@ -473,10 +505,10 @@ describe('LettaCodeSubagentProvider', () => {
       });
 
       const messagePost = calls.find((c) => c.url.includes('/messages'))!;
-      const body = JSON.parse(messagePost.init!.body as string) as { content: string };
-      expect(body.content).toContain('# Role: reviewer');
-      expect(body.content).toContain('be skeptical');
-      expect(body.content).not.toContain('agent_id');
+      const body = JSON.parse(messagePost.init!.body as string) as { input: string };
+      expect(body.input).toContain('# Role: reviewer');
+      expect(body.input).toContain('be skeptical');
+      expect(body.input).not.toContain('agent_id');
     });
 
     it('dispatches via agent_id and skips persona when resolver returns an id', async () => {
@@ -506,19 +538,19 @@ describe('LettaCodeSubagentProvider', () => {
       await drain(provider, handle);
 
       const messagePost = calls.find((c) => c.url.includes('/messages'))!;
-      const body = JSON.parse(messagePost.init!.body as string) as { content: string };
+      const body = JSON.parse(messagePost.init!.body as string) as { input: string };
       // agent_id tool arg present, persona block absent.
-      expect(body.content).toContain('agent_id: "agent-reviewer-vibesync-1"');
-      expect(body.content).not.toContain('# Role: reviewer');
+      expect(body.input).toContain('agent_id: "agent-reviewer-vibesync-1"');
+      expect(body.input).not.toContain('# Role: reviewer');
       // Sentinel block still wraps the task only.
-      expect(body.content).toContain('<<<PROMPT_BEGIN>>>');
-      expect(body.content).toContain('# Task');
-      expect(body.content).toContain('review abc');
-      expect(body.content).toContain('<<<PROMPT_END>>>');
+      expect(body.input).toContain('<<<TASK_PROMPT_BEGIN>>>');
+      expect(body.input).toContain('# Task');
+      expect(body.input).toContain('review abc');
+      expect(body.input).toContain('<<<TASK_PROMPT_END>>>');
       // Explicit anti-inlining instruction is present so the PM
       // doesn't helpfully add persona text on its own.
-      expect(body.content).toContain('do');
-      expect(body.content).toContain('NOT inline persona');
+      expect(body.input).toContain('do');
+      expect(body.input).toContain('NOT inline persona');
     });
 
     it('extra.agentId overrides the resolver (caller-supplied id wins)', async () => {
@@ -548,9 +580,9 @@ describe('LettaCodeSubagentProvider', () => {
       expect(resolverCalls).toHaveLength(0);
 
       const messagePost = calls.find((c) => c.url.includes('/messages'))!;
-      const body = JSON.parse(messagePost.init!.body as string) as { content: string };
-      expect(body.content).toContain('agent_id: "agent-explicit-override"');
-      expect(body.content).not.toContain('agent-from-resolver');
+      const body = JSON.parse(messagePost.init!.body as string) as { input: string };
+      expect(body.input).toContain('agent_id: "agent-explicit-override"');
+      expect(body.input).not.toContain('agent-from-resolver');
     });
 
     it('honors extra.conversationId on the agent_id path (per-dispatch isolation)', async () => {
@@ -575,10 +607,18 @@ describe('LettaCodeSubagentProvider', () => {
       await provider.prompt(handle, [{ type: 'text', text: 'go' }]);
       await drain(provider, handle);
 
-      // No conversation creation roundtrip (we already have the id).
-      expect(calls.find((c) => c.url.endsWith('/v1/conversations'))).toBeUndefined();
-      // First call must be the message POST against the supplied conv id.
-      expect(calls[0]!.url).toBe('http://localhost:8291/v1/conversations/conv-iso-7/messages');
+      // vibesync-ctla: the supplied per-dispatch conversation id is created
+      // on the shim WITH that id before sending, then the message POSTs
+      // against it. (Previously creation was skipped, which 404'd because
+      // the dispatcher-minted conversation did not exist in the shim store.)
+      const createCall = calls.find((c) => c.url.endsWith('/v1/conversations'));
+      expect(createCall).toBeDefined();
+      expect(JSON.parse(createCall!.init!.body as string)).toMatchObject({
+        id: 'conv-iso-7',
+      });
+      expect(calls[calls.length - 1]!.url).toBe(
+        'http://localhost:8291/v1/conversations/conv-iso-7/messages',
+      );
     });
 
     it('resolver receives null projectIdentifier when extra.projectIdentifier is omitted', async () => {
@@ -615,8 +655,11 @@ describe('buildPuppetMessage', () => {
       input: 'Review commit abc.',
     });
     expect(out).toContain('subagent_type: "general-purpose"');
-    expect(out).toContain('<<<PROMPT_BEGIN>>>');
-    expect(out).toContain('<<<PROMPT_END>>>');
+    expect(out).toContain('[ORCHESTRATION_SUBAGENT_DISPATCH]');
+    expect(out).toContain('You MUST call the Agent tool exactly once');
+    expect(out).toContain('Copy the complete text between <<<TASK_PROMPT_BEGIN>>>');
+    expect(out).toContain('<<<TASK_PROMPT_BEGIN>>>');
+    expect(out).toContain('<<<TASK_PROMPT_END>>>');
     expect(out).toContain('# Role: reviewer');
     expect(out).toContain('You are the reviewer.');
     expect(out).toContain('Review commit abc.');
@@ -646,6 +689,8 @@ describe('buildPuppetMessage', () => {
       agentId: 'agent-reviewer-vibesync-1',
     });
     expect(out).toContain('agent_id: "agent-reviewer-vibesync-1"');
+    expect(out).toContain('<<<TASK_PROMPT_BEGIN>>>');
+    expect(out).toContain('<<<TASK_PROMPT_END>>>');
     expect(out).toContain('# Task');
     expect(out).toContain('Review commit abc.');
     expect(out).not.toContain('SHOULD NOT APPEAR');
@@ -693,10 +738,39 @@ describe('translateShimEvent', () => {
     }
   });
 
+  it('translates vanilla Agent tool_return_message frames as message-delta output', () => {
+    const out = translateShimEvent({
+      type: 'message',
+      data: {
+        message_type: 'tool_return_message',
+        name: 'Agent',
+        status: 'success',
+        tool_return: 'subagent says hi',
+      },
+    });
+    expect(out.events).toHaveLength(1);
+    const ev = out.events[0]!;
+    expect(ev.kind).toBe('message-delta');
+    if (ev.kind === 'message-delta') {
+      expect(ev.text).toBe('subagent says hi');
+    }
+  });
+
   it('emits first-token + tool-call for Agent tool_call', () => {
     const out = translateShimEvent({
       type: 'tool_call',
       data: { tool_name: 'Agent', args: { subagent_type: 'general-purpose' } },
+    });
+    expect(out.events.map((e) => e.kind)).toEqual(['first-token', 'tool-call']);
+  });
+
+  it('emits first-token + tool-call for vanilla Agent tool_call_message frames', () => {
+    const out = translateShimEvent({
+      type: 'message',
+      data: {
+        message_type: 'tool_call_message',
+        tool_call: { name: 'Agent', arguments: '{"subagent_type":"general-purpose"}' },
+      },
     });
     expect(out.events.map((e) => e.kind)).toEqual(['first-token', 'tool-call']);
   });
@@ -710,13 +784,41 @@ describe('translateShimEvent', () => {
     expect(out.events[0]!.kind).toBe('tool-result');
   });
 
-  it('passes stop_reason through to turn-done', () => {
-    const out = translateShimEvent({ type: 'stop', data: { stop_reason: 'requires_approval' } });
+  it('uses vanilla assistant_message content as fallback step output', () => {
+    const out = translateShimEvent({
+      type: 'message',
+      data: { message_type: 'assistant_message', content: 'final role output' },
+    });
+    expect(out.events).toHaveLength(1);
+    const ev = out.events[0]!;
+    expect(ev.kind).toBe('message-delta');
+    if (ev.kind === 'message-delta') {
+      expect(ev.text).toBe('final role output');
+    }
+  });
+
+  it('passes a terminal stop_reason through to turn-done', () => {
+    const out = translateShimEvent({ type: 'stop', data: { stop_reason: 'end_turn' } });
     expect(out.events).toHaveLength(1);
     const ev = out.events[0]!;
     expect(ev.kind).toBe('turn-done');
     if (ev.kind === 'turn-done') {
-      expect(ev.stopReason).toBe('requires_approval');
+      expect(ev.stopReason).toBe('end_turn');
+    }
+  });
+
+  it('does NOT emit turn-done for requires_approval (non-terminal under bypassPermissions; vibesync-ltrf)', () => {
+    const out = translateShimEvent({ type: 'stop', data: { stop_reason: 'requires_approval' } });
+    expect(out.events).toHaveLength(0);
+  });
+
+  it('passes vanilla stop_reason frames through to turn-done', () => {
+    const out = translateShimEvent({ type: 'message', data: { message_type: 'stop_reason', stop_reason: 'end_turn' } });
+    expect(out.events).toHaveLength(1);
+    const ev = out.events[0]!;
+    expect(ev.kind).toBe('turn-done');
+    if (ev.kind === 'turn-done') {
+      expect(ev.stopReason).toBe('end_turn');
     }
   });
 

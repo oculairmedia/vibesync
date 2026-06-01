@@ -6,6 +6,7 @@ import {
   loadPack,
   validatePackPath,
 } from '../../../src/orchestration/packs/index.js';
+import { renderTemplate } from '../../../src/orchestration/dispatcher/render.js';
 
 /**
  * Integration: the gastown pack at packs/gastown/ loads cleanly and
@@ -65,6 +66,31 @@ describe('gastown pack', () => {
     const f = pack.formulas.find((x) => x.name === 'onboard-feature');
     expect(f).toBeDefined();
     expect(f!.steps.map((s) => s.role)).toEqual(['mayor', 'coder', 'reviewer', 'tester']);
+  });
+
+  it('onboard-feature role prompt templates render concrete input and prior handoff context', () => {
+    const pack = loadPack(PACK_ROOT, 'project');
+    const f = pack.formulas.find((x) => x.name === 'onboard-feature');
+    expect(f).toBeDefined();
+
+    for (const step of f!.steps) {
+      const rendered = renderTemplate({
+        packRoot: pack.root,
+        template: step.promptTemplate!,
+        context: {
+          input: 'Build the onboarding feature in /opt/stacks/example.',
+          prior_outputs: '## mayor\nUse src/onboarding.ts and add tests.',
+          prior_mayor: 'Use src/onboarding.ts and add tests.',
+          prior_coder: 'Changed src/onboarding.ts and tests/onboarding.test.ts.',
+          prior_reviewer: 'LGTM-with-nits',
+        },
+      });
+
+      expect(rendered).toContain('Build the onboarding feature in /opt/stacks/example.');
+      expect(rendered).toContain('## mayor\nUse src/onboarding.ts and add tests.');
+      expect(rendered).not.toContain('${input}');
+      expect(rendered).not.toContain('${prior_outputs}');
+    }
   });
 
   it('refinery-sweep is a single-step formula', () => {

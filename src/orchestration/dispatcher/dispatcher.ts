@@ -659,7 +659,20 @@ export class FormulaDispatcher {
         if (event.kind === 'message-delta') output += event.text;
         if (event.kind === 'error') throw new Error(event.message);
         if (event.kind === 'stopped') throw new Error('runtime stopped before turn completion');
-        if (event.kind === 'turn-done') break;
+        if (event.kind === 'turn-done') {
+          // vibesync-uuas: a turn that ended on requires_approval did NOT
+          // do the work — the agent halted waiting for an approver that
+          // never comes on the headless dispatch path. Treating it as
+          // success closes the step green with empty output (silent
+          // failure). Fail the step instead so retries/visibility kick in.
+          if (event.stopReason === 'requires_approval') {
+            throw new Error(
+              'runtime halted on requires_approval — no approver attached for headless dispatch; ' +
+                'the Agent/tool call never executed (set SHIM_PERMISSION_MODE=bypassPermissions on the shim)',
+            );
+          }
+          break;
+        }
       }
       return { text: output, eventCount };
     } finally {
@@ -816,11 +829,22 @@ function sessionEventPayload(event: SessionEvent): Readonly<Record<string, unkno
 }
 
 function renderContext(input: string, outputs: Readonly<Record<string, string>>): Readonly<Record<string, string | number | boolean>> {
-  const context: Record<string, string> = { input };
+  const context: Record<string, string> = {
+    input,
+    prior_outputs: formatPriorOutputs(outputs),
+  };
   for (const [stepName, output] of Object.entries(outputs)) {
     context[`prior_${stepName}`] = output;
   }
   return context;
+}
+
+function formatPriorOutputs(outputs: Readonly<Record<string, string>>): string {
+  const entries = Object.entries(outputs);
+  if (entries.length === 0) return 'No prior step outputs yet.';
+  return entries
+    .map(([stepName, output]) => [`## ${stepName}`, output.trim() || '(empty output)'].join('\n'))
+    .join('\n\n');
 }
 
 function readStepName(row: BeadRow): string {

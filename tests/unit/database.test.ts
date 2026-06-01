@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { SyncDatabase } from '../../src/database';
 import fs from 'fs';
 import path from 'path';
+import { randomUUID } from 'crypto';
 
 describe('SyncDatabase', () => {
   let db;
@@ -15,7 +16,7 @@ describe('SyncDatabase', () => {
 
   beforeEach(() => {
     // Create unique test database for each test
-    testDbPath = path.join(process.env.DB_PATH.replace('.db', `-${Date.now()}.db`));
+    testDbPath = process.env.DB_PATH.replace('.db', `-${process.pid}-${Date.now()}-${randomUUID()}.db`);
     db = new SyncDatabase(testDbPath);
     db.initialize();
   });
@@ -801,7 +802,7 @@ describe('SyncDatabase', () => {
     describe('provider routing (vibesync-f5g)', () => {
       it('returns nulls for a project with no override (default routing)', () => {
         const routing = db.getProjectProviderRouting('TEST');
-        expect(routing).toEqual({ lettaBaseUrl: null, providerKind: null });
+        expect(routing).toEqual({ lettaBaseUrl: null, providerKind: null, parentAgentId: null });
       });
 
       it('returns null when the project does not exist', () => {
@@ -820,6 +821,24 @@ describe('SyncDatabase', () => {
         expect(routing).toEqual({
           lettaBaseUrl: 'http://192.168.50.90:8291',
           providerKind: 'letta-code-subagent',
+          parentAgentId: null,
+        });
+      });
+
+      it('reads the project Letta agent id as the provider parent agent id', () => {
+        db.setProjectLettaAgent('TEST', {
+          agentId: 'agent-routing-parent',
+        });
+        db.setProjectProviderRouting('TEST', {
+          lettaBaseUrl: 'http://localhost:8291',
+          providerKind: 'letta-code-subagent',
+        });
+
+        const routing = db.getProjectProviderRouting('TEST');
+        expect(routing).toEqual({
+          lettaBaseUrl: 'http://localhost:8291',
+          providerKind: 'letta-code-subagent',
+          parentAgentId: 'agent-routing-parent',
         });
       });
 
@@ -861,7 +880,7 @@ describe('SyncDatabase', () => {
         });
 
         const routing = db.getProjectProviderRouting('TEST');
-        expect(routing).toEqual({ lettaBaseUrl: null, providerKind: null });
+        expect(routing).toEqual({ lettaBaseUrl: null, providerKind: null, parentAgentId: null });
       });
     });
 

@@ -2,6 +2,7 @@ import pino from 'pino';
 
 const isDevelopment = process.env.NODE_ENV !== 'production';
 const logLevel = process.env.LOG_LEVEL || (isDevelopment ? 'debug' : 'info');
+const prettyLogsEnabled = isDevelopment && process.env.NO_PRETTY_LOGS !== '1';
 
 const loggerConfig: pino.LoggerOptions = {
   level: logLevel,
@@ -29,7 +30,7 @@ const loggerConfig: pino.LoggerOptions = {
   },
 };
 
-if (isDevelopment) {
+if (prettyLogsEnabled) {
   loggerConfig.transport = {
     target: 'pino-pretty',
     options: {
