@@ -89,22 +89,23 @@ export interface BootOrchestrationProviderRoutingOptions {
    * resulting agentId through extra.agentId so the provider
    * dispatches against the persistent role agent (Phase C path).
    *
-   * `packDirsByProject` is a static map of projectIdentifier →
-   * absolute pack root (the directory that contains
-   * `.letta/agents/<role>.md`). Missing entries fall through to the
-   * inline-persona path.
-   *
-   * `storageDirsByProject` is a static map of projectIdentifier →
-   * absolute local-backend storage dir (where the persistent agent
-   * JSON files live). Missing entries fall through to the inline
-   * path.
-   *
-   * Either map missing for a given project = no persistent bootstrap
-   * for that project = today's behavior. This keeps the rollout
-   * project-by-project rather than backend-wide.
+   * lcp-kamu: packDir and storageDir are now read from the
+   * projects.pack_dir and projects.storage_dir DB columns with
+   * defaults (packs/gastown, /root/.letta/lc-local-backend).
+   * packDirsByProject and storageDirsByProject are DEPRECATED
+   * legacy maps kept for backward-compat; new projects should leave
+   * these DB columns null to use the defaults (no source edit required).
    */
   readonly roleAgentBootstrapper?: RoleAgentBootstrapperLike;
+  /**
+   * @deprecated lcp-kamu: Use projects.pack_dir column instead.
+   * Legacy static map for tests.
+   */
   readonly packDirsByProject?: Readonly<Record<string, string>>;
+  /**
+   * @deprecated lcp-kamu: Use projects.storage_dir column instead.
+   * Legacy static map for tests.
+   */
   readonly storageDirsByProject?: Readonly<Record<string, string>>;
 }
 
@@ -304,10 +305,15 @@ export function buildProviderResolver(opts: BootOrchestrationProviderRoutingOpti
 }
 
 /**
- * vibesync-mcz Phase D — construct the dispatcher's persistent
-  * role-agent bootstrap context resolver. Returns null when the project
-  * is not on the letta-code-subagent path or when the
-  * bootstrapper/pack-dir/storage-dir mapping isn't supplied.
+ * vibesync-mcz Phase D / lcp-kamu — construct the dispatcher's persistent
+ * role-agent bootstrap context resolver. Returns null when the project
+ * is not on the letta-code-subagent path or when the
+ * bootstrapper/pack-dir/storage-dir mapping isn't available.
+ *
+ * lcp-kamu: packDir and storageDir now come from the projects DB row
+ * (projects.pack_dir, projects.storage_dir) with sensible defaults when
+ * NULL. This removes the hardcoded map requirement — new projects
+ * onboard with zero source edits.
  *
  * Exported for unit tests; production callers go through
  * bootOrchestrationPlane.
@@ -315,20 +321,64 @@ export function buildProviderResolver(opts: BootOrchestrationProviderRoutingOpti
 export function buildRoleAgentContextResolver(
   opts: BootOrchestrationProviderRoutingOptions,
 ): RoleAgentBootstrapContextResolver {
+  const DEFAULT_PACK_DIR = 'packs/gastown';
+  const DEFAULT_STORAGE_DIR = '/root/.letta/lc-local-backend';
+
   return {
     resolve(input) {
       const projectId = input.projectIdentifier;
-      if (!projectId) return null;
+      if (!projectId) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          '[boot] buildRoleAgentContextResolver: no projectIdentifier in input — cannot resolve role-agent context',
+        );
+        return null;
+      }
+
       const row = opts.store.getProjectProviderRouting(projectId);
-      if (!row || row.providerKind !== 'letta-code-subagent') return null;
+      if (!row) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[boot] buildRoleAgentContextResolver: project '${projectId}' has no provider routing row — coder dispatch will fail`,
+        );
+        return null;
+      }
+
+      if (row.providerKind !== 'letta-code-subagent') {
+        // Expected for projects not using letta-code-subagent; no warning needed.
+        return null;
+      }
+
       const bootstrapper = opts.roleAgentBootstrapper;
-      const packDir = opts.packDirsByProject?.[projectId];
-      const storageDir = opts.storageDirsByProject?.[projectId];
+      if (!bootstrapper) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[boot] buildRoleAgentContextResolver: project '${projectId}' routes to letta-code-subagent but no bootstrapper configured — coder dispatch will fail`,
+        );
+        return null;
+      }
+
+      // lcp-kamu: read from DB row, fall back to legacy map, then use default.
+      const packDir =
+        row.packDir ??
+        opts.packDirsByProject?.[projectId] ??
+        DEFAULT_PACK_DIR;
+
+      const storageDir =
+        row.storageDir ??
+        opts.storageDirsByProject?.[projectId] ??
+        DEFAULT_STORAGE_DIR;
+
       const lettaBaseUrl = row.lettaBaseUrl;
-      // ALL of bootstrapper + packDir + storageDir + lettaBaseUrl
-      // must be present. Any missing piece means we can't bootstrap
-      // safely — fall through to inline-persona, which still works.
-      if (!bootstrapper || !packDir || !storageDir || !lettaBaseUrl) return null;
+      if (!lettaBaseUrl) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[boot] buildRoleAgentContextResolver: project '${projectId}' routes to letta-code-subagent but no lettaBaseUrl configured (projects.letta_base_url is NULL) — coder dispatch will fail`,
+        );
+        return null;
+      }
+
+      // All pieces present — return the bootstrap context.
       return { bootstrapper, packDir, storageDir, lettaBaseUrl };
     },
   };
