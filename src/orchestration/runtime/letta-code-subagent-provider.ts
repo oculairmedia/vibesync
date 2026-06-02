@@ -594,12 +594,21 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
         }
       }
     } catch (err) {
-      state.events.push({
-        kind: 'error',
-        ts: nowIso(),
-        code: 'sse_read_error',
-        message: errorMessage(err),
-      });
+      // lcp-98y8: if the turn already completed (turn-done seen) before the
+      // read loop errored — e.g. the per-step timeout AbortController fired
+      // AFTER the agent finished its work and opened a PR, or the shim closed
+      // the stream post-completion — the error is benign trailing noise, NOT
+      // a step failure. Surfacing it caused the molecule to be marked failed
+      // even though the coder succeeded (the tester then never ran). Only
+      // record an error event when the turn had NOT completed.
+      if (!turnDoneEmitted) {
+        state.events.push({
+          kind: 'error',
+          ts: nowIso(),
+          code: 'sse_read_error',
+          message: errorMessage(err),
+        });
+      }
     } finally {
       if (!turnDoneEmitted) {
         state.events.push({ kind: 'turn-done', ts: nowIso(), stopReason: 'closed' });
