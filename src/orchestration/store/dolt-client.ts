@@ -664,6 +664,43 @@ export class DoltClient {
     }
   }
 
+  /**
+   * Mark a molecule root bead as terminal (lcp-s0wi). Sets status to 'closed'
+   * and records the outcome (completed|failed|cancelled) in metadata.exec.outcome.
+   * Used by the dispatcher to close finished molecule roots so GET /molecules
+   * can filter them out from the active list.
+   */
+  async markMoleculeRootStatus(
+    rootId: string,
+    status: 'closed',
+    outcome: 'completed' | 'failed' | 'cancelled',
+  ): Promise<void> {
+    const conn = await this.pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [rows] = await conn.execute<mysql.RowDataPacket[]>(
+        `SELECT metadata FROM issues WHERE id = ?`,
+        [rootId],
+      );
+      if (rows.length === 0) {
+        throw new Error(`markMoleculeRootStatus: molecule ${rootId} not found`);
+      }
+      const existing = rows[0]?.['metadata'];
+      const meta = typeof existing === 'string' ? JSON.parse(existing) : (existing ?? {});
+      meta.exec = { ...(meta.exec ?? {}), outcome };
+      await conn.execute(
+        `UPDATE issues SET status = ?, closed_at = NOW(), metadata = CAST(? AS JSON) WHERE id = ?`,
+        [status, JSON.stringify(meta), rootId],
+      );
+      await conn.commit();
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
+  }
+
   /** Read a single bead by id. */
   async getBead(id: string): Promise<BeadRow | null> {
     const [rows] = await this.pool.execute<mysql.RowDataPacket[]>(

@@ -171,6 +171,19 @@ export class InMemoryDoltClient {
     return previous;
   }
 
+  async markMoleculeRootStatus(
+    rootId: string,
+    status: 'closed',
+    outcome: 'completed' | 'failed' | 'cancelled',
+  ): Promise<void> {
+    const row = this.requireBead(rootId);
+    this.updateBead(rootId, {
+      status,
+      closed_at: new Date(),
+      metadata: mergeExec(row.metadata, { outcome }),
+    });
+  }
+
   private blockingEdges(stepId: string): DependencyRow[] {
     return this.dependencies.filter((edge) => edge.issue_id === stepId && edge.type === 'blocks');
   }

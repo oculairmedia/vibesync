@@ -123,6 +123,8 @@ export interface MoleculeStore {
   recordStepAttempt(stepId: string, attempt: number): Promise<void>;
   markStepDone(stepId: string, output: unknown): Promise<void>;
   markStepFailed(stepId: string, errorTrace: string): Promise<void>;
+  // lcp-s0wi: mark a molecule root bead as terminal with an outcome.
+  markMoleculeRootStatus(rootId: string, status: 'closed', outcome: 'completed' | 'failed' | 'cancelled'): Promise<void>;
 }
 
 /**
@@ -340,6 +342,20 @@ export class MoleculeWalker {
   /** Mark a step as failed. Pass-through. */
   async failStep(stepId: string, errorTrace: string): Promise<void> {
     await this.store.markStepFailed(stepId, errorTrace);
+  }
+
+  /**
+   * Mark a molecule root as terminal with an outcome (lcp-s0wi). Called by
+   * the dispatcher when a molecule finishes (all steps closed). Sets status
+   * to 'closed' and records outcome in metadata.exec.outcome so GET /molecules
+   * can filter out finished runs.
+   */
+  async markMoleculeRootStatus(
+    rootId: string,
+    status: 'closed',
+    outcome: 'completed' | 'failed' | 'cancelled',
+  ): Promise<void> {
+    await this.store.markMoleculeRootStatus(rootId, status, outcome);
   }
 
   /**

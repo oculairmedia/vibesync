@@ -308,6 +308,7 @@ export class FormulaDispatcher {
         if (failed) throw failed.reason;
       }
     } catch (error) {
+      await this.walker.markMoleculeRootStatus(moleculeId, 'closed', 'failed');
       this.emit('dispatcher/formula.failed', moleculeId, undefined, {
         moleculeId,
         error: stringifyError(error),
@@ -315,6 +316,7 @@ export class FormulaDispatcher {
       throw error;
     }
 
+    await this.walker.markMoleculeRootStatus(moleculeId, 'closed', 'completed');
     this.emit('dispatcher/formula.completed', moleculeId, undefined, {
       moleculeId,
       durationMs: Date.now() - startedAt,
@@ -438,6 +440,7 @@ export class FormulaDispatcher {
       });
     }
 
+    await this.walker.markMoleculeRootStatus(moleculeId, 'closed', 'cancelled');
     this.emit('dispatcher/formula.cancelled', moleculeId, undefined, {
       moleculeId,
       cancelledStepCount,
