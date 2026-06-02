@@ -174,7 +174,18 @@ Ask the PM agent for architectural guidance before making significant changes.
 <!-- VIBESYNC:custom-rules:START -->
 ## Project-Specific Rules
 
-No custom rules configured. Add project-specific agent instructions here, then change the marker above to `<!-- VIBESYNC:custom-rules:CUSTOM -->` to prevent overwriting.
+### Git workflow — NEVER push to main (lcp-uye8)
+
+This is a HARD rule for every agent that touches code, no exceptions:
+
+- **NEVER commit on `main`.** Always create a feature branch first: `git checkout -b fix/<bead-id>-<short-desc>`.
+- **NEVER push to `main`.** `origin/main` is branch-protected — direct pushes are rejected. Push your feature branch and open a PR.
+- **NEVER merge your own PR** or run `git checkout main && git merge`. Merging is a separate gated step (reviewer/human + CI typecheck/tests). Your job ends at "PR opened."
+- A change MUST typecheck (`npx tsc --noEmit`) before you open the PR. Do not open a PR for code that does not compile.
+- If any git operation fails because of branch protection, STOP and report it — do not work around it.
+
+Background: an autonomous rig run pushed broken, unreviewed code straight to `origin/main` (it did not even typecheck), nearly breaking the service on the next restart. Branch protection + PR-only is the safety gate. See lcp-uye8.
+
 <!-- VIBESYNC:custom-rules:END -->
 
 <!-- VIBESYNC:layering-invariants:START -->
