@@ -62,6 +62,10 @@ export interface ProjectProviderRoutingStore {
     readonly lettaBaseUrl: string | null;
     readonly providerKind: string | null;
     readonly parentAgentId?: string | null;
+    // lcp-kamu: per-project pack/storage dirs read from the projects DB row,
+    // replacing the hardcoded packDirsByProject/storageDirsByProject maps.
+    readonly packDir?: string | null;
+    readonly storageDir?: string | null;
   } | null;
 }
 
