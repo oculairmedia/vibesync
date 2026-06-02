@@ -411,8 +411,20 @@ async function main(): Promise<void> {
         providerRouting: {
           store: { getProjectProviderRouting: db.getProjectProviderRouting.bind(db) },
           roleAgentBootstrapper,
-          packDirsByProject: { 'letta-code-parallel': 'packs/gastown' },
-          storageDirsByProject: { 'letta-code-parallel': '/root/.letta/lc-local-backend' },
+          // lcp-yb3z: per-project pack + storage dirs for role-agent
+          // bootstrap. Both projects route through the shared admin-shim
+          // (lettaBaseUrl) + local-backend storage, and use the gastown
+          // pack. Without an entry here the role-agent context resolver
+          // returns null and the coder step has no persistent agent →
+          // times out (the awbf.1 first-run failure).
+          packDirsByProject: {
+            'letta-code-parallel': 'packs/gastown',
+            'letta-mobile': 'packs/gastown',
+          },
+          storageDirsByProject: {
+            'letta-code-parallel': '/root/.letta/lc-local-backend',
+            'letta-mobile': '/root/.letta/lc-local-backend',
+          },
         },
       });
       logger.info(
