@@ -269,6 +269,9 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
         'LettaCodeSubagentProvider.start: SessionSpec.extra.parentAgentId is required',
       );
     }
+    // lcp-mj0h: validate parent agent exists before dispatch to avoid
+    // cryptic shim 400s on the conversation-create path.
+    await this.ensureParentAgentExists(parentAgentId);
     const subagentType = readStringExtra(spec, 'subagentType') ?? 'general-purpose';
     const conversationId = readStringExtra(spec, 'conversationId') ?? null;
     const projectIdentifier = readStringExtra(spec, 'projectIdentifier') ?? null;
@@ -470,9 +473,16 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      const body = await safeReadText(res);
+      const bodyText = await safeReadText(res);
+      // lcp-mj0h: wrap the shim's "agent_id required (and must exist)" 400
+      // with context naming the phantom parent agent so the diagnostic is obvious.
+      if (res.status === 400 && bodyText.includes('agent_id')) {
+        throw new Error(
+          `LettaCodeSubagentProvider: parent/PM agent ${parentAgentId} does not exist in shim store (POST /v1/conversations failed with 400: ${bodyText})`,
+        );
+      }
       throw new Error(
-        `LettaCodeSubagentProvider: POST /v1/conversations failed (${res.status}): ${body}`,
+        `LettaCodeSubagentProvider: POST /v1/conversations failed (${res.status}): ${bodyText}`,
       );
     }
     const json = (await res.json()) as { id?: string; conversation_id?: string };
@@ -595,6 +605,59 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
         state.events.push({ kind: 'turn-done', ts: nowIso(), stopReason: 'closed' });
       }
     }
+  }
+
+  /**
+   * lcp-mj0h: validate the parent/PM agent exists in the shim store.
+   * If missing, auto-create it via POST /v1/agents so dispatch can proceed.
+   * Throws if creation fails.
+   */
+  private async ensureParentAgentExists(parentAgentId: string): Promise<void> {
+    // Probe: does the agent exist?
+    const getUrl = `${this.opts.shimBaseUrl}/v1/agents/${encodeURIComponent(parentAgentId)}`;
+    const getRes = await this.opts.fetchImpl(getUrl, {
+      method: 'GET',
+      headers: this.headers({ json: false }),
+    });
+    if (getRes.ok) {
+      // Agent exists — no-op.
+      return;
+    }
+    if (getRes.status !== 404) {
+      // Unexpected error — surface it.
+      const body = await safeReadText(getRes);
+      throw new Error(
+        `LettaCodeSubagentProvider: failed to probe parent agent ${parentAgentId} (GET /v1/agents/${parentAgentId} returned ${getRes.status}): ${body}`,
+      );
+    }
+    // 404 → agent missing. Auto-create via POST /v1/agents.
+    const postUrl = `${this.opts.shimBaseUrl}/v1/agents`;
+    const postBody: Record<string, unknown> = {
+      id: parentAgentId,
+      // Minimal PM agent: model and tags are optional; the shim will
+      // assign defaults. The system prompt can be empty — the PM's real
+      // config lives in the letta-code backend, not this auto-heal path.
+      system: 'PM agent auto-created by LettaCodeSubagentProvider to repair phantom reference.',
+      tags: ['vibesync', 'pm', 'auto-created'],
+    };
+    const postRes = await this.opts.fetchImpl(postUrl, {
+      method: 'POST',
+      headers: this.headers({ json: true }),
+      body: JSON.stringify(postBody),
+    });
+    if (!postRes.ok) {
+      const body = await safeReadText(postRes);
+      throw new Error(
+        `LettaCodeSubagentProvider: failed to auto-create parent agent ${parentAgentId} (POST /v1/agents failed with ${postRes.status}): ${body}`,
+      );
+    }
+    const json = (await postRes.json()) as { id?: string };
+    if (!json.id || json.id !== parentAgentId) {
+      throw new Error(
+        `LettaCodeSubagentProvider: auto-created parent agent but shim returned unexpected id (wanted ${parentAgentId}, got ${json.id ?? '<none>'})`,
+      );
+    }
+    // Success — agent now exists.
   }
 
   private headers(opts: { json?: boolean; sse?: boolean }): Record<string, string> {
