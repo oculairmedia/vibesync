@@ -35,6 +35,15 @@ export interface StepSpec {
   readonly waitFor?: 'completion';
   readonly retries?: number;
   readonly retryBackoffMs?: number;
+  /**
+   * Per-step turn timeout in milliseconds (vibesync-lcp-98y8). When
+   * set, overrides the provider's default turnTimeoutMs for this
+   * specific step. Use for steps that legitimately run long (e.g.
+   * coder/implementer refactors). When omitted, the provider uses
+   * its configured default (10min for LettaCodeSubagentProvider,
+   * or VIBESYNC_TURN_TIMEOUT_MS env var if set).
+   */
+  readonly turnTimeoutMs?: number;
 }
 
 /**

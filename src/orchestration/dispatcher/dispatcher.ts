@@ -496,6 +496,7 @@ export class FormulaDispatcher {
           provider: args.provider,
           ...(args.input.projectIdentifier ? { projectIdentifier: args.input.projectIdentifier } : {}),
           roleAgentContext: args.roleAgentContext,
+          ...(stepSpec.turnTimeoutMs !== undefined ? { turnTimeoutMs: stepSpec.turnTimeoutMs } : {}),
         });
         args.outputs[stepName] = output.text;
         await this.walker.finishStep(args.step.id, { output: output.text, eventCount: output.eventCount, attempts: attempt });
@@ -552,6 +553,7 @@ export class FormulaDispatcher {
       readonly lettaBaseUrl: string;
       readonly storageDir: string;
     } | null;
+    readonly turnTimeoutMs?: number;
   }): Promise<{ readonly text: string; readonly eventCount: number }> {
     this.emit('dispatcher/step.started', args.moleculeId, args.stepId, {
       stepName: args.stepName,
@@ -613,6 +615,7 @@ export class FormulaDispatcher {
           ...(args.projectIdentifier ? { projectIdentifier: args.projectIdentifier } : {}),
           ...(bootstrappedAgentId ? { agentId: bootstrappedAgentId } : {}),
           ...(conversationId ? { conversationId } : {}),
+          ...(args.turnTimeoutMs !== undefined ? { turnTimeoutMs: args.turnTimeoutMs } : {}),
         },
       });
       const promptResult = await args.provider.prompt(handle, [{ type: 'text', text: args.rendered }]);

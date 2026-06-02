@@ -138,8 +138,10 @@ export interface LettaCodeSubagentProviderOptions {
   /** Bearer token. Optional if the shim doesn't enforce auth. */
   readonly password?: string;
   /**
-   * Hard timeout for the SSE read loop. Default 10min — formula steps
-   * with real subagents (file reads, lint, etc.) can be slow.
+   * Default hard timeout for the SSE read loop. Default 10min — formula
+   * steps with real subagents (file reads, lint, etc.) can be slow.
+   * Overridden per-step via SessionSpec.extra.turnTimeoutMs (vibesync-lcp-98y8).
+   * Can also be set globally via VIBESYNC_TURN_TIMEOUT_MS env var.
    */
   readonly turnTimeoutMs?: number;
   /**
@@ -190,6 +192,12 @@ interface SessionState {
    * truth for identity. When null, fall back to the inline path.
    */
   readonly agentId: string | null;
+  /**
+   * Per-step turn timeout (vibesync-lcp-98y8). When non-null,
+   * overrides the provider's default for this session. Extracted
+   * from SessionSpec.extra.turnTimeoutMs at start() time.
+   */
+  readonly stepTimeoutMs: number | null;
   conversationId: string | null;
   /**
    * vibesync-ctla: tracks whether the conversation has been created on
@@ -211,6 +219,19 @@ interface SessionState {
 }
 
 const DEFAULT_TURN_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * Resolve the global default turn timeout. Checks VIBESYNC_TURN_TIMEOUT_MS
+ * env var first (vibesync-lcp-98y8), falls back to 10min if not set or invalid.
+ */
+function resolveDefaultTurnTimeout(): number {
+  const envVar = process.env['VIBESYNC_TURN_TIMEOUT_MS'];
+  if (envVar !== undefined) {
+    const parsed = Number.parseInt(envVar, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return DEFAULT_TURN_TIMEOUT_MS;
+}
 
 export class LettaCodeSubagentProvider implements RuntimeProvider {
   readonly kind = 'letta-code-subagent';
@@ -234,7 +255,7 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
     this.opts = {
       shimBaseUrl: opts.shimBaseUrl.replace(/\/+$/, ''),
       password: opts.password ?? '',
-      turnTimeoutMs: opts.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS,
+      turnTimeoutMs: opts.turnTimeoutMs ?? resolveDefaultTurnTimeout(),
       personaLoader: opts.personaLoader,
       agentIdResolver: opts.agentIdResolver ?? null,
       fetchImpl: opts.fetchImpl ?? fetch.bind(globalThis),
@@ -274,6 +295,8 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
         ? ''
         : readStringExtra(spec, 'personaContent') ?? (await this.opts.personaLoader.load(spec.role));
 
+    // vibesync-lcp-98y8: extract per-step turnTimeoutMs from extra if present
+    const stepTimeoutMs = readNumberExtra(spec, 'turnTimeoutMs') ?? null;
     this.handleCounter += 1;
     const handle: LettaCodeSubagentSessionHandle = {
       id: `letta-code-subagent:${parentAgentId}:${spec.role}:${this.handleCounter}`,
@@ -287,6 +310,7 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
       subagentType,
       personaContent,
       agentId: resolvedAgentId,
+      stepTimeoutMs,
       conversationId,
       conversationCreated: false,
       stopped: false,
@@ -350,7 +374,8 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
         state.conversationId = desiredId ?? createdId;
         state.conversationCreated = true;
       }
-      await this.runPromptStream(state, puppet);
+      // vibesync-lcp-98y8: use per-step timeout if set, else provider default
+      await this.runPromptStream(state, puppet, state.stepTimeoutMs ?? undefined);
     })().catch((err: unknown) => {
       // Surface the failure as a synthetic error event so observe()
       // can yield it before completing. Don't rethrow — promptDone is
@@ -460,10 +485,11 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
     return id;
   }
 
-  private async runPromptStream(state: SessionState, puppet: string): Promise<void> {
+  private async runPromptStream(state: SessionState, puppet: string, stepTimeoutMs?: number): Promise<void> {
     const url = `${this.opts.shimBaseUrl}/v1/conversations/${encodeURIComponent(state.conversationId!)}/messages`;
     const ac = new AbortController();
-    const timeoutHandle = setTimeout(() => ac.abort(), this.opts.turnTimeoutMs);
+    const effectiveTimeout = stepTimeoutMs ?? this.opts.turnTimeoutMs;
+    const timeoutHandle = setTimeout(() => ac.abort(), effectiveTimeout);
     let res: Awaited<ReturnType<typeof fetch>>;
     try {
       res = await this.opts.fetchImpl(url, {
@@ -894,6 +920,11 @@ function expectHandle(handle: SessionHandle): LettaCodeSubagentSessionHandle {
 function readStringExtra(spec: SessionSpec, key: string): string | undefined {
   const v = spec.extra?.[key];
   return typeof v === 'string' && v.length > 0 ? v : undefined;
+}
+
+function readNumberExtra(spec: SessionSpec, key: string): number | undefined {
+  const v = spec.extra?.[key];
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined;
 }
 
 function readString(v: unknown): string | null {

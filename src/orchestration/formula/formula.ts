@@ -23,6 +23,7 @@
  *   depends_on = "<step>"    # optional, single name OR array
  *   retries = 0              # optional, non-negative integer
  *   retry_backoff_ms = 1000  # optional, non-negative integer
+ *   turn_timeout_ms = 600000 # optional, non-negative integer (vibesync-lcp-98y8)
  *
  * The `when_to_use` field (vibesync-cy4) is the catalog hint a PM /
  * mayor agent reads via `GET /formulas` to pick the right formula for
@@ -164,6 +165,9 @@ function parseStep(
   }
   const retries = readNonNegativeInteger(raw['retries'], 0, `formula "${formulaName}": step "${name}".retries`);
   const retryBackoffMs = readNonNegativeInteger(raw['retry_backoff_ms'], 1000, `formula "${formulaName}": step "${name}".retry_backoff_ms`);
+  const turnTimeoutMs = raw['turn_timeout_ms'] !== undefined
+    ? readNonNegativeInteger(raw['turn_timeout_ms'], undefined as never, `formula "${formulaName}": step "${name}".turn_timeout_ms`)
+    : undefined;
   const spec: StepSpec = {
     name,
     role,
@@ -172,6 +176,7 @@ function parseStep(
     waitFor: 'completion',
     retries,
     retryBackoffMs,
+    ...(turnTimeoutMs !== undefined ? { turnTimeoutMs } : {}),
   };
   return spec;
 }

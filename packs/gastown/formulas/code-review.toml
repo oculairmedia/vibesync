@@ -12,6 +12,8 @@ role = "coder"
 prompt_template = "prompts/coder-system.md"
 depends_on = "reviewer"
 wait_for = "completion"
+# vibesync-lcp-98y8: coder steps can legitimately run long (substantial refactors, large PRs)
+turn_timeout_ms = 1200000  # 20 minutes
 
 [[formula.code-review.steps]]
 role = "tester"
