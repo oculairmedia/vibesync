@@ -32,9 +32,43 @@ export function registerEventsRoutes(app: App, deps: EventsDeps): void {
     },
   });
 
+  // lcp-vugl: SSE stream with bootstrap snapshot. On connect, immediately send
+  // current fleet state (active molecules + fleet counts) so the client can
+  // render the current rig activity without waiting for the next event. Then
+  // stream deltas as they occur.
   app.registerRoute({
     match: ({ pathname, method }) => pathname === '/api/events/stream' && method === 'GET',
-    handle: async ({ res }) => { deps.sseManager.addClient(res); },
+    handle: async ({ res }) => {
+      // Snapshot function: fetch current fleet state from walker
+      const snapshotFn = async (): Promise<Record<string, unknown>> => {
+        if (!deps.orchestration) {
+          return { molecules: [], fleet: { active: 0, queueDepth: 0 } };
+        }
+        const molecules = await deps.orchestration.walker.listMolecules({
+          statuses: ['open', 'in_progress'],
+          limit: 100,
+        });
+        return {
+          molecules: molecules.map((m) => ({
+            id: m.id,
+            formulaName: m.formulaName,
+            projectIdentifier: m.motivatingBeadId,
+            status: m.status,
+            title: m.title,
+            createdAt: m.createdAt instanceof Date ? m.createdAt.toISOString() : m.createdAt,
+            updatedAt: m.updatedAt instanceof Date ? m.updatedAt.toISOString() : m.updatedAt,
+            stepCounts: m.stepCounts,
+            currentStep: m.currentStep,
+            currentStepStatus: m.currentStepStatus,
+          })),
+          fleet: {
+            active: deps.orchestration.dispatcher.getActiveMoleculeCount(),
+            queueDepth: deps.orchestration.dispatcher.getQueueDepth(),
+          },
+        };
+      };
+      await deps.sseManager.addClient(res, snapshotFn);
+    },
   });
 }
 
