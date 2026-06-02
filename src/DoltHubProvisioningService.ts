@@ -455,7 +455,8 @@ export class DoltHubProvisioningService {
     // lcp-yb3z: no-db projects have no Dolt server to provision/port-sweep.
     if (await this.isNoDbBeads(project.filesystem_path, commands)) {
       this.logger?.info?.(
-        `ensureUniqueBeadsPort: skipping port sweep for no-db project ${project.identifier}`,
+        { project: project.identifier },
+        'ensureUniqueBeadsPort: skipping port sweep for no-db project',
       );
       return;
     }
