@@ -420,10 +420,12 @@ async function main(): Promise<void> {
           packDirsByProject: {
             'letta-code-parallel': 'packs/gastown',
             'letta-mobile': 'packs/gastown',
+            'vibesync': 'packs/gastown',
           },
           storageDirsByProject: {
             'letta-code-parallel': '/root/.letta/lc-local-backend',
             'letta-mobile': '/root/.letta/lc-local-backend',
+            'vibesync': '/root/.letta/lc-local-backend',
           },
         },
       });
