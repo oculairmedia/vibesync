@@ -60,6 +60,24 @@ export interface MoleculeView {
   readonly edges: readonly DependencyRow[];
 }
 
+/**
+ * lcp-61uj: lightweight per-run summary for the fleet-status endpoint
+ * (GET /molecules). Enough to render a run card without fetching each
+ * molecule's full trace.
+ */
+export interface MoleculeSummary {
+  readonly id: string;
+  readonly formulaName: string | null;
+  readonly motivatingBeadId: string | null;
+  readonly status: string;
+  readonly title: string;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
+  readonly stepCounts: { readonly total: number; readonly done: number; readonly running: number };
+  readonly currentStep: string | null;
+  readonly currentStepStatus: string | null;
+}
+
 export interface MoleculeStore {
   getBead(id: string): Promise<BeadRow | null>;
   getBeadDependencies(id: string): Promise<DependencyRow[]>;
@@ -78,6 +96,8 @@ export interface MoleculeStore {
   }): Promise<void>;
   findReadyStepsForMolecule(rootId: string): Promise<readonly BeadRow[]>;
   findRunningStepsForMolecule(rootId: string): Promise<readonly BeadRow[]>;
+  // lcp-61uj: list molecule-root beads (rig runs) for the fleet-status endpoint.
+  listMoleculeRoots(opts?: { statuses?: readonly string[]; limit?: number }): Promise<readonly BeadRow[]>;
   markStepRunning(stepId: string): Promise<void>;
   recordStepTask(stepId: string, task: {
     /**
@@ -196,6 +216,45 @@ export class MoleculeWalker {
   /** Return step beads currently marked as running for this molecule. */
   async findRunning(rootId: string): Promise<readonly BeadRow[]> {
     return this.store.findRunningStepsForMolecule(rootId);
+  }
+
+  /**
+   * lcp-61uj: list molecule runs (fleet status) with a lightweight per-run
+   * summary so a UI can render run cards without N trace fetches. Each
+   * summary carries: id, formulaName, motivatingBeadId, status, created/
+   * updated, step counts (total/done/running), and the current/last step.
+   * `statuses` filters molecule-root status (e.g. ['open','in_progress']
+   * for active); omit for recent-all. `limit` caps results.
+   */
+  async listMolecules(opts: { statuses?: readonly string[]; limit?: number } = {}): Promise<MoleculeSummary[]> {
+    const roots = await this.store.listMoleculeRoots(opts);
+    const summaries: MoleculeSummary[] = [];
+    for (const root of roots) {
+      const view = await this.load(root.id);
+      const steps = view?.steps ?? [];
+      const total = steps.length;
+      const done = steps.filter((s) => s.status === 'closed').length;
+      const running = steps.filter((s) => s.status === 'in_progress').length;
+      // current step: prefer a running step, else the last non-open step.
+      const currentStep =
+        steps.find((s) => s.status === 'in_progress') ??
+        [...steps].reverse().find((s) => s.status !== 'open');
+      const exec = (root.metadata as { exec?: { formula?: string; motivating_bead?: string } })?.exec ?? {};
+      const stepExec = (currentStep?.metadata as { exec?: { step?: string } } | undefined)?.exec;
+      summaries.push({
+        id: root.id,
+        formulaName: exec.formula ?? null,
+        motivatingBeadId: exec.motivating_bead ?? null,
+        status: root.status,
+        title: root.title,
+        createdAt: root.created_at,
+        updatedAt: root.updated_at,
+        stepCounts: { total, done, running },
+        currentStep: currentStep ? (stepExec?.step ?? currentStep.title ?? null) : null,
+        currentStepStatus: currentStep?.status ?? null,
+      });
+    }
+    return summaries;
   }
 
   /**

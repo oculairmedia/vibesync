@@ -97,6 +97,17 @@ export class InMemoryDoltClient {
       .filter((row): row is BeadRow => row?.issue_type === 'molecule_step' && row.status === 'in_progress');
   }
 
+  // lcp-61uj: list molecule-root beads for the fleet-status endpoint.
+  async listMoleculeRoots(opts: { statuses?: readonly string[]; limit?: number } = {}): Promise<BeadRow[]> {
+    const statuses = opts.statuses;
+    const limit = opts.limit ?? 50;
+    return [...this.beads.values()]
+      .filter((row): row is BeadRow => row.issue_type === 'molecule_root')
+      .filter((row) => !statuses || statuses.includes(row.status))
+      .sort((a, b) => b.created_at.getTime() - a.created_at.getTime())
+      .slice(0, limit);
+  }
+
   async markStepRunning(stepId: string): Promise<void> {
     this.updateBead(stepId, { status: 'in_progress' });
   }

@@ -81,6 +81,50 @@ export function registerFormulaRoutes(app: App, deps: FormulaRoutesDeps): void {
     },
   });
 
+  // lcp-61uj: fleet-status endpoint. GET /molecules — list active + recent
+  // runs so a UI can render the rig dashboard without knowing ids in advance.
+  // Query: ?status=open,in_progress (filter; default active only),
+  //        ?status=all (include closed/recent), ?limit=N.
+  app.registerRoute({
+    match: ({ pathname, method }) => /^\/molecules\/?$/.test(pathname) && method === 'GET',
+    handle: async (ctx) => {
+      if (!authorize(ctx, deps)) return;
+      const orchestration = requireOrchestration(deps, ctx.res);
+      if (!orchestration) return;
+      const statusParam = ctx.url.searchParams.get('status');
+      const statuses = statusParam && statusParam !== 'all'
+        ? statusParam.split(',').map((s) => s.trim()).filter(Boolean)
+        : statusParam === 'all'
+          ? undefined
+          : ['open', 'in_progress'];
+      const limitRaw = ctx.url.searchParams.get('limit');
+      const limit = limitRaw && Number.isFinite(Number(limitRaw))
+        ? Math.max(1, Math.min(500, Math.floor(Number(limitRaw))))
+        : 50;
+      const molecules = await orchestration.walker.listMolecules(
+        statuses ? { statuses, limit } : { limit },
+      );
+      deps.sendJson(ctx.res, 200, {
+        molecules: molecules.map((m) => ({
+          id: m.id,
+          formulaName: m.formulaName,
+          motivatingBeadId: m.motivatingBeadId,
+          status: m.status,
+          title: m.title,
+          createdAt: m.createdAt instanceof Date ? m.createdAt.toISOString() : m.createdAt,
+          updatedAt: m.updatedAt instanceof Date ? m.updatedAt.toISOString() : m.updatedAt,
+          stepCounts: m.stepCounts,
+          currentStep: m.currentStep,
+          currentStepStatus: m.currentStepStatus,
+        })),
+        fleet: {
+          active: orchestration.dispatcher.getActiveMoleculeCount(),
+          queueDepth: orchestration.dispatcher.getQueueDepth(),
+        },
+      });
+    },
+  });
+
   app.registerRoute({
     match: ({ pathname, method }) => /^\/molecules\/[^/]+$/.test(pathname) && method === 'GET',
     handle: async (ctx) => {

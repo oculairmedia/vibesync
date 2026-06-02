@@ -449,6 +449,32 @@ export class DoltClient {
     return rows.map(toBeadRow);
   }
 
+  /**
+   * lcp-61uj: list molecule-root beads (the rig runs) for the fleet-status
+   * endpoint. Ordered newest-first. `statuses` filters by bead status
+   * (e.g. ['open','in_progress'] for active runs); omit for all. `limit`
+   * caps the result (default 50).
+   */
+  async listMoleculeRoots(opts: { statuses?: readonly string[]; limit?: number } = {}): Promise<BeadRow[]> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 50, 500));
+    const statuses = opts.statuses?.filter((s) => typeof s === 'string' && s.length > 0) ?? [];
+    const whereStatus = statuses.length > 0
+      ? `AND i.status IN (${statuses.map(() => '?').join(', ')})`
+      : '';
+    const [rows] = await this.pool.execute<mysql.RowDataPacket[]>(
+      `
+      SELECT i.*
+      FROM issues i
+      WHERE i.issue_type = 'molecule_root'
+      ${whereStatus}
+      ORDER BY i.created_at DESC
+      LIMIT ${limit}
+      `,
+      [...statuses],
+    );
+    return rows.map(toBeadRow);
+  }
+
   /** Mark a step as running (status='in_progress'). */
   async markStepRunning(stepId: string): Promise<void> {
     await this.pool.execute(`UPDATE issues SET status = 'in_progress' WHERE id = ?`, [stepId]);
