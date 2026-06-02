@@ -32,11 +32,18 @@ interface SyncResult {
 
 const log = rootLogger.child({ module: 'beads-mirror' });
 
+interface FailureBackoff {
+  consecutiveFailures: number;
+  lastFailureAt: number;
+  nextRetryAt: number;
+}
+
 export class BeadsIssueMirror {
   private db: MirrorDb;
   private adapter: MirrorBeadsAdapter;
   private freshnessMs: number;
   private inflight: Map<string, Promise<SyncResult>> = new Map();
+  private failureBackoffs: Map<string, FailureBackoff> = new Map();
 
   constructor(deps: { db: MirrorDb; beadsAdapter: MirrorBeadsAdapter }, options: MirrorOptions = {}) {
     this.db = deps.db;
@@ -49,6 +56,12 @@ export class BeadsIssueMirror {
     if (!project || !project.filesystem_path) {
       return { changed: 0, source: 'skipped', error: 'project_missing_or_no_filesystem_path', durationMs: 0 };
     }
+    
+    // Check if project is in backoff
+    if (this._isInBackoff(projectIdentifier)) {
+      return { changed: 0, source: 'skipped', error: 'backoff', durationMs: 0 };
+    }
+    
     const ttl = maxAgeMs ?? this.freshnessMs;
     const syncedAt = this.db.getBeadsMirrorSyncedAt(projectIdentifier);
     const age = syncedAt ? Date.now() - syncedAt : Infinity;
@@ -89,11 +102,22 @@ export class BeadsIssueMirror {
         this.db.upsertBeadsIssue(project.identifier, issue);
       }
       this.db.setBeadsMirrorSyncedAt(project.identifier, Date.now(), null);
+      this._clearBackoff(project.identifier);
       log.info({ project: project.identifier, count: items.length }, 'Full mirror sync complete');
       return { changed: items.length, source: 'full', error: null, durationMs: 0 };
     } catch (err) {
       const msg = (err as Error).message ?? String(err);
-      log.warn({ project: project.identifier, err }, 'Full mirror sync failed');
+      const reason = this._classifyError(msg);
+      this._recordFailure(project.identifier);
+      
+      if (reason) {
+        // Expected error - log concisely without stack trace
+        log.warn({ project: project.identifier, reason }, 'Full mirror sync failed');
+      } else {
+        // Unexpected error - log with details
+        log.error({ project: project.identifier, err }, 'Full mirror sync failed (unexpected)');
+      }
+      
       this.db.setBeadsMirrorSyncedAt(project.identifier, Date.now(), msg);
       return { changed: 0, source: 'full', error: msg, durationMs: 0 };
     }
@@ -109,13 +133,24 @@ export class BeadsIssueMirror {
         this.db.upsertBeadsIssue(project.identifier, issue);
       }
       this.db.setBeadsMirrorSyncedAt(project.identifier, Date.now(), null);
+      this._clearBackoff(project.identifier);
       if (items.length > 0) {
         log.info({ project: project.identifier, count: items.length, since: sinceIso }, 'Incremental mirror sync applied');
       }
       return { changed: items.length, source: 'incremental', error: null, durationMs: 0 };
     } catch (err) {
       const msg = (err as Error).message ?? String(err);
-      log.warn({ project: project.identifier, err }, 'Incremental mirror sync failed');
+      const reason = this._classifyError(msg);
+      this._recordFailure(project.identifier);
+      
+      if (reason) {
+        // Expected error - log concisely without stack trace
+        log.warn({ project: project.identifier, reason, since: sinceIso }, 'Incremental mirror sync failed');
+      } else {
+        // Unexpected error - log with details
+        log.error({ project: project.identifier, err, since: sinceIso }, 'Incremental mirror sync failed (unexpected)');
+      }
+      
       this.db.setBeadsMirrorSyncedAt(project.identifier, Date.now(), msg);
       return { changed: 0, source: 'incremental', error: msg, durationMs: 0 };
     }
@@ -130,7 +165,7 @@ export class BeadsIssueMirror {
     return result.items || [];
   }
 
-  async preloadAll(options: { concurrency?: number } = {}): Promise<{ projects: number; ok: number; failed: number; durationMs: number }> {
+  async preloadAll(options: { concurrency?: number } = {}): Promise<{ projects: number; ok: number; failed: number; skipped: number; durationMs: number }> {
     const start = Date.now();
     const concurrency = Math.max(1, options.concurrency ?? 4);
     const projects = this.db.getAllProjects().filter((p) => p.status !== 'archived' && p.filesystem_path);
@@ -139,6 +174,7 @@ export class BeadsIssueMirror {
     const queue = projects.slice();
     let ok = 0;
     let failed = 0;
+    let skipped = 0;
 
     const worker = async () => {
       while (queue.length > 0) {
@@ -146,7 +182,13 @@ export class BeadsIssueMirror {
         if (!project) return;
         try {
           const r = await this.syncProject(project);
-          if (r.error) failed++; else ok++;
+          if (r.error === 'backoff') {
+            skipped++;
+          } else if (r.error) {
+            failed++;
+          } else {
+            ok++;
+          }
         } catch {
           failed++;
         }
@@ -155,8 +197,67 @@ export class BeadsIssueMirror {
 
     await Promise.all(Array.from({ length: Math.min(concurrency, projects.length) }, worker));
     const durationMs = Date.now() - start;
-    log.info({ projects: projects.length, ok, failed, durationMs }, 'Beads mirror preload complete');
-    return { projects: projects.length, ok, failed, durationMs };
+    log.info({ projects: projects.length, ok, failed, skipped, durationMs }, 'Beads mirror preload complete');
+    return { projects: projects.length, ok, failed, skipped, durationMs };
+  }
+
+  private _classifyError(errorMsg: string): string | null {
+    const lowerMsg = errorMsg.toLowerCase();
+    if (lowerMsg.includes('connection refused') || lowerMsg.includes('econnrefused')) {
+      return 'dolt_unreachable';
+    }
+    if (lowerMsg.includes('database not found') || lowerMsg.includes('database does not exist') || lowerMsg.includes('no such database')) {
+      return 'db_not_found';
+    }
+    if (lowerMsg.includes('no beads database') || lowerMsg.includes('.beads directory not found') || lowerMsg.includes('beads_dir does not exist')) {
+      return 'no_beads_db';
+    }
+    if (lowerMsg.includes('dolt server not running')) {
+      return 'dolt_not_running';
+    }
+    return null; // Unexpected error
+  }
+
+  private _isInBackoff(projectId: string): boolean {
+    const backoff = this.failureBackoffs.get(projectId);
+    if (!backoff) return false;
+    return Date.now() < backoff.nextRetryAt;
+  }
+
+  private _recordFailure(projectId: string): void {
+    const existing = this.failureBackoffs.get(projectId);
+    const now = Date.now();
+    
+    if (!existing) {
+      // First failure: retry after 30 seconds
+      this.failureBackoffs.set(projectId, {
+        consecutiveFailures: 1,
+        lastFailureAt: now,
+        nextRetryAt: now + 30_000,
+      });
+    } else {
+      // Exponential backoff: 30s, 1m, 2m, 5m, 10m, max 30m
+      const backoffMs = Math.min(
+        30_000 * Math.pow(2, existing.consecutiveFailures),
+        30 * 60_000
+      );
+      this.failureBackoffs.set(projectId, {
+        consecutiveFailures: existing.consecutiveFailures + 1,
+        lastFailureAt: now,
+        nextRetryAt: now + backoffMs,
+      });
+      
+      const backoffMin = Math.round(backoffMs / 60_000);
+      log.debug({ project: projectId, consecutiveFailures: existing.consecutiveFailures + 1, backoffMin }, 'Project in backoff after repeated failures');
+    }
+  }
+
+  private _clearBackoff(projectId: string): void {
+    const had = this.failureBackoffs.has(projectId);
+    this.failureBackoffs.delete(projectId);
+    if (had) {
+      log.debug({ project: projectId }, 'Project backoff cleared after successful sync');
+    }
   }
 }
 
