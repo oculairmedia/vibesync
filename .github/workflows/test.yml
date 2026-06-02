@@ -7,6 +7,22 @@ on:
     branches: [main, develop]
 
 jobs:
+  # lcp-uye8: typecheck gate. A non-compiling change must NOT be mergeable.
+  # This job is wired as a REQUIRED status check on origin/main so a PR that
+  # fails `tsc --noEmit` is blocked (the kamu incident: broken TS pushed
+  # straight to main because CI only ran tests, not the typecheck).
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: npm ci
+      - name: Type check (tsc --noEmit)
+        run: npm run type-check
+
   test:
     runs-on: ubuntu-latest
 
