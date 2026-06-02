@@ -160,6 +160,7 @@ describe('DoltHubProvisioningService', () => {
     });
 
     expect(result.commands).toEqual([
+      'bd config get no-db',
       'bd config get federation.remote',
       'bd config get sync.remote',
       'bd dolt remote list',
@@ -194,6 +195,7 @@ describe('DoltHubProvisioningService', () => {
     });
 
     expect(result.commands).toEqual([
+      'bd config get no-db',
       'bd config get federation.remote',
       'bd config get sync.remote',
       'bd dolt remote list',
@@ -264,15 +266,64 @@ describe('DoltHubProvisioningService', () => {
       filesystem_path: target,
     });
 
-    expect(result.commands.slice(0, 2)).toEqual([
+    expect(result.commands.slice(0, 3)).toEqual([
+      'bd config get no-db',
       'bd dolt set port 32000',
       'bd dolt start',
     ]);
     expect(commandRunner).toHaveBeenNthCalledWith(
-      1,
+      2,
       'bd',
       ['dolt', 'set', 'port', '32000'],
       expect.objectContaining({ cwd: target }),
     );
+  });
+
+  it('skips port sweep for no-db projects (embedded dolt, no SQL server)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'vibesync-dolthub-'));
+    const target = join(root, 'letta-mobile');
+    const other = join(root, 'other');
+    
+    // Create a no-db project (letta-mobile) with port conflict
+    mkdirSync(join(target, '.beads'), { recursive: true });
+    writeFileSync(join(target, '.beads', 'dolt-server.port'), '42709\n');
+    writeFileSync(join(target, '.beads', 'config.yaml'), 'no-db: true\n');
+    
+    // Create a conflicting project that also uses the same port
+    mkdirSync(join(other, '.beads', 'dolt'), { recursive: true });
+    writeFileSync(join(other, '.beads', 'dolt-server.port'), '42709\n');
+    
+    db.projects.getAllProjects.mockReturnValue([
+      { identifier: 'TARGET', filesystem_path: target },
+      { identifier: 'OTHER', filesystem_path: other },
+    ]);
+
+    // Mock bd config get to return "true" for no-db check
+    commandRunner.mockImplementation(async (_command, args) => {
+      if (args.join(' ') === 'config get no-db') {
+        return { stdout: 'no-db = true', stderr: '' };
+      }
+      if (args.join(' ') === 'dolt remote list') {
+        return { stdout: 'origin https://doltremoteapi.dolthub.com/oulair/letta_mobile\n', stderr: '' };
+      }
+      return { stdout: 'ok', stderr: '' };
+    });
+
+    const result = await service.provisionProject({
+      identifier: 'TARGET',
+      name: 'Letta Mobile',
+      filesystem_path: target,
+    });
+
+    // Verify port sweep commands (dolt set port, dolt start) were NOT run
+    expect(result.commands).not.toContain('bd dolt set port 32000');
+    expect(result.commands).not.toContain('bd dolt start');
+    
+    // Verify the no-db check WAS performed
+    expect(result.commands).toContain('bd config get no-db');
+    
+    // Verify normal provisioning continued (remote config, push)
+    expect(result.status).toBe('provisioned');
+    expect(result.pushed).toBe(true);
   });
 });
