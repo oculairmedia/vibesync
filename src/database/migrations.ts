@@ -321,6 +321,31 @@ export function migrateProjectRoleAgentsTable(db: BetterSqlite3.Database): void 
   `);
 }
 
+/**
+ * Per-project orchestration dirs (lcp-kamu).
+ *
+ * Adds pack_dir and storage_dir to projects so role-agent bootstrap
+ * doesn't require hardcoded maps in src/index.ts. When both are NULL,
+ * the buildRoleAgentContextResolver uses defaults:
+ *   pack_dir → packs/gastown
+ *   storage_dir → /root/.letta/lc-local-backend
+ *
+ * This allows new projects to get orchestration without a source edit.
+ */
+export function migrateProjectOrchestrationDirColumns(db: BetterSqlite3.Database): void {
+  const columns = db.prepare('PRAGMA table_info(projects)').all() as ColumnInfo[];
+  const columnNames = columns.map((c) => c.name);
+
+  if (!columnNames.includes('pack_dir')) {
+    console.log('[DB] Adding pack_dir column to projects table');
+    db.exec('ALTER TABLE projects ADD COLUMN pack_dir TEXT');
+  }
+  if (!columnNames.includes('storage_dir')) {
+    console.log('[DB] Adding storage_dir column to projects table');
+    db.exec('ALTER TABLE projects ADD COLUMN storage_dir TEXT');
+  }
+}
+
 export function runAllMigrations(db: BetterSqlite3.Database): void {
   migrateParentChildColumns(db);
   migrateBookStackTables(db);
@@ -332,4 +357,5 @@ export function runAllMigrations(db: BetterSqlite3.Database): void {
   migrateIssueMutationIdempotencyTable(db);
   migrateProjectProviderRoutingColumns(db);
   migrateProjectRoleAgentsTable(db);
+  migrateProjectOrchestrationDirColumns(db);
 }
