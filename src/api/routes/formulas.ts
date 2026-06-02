@@ -267,13 +267,69 @@ async function startRunAndCaptureMoleculeId(
   ]);
 }
 
+/**
+ * lcp-40ru: extract PR/branch/commit artifacts from step outputs (typically
+ * from a coder step). Returns { prUrl?, branch?, commitSha? } parsed from
+ * the output_payload. Looks for common patterns in output (URLs, branch refs).
+ */
+function extractArtifacts(steps: readonly BeadRow[]): { prUrl?: string; branch?: string; commitSha?: string } {
+  const artifacts: { prUrl?: string; branch?: string; commitSha?: string } = {};
+  for (const step of steps) {
+    const role = readRoleFromTitle(step.title);
+    if (role !== 'coder') continue;
+    const output = readOutput(step);
+    if (typeof output === 'string') {
+      // Extract PR URL: look for github.com/.../.../pull/NNN.
+      const prMatch = /https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+/i.exec(output);
+      if (prMatch?.[0]) artifacts.prUrl = prMatch[0];
+      // Extract branch: look for "branch: <name>" or "on branch <name>".
+      const branchMatch = /(?:branch|on branch)[:\s]+([a-zA-Z0-9._/-]+)/i.exec(output);
+      if (branchMatch?.[1]) artifacts.branch = branchMatch[1];
+      // Extract commit SHA: 40-char hex.
+      const shaMatch = /\b([0-9a-f]{40})\b/i.exec(output);
+      if (shaMatch?.[1]) artifacts.commitSha = shaMatch[1];
+    } else if (output && typeof output === 'object') {
+      // If output is structured, check for direct fields.
+      const obj = output as Record<string, unknown>;
+      if (typeof obj.prUrl === 'string') artifacts.prUrl = obj.prUrl;
+      if (typeof obj.pullRequestUrl === 'string') artifacts.prUrl = obj.pullRequestUrl;
+      if (typeof obj.branch === 'string') artifacts.branch = obj.branch;
+      if (typeof obj.commitSha === 'string') artifacts.commitSha = obj.commitSha;
+      if (typeof obj.commit === 'string') artifacts.commitSha = obj.commit;
+    }
+  }
+  return artifacts;
+}
+
 function serializeMolecule(moleculeId: string, root: BeadRow, steps: readonly BeadRow[]): Record<string, unknown> {
   const anyFailed = steps.some((step) => Boolean(readExec(step).error_trace));
   const allClosed = steps.length > 0 && steps.every((step) => step.status === 'closed');
+  // lcp-40ru: compute progress counts + current-step for UI run-card.
+  const total = steps.length;
+  const done = steps.filter((s) => s.status === 'closed').length;
+  const running = steps.filter((s) => s.status === 'in_progress').length;
+  const currentStepBead = steps.find((s) => s.status === 'in_progress') ?? [...steps].reverse().find((s) => s.status !== 'open');
+  const currentStepName = currentStepBead ? readString(readExec(currentStepBead).step) : null;
+  const currentStepStatus = currentStepBead?.status ?? null;
+  // lcp-40ru: createdAt + elapsed time.
+  const createdAt = rowDate(root.created_at);
+  const elapsedMs = createdAt ? Date.now() - new Date(createdAt).getTime() : null;
+  // lcp-40ru: errorSummary from the failed step.
+  const failedStep = steps.find((s) => Boolean(readExec(s).error_trace));
+  const errorSummary = failedStep ? sanitizeTraceText(readString(readExec(failedStep).error_trace) ?? 'Unknown error') : null;
+  // lcp-40ru: producedArtifacts parsed from coder step output.
+  const artifacts = extractArtifacts(steps);
   return {
     moleculeId,
     formulaName: readString(readExec(root).formula),
     status: anyFailed ? 'failed' : allClosed ? 'completed' : 'running',
+    progress: { total, done, running },
+    currentStep: currentStepName,
+    currentStepStatus,
+    createdAt,
+    elapsedMs,
+    errorSummary,
+    producedArtifacts: artifacts,
     steps: steps.map((step) => ({
       stepId: step.id,
       stepName: readString(readExec(step).step),
@@ -295,6 +351,18 @@ function serializeMoleculeTrace(
   const health = normalizeMoleculeHealth(root, steps, events);
   const stepTraces = steps.map((step) => serializeStepTrace(step, edges, events));
   const usage = aggregateUsage(events);
+  // lcp-40ru: enrich trace with UI-card fields (additive, backward-compat).
+  const total = steps.length;
+  const done = steps.filter((s) => s.status === 'closed').length;
+  const running = steps.filter((s) => s.status === 'in_progress').length;
+  const currentStepBead = steps.find((s) => s.status === 'in_progress') ?? [...steps].reverse().find((s) => s.status !== 'open');
+  const currentStepName = currentStepBead ? readString(readExec(currentStepBead).step) : null;
+  const currentStepStatus = currentStepBead?.status ?? null;
+  const createdAtDate = rowDate(root.created_at);
+  const elapsedMs = createdAtDate ? Date.now() - new Date(createdAtDate).getTime() : null;
+  const failedStep = steps.find((s) => Boolean(readExec(s).error_trace));
+  const errorSummary = failedStep ? sanitizeTraceText(readString(readExec(failedStep).error_trace) ?? 'Unknown error') : null;
+  const artifacts = extractArtifacts(steps);
   return {
     moleculeId,
     rootBeadId: root.id,
@@ -303,6 +371,12 @@ function serializeMoleculeTrace(
     health,
     createdAt: rowDate(root.created_at),
     updatedAt: rowDate(root.updated_at),
+    progress: { total, done, running },
+    currentStep: currentStepName,
+    currentStepStatus,
+    elapsedMs,
+    errorSummary,
+    producedArtifacts: artifacts,
     steps: stepTraces,
     runtimeEvents: events.map(serializeTraceEvent),
     toolCalls: events.filter((event) => event.kind === 'runtime/session.tool_call').map(serializeToolEvent),
