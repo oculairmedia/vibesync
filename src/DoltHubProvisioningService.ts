@@ -426,7 +426,39 @@ export class DoltHubProvisioningService {
     return { changed, pushed };
   }
 
+  /**
+   * Detect whether a project's bd is in no-db / embedded mode (JSONL-only,
+   * no Dolt SQL server). Such projects (e.g. letta-mobile: `no-db: true`)
+   * cannot run `bd dolt start`, and the per-project port sweep below would
+   * try to provision a server that doesn't exist — producing the
+   * `connect ECONNREFUSED <port>` failure at dispatch time (lcp-yb3z).
+   */
+  private async isNoDbBeads(projectPath: string, commands: string[]): Promise<boolean> {
+    try {
+      const res = await this.runBd(projectPath, ['config', 'get', 'no-db'], commands);
+      if (/\btrue\b/i.test(res.stdout ?? '')) return true;
+    } catch {
+      // `config get` may exit non-zero when the key is unset; fall through.
+    }
+    // Fallback: read .beads/config.yaml directly.
+    try {
+      const { readFileSync } = require('node:fs') as typeof import('node:fs');
+      const { join } = require('node:path') as typeof import('node:path');
+      const cfg = readFileSync(join(projectPath, '.beads', 'config.yaml'), 'utf8');
+      return /^\s*no-db:\s*true\s*$/im.test(cfg);
+    } catch {
+      return false;
+    }
+  }
+
   private async ensureUniqueBeadsPort(project: BeadsProject, commands: string[]): Promise<void> {
+    // lcp-yb3z: no-db projects have no Dolt server to provision/port-sweep.
+    if (await this.isNoDbBeads(project.filesystem_path, commands)) {
+      this.logger?.info?.(
+        `ensureUniqueBeadsPort: skipping port sweep for no-db project ${project.identifier}`,
+      );
+      return;
+    }
     const registry: readonly SweeperProject[] = (this.db?.projects?.getAllProjects?.() ?? []).map(
       (entry) => ({ identifier: entry.identifier, filesystem_path: entry.filesystem_path ?? null }),
     );
