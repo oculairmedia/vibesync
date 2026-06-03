@@ -802,7 +802,13 @@ describe('SyncDatabase', () => {
     describe('provider routing (vibesync-f5g)', () => {
       it('returns nulls for a project with no override (default routing)', () => {
         const routing = db.getProjectProviderRouting('TEST');
-        expect(routing).toEqual({ lettaBaseUrl: null, providerKind: null, parentAgentId: null });
+        expect(routing).toEqual({
+          lettaBaseUrl: null,
+          providerKind: null,
+          parentAgentId: null,
+          packDir: null,
+          storageDir: null,
+        });
       });
 
       it('returns null when the project does not exist', () => {
@@ -822,6 +828,8 @@ describe('SyncDatabase', () => {
           lettaBaseUrl: 'http://192.168.50.90:8291',
           providerKind: 'letta-code-subagent',
           parentAgentId: null,
+          packDir: null,
+          storageDir: null,
         });
       });
 
@@ -839,6 +847,8 @@ describe('SyncDatabase', () => {
           lettaBaseUrl: 'http://localhost:8291',
           providerKind: 'letta-code-subagent',
           parentAgentId: 'agent-routing-parent',
+          packDir: null,
+          storageDir: null,
         });
       });
 
@@ -880,7 +890,13 @@ describe('SyncDatabase', () => {
         });
 
         const routing = db.getProjectProviderRouting('TEST');
-        expect(routing).toEqual({ lettaBaseUrl: null, providerKind: null, parentAgentId: null });
+        expect(routing).toEqual({
+          lettaBaseUrl: null,
+          providerKind: null,
+          parentAgentId: null,
+          packDir: null,
+          storageDir: null,
+        });
       });
     });
 
