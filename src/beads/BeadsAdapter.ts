@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
+import { classifyBeadsFailure } from './error-classification.js';
 import { logger as rootLogger } from '../logger.js';
 import type {
   NormalizedBeadsIssue,
@@ -126,53 +127,20 @@ export class BeadsAdapter {
     } catch (error) {
       const errorMsg = (error as Error).message;
       // Classify expected recurring mirror failures
-      const isExpectedFailure = this._isExpectedMirrorFailure(errorMsg);
-      
-      if (isExpectedFailure) {
+      const failureReason = classifyBeadsFailure(errorMsg);
+
+      if (failureReason) {
         // Log concisely without stack trace for expected failures
-        log.warn({ command: displayCommand, reason: this._extractFailureReason(errorMsg) }, 'Beads command failed (expected)');
+        log.warn({ command: displayCommand, reason: failureReason }, 'Beads command failed (expected)');
       } else {
         // Log unexpected errors with full details
         log.error({ command: displayCommand, err: error }, 'Beads command failed (unexpected)');
       }
-      
+
       throw new Error(
         `Beads command failed: ${displayCommand}\n${errorMsg}`,
       );
     }
-  }
-
-  private _isExpectedMirrorFailure(errorMsg: string): boolean {
-    const expectedPatterns = [
-      'connection refused',
-      'ECONNREFUSED',
-      'database not found',
-      'database does not exist',
-      'no such database',
-      'failed to connect to dolt',
-      'dolt server not running',
-      'no beads database',
-      '.beads directory not found',
-      'BEADS_DIR does not exist',
-    ];
-    const lowerMsg = errorMsg.toLowerCase();
-    return expectedPatterns.some(pattern => lowerMsg.includes(pattern.toLowerCase()));
-  }
-
-  private _extractFailureReason(errorMsg: string): string {
-    if (errorMsg.toLowerCase().includes('connection refused') || errorMsg.toLowerCase().includes('econnrefused')) {
-      return 'dolt_unreachable';
-    }
-    if (errorMsg.toLowerCase().includes('database not found') || errorMsg.toLowerCase().includes('database does not exist') || errorMsg.toLowerCase().includes('no such database')) {
-      return 'db_not_found';
-    }
-    if (errorMsg.toLowerCase().includes('no beads database') || errorMsg.toLowerCase().includes('.beads directory not found') || errorMsg.toLowerCase().includes('beads_dir does not exist')) {
-      return 'no_beads_db';
-    }
-    if (errorMsg.toLowerCase().includes('dolt server not running')) {
-      return 'dolt_not_running';
-    }
-    return 'unknown_expected';
   }
 
   private _extractBeadsDirArg(args: string[]): {

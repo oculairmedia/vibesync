@@ -1,3 +1,4 @@
+import { classifyBeadsFailure } from './error-classification.js';
 import { logger as rootLogger } from '../logger.js';
 import type { ProjectRow } from '../types/db.js';
 import type { NormalizedBeadsIssue } from '../types/beads.js';
@@ -202,20 +203,7 @@ export class BeadsIssueMirror {
   }
 
   private _classifyError(errorMsg: string): string | null {
-    const lowerMsg = errorMsg.toLowerCase();
-    if (lowerMsg.includes('connection refused') || lowerMsg.includes('econnrefused')) {
-      return 'dolt_unreachable';
-    }
-    if (lowerMsg.includes('database not found') || lowerMsg.includes('database does not exist') || lowerMsg.includes('no such database')) {
-      return 'db_not_found';
-    }
-    if (lowerMsg.includes('no beads database') || lowerMsg.includes('.beads directory not found') || lowerMsg.includes('beads_dir does not exist')) {
-      return 'no_beads_db';
-    }
-    if (lowerMsg.includes('dolt server not running')) {
-      return 'dolt_not_running';
-    }
-    return null; // Unexpected error
+    return classifyBeadsFailure(errorMsg);
   }
 
   private _isInBackoff(projectId: string): boolean {
@@ -236,7 +224,7 @@ export class BeadsIssueMirror {
         nextRetryAt: now + 30_000,
       });
     } else {
-      // Exponential backoff: 30s, 1m, 2m, 5m, 10m, max 30m
+      // Exponential backoff after the first failure: 1m, 2m, 4m, 8m, 16m, capped at 30m.
       const backoffMs = Math.min(
         30_000 * Math.pow(2, existing.consecutiveFailures),
         30 * 60_000

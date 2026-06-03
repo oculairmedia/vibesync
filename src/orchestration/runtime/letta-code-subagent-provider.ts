@@ -630,6 +630,7 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
     });
     if (getRes.ok) {
       // Agent exists — no-op.
+      await getRes.body?.cancel();
       return;
     }
     if (getRes.status !== 404) {
