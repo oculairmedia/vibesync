@@ -59,11 +59,38 @@ function makeFakeFetch(opts: {
   readonly conversationStatus?: number;
   readonly messagesStatus?: number;
   readonly conversationBody?: unknown;
+  /** Status code for GET /v1/agents/{id} probe. 200 = exists (no creation), 404 = missing (triggers auto-create). Default 200. */
+  readonly agentExistsStatus?: number;
+  /** Status code for POST /v1/agents (auto-create). Default 201. Only consulted if agentExistsStatus=404. */
+  readonly agentCreateStatus?: number;
 }): { fetchImpl: typeof fetch; calls: FakeFetchCall[] } {
   const calls: FakeFetchCall[] = [];
   const fetchImpl = (async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     calls.push({ url, init });
+    // lcp-mj0h auto-heal: GET /v1/agents/{id} probe
+    if (url.match(/\/v1\/agents\/[^/]+$/) && (!init || init.method === 'GET' || !init.method)) {
+      const status = opts.agentExistsStatus ?? 200;
+      if (status === 200) {
+        return new Response(JSON.stringify({ id: 'agent-pm', system: 'fake pm agent' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('not found', { status });
+    }
+    // lcp-mj0h auto-heal: POST /v1/agents (auto-create)
+    if (url.endsWith('/v1/agents') && init?.method === 'POST') {
+      const status = opts.agentCreateStatus ?? 201;
+      if (status >= 400) {
+        return new Response('creation failed', { status });
+      }
+      const body = JSON.parse(init.body as string) as { id?: string };
+      return new Response(JSON.stringify({ id: body.id ?? 'agent-auto', system: 'auto-created' }), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     if (url.endsWith('/v1/conversations')) {
       const status = opts.conversationStatus ?? 200;
       const body = opts.conversationBody ?? { id: opts.conversationId ?? 'conv-fake-1' };
@@ -128,7 +155,8 @@ describe('LettaCodeSubagentProvider', () => {
       });
       await provider.prompt(handle, [{ type: 'text', text: 'hi' }]);
       await drain(provider, handle);
-      expect(calls[0]!.url).toBe('http://localhost:8291/v1/conversations');
+      const createCall = calls.find((c) => c.url.endsWith('/v1/conversations'));
+      expect(createCall?.url).toBe('http://localhost:8291/v1/conversations');
     });
   });
 
@@ -144,9 +172,11 @@ describe('LettaCodeSubagentProvider', () => {
     });
 
     it('returns a handle tagged with the provider kind and role', async () => {
+      const { fetchImpl } = makeFakeFetch({});
       const provider = new LettaCodeSubagentProvider({
         shimBaseUrl: 'http://localhost:8291',
         personaLoader: fakePersonaLoader(),
+        fetchImpl,
       });
       const handle = await provider.start({
         role: 'reviewer',
@@ -168,10 +198,10 @@ describe('LettaCodeSubagentProvider', () => {
         role: 'reviewer',
         extra: { parentAgentId: 'agent-pm' },
       });
-      expect(calls.length).toBe(0);
+      expect(calls.filter((c) => c.url.endsWith('/v1/conversations'))).toHaveLength(0);
       // stop() before prompt() must be a true no-op — no orphan conversation
       await provider.stop(handle);
-      expect(calls.length).toBe(0);
+      expect(calls.filter((c) => c.url.endsWith('/v1/conversations'))).toHaveLength(0);
     });
   });
 
@@ -198,13 +228,16 @@ describe('LettaCodeSubagentProvider', () => {
       await provider.prompt(handle, [{ type: 'text', text: 'review commit abc' }]);
       const events = await drain(provider, handle);
 
-      // First HTTP call: POST /v1/conversations
-      expect(calls[0]!.url).toBe('http://localhost:8291/v1/conversations');
-      expect(JSON.parse(calls[0]!.init!.body as string)).toEqual({ agent_id: 'agent-pm' });
+      // First conversation call: POST /v1/conversations. The provider may
+      // make parent-agent health probes before creating the conversation.
+      const createCall = calls.find((c) => c.url.endsWith('/v1/conversations'));
+      expect(createCall?.url).toBe('http://localhost:8291/v1/conversations');
+      expect(JSON.parse(createCall!.init!.body as string)).toEqual({ agent_id: 'agent-pm' });
 
-      // Second HTTP call: POST .../messages with the puppet body
-      expect(calls[1]!.url).toBe('http://localhost:8291/v1/conversations/conv-abc/messages');
-      const messageBody = JSON.parse(calls[1]!.init!.body as string) as { input: string };
+      // Message call: POST .../messages with the puppet body
+      const messageCall = calls.find((c) => c.url.includes('/messages'));
+      expect(messageCall?.url).toBe('http://localhost:8291/v1/conversations/conv-abc/messages');
+      const messageBody = JSON.parse(messageCall!.init!.body as string) as { input: string };
       expect(messageBody.input).toContain('[ORCHESTRATION_SUBAGENT_DISPATCH]');
       expect(messageBody.input).toContain('"general-purpose"');
       expect(messageBody.input).toContain('You MUST call the Agent tool exactly once');
@@ -373,9 +406,11 @@ describe('LettaCodeSubagentProvider', () => {
     });
 
     it('observe() on a stopped handle yields a stopped event', async () => {
+      const { fetchImpl } = makeFakeFetch({});
       const provider = new LettaCodeSubagentProvider({
         shimBaseUrl: 'http://localhost:8291',
         personaLoader: fakePersonaLoader(),
+        fetchImpl,
       });
       const handle = await provider.start({
         role: 'reviewer',
@@ -403,9 +438,11 @@ describe('LettaCodeSubagentProvider', () => {
 
   describe('idempotency & lifecycle', () => {
     it('stop() is idempotent', async () => {
+      const { fetchImpl } = makeFakeFetch({});
       const provider = new LettaCodeSubagentProvider({
         shimBaseUrl: 'http://localhost:8291',
         personaLoader: fakePersonaLoader(),
+        fetchImpl,
       });
       const handle = await provider.start({
         role: 'reviewer',
@@ -416,9 +453,11 @@ describe('LettaCodeSubagentProvider', () => {
     });
 
     it('nudge() is a no-op', async () => {
+      const { fetchImpl } = makeFakeFetch({});
       const provider = new LettaCodeSubagentProvider({
         shimBaseUrl: 'http://localhost:8291',
         personaLoader: fakePersonaLoader(),
+        fetchImpl,
       });
       const handle = await provider.start({
         role: 'reviewer',

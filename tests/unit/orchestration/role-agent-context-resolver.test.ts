@@ -90,10 +90,11 @@ describe('buildRoleAgentContextResolver (vibesync-mcz Phase D)', () => {
     expect(result).toBeNull();
   });
 
-  it('returns null when packDir is missing for the project', async () => {
+  it('uses the default packDir when the project has no explicit packDir mapping', async () => {
+    const bootstrapper = fakeBootstrapper();
     const resolver = buildRoleAgentContextResolver({
       store: fakeStore({ [PROJECT]: { providerKind: 'letta-code-subagent', lettaBaseUrl: 'http://shim:8291' } }),
-      roleAgentBootstrapper: fakeBootstrapper(),
+      roleAgentBootstrapper: bootstrapper,
       packDirsByProject: { 'other': '/packs/other' },
       storageDirsByProject: { [PROJECT]: '/storage' },
     });
@@ -103,13 +104,19 @@ describe('buildRoleAgentContextResolver (vibesync-mcz Phase D)', () => {
       input: 'go',
       projectIdentifier: PROJECT,
     });
-    expect(result).toBeNull();
+    expect(result).toEqual({
+      bootstrapper,
+      packDir: 'packs/gastown',
+      storageDir: '/storage',
+      lettaBaseUrl: 'http://shim:8291',
+    });
   });
 
-  it('returns null when storageDir is missing for the project', async () => {
+  it('uses the default storageDir when the project has no explicit storageDir mapping', async () => {
+    const bootstrapper = fakeBootstrapper();
     const resolver = buildRoleAgentContextResolver({
       store: fakeStore({ [PROJECT]: { providerKind: 'letta-code-subagent', lettaBaseUrl: 'http://shim:8291' } }),
-      roleAgentBootstrapper: fakeBootstrapper(),
+      roleAgentBootstrapper: bootstrapper,
       packDirsByProject: { [PROJECT]: '/packs/gastown' },
       storageDirsByProject: {},
     });
@@ -119,7 +126,12 @@ describe('buildRoleAgentContextResolver (vibesync-mcz Phase D)', () => {
       input: 'go',
       projectIdentifier: PROJECT,
     });
-    expect(result).toBeNull();
+    expect(result).toEqual({
+      bootstrapper,
+      packDir: '/packs/gastown',
+      storageDir: '/root/.letta/lc-local-backend',
+      lettaBaseUrl: 'http://shim:8291',
+    });
   });
 
   it('returns null when lettaBaseUrl is missing on the routing row', async () => {

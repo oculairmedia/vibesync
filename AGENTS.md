@@ -182,6 +182,7 @@ This is a HARD rule for every agent that touches code, no exceptions:
 - **NEVER push to `main`.** `origin/main` is branch-protected — direct pushes are rejected. Push your feature branch and open a PR.
 - **NEVER merge your own PR** or run `git checkout main && git merge`. Merging is a separate gated step (reviewer/human + CI typecheck/tests). Your job ends at "PR opened."
 - A change MUST typecheck (`npx tsc --noEmit`) before you open the PR. Do not open a PR for code that does not compile.
+- Every feature, fix, or behavior change MUST add or update a regression test that would fail if the behavior regressed later. PRs without test coverage for new or changed behavior should be rejected in review.
 - If any git operation fails because of branch protection, STOP and report it — do not work around it.
 
 Background: an autonomous rig run pushed broken, unreviewed code straight to `origin/main` (it did not even typecheck), nearly breaking the service on the next restart. Branch protection + PR-only is the safety gate. See lcp-uye8.
