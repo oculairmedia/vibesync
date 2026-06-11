@@ -5,6 +5,10 @@ import { InMemoryDoltClient } from '../../_fixtures/in-memory-dolt-client.js';
 
 describe('bootOrchestrationPlane', () => {
   it('returns a wired orchestration handle', async () => {
+    // vibesync-ryhc: the work-activity reporter wires an extra bus subscriber
+    // when a shim URL is present in the environment (true on CI runners).
+    // Disable it explicitly — this test asserts the BASELINE wiring.
+    process.env['VIBESYNC_WORK_ACTIVITY_REPORT'] = '0';
     const handle = await bootForTest();
 
     expect(handle.dispatcher).toBeDefined();
