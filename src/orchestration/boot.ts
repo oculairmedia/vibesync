@@ -6,7 +6,7 @@ import {
   type RoleAgentBootstrapperLike,
   type WritebackStore,
 } from './dispatcher/index.js';
-import { EventBus } from './events/index.js';
+import { EventBus, WorkActivityReporter } from './events/index.js';
 import { HealthPatrol } from './health/index.js';
 import { MoleculeWalker } from './molecule/index.js';
 import {
@@ -167,6 +167,22 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     });
   }
 
+  // vibesync-ryhc: work-activity reporter for mobile active-subagent bar.
+  // Enabled only when shimBaseUrl is configured AND VIBESYNC_WORK_ACTIVITY_REPORT
+  // is not explicitly disabled.
+  let workActivityReporter: WorkActivityReporter | null = null;
+  const shimBaseUrl = process.env['VIBESYNC_LETTA_CODE_SHIM_URL'] ?? process.env['LETTA_CODE_SHIM_URL'];
+  const workActivityEnabled = process.env['VIBESYNC_WORK_ACTIVITY_REPORT'] !== '0';
+  if (shimBaseUrl && workActivityEnabled) {
+    const password = process.env['VIBESYNC_LETTA_CODE_PASSWORD'] ?? process.env['LETTA_CODE_PASSWORD'];
+    workActivityReporter = new WorkActivityReporter({
+      eventBus: bus,
+      shimBaseUrl,
+      password,
+    });
+    workActivityReporter.start();
+  }
+
   let shutDown = false;
 
   return {
@@ -180,6 +196,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
       shutDown = true;
       unsubscribeWriteback?.();
       patrol.stop();
+      workActivityReporter?.stop();
     },
   };
 }
