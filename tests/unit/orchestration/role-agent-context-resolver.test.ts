@@ -13,7 +13,12 @@ import { buildRoleAgentContextResolver } from '../../../src/orchestration/boot.j
 import type { ProjectProviderRoutingStore } from '../../../src/orchestration/boot.js';
 import type { RoleAgentBootstrapperLike } from '../../../src/orchestration/dispatcher/index.js';
 
-function fakeStore(rows: Record<string, { providerKind: string | null; lettaBaseUrl: string | null }>): ProjectProviderRoutingStore {
+function fakeStore(rows: Record<string, {
+  providerKind: string | null;
+  lettaBaseUrl: string | null;
+  packDir?: string | null;
+  storageDir?: string | null;
+}>): ProjectProviderRoutingStore {
   return {
     getProjectProviderRouting(projectId: string) {
       return rows[projectId] ?? null;
@@ -130,6 +135,35 @@ describe('buildRoleAgentContextResolver (vibesync-mcz Phase D)', () => {
       bootstrapper,
       packDir: '/packs/gastown',
       storageDir: '/root/.letta/lc-local-backend',
+      lettaBaseUrl: 'http://shim:8291',
+    });
+  });
+
+  it('prefers DB-backed packDir and storageDir over legacy maps', async () => {
+    const bootstrapper = fakeBootstrapper();
+    const resolver = buildRoleAgentContextResolver({
+      store: fakeStore({
+        [PROJECT]: {
+          providerKind: 'letta-code-subagent',
+          lettaBaseUrl: 'http://shim:8291',
+          packDir: '/db/pack',
+          storageDir: '/db/storage',
+        },
+      }),
+      roleAgentBootstrapper: bootstrapper,
+      packDirsByProject: { [PROJECT]: '/legacy/pack' },
+      storageDirsByProject: { [PROJECT]: '/legacy/storage' },
+    });
+    const result = await resolver.resolve({
+      formula: {} as never,
+      pack: {} as never,
+      input: 'go',
+      projectIdentifier: PROJECT,
+    });
+    expect(result).toEqual({
+      bootstrapper,
+      packDir: '/db/pack',
+      storageDir: '/db/storage',
       lettaBaseUrl: 'http://shim:8291',
     });
   });

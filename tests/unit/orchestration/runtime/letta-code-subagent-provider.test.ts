@@ -165,6 +165,7 @@ describe('LettaCodeSubagentProvider', () => {
       const provider = new LettaCodeSubagentProvider({
         shimBaseUrl: 'http://localhost:8291',
         personaLoader: fakePersonaLoader(),
+        fetchImpl: makeFakeFetch({}).fetchImpl,
       });
       await expect(
         provider.start({ role: 'reviewer' }),
@@ -426,6 +427,7 @@ describe('LettaCodeSubagentProvider', () => {
       const provider = new LettaCodeSubagentProvider({
         shimBaseUrl: 'http://localhost:8291',
         personaLoader: fakePersonaLoader(),
+        fetchImpl: makeFakeFetch({}).fetchImpl,
       });
       await expect(
         provider.prompt(

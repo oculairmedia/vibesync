@@ -1,10 +1,14 @@
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
+import { classifyBeadsFailure } from './error-classification.js';
+import { logger as rootLogger } from '../logger.js';
 import type {
   NormalizedBeadsIssue,
   NormalizedWorkItems,
   BeadsProject,
 } from '../types/beads';
+
+const log = rootLogger.child({ module: 'beads-adapter' });
 
 type RawBeadsIssue = Record<string, unknown>;
 
@@ -121,8 +125,20 @@ export class BeadsAdapter {
       });
       return JSON.parse(output) as unknown;
     } catch (error) {
+      const errorMsg = (error as Error).message;
+      // Classify expected recurring mirror failures
+      const failureReason = classifyBeadsFailure(errorMsg);
+
+      if (failureReason) {
+        // Log concisely without stack trace for expected failures
+        log.warn({ command: displayCommand, reason: failureReason }, 'Beads command failed (expected)');
+      } else {
+        // Log unexpected errors with full details
+        log.error({ command: displayCommand, err: error }, 'Beads command failed (unexpected)');
+      }
+
       throw new Error(
-        `Beads command failed: ${displayCommand}\n${(error as Error).message}`,
+        `Beads command failed: ${displayCommand}\n${errorMsg}`,
       );
     }
   }
