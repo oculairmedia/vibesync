@@ -6,7 +6,7 @@
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | ADR ID          | 0001                                                                                                                                                               |
 | Title           | Orchestration Ownership & Kotlin Migration Boundary                                                                                                                |
-| Status          | Proposed (revised 2026-07-14 after REQUESTED CHANGES on commit 94fc8bc8)                                                                                           |
+| Status          | **Accepted** (decision date 2026-07-14, reviewer Meridian; rev 3 finalizes after Meridian's second review of commit `117aec9d`)                                    |
 | Revision of     | 94fc8bc8fdcb4aaff3daf431df974eb54accd8b4 (initial ADR delivery)                                                                                                    |
 | Authors         | PM-vibesync (vibesync-jxri.1)                                                                                                                                      |
 | Deciders        | Meridian (Director of Engineering)                                                                                                                                 |
@@ -27,10 +27,11 @@
 
 ## 0. Revision log
 
-| Rev | Date       | SHA-prefix | Author      | Reason                                                                                                              |
-| --- | ---------- | ---------- | ----------- | ------------------------------------------------------------------------------------------------------------------- |
-| 1   | 2026-07-14 | `94fc8bc8` | PM-vibesync | Initial ADR delivery                                                                                                |
-| 2   | 2026-07-14 | (this rev) | PM-vibesync | REQUESTED CHANGES from Meridian review of 94fc8bc8. Each numbered CHANGE is addressed below in §11 with the source. |
+| Rev | Date       | SHA-prefix | Author      | Reason                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| --- | ---------- | ---------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | 2026-07-14 | `94fc8bc8` | PM-vibesync | Initial ADR delivery                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| 2   | 2026-07-14 | `117aec9d` | PM-vibesync | REQUESTED CHANGES from Meridian review of 94fc8bc8. Each numbered CHANGE is addressed below in §11 with the source.                                                                                                                                                                                                                                                                                                                                                                                                         |
+| 3   | 2026-07-14 | (this rev) | PM-vibesync | Meridian second review of 117aec9d accepts in substance. Final corrections: (a) `jxri.21` (not `jxri.6`) is the executor of legacy persistence migration; (b) downstream cross-references are follow-up obligations, not blockers to ADR acceptance; (c) exact App Server control-session replacement behavior and capability issuer/validator details remain owned by `jxri.3` / `jxri.5` / `jxri.12` (tested, not asserted); (d) status elevated Proposed → Accepted with decision date 2026-07-14 and reviewer Meridian. |
 
 ---
 
@@ -123,10 +124,16 @@ not how the Letta App Server model works. The correct delineation is:
    audit log) consume the same bus stream. Observers are
    subscribers, not control-session peers.
 5. **DispatchInput carries `parentAgentId` (PM identity) and a
-   control-session-scoped run token.** The run token is the
-   dispatcher-minted proof that the dispatcher is the active
-   controller for this control session; the PM identity is the
-   Letta agent the controller drives.
+   control-session-scoped run token.** The run token is a
+   VibeSync-dispatcher-internal proof that the dispatcher is the
+   active controller for this control session; the PM identity is
+   the Letta agent the controller drives. **The run token is NOT
+   the App Server bearer credential** (§3.7). The run token is an
+   in-VibeSync dispatcher concept (proof of control-session
+   ownership for molecule-step writeback and event correlation);
+   the App Server bearer is a separate control-plane authorization
+   credential. Its issuer, validator, and exact scheme are owned by
+   `jxri.3` / `jxri.12`.
 
 **Incidental (current Bun code):**
 
@@ -286,7 +293,7 @@ not the final Kotlin behavior.
   preferred Bun path.
 - Per-project config (pack dir, storage dir, provider kind, parent
   agent id, letta base URL) lives in the `projects` table columns
-  today (legacy) and will live in Beads after migration (jxri.6).
+  today (legacy) and will live in Beads after migration (`jxri.21`).
   Defaults: `packs/gastown` and `/root/.letta/lc-local-backend`.
 - Feature activation (molecule writeback, work-activity reporter,
   drift audit) goes through `BootOrchestrationPlaneOptions` config,
@@ -310,7 +317,7 @@ not the final Kotlin behavior.
 
 - Hardcoded map defaults like `DEFAULT_PACK_DIR = 'packs/gastown'`
   inside `buildRoleAgentContextResolver` (lcp-kamu). The Kotlin port
-  reads pack dir from the same column (legacy today; Beads post-`jxri.6`).
+  reads pack dir from the same column (legacy today; Beads post-`jxri.21`).
   The constant is a temporary fallback for tests, not a configuration
   default.
 
@@ -392,30 +399,35 @@ REQUESTED CHANGES #4: the prior draft asserted Iroh carries domain
 authorization. It does not. Iroh is transport identity/reachability;
 domain authorization is controller-owned.
 
-**Normative:**
+**Normative (this ADR pins ownership only):**
 
-| Layer                   | Owner / Mechanism                                                                                       |
-| ----------------------- | ------------------------------------------------------------------------------------------------------- |
-| Transport identity      | **Iroh node IDs / tickets** — peer identity for NAT-traversing connectivity                             |
-| Reachability            | **Iroh** — connection establishment between peers                                                       |
-| Domain authorization    | **Controller-owned signed capabilities**, layered over Iroh transport                                   |
-| App Server session auth | **Capability token** minted by the App Server / controller (`authToken` per the Letta Agent SDK README) |
+| Layer                         | Owner / Mechanism                                                                                                                                                                                                                                                                                                    |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Transport identity            | **Iroh node IDs / tickets** — peer identity for NAT-traversing connectivity                                                                                                                                                                                                                                          |
+| Reachability                  | **Iroh** — connection establishment between peers                                                                                                                                                                                                                                                                    |
+| Domain authorization          | **Controller-owned signed capabilities**, layered over Iroh transport                                                                                                                                                                                                                                                |
+| Control-session authorization | **App Server bearer credential** (`authToken` in the Agent SDK client) — exact issuer, validator, signing scheme, and scope are owned by `vibesync-jxri.12` (discovery) and `vibesync-jxri.3` (versioned schemas); this ADR does not rename it into a protocol concept or assert specific issuer/validator behavior. |
 
 **Authority layering (top to bottom):**
 
-1. **Capability token** — issued by the controller (or App Server)
-   to a client. Scoped to (project, role, conversation, expiry). The
-   token is what the App Server validates on websocket connect.
+1. **App Server bearer credential** — `authToken` is the Agent SDK
+   client field for non-loopback App Server authentication. This ADR
+   does not assume it is a signed capability token. Its issuer,
+   validator, signing scheme, and exact scope claim set are tested and
+   finalized by `vibesync-jxri.12` (discovery) and `vibesync-jxri.3`
+   (versioned schemas). The normative claim here is only that domain
+   authorization is application-owned and not supplied by Iroh.
 2. **Iroh transport** — provides the authenticated connection
-   between the client and the App Server. The App Server's
-   `--ws-auth` mode validates the capability token; Iroh just
-   delivers the bytes.
-3. **Capability schema** — the format and signing scheme of
-   capability tokens. **This schema does not yet exist as
+   between the client and the App Server. Iroh is transport only;
+   it does not define application authorization. Credential
+   validation occurs at the App Server/controller boundary as defined
+   by the downstream contract.
+3. **Authorization schema** — the format and validation scheme of
+   controller-owned domain credentials. **This schema does not yet exist as
    "Iroh behavior" and is not asserted by this ADR.** It is owned
-   downstream: `vibesync-jxri.12` (discovery) and `vibesync-jxri.13`
-   (shadow / differential harness) define the wire shape and
-   signing scheme as part of their acceptance criteria.
+   downstream: `vibesync-jxri.12` (discovery), `vibesync-jxri.3`
+   (schemas), and `vibesync-jxri.5` (RuntimeProvider seam
+   contract). Each is tested rather than asserted here.
 
 **Incidental (current code, do not port verbatim):**
 
@@ -596,7 +608,7 @@ runbook rehearsed) are the binary go/no-go for letting
 | Beads schema                            | Migration path through `bd`'s migration; runtime beads follow `docs/architecture/bd-conventions.md`.                                                                                                                                               |
 | Pack TOML                               | Schema is additive; removing a key requires a deprecation cycle through at least one reference release.                                                                                                                                            |
 | `provider_kind='letta-teams'` rows      | Treated as removed configuration; warn-and-fall-back to boot-level local backend. Migration shim planned under `jxri.6`.                                                                                                                           |
-| Legacy `vibesync.db` SQLite registry    | Read-only access; no new domain state. Migration to Beads executed by `jxri.6`. Final removal only after `jxri.14` closes.                                                                                                                         |
+| Legacy `vibesync.db` SQLite registry    | Read-only access; no new domain state. Migration to Beads executed by `jxri.21`. Final removal only after `jxri.14` closes.                                                                                                                        |
 | Bun ↔ Kotlin divergence                 | During cutover: shared Beads/Dolt authority, per-capability authority flags, no duplicate mutation. Bun is authoritative until its capability flag is flipped; Kotlin is shadow / canary only. After `jxri.14`: Kotlin authoritative, Bun retired. |
 | Reference release cadence               | At least one reference release per epic-quarter. Hot-fix releases allowed for severity-1 regressions under `jxri.14` change control.                                                                                                               |
 | `@letta-ai/letta-code-sdk` (deprecated) | STOP using. Migrate to `@letta-ai/letta-agent-sdk` per `jxri.6`. The deprecated shim is on the Bun reference's migration path.                                                                                                                     |
@@ -611,7 +623,7 @@ runbook rehearsed) are the binary go/no-go for letting
 | `RuntimeProvider` seam and ownership (this ADR)                                                                                                 | **Normative**                                    | `src/orchestration/runtime/provider.ts`; versioning owned by `jxri.5`.                                                       |
 | `SessionEvent` discriminated union + unknown-kind pass-through                                                                                  | **Normative (seam)**                             | Contract versioned by `jxri.5`.                                                                                              |
 | `SessionHandle` opaque, provider-local                                                                                                          | **Normative**                                    | Same.                                                                                                                        |
-| Beads as universal persistence (NEW state)                                                                                                      | **Normative**                                    | `AGENTS.md` rule 2; `docs/architecture/bd-conventions.md`; migration of legacy rows tracked by `jxri.2`/`jxri.6`.            |
+| Beads as universal persistence (NEW state)                                                                                                      | **Normative**                                    | `AGENTS.md` rule 2; `docs/architecture/bd-conventions.md`; migration of legacy rows tracked by `jxri.2`/`jxri.21`.           |
 | EventBus as universal observation                                                                                                               | **Normative**                                    | `AGENTS.md` rule 3; `src/orchestration/events/bus.ts`.                                                                       |
 | Config activation (presence in `BootOrchestrationPlaneOptions`)                                                                                 | **Normative**                                    | `AGENTS.md` rule 4.                                                                                                          |
 | Zero hardcoded roles in core                                                                                                                    | **Normative**                                    | `AGENTS.md` rule 5.                                                                                                          |
@@ -628,7 +640,7 @@ runbook rehearsed) are the binary go/no-go for letting
 | **Auto-heal phantom PM agent refs** (`ensureParentAgentExists`)                                                                                 | **Incidental — DO NOT PORT**                     | Recovery for shim store inconsistency. lcp-mj0h.                                                                             |
 | **`requires_approval` parsing detail** (treat as non-terminal, wait for end_turn)                                                               | **Incidental — DO NOT PORT**                     | The contract is normative (don't end on requires_approval). The parser detail is bypassPermissions-mode-specific (lcp-ltrf). |
 | **`provider_kind='letta-teams'` rows**                                                                                                          | **Incidental — DO NOT PORT**                     | Removed legacy; warn-and-fall-back. Don't bring back the SDK.                                                                |
-| **Legacy SQLite `vibesync.db` registry tables** (`projects`, `issues`, `project_role_agents`, `sync_history`, `project_files`, `sync_metadata`) | **Incidental — DO NOT EXTEND, DO NOT REPLICATE** | Current state; migrate to Beads per `jxri.6`. No new domain state, no port to Kotlin.                                        |
+| **Legacy SQLite `vibesync.db` registry tables** (`projects`, `issues`, `project_role_agents`, `sync_history`, `project_files`, `sync_metadata`) | **Incidental — DO NOT EXTEND, DO NOT REPLICATE** | Current state; migrate to Beads per `jxri.21`. No new domain state, no port to Kotlin.                                       |
 | **`@letta-ai/letta-code-sdk` usage** (deprecated upstream package)                                                                              | **Incidental — STOP USING**                      | npm: "Deprecated compatibility shim for @letta-ai/letta-agent-sdk". Migrate to `@letta-ai/letta-agent-sdk` per `jxri.6`.     |
 | **Provisioning-SDK + runtime-shim asymmetry**                                                                                                   | **Incidental — DO NOT PORT**                     | Will collapse to SDK-only in Bun (`jxri.6`). Kotlin uses one path.                                                           |
 | **`buildDefaultRuntimeProvider` env-var branches in `boot.ts`**                                                                                 | **Incidental — DO NOT PORT**                     | Boot wiring choice; dispatcher MUST NOT read env vars directly.                                                              |
@@ -704,33 +716,46 @@ This ADR closes (`vibesync-jxri.1` status → closed) when:
 - [x] Explicit non-goals are listed (13 items in rev 2).
 - [x] **AGENTS.md cross-link** is in place at the layering-invariants
       section (added in rev 2).
-- [ ] **Reviewed and accepted by Meridian** — REMAIN UNCHECKED until
-      Meridian signs off on rev 2.
+- [x] **Reviewed and accepted by Meridian** — second review on commit
+      `117aec9d` accepts in substance (2026-07-14). Final corrections
+      applied in rev 3 (this commit): `jxri.21` is the persistence
+      migration executor (not `jxri.6`); downstream cross-references
+      are follow-up obligations, not blockers; capability
+      issuer/validator details are delegated to `jxri.3` / `jxri.12`.
 - [ ] Cited from `jxri.2`, `jxri.3`, `jxri.5`, `jxri.6`, `jxri.10.4`,
-      `jxri.12`, `jxri.13`, `jxri.14`, `jxri.17` (follow-up
-      cross-references added by those beads).
+      `jxri.12`, `jxri.13`, `jxri.14`, `jxri.17`, **`jxri.21`** —
+      **follow-up obligation**, not a blocker to ADR acceptance. Each
+      downstream bead should add a "see ADR-0001 §X" pointer to its
+      description. ADR acceptance does NOT depend on these pointers
+      being in place; they are housekeeping.
 - [ ] Reciprocal note posted in `letta-mobile-gx6ri` citing this ADR
-      (coordination via Beads comments; not this repo's job).
+      (coordination via Beads comments; not this repo's job) —
+      **follow-up obligation**, not a blocker.
 
-The remaining acceptance items are tracked under this bead's
-"open questions" section below until closed.
+The remaining items above are follow-up obligations for downstream
+beads, NOT blockers to this ADR being Accepted. Closing
+`vibesync-jxri.1` after Meridian's sign-off on rev 3 does NOT require
+the cited-bead references or the cross-repo note to be present.
 
 ---
 
 ## 8. Open questions
 
-1. **Capability token format / signing scheme** (owned by `jxri.12`
-   discovery and `jxri.13` shadow harness). This ADR does not
+1. **Capability token format / signing scheme** (owned by `jxri.3`
+   versioned schemas and `jxri.12` discovery). This ADR does not
    specify the schema — only that it is controller-owned, layered
-   over Iroh, and versioned by jxri.3.
+   over Iroh, and versioned by `jxri.3`. `jxri.13` (shadow
+   harness) tests that the shadow path produces equivalent
+   authorization decisions.
 2. **Per-capability authority flags list.** Owned by `jxri.13`
    shadow harness.
 3. **Inline-persona compatibility retirement schedule.** Owned by
    `jxri.6` (modernize Letta runtime provider). The path exists
    until all projects bootstrap a persistent role agent.
 4. **Beads schema for projects / project_role_agents.** Owned by
-   `jxri.2` (inventory) and `jxri.3` (schemas). Migration is
-   `jxri.6`'s work.
+   `jxri.2` (inventory) and `jxri.3` (schemas). Migration of the
+   legacy SQLite registry rows to Beads is executed by
+   `vibesync-jxri.21`.
 
 ---
 
@@ -789,7 +814,7 @@ The remaining acceptance items are tracked under this bead's
   projection reference (NOT in core).
 - Beads epic: `vibesync-jxri`.
 - Companion beads: `vibesync-jxri.2`, `.3`, `.5`, `.6`, `.7`, `.10.4`,
-  `.12`, `.13`, `.14`, `.16`, `.17`.
+  `.12`, `.13`, `.14`, `.16`, `.17`, `.21`.
 - Downstream ADR: `letta-mobile-gx6ri` (cross-repo; prerequisite
   evidence for Kotlin authority cutover).
 
