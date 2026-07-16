@@ -44,14 +44,53 @@ export interface WritebackStore {
   recordMoleculeWriteback(rootId: string, status: 'completed' | 'failed'): Promise<string | undefined>;
 }
 
+/**
+ * Structured logger surface for the writeback hook.
+ *
+ * `warn` carries swallowed failures (existing contract, vibesync-er21).
+ * `info` (added for vibesync-er21 hook-wiring) carries the two
+ * observability signals that were previously missing entirely:
+ *   - a one-time subscription-confirmed line at install, so the daemon
+ *     log proves the hook is wired to the EventBus, and
+ *   - a per-invocation line every time a completion/failure event reaches
+ *     the subscriber, recording the action taken (posted / skipped and
+ *     why). Without this, a completed molecule that produced no note was
+ *     indistinguishable from a hook that never subscribed — the exact
+ *     symptom this bead chases.
+ */
+export interface WritebackLogger {
+  warn(obj: unknown, msg: string): void;
+  info?(obj: unknown, msg: string): void;
+}
+
+/** Outcome of handling one completion/failure event, for the per-invocation log. */
+export type WritebackAction =
+  | 'posted'
+  | 'skipped-no-molecule-id'
+  | 'skipped-molecule-not-found'
+  | 'skipped-no-motivating-bead'
+  | 'skipped-already-written'
+  | 'skipped-motivating-bead-gc';
+
 export interface WritebackHookDeps {
   readonly bus: EventBus;
   readonly walker: MoleculeWalker;
   readonly store: WritebackStore;
   /** Injectable so tests can pin the timestamp. Defaults to Date.now. */
   readonly now?: () => Date;
-  /** Optional logger for swallowed errors. */
-  readonly logger?: { warn(obj: unknown, msg: string): void };
+  /** Optional logger for swallowed errors and subscription/invocation traces. */
+  readonly logger?: WritebackLogger;
+}
+
+function logInfo(logger: WritebackLogger | undefined, obj: unknown, msg: string): void {
+  if (logger?.info) {
+    logger.info(obj, msg);
+    return;
+  }
+  // No structured logger at this call site — still surface the trace so the
+  // subscription/invocation is never invisible in the daemon log.
+  // eslint-disable-next-line no-console
+  console.error(`[writeback] ${msg}`, obj);
 }
 
 /**
@@ -69,7 +108,7 @@ export function installWritebackHook(deps: WritebackHookDeps): () => void {
   // across process restarts. On failure the key is released so a later
   // event can retry.
   const inFlight = new Set<string>();
-  return deps.bus.subscribe((event) => {
+  const unsubscribe = deps.bus.subscribe((event) => {
     if (event.kind !== 'dispatcher/formula.completed' && event.kind !== 'dispatcher/formula.failed') {
       return;
     }
@@ -77,6 +116,18 @@ export function installWritebackHook(deps: WritebackHookDeps): () => void {
     if (inFlight.has(key)) return;
     inFlight.add(key);
     void handleEvent(event, deps, now)
+      .then((action) => {
+        // Per-invocation trace (vibesync-er21 hook-wiring): every completion
+        // event that reaches the subscriber logs the action it took. A
+        // "skipped-no-motivating-bead" line is how an operator now sees that
+        // the hook DID fire but had no target — versus the old behaviour
+        // where the same case produced no log line at all.
+        logInfo(
+          deps.logger,
+          { moleculeId: event.molecule_id, kind: event.kind, action },
+          `writeback hook fired: ${action}`,
+        );
+      })
       .catch((err: unknown) => {
         // Loud by design (vibesync-er21): a swallowed writeback failure is
         // how the loop-back to human-tracked work silently disappears. If no
@@ -88,6 +139,13 @@ export function installWritebackHook(deps: WritebackHookDeps): () => void {
         inFlight.delete(key);
       });
   });
+
+  // Subscription-confirmed trace (vibesync-er21 hook-wiring): prove at boot
+  // that the hook is attached to the EventBus. Its absence in the daemon log
+  // is the fastest signal that the writeback loop-back was never wired.
+  logInfo(deps.logger, { subscriberCount: deps.bus.subscriberCount() }, 'writeback hook subscribed to EventBus (dispatcher/formula.completed|failed)');
+
+  return unsubscribe;
 }
 
 function logWritebackFailure(
@@ -104,22 +162,22 @@ function logWritebackFailure(
   console.error(`[writeback] ${msg}`, obj);
 }
 
-async function handleEvent(event: Event, deps: WritebackHookDeps, now: () => Date): Promise<void> {
+async function handleEvent(event: Event, deps: WritebackHookDeps, now: () => Date): Promise<WritebackAction> {
   const moleculeId = event.molecule_id;
-  if (!moleculeId) return;
+  if (!moleculeId) return 'skipped-no-molecule-id';
   const view = await deps.walker.load(moleculeId);
-  if (!view) return;
+  if (!view) return 'skipped-molecule-not-found';
 
   const exec = readExec(view.root);
   const motivatingBeadId = typeof exec['motivating_bead'] === 'string' ? (exec['motivating_bead'] as string) : '';
-  if (!motivatingBeadId) return;
+  if (!motivatingBeadId) return 'skipped-no-motivating-bead';
 
   // Idempotency read (NOT a write): if a prior run already stamped the
   // writeback status, this event is a replay — short-circuit. Reading via
   // the molecule root's own metadata avoids stamping before the note lands.
   const alreadyDone = typeof exec['writeback_status'] === 'string' ? (exec['writeback_status'] as string) : undefined;
   const status = event.kind === 'dispatcher/formula.completed' ? 'completed' : 'failed';
-  if (alreadyDone === status) return;
+  if (alreadyDone === status) return 'skipped-already-written';
 
   const formulaName = typeof exec['formula'] === 'string' ? (exec['formula'] as string) : 'unknown';
   const note = status === 'completed'
@@ -143,11 +201,12 @@ async function handleEvent(event: Event, deps: WritebackHookDeps, now: () => Dat
       { moleculeId, motivatingBeadId },
       'writeback hook: motivating bead is gone (GC\'d) — recording stamp and skipping note',
     );
-    return;
+    return 'skipped-motivating-bead-gc';
   }
 
   await deps.store.appendNoteToBead(motivatingBeadId, note);
   await deps.store.recordMoleculeWriteback(moleculeId, status);
+  return 'posted';
 }
 
 function buildCompletedNote(args: {
