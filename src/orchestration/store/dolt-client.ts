@@ -36,7 +36,9 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import mysql from 'mysql2/promise';
 import type { Pool } from 'mysql2/promise';
 import { computeRepoId, defaultRepoFingerprintDeps, type RepoFingerprintDeps } from '../../beads/repoFingerprint.js';
@@ -105,15 +107,155 @@ function resolvedBeadsRoot(cfg: DoltClientConfig): string {
   return cfg.beadsRoot ?? process.cwd();
 }
 
-function readPort(cfg: DoltClientConfig): number {
-  if (cfg.port !== undefined) return cfg.port;
-  const portPath = join(resolvedBeadsRoot(cfg), '.beads', 'dolt-server.port');
-  const raw = readFileSync(portPath, 'utf8').trim();
-  const port = Number.parseInt(raw, 10);
+function portFilePath(cfg: DoltClientConfig): string {
+  return join(resolvedBeadsRoot(cfg), '.beads', 'dolt-server.port');
+}
+
+function parsePort(raw: string, portPath: string): number {
+  const port = Number.parseInt(raw.trim(), 10);
   if (!Number.isFinite(port) || port <= 0) {
-    throw new Error(`DoltClient: invalid port "${raw}" in ${portPath}`);
+    throw new Error(`DoltClient: invalid port "${raw.trim()}" in ${portPath}`);
   }
   return port;
+}
+
+function readPort(cfg: DoltClientConfig): number {
+  if (cfg.port !== undefined) return cfg.port;
+  const portPath = portFilePath(cfg);
+  const raw = readFileSync(portPath, 'utf8');
+  return parsePort(raw, portPath);
+}
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Injectable side-effects for the resilient boot path (vibesync-nl0l).
+ * Split out so the retry/start logic can be unit-tested without a real
+ * filesystem or `bd` binary.
+ */
+export interface DoltBootDeps {
+  /** Read the raw port file; returns null when it does not exist. */
+  readPortFile(portPath: string): string | null;
+  /** Start (or restart) the local Dolt server via `bd dolt start`. */
+  startDoltServer(beadsRoot: string): Promise<void>;
+  /** Sleep for the given ms (injectable so tests run instantly). */
+  sleep(ms: number): Promise<void>;
+  /** Structured log sink for boot progress/warnings. */
+  log?(level: 'info' | 'warn', obj: Record<string, unknown>, msg: string): void;
+}
+
+export const defaultDoltBootDeps: DoltBootDeps = {
+  readPortFile(portPath: string): string | null {
+    try {
+      return readFileSync(portPath, 'utf8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw err;
+    }
+  },
+  async startDoltServer(beadsRoot: string): Promise<void> {
+    // `bd dolt start` is the canonical way to (re)spawn the local Dolt
+    // sql-server and re-establish .beads/dolt-server.port. It is a no-op
+    // when the server is already running.
+    await execFileAsync('bd', ['dolt', 'start'], { cwd: beadsRoot, timeout: 30_000 });
+  },
+  sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  },
+};
+
+/**
+ * Options controlling how hard `resolveDoltPort` tries before giving up.
+ */
+export interface ResolveDoltPortOptions {
+  /** Total wall-clock budget across all attempts (ms). Default 30s. */
+  readonly timeoutMs?: number;
+  /** Delay between port-file polls (ms). Default 500ms. */
+  readonly pollIntervalMs?: number;
+  /**
+   * Whether we are permitted to start the Dolt server ourselves when the
+   * port file never appears. Default true. Set false in contexts where an
+   * external supervisor owns the Dolt lifecycle (e.g. a systemd unit split
+   * — see vibesync-nl0l follow-up).
+   */
+  readonly startServerIfMissing?: boolean;
+}
+
+/**
+ * Resilient port resolution (vibesync-nl0l).
+ *
+ * On every vibesync restart the service SIGKILLs its child Dolt fleet, so
+ * `.beads/dolt-server.port` can be absent at boot. The old single
+ * `readFileSync` threw ENOENT, which bubbled up and permanently disabled
+ * the orchestration plane. This resolver instead:
+ *   1. Polls for the port file up to `timeoutMs`.
+ *   2. If it never appears and `startServerIfMissing`, runs `bd dolt start`
+ *      to (re)spawn the Dolt server, then polls again.
+ *   3. Only throws after the full budget is exhausted — and the error is
+ *      explicit about what was tried.
+ */
+export async function resolveDoltPort(
+  cfg: DoltClientConfig,
+  deps: DoltBootDeps = defaultDoltBootDeps,
+  options: ResolveDoltPortOptions = {},
+): Promise<number> {
+  if (cfg.port !== undefined) return cfg.port;
+
+  const portPath = portFilePath(cfg);
+  const beadsRoot = resolvedBeadsRoot(cfg);
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const pollIntervalMs = options.pollIntervalMs ?? 500;
+  const startServerIfMissing = options.startServerIfMissing ?? true;
+  // Elapsed is tracked via the injected sleep budget (not wall-clock) so
+  // the loop cannot busy-spin and unit tests with an instant sleep stay
+  // deterministic and fast.
+  let elapsedMs = 0;
+  let attemptedStart = false;
+
+  // First read: if the file is already present, we are done — zero added
+  // latency on the happy path.
+  const first = deps.readPortFile(portPath);
+  if (first !== null) return parsePort(first, portPath);
+
+  deps.log?.('warn', { portPath }, 'DoltClient: port file missing at boot — waiting for Dolt to come up');
+
+  while (elapsedMs < timeoutMs) {
+    // On the first confirmed miss, if we are allowed to manage the Dolt
+    // lifecycle, start the server ourselves (once). On the SIGKILL-restart
+    // case nobody else will re-establish the port file, so passively
+    // waiting is futile — recover actively, then poll for the file the
+    // freshly-started server writes.
+    if (!attemptedStart && startServerIfMissing) {
+      attemptedStart = true;
+      deps.log?.('info', { beadsRoot }, 'DoltClient: attempting to start Dolt server via `bd dolt start`');
+      try {
+        await deps.startDoltServer(beadsRoot);
+      } catch (err) {
+        deps.log?.('warn', { err }, 'DoltClient: `bd dolt start` failed — will keep polling for the port file');
+      }
+      // Re-check immediately after the start attempt before sleeping.
+      const afterStart = deps.readPortFile(portPath);
+      if (afterStart !== null) {
+        deps.log?.('info', { portPath }, 'DoltClient: port file appeared after start — Dolt is up');
+        return parsePort(afterStart, portPath);
+      }
+    }
+
+    await deps.sleep(pollIntervalMs);
+    elapsedMs += pollIntervalMs;
+    const raw = deps.readPortFile(portPath);
+    if (raw !== null) {
+      deps.log?.('info', { portPath }, 'DoltClient: port file appeared — Dolt is up');
+      return parsePort(raw, portPath);
+    }
+  }
+
+  throw new Error(
+    `DoltClient: Dolt server did not become available within ${timeoutMs}ms — ` +
+      `port file ${portPath} never appeared` +
+      (startServerIfMissing ? ' (including after `bd dolt start`)' : '') +
+      '. Is the Dolt server up? (vibesync-nl0l)',
+  );
 }
 
 function readDatabase(cfg: DoltClientConfig): string {
@@ -208,6 +350,22 @@ export class DoltClient {
   private readonly expectedRepoId: string | null;
   private fingerprintVerified = false;
   private schemaVerified = false;
+
+  /**
+   * Resilient async constructor (vibesync-nl0l). Resolves the Dolt port
+   * with retry/wait (and, if permitted, `bd dolt start`) before building
+   * the pool, so a restart that killed the Dolt fleet self-heals instead
+   * of throwing ENOENT synchronously in the constructor. Prefer this over
+   * `new DoltClient()` on the boot path.
+   */
+  static async connect(
+    cfg: DoltClientConfig = {},
+    bootDeps: DoltBootDeps = defaultDoltBootDeps,
+    options: ResolveDoltPortOptions = {},
+  ): Promise<DoltClient> {
+    const port = await resolveDoltPort(cfg, bootDeps, options);
+    return new DoltClient({ ...cfg, port });
+  }
 
   constructor(cfg: DoltClientConfig = {}) {
     const port = readPort(cfg);
