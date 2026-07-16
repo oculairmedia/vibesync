@@ -1,4 +1,5 @@
 <!-- VIBESYNC:project-info:START -->
+
 # Agent Instructions
 
 ## Project Identity
@@ -13,9 +14,11 @@
 2. **Issue references**: Use Beads issue IDs exactly as reported by `bd` (for example, `vibesync-abc` or the repository's configured prefix).
 3. **On task completion**: Report to this project's Letta agent via `matrix-identity-bridge` using `talk_to_agent`.
 4. **Memory**: Store important discoveries with the configured project memory tool.
+
 <!-- VIBESYNC:project-info:END -->
 
 <!-- VIBESYNC:reporting-hierarchy:START -->
+
 ## PM Agent Communication
 
 **Project PM Agent:** `` ()
@@ -63,9 +66,11 @@ You (Developer Agent - experienced)
 **Files Changed**: [List if applicable]
 **Next Steps**: [If any]
 ```
+
 <!-- VIBESYNC:reporting-hierarchy:END -->
 
 <!-- VIBESYNC:beads-instructions:START -->
+
 ## Issue Tracking
 
 This project uses **bd** (Beads) for local issue tracking. Beads is a CLI tool: interact with it only through `bd` commands, not by reading or writing its backing database directly. Run `bd prime` for the current workflow context and command reference.
@@ -96,6 +101,7 @@ bun /opt/stacks/vibesync/scripts/preflight/bd-preflight.ts $(pwd)
 ```
 
 This reports:
+
 - `.beads` directory present + writable
 - Deprecated `.beads/dolt_server_port` ABSENT (presence = pre-migration shape; fix before working)
 - Current `.beads/dolt-server.port` present + valid port
@@ -112,9 +118,11 @@ Exit codes: `0` = all clean, `1` = warnings (proceed with care), `2` = errors (f
 
 - Beads state is local-first. If the repository has a remote, persist issue changes with the configured Beads sync command before ending a session.
 - If no git remote is configured, leave the Beads database and JSONL export in a clean local state and note that work is local-only.
+
 <!-- VIBESYNC:beads-instructions:END -->
 
 <!-- VIBESYNC:bookstack-docs:START -->
+
 ## BookStack Documentation
 
 - **Source of truth**: [BookStack](https://knowledge.oculair.ca)
@@ -123,9 +131,11 @@ Exit codes: `0` = all clean, `1` = warnings (proceed with care), `2` = errors (f
 - **To create/edit docs**: Use `bookstack-mcp` tools to write directly to BookStack
 - **Never edit** files in `docs/bookstack/` locally — they will be overwritten on next sync
 - **PRDs and design docs** must be stored in BookStack, not local markdown files
+
 <!-- VIBESYNC:bookstack-docs:END -->
 
 <!-- VIBESYNC:session-completion:START -->
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is not complete until code changes, Beads state, and handoff notes are in a clean state.
@@ -153,9 +163,11 @@ Exit codes: `0` = all clean, `1` = warnings (proceed with care), `2` = errors (f
 - Use the `bd` CLI only; do not inspect or mutate the Beads/Dolt backing database directly.
 - Do not use external issue tools for issue tracking.
 - If push is available and fails, resolve and retry until it succeeds.
+
 <!-- VIBESYNC:session-completion:END -->
 
 <!-- VIBESYNC:codebase-context:START -->
+
 ## Codebase Context
 
 **Project**: vibesync (`vibesync`)
@@ -172,6 +184,7 @@ Ask the PM agent for architectural guidance before making significant changes.
 <!-- VIBESYNC:codebase-context:END -->
 
 <!-- VIBESYNC:custom-rules:START -->
+
 ## Project-Specific Rules
 
 ### Git workflow — NEVER push to main (lcp-uye8)
@@ -200,7 +213,18 @@ in PR reviews when blocking a change. A violation is a defect even if the
 code "works."
 
 Full rationale + the multi-agent orchestration plan that motivated adopting
-these lives at `docs/architecture/gastown-orchestration.md`.
+these lives at `docs/architecture/gastown-orchestration.md`. The
+binding reference decision for what VibeSync owns versus what the
+runtime layer (Bun reference today, Kotlin App Server target) owns
+— including the controller/runtime split, RuntimeProvider seam
+ownership, Beads/Dolt authority, role-pack/config activation,
+Iroh transport layering, A2A deferral, and the strangler/shadow
+cutover plan — is ADR-0001 at
+[`docs/architecture/ORCHESTRATION_OWNERSHIP_ADR.md`](docs/architecture/ORCHESTRATION_OWNERSHIP_ADR.md)
+(`vibesync-jxri.1`). The versioned RuntimeProvider contract
+(typed `SessionSpec.extra` extensions, `SessionEvent` schema,
+wire-format stability) is owned by `vibesync-jxri.5`, not by this
+ADR.
 
 1. **No upward dependencies.** Layer N never imports Layer N+1. Concretely
    in VibeSync: `src/orchestration/runtime/` never imports
