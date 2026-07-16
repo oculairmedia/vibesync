@@ -166,13 +166,28 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
       store: opts.dolt,
       // vibesync-er21: writeback failures must be loud, never silent — a
       // dropped writeback is a broken loop-back to human-tracked work.
+      // The `info` channel (vibesync-er21 hook-wiring) carries the
+      // subscription-confirmed line and every per-invocation trace, so the
+      // daemon log proves the hook is wired AND shows each time it fires.
       logger: {
         warn(obj: unknown, msg: string): void {
           // eslint-disable-next-line no-console
           console.error(`[orchestration:writeback] ${msg}`, obj);
         },
+        info(obj: unknown, msg: string): void {
+          // eslint-disable-next-line no-console
+          console.log(`[orchestration:writeback] ${msg}`, obj);
+        },
       },
     });
+    // eslint-disable-next-line no-console
+    console.log('[orchestration:writeback] writeback hook installed (store implements appendNoteToBead + recordMoleculeWriteback)');
+  } else {
+    // Loud, actionable boot line: without this, a store that doesn't expose
+    // the writeback methods silently disables the entire loop-back and no
+    // completed molecule ever writes back — with zero signal in the log.
+    // eslint-disable-next-line no-console
+    console.warn('[orchestration:writeback] writeback hook NOT installed — dolt store does not implement appendNoteToBead + recordMoleculeWriteback; molecule outcomes will NOT be written back to motivating beads');
   }
 
   // vibesync-ryhc: work-activity reporter for mobile active-subagent bar.

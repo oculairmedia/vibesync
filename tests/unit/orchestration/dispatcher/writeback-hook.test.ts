@@ -350,6 +350,87 @@ describe('installWritebackHook', () => {
     }
   });
 
+  // vibesync-er21 (hook-wiring): the hook's INVOCATION must be observable.
+  // On current main the subscriber callback has no info/trace logging at all,
+  // so a completed molecule produces NO log line — a fired-but-skipped hook
+  // is indistinguishable from a hook that never subscribed. These three tests
+  // FAIL on current main (logger.info never called) and PASS with the fix
+  // (subscription-confirmed line at install + a per-invocation trace).
+  it('logs a subscription-confirmed line at install (proves the hook is wired)', () => {
+    const store = new InMemoryDoltClient();
+    const walker = new MoleculeWalker(store as never);
+    const bus = new EventBus({ noPersist: true });
+    const logger = { warn: vi.fn(), info: vi.fn() };
+
+    installWritebackHook({ bus, walker, store, logger });
+
+    expect(logger.info).toHaveBeenCalledTimes(1);
+    const [, msg] = logger.info.mock.calls[0]!;
+    expect(String(msg)).toContain('subscribed to EventBus');
+  });
+
+  it('logs a per-invocation "posted" trace when a completed molecule writes back', async () => {
+    const store = new InMemoryDoltClient();
+    const walker = new MoleculeWalker(store as never);
+    const bus = new EventBus({ noPersist: true });
+    const fx = { rootId: 'mol-mol-trace-posted', motivatingBeadId: 'vibesync-f89x', formulaName: 'code-review' };
+    await setupMolecule(store, fx);
+    await addStep(store, fx.rootId, 'reviewer', 'LGTM');
+
+    const logger = { warn: vi.fn(), info: vi.fn() };
+    installWritebackHook({ bus, walker, store, logger });
+
+    bus.emit({
+      layer: 'dispatcher',
+      kind: 'dispatcher/formula.completed',
+      molecule_id: fx.rootId,
+      payload: { moleculeId: fx.rootId, durationMs: 1 },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // Note landed (the fix keeps the append working) AND the invocation was
+    // traced with action=posted.
+    expect(store.notes).toHaveLength(1);
+    const invocationCall = logger.info.mock.calls.find(
+      ([obj]) => (obj as { action?: string })?.action === 'posted',
+    );
+    expect(invocationCall, 'expected a per-invocation info trace with action=posted').toBeDefined();
+    expect(String(invocationCall![1])).toContain('writeback hook fired');
+    expect((invocationCall![0] as { moleculeId?: string }).moleculeId).toBe(fx.rootId);
+  });
+
+  it('traces "skipped-no-motivating-bead" when a completed root carries no motivating bead (mol-mol-mcuv9s9o7aaa repro)', async () => {
+    // Reproduces the real evidence: mol-mol-mcuv9s9o7aaa closed with
+    // exec.outcome=completed but exec had NO motivating_bead, so no note and
+    // no stamp were produced. On current main this case is completely silent;
+    // with the fix the hook still fires and now emits a trace explaining WHY
+    // nothing was posted, instead of looking like the hook never ran.
+    const store = new InMemoryDoltClient();
+    const walker = new MoleculeWalker(store as never);
+    const bus = new EventBus({ noPersist: true });
+    const rootId = 'mol-mol-no-motivating';
+    await store.insertMoleculeRoot({ id: rootId, formulaName: 'code-review', title: '[code-review] root' });
+    await addStep(store, rootId, 'reviewer', 'LGTM');
+
+    const logger = { warn: vi.fn(), info: vi.fn() };
+    installWritebackHook({ bus, walker, store, logger });
+
+    bus.emit({
+      layer: 'dispatcher',
+      kind: 'dispatcher/formula.completed',
+      molecule_id: rootId,
+      payload: { moleculeId: rootId, durationMs: 1 },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(store.notes).toHaveLength(0);
+    const skipTrace = logger.info.mock.calls.find(
+      ([obj]) => (obj as { action?: string })?.action === 'skipped-no-motivating-bead',
+    );
+    expect(skipTrace, 'expected a per-invocation info trace with action=skipped-no-motivating-bead').toBeDefined();
+    expect((skipTrace![0] as { moleculeId?: string }).moleculeId).toBe(rootId);
+  });
+
   it('logs and swallows when the motivating bead is gone', async () => {
     const store = new InMemoryDoltClient();
     const walker = new MoleculeWalker(store as never);
