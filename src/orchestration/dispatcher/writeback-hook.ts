@@ -88,9 +88,11 @@ function logInfo(logger: WritebackLogger | undefined, obj: unknown, msg: string)
     return;
   }
   // No structured logger at this call site — still surface the trace so the
-  // subscription/invocation is never invisible in the daemon log.
+  // subscription/invocation is never invisible in the daemon log. This is an
+  // INFORMATIONAL trace, so log at info level (console.log) — logging it at
+  // error level would pollute the log with false error signals (CodeRabbit).
   // eslint-disable-next-line no-console
-  console.error(`[writeback] ${msg}`, obj);
+  console.log(`[writeback] ${msg}`, obj);
 }
 
 /**
