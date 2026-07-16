@@ -312,6 +312,12 @@ export class FormulaDispatcher {
       this.emit('dispatcher/formula.failed', moleculeId, undefined, {
         moleculeId,
         error: stringifyError(error),
+        // vibesync-u32z: carry the motivating bead on the completion event so
+        // the writeback hook can resolve it directly from the event, without
+        // depending solely on re-reading the persisted molecule_root row (a
+        // single point of failure if any dispatch path or Dolt write dropped
+        // the exec.motivating_bead stamp).
+        ...(input.motivatingBeadId ? { motivating_bead: input.motivatingBeadId } : {}),
       });
       throw error;
     }
@@ -320,6 +326,10 @@ export class FormulaDispatcher {
     this.emit('dispatcher/formula.completed', moleculeId, undefined, {
       moleculeId,
       durationMs: Date.now() - startedAt,
+      // vibesync-u32z: see the failure branch above — the completion event is
+      // now self-describing so the writeback hook never has to reverse-engineer
+      // the motivating bead from a row that may not carry it.
+      ...(input.motivatingBeadId ? { motivating_bead: input.motivatingBeadId } : {}),
     });
     return { moleculeId, outputs };
   }
@@ -362,6 +372,10 @@ export class FormulaDispatcher {
     }
 
     const outputs = outputsFromClosedSteps(view.steps);
+    // vibesync-u32z: on resume, `input` is not in scope — recover the
+    // motivating bead from the persisted molecule_root exec so the completion
+    // event stays self-describing across a restart/resume too.
+    const motivatingBeadId = readMotivatingBead(view.root);
     this.emit('dispatcher/formula.resumed', moleculeId, undefined, {
       moleculeId,
       runningStepCount: view.steps.filter((step) => step.status === 'in_progress').length,
@@ -374,6 +388,7 @@ export class FormulaDispatcher {
           moleculeId,
           durationMs: Date.now() - startedAt,
           resumed: true,
+          ...(motivatingBeadId ? { motivating_bead: motivatingBeadId } : {}),
         });
         return { moleculeId, outputs };
       }
@@ -389,6 +404,7 @@ export class FormulaDispatcher {
         moleculeId,
         error: stringifyError(error),
         resumed: true,
+        ...(motivatingBeadId ? { motivating_bead: motivatingBeadId } : {}),
       });
       throw error;
     }
@@ -398,6 +414,7 @@ export class FormulaDispatcher {
         moleculeId,
         durationMs: Date.now() - startedAt,
         resumed: true,
+        ...(motivatingBeadId ? { motivating_bead: motivatingBeadId } : {}),
       });
     } else {
       this.emit('dispatcher/formula.resume.paused', moleculeId, undefined, {
@@ -889,6 +906,15 @@ function readExec(row: BeadRow): Record<string, unknown> {
 
 function readString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * vibesync-u32z: recover the motivating bead id from a molecule_root row's
+ * exec metadata. Used by resume() (where the original DispatchInput is not in
+ * scope) so the completion event can still carry the motivating bead.
+ */
+function readMotivatingBead(row: BeadRow): string | null {
+  return readString(readExec(row)['motivating_bead']);
 }
 
 function normalizeMaxParallelSteps(value: number | undefined): number {

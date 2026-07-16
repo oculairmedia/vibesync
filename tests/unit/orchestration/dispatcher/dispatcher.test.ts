@@ -60,6 +60,32 @@ describe('FormulaDispatcher', () => {
     });
   });
 
+  // vibesync-u32z: the motivating bead must be carried on the completion event
+  // so the writeback hook can resolve it directly from the event, not only by
+  // re-reading the persisted molecule_root. On main the formula.completed
+  // payload carries no motivating_bead — this assertion FAILS there and PASSES
+  // with the fix (dispatcher threads input.motivatingBeadId onto the event).
+  it('carries motivating_bead on the formula.completed event when dispatched with one', async () => {
+    const { dispatcher, store, events } = newHarness({
+      script: scriptByRole({ reviewer: 'review output', coder: 'code output', tester: 'test output' }),
+    });
+
+    const result = await dispatcher.run({
+      formula: codeReviewFormula(),
+      pack: newPack(),
+      input: 'please review',
+      motivatingBeadId: 'vibesync-sqt0',
+    });
+
+    const completed = events.find((event) => event.kind === 'dispatcher/formula.completed');
+    expect(completed?.payload).toMatchObject({ motivating_bead: 'vibesync-sqt0' });
+
+    // Regression guard: the persisted root must ALSO carry it (the walker/store
+    // path is the belt; the event is the suspenders).
+    const root = await store.getBead(result.moleculeId);
+    expect(root?.metadata).toMatchObject({ exec: { motivating_bead: 'vibesync-sqt0' } });
+  });
+
   it('threads predecessor output into successor prompt context', async () => {
     const { dispatcher, provider } = newHarness({
       script: scriptByRole({ reviewer: 'review says fix auth', coder: 'code done', tester: 'tests pass' }),
