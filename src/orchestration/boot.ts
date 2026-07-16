@@ -164,6 +164,14 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
       bus,
       walker,
       store: opts.dolt,
+      // vibesync-er21: writeback failures must be loud, never silent — a
+      // dropped writeback is a broken loop-back to human-tracked work.
+      logger: {
+        warn(obj: unknown, msg: string): void {
+          // eslint-disable-next-line no-console
+          console.error(`[orchestration:writeback] ${msg}`, obj);
+        },
+      },
     });
   }
 

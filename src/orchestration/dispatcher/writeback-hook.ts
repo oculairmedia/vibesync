@@ -17,8 +17,12 @@
  *   - Status of the motivating bead is NEVER touched — that decision
  *     belongs to the PM agent.
  *   - Idempotent: writeback_status is stamped on the molecule_root
- *     metadata. A replay of the same event finds the stamp and
- *     short-circuits before touching the motivating bead's notes.
+ *     metadata AFTER the note lands. A replay of the same event finds the
+ *     stamp and short-circuits before touching the motivating bead's notes.
+ *     Ordering matters (vibesync-er21): stamping only after a successful
+ *     append means a transient store failure leaves the writeback pending
+ *     (retryable on the next event replay / reboot re-emit) instead of
+ *     being permanently lost.
  *
  * The hook reads everything it needs through the MoleculeWalker (the
  * existing materialized view) and writes via the store's
@@ -33,6 +37,9 @@ import type { BeadRow } from '../store/index.js';
 const OUTPUT_EXCERPT_LIMIT = 400;
 
 export interface WritebackStore {
+  /** Look up a bead by id. Used to distinguish a GC'd motivating bead
+   *  (permanent no-op) from a transient store failure (must retry). */
+  getBead(id: string): Promise<BeadRow | null>;
   appendNoteToBead(beadId: string, note: string): Promise<void>;
   recordMoleculeWriteback(rootId: string, status: 'completed' | 'failed'): Promise<string | undefined>;
 }
@@ -53,14 +60,48 @@ export interface WritebackHookDeps {
  */
 export function installWritebackHook(deps: WritebackHookDeps): () => void {
   const now = deps.now ?? (() => new Date());
+  // In-process guard against concurrent replays of the same completion
+  // event (vibesync-er21). Because we stamp writeback_status only AFTER the
+  // note lands (so a transient failure stays retryable), two events that
+  // arrive before the first append resolves would both read "not stamped"
+  // and each post a note. This set serializes handling per molecule+status
+  // so at most one note is in flight; the persistent stamp then dedupes
+  // across process restarts. On failure the key is released so a later
+  // event can retry.
+  const inFlight = new Set<string>();
   return deps.bus.subscribe((event) => {
     if (event.kind !== 'dispatcher/formula.completed' && event.kind !== 'dispatcher/formula.failed') {
       return;
     }
-    void handleEvent(event, deps, now).catch((err: unknown) => {
-      deps.logger?.warn({ err, moleculeId: event.molecule_id }, 'writeback hook failed');
-    });
+    const key = `${event.molecule_id ?? ''}:${event.kind}`;
+    if (inFlight.has(key)) return;
+    inFlight.add(key);
+    void handleEvent(event, deps, now)
+      .catch((err: unknown) => {
+        // Loud by design (vibesync-er21): a swallowed writeback failure is
+        // how the loop-back to human-tracked work silently disappears. If no
+        // logger was injected, fall back to console.error so the failure is
+        // never invisible in the daemon log.
+        logWritebackFailure(deps.logger, { err, moleculeId: event.molecule_id }, 'writeback hook failed — outcome NOT posted to motivating bead');
+      })
+      .finally(() => {
+        inFlight.delete(key);
+      });
   });
+}
+
+function logWritebackFailure(
+  logger: WritebackHookDeps['logger'],
+  obj: { err: unknown; moleculeId?: string | undefined; motivatingBeadId?: string | undefined },
+  msg: string,
+): void {
+  if (logger) {
+    logger.warn(obj, msg);
+    return;
+  }
+  // No structured logger wired at this call site — never stay silent.
+  // eslint-disable-next-line no-console
+  console.error(`[writeback] ${msg}`, obj);
 }
 
 async function handleEvent(event: Event, deps: WritebackHookDeps, now: () => Date): Promise<void> {
@@ -73,23 +114,40 @@ async function handleEvent(event: Event, deps: WritebackHookDeps, now: () => Dat
   const motivatingBeadId = typeof exec['motivating_bead'] === 'string' ? (exec['motivating_bead'] as string) : '';
   if (!motivatingBeadId) return;
 
+  // Idempotency read (NOT a write): if a prior run already stamped the
+  // writeback status, this event is a replay — short-circuit. Reading via
+  // the molecule root's own metadata avoids stamping before the note lands.
+  const alreadyDone = typeof exec['writeback_status'] === 'string' ? (exec['writeback_status'] as string) : undefined;
   const status = event.kind === 'dispatcher/formula.completed' ? 'completed' : 'failed';
-  const previous = await deps.store.recordMoleculeWriteback(moleculeId, status);
-  if (previous === status) return;
+  if (alreadyDone === status) return;
 
   const formulaName = typeof exec['formula'] === 'string' ? (exec['formula'] as string) : 'unknown';
   const note = status === 'completed'
     ? buildCompletedNote({ moleculeId, formulaName, steps: view.steps, when: now() })
     : buildFailedNote({ moleculeId, formulaName, steps: view.steps, event, when: now() });
 
-  try {
-    await deps.store.appendNoteToBead(motivatingBeadId, note);
-  } catch (err) {
+  // CONTRACT (vibesync-er21): the writeback stamp must be written ONLY
+  // after the note successfully lands on the motivating bead. The previous
+  // ordering (stamp first, then append) meant a transient Dolt failure on
+  // append left the stamp set, so every subsequent replay/reboot re-emit
+  // short-circuited and the outcome was lost forever. Now:
+  //   1. Confirm the motivating bead still exists.
+  //      - Gone (GC'd): permanent no-op — stamp so replays stop, warn once.
+  //   2. Append the note. On failure: do NOT stamp, rethrow so the caller
+  //      logs loudly and a later replay retries.
+  //   3. Only after the note lands, stamp writeback_status for idempotency.
+  const motivatingBead = await deps.store.getBead(motivatingBeadId);
+  if (!motivatingBead) {
+    await deps.store.recordMoleculeWriteback(moleculeId, status);
     deps.logger?.warn(
-      { err, moleculeId, motivatingBeadId },
-      'writeback hook could not append note (motivating bead may have been removed)',
+      { moleculeId, motivatingBeadId },
+      'writeback hook: motivating bead is gone (GC\'d) — recording stamp and skipping note',
     );
+    return;
   }
+
+  await deps.store.appendNoteToBead(motivatingBeadId, note);
+  await deps.store.recordMoleculeWriteback(moleculeId, status);
 }
 
 function buildCompletedNote(args: {
