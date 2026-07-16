@@ -2,8 +2,8 @@
  * Public exports for src/orchestration/store/.
  */
 
-export { DoltClient, WrongDoltDatabaseError } from './dolt-client.js';
-export type { BeadRow, DependencyRow, DoltClientConfig } from './dolt-client.js';
+export { DoltClient, WrongDoltDatabaseError, resolveDoltPort, defaultDoltBootDeps } from './dolt-client.js';
+export type { BeadRow, DependencyRow, DoltClientConfig, DoltBootDeps, ResolveDoltPortOptions } from './dolt-client.js';
 export {
   BD_FINGERPRINT_BD_VERSION,
   BD_FINGERPRINT_TABLES,

@@ -15,7 +15,7 @@ import { createBookStackWatcher } from './BookStackWatcher';
 import { ProjectRegistry, type RigEvent } from './ProjectRegistry';
 import { broadcastSyncEvent } from './ApiServer';
 import { bootOrchestrationPlane, type OrchestrationHandle } from './orchestration/boot.js';
-import { DoltClient } from './orchestration/store/index.js';
+import { DoltClient, defaultDoltBootDeps } from './orchestration/store/index.js';
 import { sweepAll as sweepBeadsPorts, type SweeperProject } from './beads/PortSweeper.js';
 import { startPeriodicPortSweep } from './beads/startPeriodicPortSweep.js';
 
@@ -395,50 +395,76 @@ async function main(): Promise<void> {
 
   let orchestration: OrchestrationHandle | null = null;
   if (ENABLE_ORCHESTRATION) {
-    try {
-      const dolt = new DoltClient();
-      const { RoleAgentBootstrapper } = await import('./letta/RoleAgentBootstrapper.js');
-      const roleAgentBootstrapper = new RoleAgentBootstrapper({
-        repo: {
-          getRoleAgent: db.getRoleAgent.bind(db),
-          upsertRoleAgent: db.upsertRoleAgent.bind(db),
-        },
-        defaultModel: 'lmstudio/sonnet-4-5',
-        // memfs: true is the default in RoleAgentBootstrapper, no need to pass
-      });
-      orchestration = await bootOrchestrationPlane({
-        dolt,
-        providerRouting: {
-          store: { getProjectProviderRouting: db.getProjectProviderRouting.bind(db) },
-          roleAgentBootstrapper,
-          // lcp-kamu: per-project pack + storage dirs are now read from the
-          // projects.pack_dir and projects.storage_dir DB columns with
-          // defaults (packs/gastown, /root/.letta/lc-local-backend). New
-          // projects need no source edit to onboard. The hardcoded maps
-          // below are kept for backward-compat with existing projects that
-          // may rely on them, but new projects should leave the DB columns
-          // null to use the defaults.
-          packDirsByProject: {
-            'letta-code-parallel': 'packs/gastown',
-            'letta-mobile': 'packs/gastown',
-            'vibesync': 'packs/gastown',
+    // vibesync-nl0l: a restart SIGKILLs the child Dolt fleet, so the Dolt
+    // server / port file may not be up the instant vibesync boots. Rather
+    // than a single attempt that permanently disables the plane on ENOENT,
+    // resolve the port resiliently (waiting for / starting Dolt) and retry
+    // the whole plane boot with backoff so it self-heals with no human.
+    const { RoleAgentBootstrapper } = await import('./letta/RoleAgentBootstrapper.js');
+    const roleAgentBootstrapper = new RoleAgentBootstrapper({
+      repo: {
+        getRoleAgent: db.getRoleAgent.bind(db),
+        upsertRoleAgent: db.upsertRoleAgent.bind(db),
+      },
+      defaultModel: 'lmstudio/sonnet-4-5',
+      // memfs: true is the default in RoleAgentBootstrapper, no need to pass
+    });
+
+    const maxBootAttempts = Number.parseInt(process.env['ORCHESTRATION_BOOT_ATTEMPTS'] ?? '5', 10);
+    for (let attempt = 1; attempt <= maxBootAttempts && !orchestration; attempt += 1) {
+      try {
+        // Resolve the Dolt port with wait + `bd dolt start` fallback,
+        // logging progress through the app logger.
+        const dolt = await DoltClient.connect(
+          {},
+          {
+            ...defaultDoltBootDeps,
+            log(level, obj, msg) {
+              logger[level](obj, msg);
+            },
           },
-          storageDirsByProject: {
-            'letta-code-parallel': '/root/.letta/lc-local-backend',
-            'letta-mobile': '/root/.letta/lc-local-backend',
-            'vibesync': '/root/.letta/lc-local-backend',
+        );
+        orchestration = await bootOrchestrationPlane({
+          dolt,
+          providerRouting: {
+            store: { getProjectProviderRouting: db.getProjectProviderRouting.bind(db) },
+            roleAgentBootstrapper,
+            // lcp-kamu: per-project pack + storage dirs are now read from the
+            // projects.pack_dir and projects.storage_dir DB columns with
+            // defaults (packs/gastown, /root/.letta/lc-local-backend). New
+            // projects need no source edit to onboard. The hardcoded maps
+            // below are kept for backward-compat with existing projects that
+            // may rely on them, but new projects should leave the DB columns
+            // null to use the defaults.
+            packDirsByProject: {
+              'letta-code-parallel': 'packs/gastown',
+              'letta-mobile': 'packs/gastown',
+              'vibesync': 'packs/gastown',
+            },
+            storageDirsByProject: {
+              'letta-code-parallel': '/root/.letta/lc-local-backend',
+              'letta-mobile': '/root/.letta/lc-local-backend',
+              'vibesync': '/root/.letta/lc-local-backend',
+            },
           },
-        },
-      });
-      logger.info(
-        { provider: orchestration.provider.kind },
-        'Orchestration plane initialized',
-      );
-    } catch (orchestrationError) {
-      logger.warn(
-        { err: orchestrationError },
-        'Failed to initialize orchestration plane, continuing without it',
-      );
+        });
+        logger.info(
+          { provider: orchestration.provider.kind, attempt },
+          'Orchestration plane initialized',
+        );
+      } catch (orchestrationError) {
+        const lastAttempt = attempt >= maxBootAttempts;
+        logger.warn(
+          { err: orchestrationError, attempt, maxBootAttempts },
+          lastAttempt
+            ? 'Failed to initialize orchestration plane after all attempts, continuing without it'
+            : 'Failed to initialize orchestration plane, retrying with backoff',
+        );
+        if (!lastAttempt) {
+          const backoffMs = Math.min(30_000, 2_000 * 2 ** (attempt - 1));
+          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        }
+      }
     }
   } else {
     logger.info('Orchestration plane disabled (ENABLE_ORCHESTRATION is not true)');
