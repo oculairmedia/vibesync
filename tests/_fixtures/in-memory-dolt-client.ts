@@ -27,6 +27,14 @@ export class InMemoryDoltClient {
   readonly dependencies: DependencyRow[] = [];
   readonly notes: BeadNote[] = [];
 
+  /** Test fault-injection: when > 0, the next N appendNoteToBead calls throw
+   *  a transient store error (simulates Dolt flakiness during a run). Each
+   *  failing call decrements the counter. Used to prove the writeback is
+   *  retryable rather than permanently lost (vibesync-er21). */
+  failNextAppends = 0;
+  /** Test observability: total appendNoteToBead attempts (including failed). */
+  appendAttempts = 0;
+
   async getBead(id: string): Promise<BeadRow | null> {
     return this.beads.get(id) ?? null;
   }
@@ -155,6 +163,11 @@ export class InMemoryDoltClient {
   }
 
   async appendNoteToBead(beadId: string, note: string): Promise<void> {
+    this.appendAttempts += 1;
+    if (this.failNextAppends > 0) {
+      this.failNextAppends -= 1;
+      throw new Error('InMemoryDoltClient: transient Dolt failure (injected)');
+    }
     if (!this.beads.has(beadId)) throw new Error(`InMemoryDoltClient: unknown bead ${beadId}`);
     this.notes.push({ beadId, note });
   }
