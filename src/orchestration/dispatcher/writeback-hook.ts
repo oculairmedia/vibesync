@@ -171,7 +171,17 @@ async function handleEvent(event: Event, deps: WritebackHookDeps, now: () => Dat
   if (!view) return 'skipped-molecule-not-found';
 
   const exec = readExec(view.root);
-  const motivatingBeadId = typeof exec['motivating_bead'] === 'string' ? (exec['motivating_bead'] as string) : '';
+  // vibesync-u32z: resolve the motivating bead from the completion EVENT first
+  // (the dispatcher now carries it on formula.completed|failed), then fall back
+  // to the persisted molecule_root exec for older/in-flight molecules and
+  // resume paths. Depending solely on the persisted row was a single point of
+  // failure: any dispatch path or Dolt write that dropped exec.motivating_bead
+  // silently broke the loop-back (repro: mol-mol-nu3n4s38yfxx / vibesync-sqt0).
+  const motivatingFromEvent = typeof event.payload?.['motivating_bead'] === 'string'
+    ? (event.payload['motivating_bead'] as string)
+    : '';
+  const motivatingFromRoot = typeof exec['motivating_bead'] === 'string' ? (exec['motivating_bead'] as string) : '';
+  const motivatingBeadId = motivatingFromEvent || motivatingFromRoot;
   if (!motivatingBeadId) return 'skipped-no-motivating-bead';
 
   // Idempotency read (NOT a write): if a prior run already stamped the

@@ -155,6 +155,46 @@ describe('installWritebackHook', () => {
     expect(store.notes).toHaveLength(0);
   });
 
+  // vibesync-u32z: the persisted molecule_root lost its motivating_bead
+  // (repro: mol-mol-nu3n4s38yfxx — exec was {formula, outcome} with no
+  // motivating_bead), but the completion EVENT now carries it. The hook must
+  // resolve the bead from the event and POST. On main the hook only reads the
+  // root exec, so this FAILS (skipped-no-motivating-bead, no note); with the
+  // fix it PASSES (posted).
+  it('resolves motivating_bead from the completion event when the root lost it (mol-mol-nu3n4s38yfxx repro)', async () => {
+    const store = new InMemoryDoltClient();
+    const walker = new MoleculeWalker(store as never);
+    const bus = new EventBus({ noPersist: true });
+    const rootId = 'mol-mol-nu3n4s38yfxx';
+    const motivatingBeadId = 'vibesync-sqt0';
+    // Root persisted WITHOUT motivating_bead (the exact repro state), but the
+    // motivating bead itself exists and should receive the note.
+    store.beads.set(motivatingBeadId, fakeBead(motivatingBeadId, 'Motivating: review vibesync-sqt0'));
+    await store.insertMoleculeRoot({ id: rootId, formulaName: 'code-review', title: '[code-review] root' });
+    await addStep(store, rootId, 'reviewer', 'LGTM');
+
+    const logger = { warn: vi.fn(), info: vi.fn() };
+    installWritebackHook({ bus, walker, store, logger, now: () => new Date('2026-07-16T20:00:00Z') });
+
+    bus.emit({
+      layer: 'dispatcher',
+      kind: 'dispatcher/formula.completed',
+      molecule_id: rootId,
+      // The event carries the motivating bead even though the root row does not.
+      payload: { moleculeId: rootId, durationMs: 1, motivating_bead: motivatingBeadId },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(store.notes).toHaveLength(1);
+    expect(store.notes[0]!.beadId).toBe(motivatingBeadId);
+    expect(store.notes[0]!.note).toContain('formula code-review completed');
+    expect(store.notes[0]!.note).toContain('reviewer: LGTM');
+    const postedTrace = logger.info.mock.calls.find(
+      ([obj]) => (obj as { action?: string })?.action === 'posted',
+    );
+    expect(postedTrace, 'expected a per-invocation info trace with action=posted').toBeDefined();
+  });
+
   it('is idempotent — replaying the same event produces exactly one note', async () => {
     const store = new InMemoryDoltClient();
     const walker = new MoleculeWalker(store as never);
