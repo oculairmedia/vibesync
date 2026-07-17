@@ -33,3 +33,24 @@ export type {
   Allocation,
   AgentPoolDeps,
 } from './agent-pool.js';
+
+export { planDispatch, compareCandidates } from './plan-dispatch.js';
+export type {
+  DispatchCandidate,
+  DispatchPlan,
+  SkippedCandidate,
+  SkipReason,
+} from './plan-dispatch.js';
+
+export { SchedulerLoop } from './scheduler-loop.js';
+export type {
+  SchedulerConfig,
+  SchedulerLoopDeps,
+  CapacitySource,
+  ReadyWorkSource,
+  CandidateMetadataSource,
+  DispatchExecutor,
+  SchedulerContextStore,
+  DispatchLock,
+  TickResult,
+} from './scheduler-loop.js';
