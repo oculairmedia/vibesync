@@ -54,3 +54,20 @@ export type {
   DispatchLock,
   TickResult,
 } from './scheduler-loop.js';
+
+export {
+  PropulsionExecutor,
+  classifyOutcome,
+  extractArtifacts,
+  NEEDS_MERIDIAN_MARKER,
+} from './propulsion-executor.js';
+export type {
+  PropulsionOutcome,
+  CompletionArtifacts,
+  DispatchRunResult,
+  DispatchRunner,
+  SlotReleaser,
+  SelfCompletionSink,
+  EscalationSink,
+  PropulsionExecutorDeps,
+} from './propulsion-executor.js';
