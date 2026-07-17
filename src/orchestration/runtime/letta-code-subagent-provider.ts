@@ -513,6 +513,14 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
     const url = `${this.opts.shimBaseUrl}/v1/conversations/${encodeURIComponent(state.conversationId!)}/messages`;
     const ac = new AbortController();
     const effectiveTimeout = stepTimeoutMs ?? this.opts.turnTimeoutMs;
+    // vibesync-2hgr diagnostic: log the ACTUAL deadline the AbortController
+    // will enforce so a real dispatch proves whether the observed ~4min abort
+    // comes from HERE (effectiveTimeout) or from the fetch layer. If this logs
+    // 900000 but the turn still aborts at ~240s, the cap is NOT ours — it is
+    // Bun's fetch idle-read timeout on the SSE body (handled by the
+    // timeout:false below).
+    // eslint-disable-next-line no-console
+    console.log(`[runtime:turn-timeout] effectiveTimeout=${effectiveTimeout}ms stepTimeoutMs=${stepTimeoutMs ?? 'null'} providerDefault=${this.opts.turnTimeoutMs}ms conv=${state.conversationId}`);
     const timeoutHandle = setTimeout(() => ac.abort(), effectiveTimeout);
     let res: Awaited<ReturnType<typeof fetch>>;
     try {
