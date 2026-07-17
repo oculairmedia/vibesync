@@ -233,6 +233,20 @@ function resolveDefaultTurnTimeout(): number {
   return DEFAULT_TURN_TIMEOUT_MS;
 }
 
+/**
+ * vibesync-2hgr: Bun's global fetch has its own default request timeout that
+ * also caps the streaming SSE body read (~4min), firing "The operation timed
+ * out." independent of our AbortController. Return `{ timeout: false }` under
+ * Bun to disable it (so the AbortController is the sole deadline); return an
+ * empty object elsewhere so a standard fetch impl is never handed an unknown
+ * field. `timeout` is a Bun fetch extension not present on the DOM RequestInit,
+ * so callers spread this into an init cast to RequestInit.
+ */
+export function bunNoFetchTimeout(): { timeout?: false } {
+  const hasBun = typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
+  return hasBun ? { timeout: false } : {};
+}
+
 export class LettaCodeSubagentProvider implements RuntimeProvider {
   readonly kind = 'letta-code-subagent';
   private readonly opts: Required<
@@ -512,7 +526,19 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
         // 400 {"detail":"missing user text"} failures on dispatch.
         body: JSON.stringify({ input: puppet }),
         signal: ac.signal,
-      });
+        // vibesync-2hgr: Bun's global fetch imposes its OWN default request
+        // timeout (~4min) on the whole request INCLUDING the streaming SSE
+        // body read. On a long role-agent turn that emits no SSE chunks for a
+        // while, that fetch-level timeout fires as "The operation timed out."
+        // (a `sse_read_error`) — independent of, and well below, our
+        // AbortController deadline (VIBESYNC_TURN_TIMEOUT_MS, default 10min).
+        // Raising the env var alone did NOT help because this cap lives in the
+        // fetch layer, not our AbortController. Disable Bun's fetch timeout so
+        // the AbortController above is the single source of truth for the turn
+        // deadline. `timeout: false` is a Bun extension; harmless/ignored under
+        // a standard (non-Bun) fetch impl (e.g. the injected test fake).
+        ...bunNoFetchTimeout(),
+      } as RequestInit);
     } catch (err) {
       clearTimeout(timeoutHandle);
       throw err;
