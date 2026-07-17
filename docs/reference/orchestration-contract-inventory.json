@@ -1,0 +1,1218 @@
+{
+  "$schema_note": "vibesync-jxri.2 orchestration contract inventory. Every externally observable surface classified: normative|deprecated|compatibility-only|missing, with {owner, consumers, tests, kotlin_fate}.",
+  "generated_by": "PM-vibesync (hand-authored from source per Meridian ruling; dogfood loop reserved until vibesync-2hgr timeout root-caused)",
+  "source_ref": "origin/main",
+  "columns": [
+    "surface_id",
+    "kind",
+    "owner",
+    "consumers",
+    "tests",
+    "classification",
+    "kotlin_fate",
+    "notes"
+  ],
+  "surfaces": [
+    {
+      "surface_id": "GET /formulas",
+      "kind": "route",
+      "owner": "src/api/routes/formulas.ts",
+      "consumers": "PM agent (list_formulas), rig CLI, mobile",
+      "tests": "tests/unit/orchestration + ApiServer.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "Formula catalog w/ whenToUse hints."
+    },
+    {
+      "surface_id": "POST /formulas/:name/run",
+      "kind": "route",
+      "owner": "src/api/routes/formulas.ts",
+      "consumers": "dispatch_molecule tool, rig CLI dispatchMolecule",
+      "tests": "dispatcher.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "Body: {input, pack, motivatingBeadId, projectIdentifier}. Returns 202 {moleculeId}. camelCase motivatingBeadId is the wire contract (vibesync-u32z)."
+    },
+    {
+      "surface_id": "GET /molecules",
+      "kind": "route",
+      "owner": "src/api/routes/formulas.ts",
+      "consumers": "rig dashboard UI, mobile",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "Fleet status; ?status filter, ?limit."
+    },
+    {
+      "surface_id": "GET /molecules/:id",
+      "kind": "route",
+      "owner": "src/api/routes/formulas.ts",
+      "consumers": "UI, PM",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "Single molecule detail."
+    },
+    {
+      "surface_id": "GET /molecules/:id/trace",
+      "kind": "route",
+      "owner": "src/api/routes/formulas.ts",
+      "consumers": "UI, debugging",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "Trace bundle (jxri.3/jxri.9 will version this)."
+    },
+    {
+      "surface_id": "POST /molecules/:id/resume",
+      "kind": "route",
+      "owner": "src/api/routes/formulas.ts",
+      "consumers": "daemon restart recovery",
+      "tests": "dispatcher.test resume",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "Re-attach to running steps."
+    },
+    {
+      "surface_id": "DELETE /molecules/:id",
+      "kind": "route",
+      "owner": "src/api/routes/formulas.ts",
+      "consumers": "UI, PM cancel",
+      "tests": "dispatcher cancel",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "Cancel molecule."
+    },
+    {
+      "surface_id": "GET /molecules/:id/events",
+      "kind": "route",
+      "owner": "src/api/routes/formulas.ts",
+      "consumers": "cli.ts follow, mobile live",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "SSE stream of molecule events. NOTE: cli.ts:130-131 consumes with undici {bodyTimeout:0, headersTimeout:timeout} (vibesync-2hgr investigation surface)."
+    },
+    {
+      "surface_id": "GET /health",
+      "kind": "route",
+      "owner": "src/api/routes/health.ts",
+      "consumers": "ops, load-balancer",
+      "tests": "health.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "GET /metrics",
+      "kind": "route",
+      "owner": "src/api/routes/health.ts",
+      "consumers": "prometheus (prom-client)",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "GET /api/stats",
+      "kind": "route",
+      "owner": "src/api/routes/health.ts",
+      "consumers": "UI",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "GET|POST|PATCH|DELETE /api/registry/projects[...]",
+      "kind": "route",
+      "owner": "src/api/routes/projects.ts",
+      "consumers": "project registry UI, discovery",
+      "tests": "ProjectRegistry.test, projectRegistryRoutes.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "Project CRUD + scan + per-project provider routing rows."
+    },
+    {
+      "surface_id": "GET /api/projects/:id/{issues,ready-work,work-items,agents,conversations,activity,issue-analytics,ast-sync}",
+      "kind": "route",
+      "owner": "src/api/routes/projects.ts",
+      "consumers": "UI, mobile",
+      "tests": "projectRegistryRoutes.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "Per-project read surfaces."
+    },
+    {
+      "surface_id": "POST /api/projects/:id/beads-remote[/provision]",
+      "kind": "route",
+      "owner": "src/api/routes/projects.ts",
+      "consumers": "provisioning",
+      "tests": "DoltHubProvisioningService.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "Beads remote provisioning (Dolt)."
+    },
+    {
+      "surface_id": "GET|PATCH /api/config, POST /api/config/reset",
+      "kind": "route",
+      "owner": "src/api/routes/config.ts",
+      "consumers": "admin UI",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "POST /api/files/{read,edit,info}",
+      "kind": "route",
+      "owner": "src/api/routes/files.ts",
+      "consumers": "host-fs mediation (mobile/desktop)",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "Shim-mediated FS access."
+    },
+    {
+      "surface_id": "GET /api/events[/stream]",
+      "kind": "route",
+      "owner": "src/api/routes/events.ts",
+      "consumers": "UI dashboards",
+      "tests": "query.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "EventBus query + SSE."
+    },
+    {
+      "surface_id": "POST /api/sync/trigger, GET /api/sync/{history,mappings}",
+      "kind": "route",
+      "owner": "src/api/routes/sync.ts",
+      "consumers": "sync controller",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "/api/temporal/{schedule[/start|/stop],reconciliation/run,workflows}",
+      "kind": "route",
+      "owner": "src/api/routes/temporal.ts",
+      "consumers": "temporal orchestration",
+      "tests": "temporal/*",
+      "classification": "compatibility-only",
+      "kotlin_fate": "evaluate",
+      "notes": "Temporal path \u2014 may not survive Kotlin convergence; flag for decision."
+    },
+    {
+      "surface_id": "GET /openapi.json, GET /docs",
+      "kind": "route",
+      "owner": "src/api/routes/openapi.ts",
+      "consumers": "API consumers, docs",
+      "tests": "openapi.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "OpenAPI spec is generated; jxri.3 makes schema versioned."
+    },
+    {
+      "surface_id": "POST /api/admin/agents-md/refresh",
+      "kind": "route",
+      "owner": "src/api/routes/agentsMd.ts",
+      "consumers": "admin",
+      "tests": "-",
+      "classification": "compatibility-only",
+      "kotlin_fate": "evaluate",
+      "notes": ""
+    },
+    {
+      "surface_id": "GET /api/agents[/lookup]",
+      "kind": "route",
+      "owner": "src/api/routes/agents.ts",
+      "consumers": "UI",
+      "tests": "agentRoutes.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "dispatcher/formula.started",
+      "kind": "event",
+      "owner": "src/orchestration/dispatcher/dispatcher.ts",
+      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "tests": "dispatcher.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "dispatcher/formula.completed",
+      "kind": "event",
+      "owner": "src/orchestration/dispatcher/dispatcher.ts",
+      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "tests": "dispatcher.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "Now carries motivating_bead (vibesync-u32z PR #25) so writeback hook resolves from event."
+    },
+    {
+      "surface_id": "dispatcher/formula.failed",
+      "kind": "event",
+      "owner": "src/orchestration/dispatcher/dispatcher.ts",
+      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "tests": "dispatcher.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "Now carries motivating_bead (vibesync-u32z PR #25) so writeback hook resolves from event."
+    },
+    {
+      "surface_id": "dispatcher/formula.queued",
+      "kind": "event",
+      "owner": "src/orchestration/dispatcher/dispatcher.ts",
+      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "tests": "dispatcher.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "dispatcher/formula.resumed",
+      "kind": "event",
+      "owner": "src/orchestration/dispatcher/dispatcher.ts",
+      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "tests": "dispatcher.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "dispatcher/formula.resume.paused",
+      "kind": "event",
+      "owner": "src/orchestration/dispatcher/dispatcher.ts",
+      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "tests": "dispatcher.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "dispatcher/formula.cancelled",
+      "kind": "event",
+      "owner": "src/orchestration/dispatcher/dispatcher.ts",
+      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "tests": "dispatcher.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "dispatcher/step.started",
+      "kind": "event",
+      "owner": "src/orchestration/dispatcher/dispatcher.ts",
+      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "tests": "dispatcher.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "dispatcher/step.finished",
+      "kind": "event",
+      "owner": "src/orchestration/dispatcher/dispatcher.ts",
+      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "tests": "dispatcher.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "dispatcher/step.failed",
+      "kind": "event",
+      "owner": "src/orchestration/dispatcher/dispatcher.ts",
+      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "tests": "dispatcher.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "dispatcher/step.retry",
+      "kind": "event",
+      "owner": "src/orchestration/dispatcher/dispatcher.ts",
+      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "tests": "dispatcher.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "dispatcher/step.cancelled",
+      "kind": "event",
+      "owner": "src/orchestration/dispatcher/dispatcher.ts",
+      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "tests": "dispatcher.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "dispatcher/step.reattached",
+      "kind": "event",
+      "owner": "src/orchestration/dispatcher/dispatcher.ts",
+      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "tests": "dispatcher.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "dispatcher/step.task_recorded",
+      "kind": "event",
+      "owner": "src/orchestration/dispatcher/dispatcher.ts",
+      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "tests": "dispatcher.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "dispatcher/step.role_agent_bootstrapped",
+      "kind": "event",
+      "owner": "src/orchestration/dispatcher/dispatcher.ts",
+      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "tests": "dispatcher.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "runtime/session.started",
+      "kind": "event",
+      "owner": "src/orchestration/runtime (emitRuntimeSessionEvent)",
+      "consumers": "UI live view, work-activity-reporter",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "runtime/session.error code=sse_read_error is the vibesync-2hgr timeout symptom."
+    },
+    {
+      "surface_id": "runtime/session.error",
+      "kind": "event",
+      "owner": "src/orchestration/runtime (emitRuntimeSessionEvent)",
+      "consumers": "UI live view, work-activity-reporter",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "runtime/session.error code=sse_read_error is the vibesync-2hgr timeout symptom."
+    },
+    {
+      "surface_id": "runtime/session.tool_call",
+      "kind": "event",
+      "owner": "src/orchestration/runtime (emitRuntimeSessionEvent)",
+      "consumers": "UI live view, work-activity-reporter",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "runtime/session.error code=sse_read_error is the vibesync-2hgr timeout symptom."
+    },
+    {
+      "surface_id": "runtime/session.tool_result",
+      "kind": "event",
+      "owner": "src/orchestration/runtime (emitRuntimeSessionEvent)",
+      "consumers": "UI live view, work-activity-reporter",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "runtime/session.error code=sse_read_error is the vibesync-2hgr timeout symptom."
+    },
+    {
+      "surface_id": "runtime/session.turn_done",
+      "kind": "event",
+      "owner": "src/orchestration/runtime (emitRuntimeSessionEvent)",
+      "consumers": "UI live view, work-activity-reporter",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "runtime/session.error code=sse_read_error is the vibesync-2hgr timeout symptom."
+    },
+    {
+      "surface_id": "runtime/session.usage",
+      "kind": "event",
+      "owner": "src/orchestration/runtime (emitRuntimeSessionEvent)",
+      "consumers": "UI live view, work-activity-reporter",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "runtime/session.error code=sse_read_error is the vibesync-2hgr timeout symptom."
+    },
+    {
+      "surface_id": "health-patrol/session.stalled",
+      "kind": "event",
+      "owner": "src/orchestration/health",
+      "consumers": "daemon, alerting",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "health-patrol/session.unhealthy",
+      "kind": "event",
+      "owner": "src/orchestration/health",
+      "consumers": "daemon, alerting",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "runtime/teammate.drift_audit.skipped",
+      "kind": "event",
+      "owner": "src/orchestration/boot.ts",
+      "consumers": "-",
+      "tests": "-",
+      "classification": "compatibility-only",
+      "kotlin_fate": "evaluate",
+      "notes": "Boot placeholder; drift audit not wired."
+    },
+    {
+      "surface_id": "molecule.exec.formula",
+      "kind": "metadata_field",
+      "owner": "src/orchestration/store/dolt-client.ts (insertMoleculeRoot/Step)",
+      "consumers": "writeback-hook, walker, MoleculeWalker.summary",
+      "tests": "walker.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "formula name"
+    },
+    {
+      "surface_id": "molecule.exec.motivating_bead",
+      "kind": "metadata_field",
+      "owner": "src/orchestration/store/dolt-client.ts (insertMoleculeRoot/Step)",
+      "consumers": "writeback-hook, walker, MoleculeWalker.summary",
+      "tests": "walker.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "bead id that motivated dispatch \u2014 writeback target (er21/u32z)"
+    },
+    {
+      "surface_id": "molecule.exec.writeback_status",
+      "kind": "metadata_field",
+      "owner": "src/orchestration/store/dolt-client.ts (insertMoleculeRoot/Step)",
+      "consumers": "writeback-hook, walker, MoleculeWalker.summary",
+      "tests": "walker.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "stamp completed|failed AFTER note lands (er21 ordering)"
+    },
+    {
+      "surface_id": "molecule.exec.outcome",
+      "kind": "metadata_field",
+      "owner": "src/orchestration/store/dolt-client.ts (insertMoleculeRoot/Step)",
+      "consumers": "writeback-hook, walker, MoleculeWalker.summary",
+      "tests": "walker.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "completed|failed"
+    },
+    {
+      "surface_id": "molecule.exec.step",
+      "kind": "metadata_field",
+      "owner": "src/orchestration/store/dolt-client.ts (insertMoleculeRoot/Step)",
+      "consumers": "writeback-hook, walker, MoleculeWalker.summary",
+      "tests": "walker.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "role/step name (step beads)"
+    },
+    {
+      "surface_id": "molecule.exec.output_payload",
+      "kind": "metadata_field",
+      "owner": "src/orchestration/store/dolt-client.ts (insertMoleculeRoot/Step)",
+      "consumers": "writeback-hook, walker, MoleculeWalker.summary",
+      "tests": "walker.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "per-step {output,eventCount,attempts}"
+    },
+    {
+      "surface_id": "molecule.exec.input_payload",
+      "kind": "metadata_field",
+      "owner": "src/orchestration/store/dolt-client.ts (insertMoleculeRoot/Step)",
+      "consumers": "writeback-hook, walker, MoleculeWalker.summary",
+      "tests": "walker.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "per-step rendered input"
+    },
+    {
+      "surface_id": "molecule.exec.error_trace",
+      "kind": "metadata_field",
+      "owner": "src/orchestration/store/dolt-client.ts (insertMoleculeRoot/Step)",
+      "consumers": "writeback-hook, walker, MoleculeWalker.summary",
+      "tests": "walker.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "failing step trace"
+    },
+    {
+      "surface_id": "molecule.exec.task_id",
+      "kind": "metadata_field",
+      "owner": "src/orchestration/store/dolt-client.ts (insertMoleculeRoot/Step)",
+      "consumers": "writeback-hook, walker, MoleculeWalker.summary",
+      "tests": "walker.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "provider-opaque re-attach id"
+    },
+    {
+      "surface_id": "molecule.exec.provider_kind",
+      "kind": "metadata_field",
+      "owner": "src/orchestration/store/dolt-client.ts (insertMoleculeRoot/Step)",
+      "consumers": "writeback-hook, walker, MoleculeWalker.summary",
+      "tests": "walker.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "letta-code-subagent"
+    },
+    {
+      "surface_id": "molecule.exec.session_id",
+      "kind": "metadata_field",
+      "owner": "src/orchestration/store/dolt-client.ts (insertMoleculeRoot/Step)",
+      "consumers": "writeback-hook, walker, MoleculeWalker.summary",
+      "tests": "walker.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "runtime session id"
+    },
+    {
+      "surface_id": "molecule.exec.conversation_id",
+      "kind": "metadata_field",
+      "owner": "src/orchestration/store/dolt-client.ts (insertMoleculeRoot/Step)",
+      "consumers": "writeback-hook, walker, MoleculeWalker.summary",
+      "tests": "walker.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "persistent-subagent conv id"
+    },
+    {
+      "surface_id": "molecule.exec.attempts",
+      "kind": "metadata_field",
+      "owner": "src/orchestration/store/dolt-client.ts (insertMoleculeRoot/Step)",
+      "consumers": "writeback-hook, walker, MoleculeWalker.summary",
+      "tests": "walker.test, writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "retry counter"
+    },
+    {
+      "surface_id": "RuntimeProvider.{kind,start,stop,prompt,nudge,observe}",
+      "kind": "provider_contract",
+      "owner": "src/orchestration/runtime/provider.ts",
+      "consumers": "dispatcher, LettaCodeSubagentProvider, tests",
+      "tests": "letta-code-subagent-provider.test, extra-providers.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "provider interface"
+    },
+    {
+      "surface_id": "SessionSpec{role,extra}",
+      "kind": "provider_contract",
+      "owner": "src/orchestration/runtime/provider.ts",
+      "consumers": "dispatcher, LettaCodeSubagentProvider, tests",
+      "tests": "letta-code-subagent-provider.test, extra-providers.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "start() spec; extra carries parentAgentId, turnTimeoutMs"
+    },
+    {
+      "surface_id": "PromptResult{taskId}",
+      "kind": "provider_contract",
+      "owner": "src/orchestration/runtime/provider.ts",
+      "consumers": "dispatcher, LettaCodeSubagentProvider, tests",
+      "tests": "letta-code-subagent-provider.test, extra-providers.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "prompt() result"
+    },
+    {
+      "surface_id": "SessionEvent(started|first-token|message-delta|tool-call|tool-result|usage|turn-done|error|stopped)",
+      "kind": "provider_contract",
+      "owner": "src/orchestration/runtime/provider.ts",
+      "consumers": "dispatcher, LettaCodeSubagentProvider, tests",
+      "tests": "letta-code-subagent-provider.test, extra-providers.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "9-variant observe() event union \u2014 jxri.3/jxri.5 versions this"
+    },
+    {
+      "surface_id": "provider_kind=letta-code-subagent",
+      "kind": "provider",
+      "owner": "src/orchestration/runtime/letta-code-subagent-provider.ts",
+      "consumers": "boot, dispatcher resolver",
+      "tests": "provider-routing.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "Only executable provider; letta-teams removed (legacy rows fall back)."
+    },
+    {
+      "surface_id": "provider turnTimeout: effectiveTimeout=stepTimeoutMs??turnTimeoutMs",
+      "kind": "provider_contract",
+      "owner": "letta-code-subagent-provider.ts:501-502",
+      "consumers": "dispatcher",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "setTimeout(abort). Default resolveDefaultTurnTimeout()=10min, env VIBESYNC_TURN_TIMEOUT_MS override. vibesync-2hgr: real ~4min abort is NOT this path (env=900000); true 240000 source still under investigation."
+    },
+    {
+      "surface_id": "formula:onboard-feature",
+      "kind": "formula",
+      "owner": "packs/gastown/formulas/onboard-feature.toml",
+      "consumers": "dispatcher, PM list_formulas",
+      "tests": "dispatcher.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "code-review sets turn_timeout_ms=1200000; onboard-feature sets none (falls to default)."
+    },
+    {
+      "surface_id": "formula:code-review",
+      "kind": "formula",
+      "owner": "packs/gastown/formulas/code-review.toml",
+      "consumers": "dispatcher, PM list_formulas",
+      "tests": "dispatcher.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "code-review sets turn_timeout_ms=1200000; onboard-feature sets none (falls to default)."
+    },
+    {
+      "surface_id": "formula:refinery-sweep",
+      "kind": "formula",
+      "owner": "packs/gastown/formulas/refinery-sweep.toml",
+      "consumers": "dispatcher, PM list_formulas",
+      "tests": "dispatcher.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "code-review sets turn_timeout_ms=1200000; onboard-feature sets none (falls to default)."
+    },
+    {
+      "surface_id": "role:mayor",
+      "kind": "role_pack",
+      "owner": "packs/gastown/roles/mayor.toml",
+      "consumers": "dispatcher persona loader, role agents",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "persona .toml -> inline block or persistent role agent."
+    },
+    {
+      "surface_id": "role:coder",
+      "kind": "role_pack",
+      "owner": "packs/gastown/roles/coder.toml",
+      "consumers": "dispatcher persona loader, role agents",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "persona .toml -> inline block or persistent role agent."
+    },
+    {
+      "surface_id": "role:reviewer",
+      "kind": "role_pack",
+      "owner": "packs/gastown/roles/reviewer.toml",
+      "consumers": "dispatcher persona loader, role agents",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "persona .toml -> inline block or persistent role agent."
+    },
+    {
+      "surface_id": "role:tester",
+      "kind": "role_pack",
+      "owner": "packs/gastown/roles/tester.toml",
+      "consumers": "dispatcher persona loader, role agents",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "persona .toml -> inline block or persistent role agent."
+    },
+    {
+      "surface_id": "role:refinery",
+      "kind": "role_pack",
+      "owner": "packs/gastown/roles/refinery.toml",
+      "consumers": "dispatcher persona loader, role agents",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "persona .toml -> inline block or persistent role agent."
+    },
+    {
+      "surface_id": "projects.identifier",
+      "kind": "table_column",
+      "owner": "src/database/migrations.ts / ProjectRepository",
+      "consumers": "dispatcher resolver, boot, UI",
+      "tests": "ProjectRegistry.test",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "Per-project routing (f5g/8hk/kamu). jxri.21 migrates legacy routing state to Beads/Dolt."
+    },
+    {
+      "surface_id": "projects.provider_kind",
+      "kind": "table_column",
+      "owner": "src/database/migrations.ts / ProjectRepository",
+      "consumers": "dispatcher resolver, boot, UI",
+      "tests": "ProjectRegistry.test",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "Per-project routing (f5g/8hk/kamu). jxri.21 migrates legacy routing state to Beads/Dolt."
+    },
+    {
+      "surface_id": "projects.letta_base_url",
+      "kind": "table_column",
+      "owner": "src/database/migrations.ts / ProjectRepository",
+      "consumers": "dispatcher resolver, boot, UI",
+      "tests": "ProjectRegistry.test",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "Per-project routing (f5g/8hk/kamu). jxri.21 migrates legacy routing state to Beads/Dolt."
+    },
+    {
+      "surface_id": "projects.letta_agent_id",
+      "kind": "table_column",
+      "owner": "src/database/migrations.ts / ProjectRepository",
+      "consumers": "dispatcher resolver, boot, UI",
+      "tests": "ProjectRegistry.test",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "Per-project routing (f5g/8hk/kamu). jxri.21 migrates legacy routing state to Beads/Dolt."
+    },
+    {
+      "surface_id": "projects.pack_dir",
+      "kind": "table_column",
+      "owner": "src/database/migrations.ts / ProjectRepository",
+      "consumers": "dispatcher resolver, boot, UI",
+      "tests": "ProjectRegistry.test",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "Per-project routing (f5g/8hk/kamu). jxri.21 migrates legacy routing state to Beads/Dolt."
+    },
+    {
+      "surface_id": "projects.storage_dir",
+      "kind": "table_column",
+      "owner": "src/database/migrations.ts / ProjectRepository",
+      "consumers": "dispatcher resolver, boot, UI",
+      "tests": "ProjectRegistry.test",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "Per-project routing (f5g/8hk/kamu). jxri.21 migrates legacy routing state to Beads/Dolt."
+    },
+    {
+      "surface_id": "projects.tech_stack",
+      "kind": "table_column",
+      "owner": "src/database/migrations.ts / ProjectRepository",
+      "consumers": "dispatcher resolver, boot, UI",
+      "tests": "ProjectRegistry.test",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "Per-project routing (f5g/8hk/kamu). jxri.21 migrates legacy routing state to Beads/Dolt."
+    },
+    {
+      "surface_id": "projects.beads_remote_status",
+      "kind": "table_column",
+      "owner": "src/database/migrations.ts / ProjectRepository",
+      "consumers": "dispatcher resolver, boot, UI",
+      "tests": "ProjectRegistry.test",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "Per-project routing (f5g/8hk/kamu). jxri.21 migrates legacy routing state to Beads/Dolt."
+    },
+    {
+      "surface_id": "projects.beads_remote_url",
+      "kind": "table_column",
+      "owner": "src/database/migrations.ts / ProjectRepository",
+      "consumers": "dispatcher resolver, boot, UI",
+      "tests": "ProjectRegistry.test",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "Per-project routing (f5g/8hk/kamu). jxri.21 migrates legacy routing state to Beads/Dolt."
+    },
+    {
+      "surface_id": "projects.mcp_enabled",
+      "kind": "table_column",
+      "owner": "src/database/migrations.ts / ProjectRepository",
+      "consumers": "dispatcher resolver, boot, UI",
+      "tests": "ProjectRegistry.test",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "Per-project routing (f5g/8hk/kamu). jxri.21 migrates legacy routing state to Beads/Dolt."
+    },
+    {
+      "surface_id": "table:issues",
+      "kind": "table",
+      "owner": "src/database/migrations.ts",
+      "consumers": "SyncDatabase repositories",
+      "tests": "database.test",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "also the bd/Dolt mirror"
+    },
+    {
+      "surface_id": "table:projects",
+      "kind": "table",
+      "owner": "src/database/migrations.ts",
+      "consumers": "SyncDatabase repositories",
+      "tests": "database.test",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "routing"
+    },
+    {
+      "surface_id": "table:project_files",
+      "kind": "table",
+      "owner": "src/database/migrations.ts",
+      "consumers": "SyncDatabase repositories",
+      "tests": "database.test",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "AST/file index"
+    },
+    {
+      "surface_id": "table:project_role_agents",
+      "kind": "table",
+      "owner": "src/database/migrations.ts",
+      "consumers": "SyncDatabase repositories",
+      "tests": "database.test",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "persistent role agents (mcz)"
+    },
+    {
+      "surface_id": "table:sync_history",
+      "kind": "table",
+      "owner": "src/database/migrations.ts",
+      "consumers": "SyncDatabase repositories",
+      "tests": "database.test",
+      "classification": "normative",
+      "kotlin_fate": "evaluate",
+      "notes": ""
+    },
+    {
+      "surface_id": "table:sync_metadata",
+      "kind": "table",
+      "owner": "src/database/migrations.ts",
+      "consumers": "SyncDatabase repositories",
+      "tests": "database.test",
+      "classification": "normative",
+      "kotlin_fate": "evaluate",
+      "notes": ""
+    },
+    {
+      "surface_id": "table:issue_mutation_idempotency",
+      "kind": "table",
+      "owner": "src/database/migrations.ts",
+      "consumers": "SyncDatabase repositories",
+      "tests": "database.test",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "idempotency_key UNIQUE(key,issue,action) \u2014 ETag/idempotency semantics"
+    },
+    {
+      "surface_id": "table:bookstack_pages",
+      "kind": "table",
+      "owner": "src/database/migrations.ts",
+      "consumers": "SyncDatabase repositories",
+      "tests": "database.test",
+      "classification": "normative",
+      "kotlin_fate": "evaluate",
+      "notes": "docs cache"
+    },
+    {
+      "surface_id": "env:VIBESYNC_LETTA_CODE_SHIM_URL",
+      "kind": "config",
+      "owner": "src/index.ts / boot.ts / provider",
+      "consumers": "boot, dispatcher",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "shim base (also LETTA_CODE_SHIM_URL)"
+    },
+    {
+      "surface_id": "env:VIBESYNC_LETTA_CODE_PARENT_AGENT_ID",
+      "kind": "config",
+      "owner": "src/index.ts / boot.ts / provider",
+      "consumers": "boot, dispatcher",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "PM parent for role-agent spawn"
+    },
+    {
+      "surface_id": "env:VIBESYNC_LETTA_CODE_PASSWORD",
+      "kind": "config",
+      "owner": "src/index.ts / boot.ts / provider",
+      "consumers": "boot, dispatcher",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "shim auth"
+    },
+    {
+      "surface_id": "env:VIBESYNC_ORCHESTRATION_PROVIDER",
+      "kind": "config",
+      "owner": "src/index.ts / boot.ts / provider",
+      "consumers": "boot, dispatcher",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "must=letta-code-subagent"
+    },
+    {
+      "surface_id": "env:VIBESYNC_ORCHESTRATION_TOKEN",
+      "kind": "config",
+      "owner": "src/index.ts / boot.ts / provider",
+      "consumers": "boot, dispatcher",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "bearer for /formulas routes"
+    },
+    {
+      "surface_id": "env:VIBESYNC_MAX_CONCURRENT_MOLECULES",
+      "kind": "config",
+      "owner": "src/index.ts / boot.ts / provider",
+      "consumers": "boot, dispatcher",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "dispatch concurrency"
+    },
+    {
+      "surface_id": "env:VIBESYNC_TURN_TIMEOUT_MS",
+      "kind": "config",
+      "owner": "src/index.ts / boot.ts / provider",
+      "consumers": "boot, dispatcher",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "provider turn cap (deployed=900000)"
+    },
+    {
+      "surface_id": "env:VIBESYNC_ROLE_AGENT_MODEL",
+      "kind": "config",
+      "owner": "src/index.ts / boot.ts / provider",
+      "consumers": "boot, dispatcher",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "role agent model"
+    },
+    {
+      "surface_id": "env:VIBESYNC_WORK_ACTIVITY_REPORT",
+      "kind": "config",
+      "owner": "src/index.ts / boot.ts / provider",
+      "consumers": "boot, dispatcher",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "mobile active-subagent bar (ryhc)"
+    },
+    {
+      "surface_id": "env:VIBESYNC_API_BASE_URL",
+      "kind": "config",
+      "owner": "src/index.ts / boot.ts / provider",
+      "consumers": "boot, dispatcher",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "dispatch_molecule tool target"
+    },
+    {
+      "surface_id": "env:ORCHESTRATION_BOOT_ATTEMPTS",
+      "kind": "config",
+      "owner": "src/index.ts / boot.ts / provider",
+      "consumers": "boot, dispatcher",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "boot retry"
+    },
+    {
+      "surface_id": "env:ENABLE_ORCHESTRATION",
+      "kind": "config",
+      "owner": "src/index.ts / boot.ts / provider",
+      "consumers": "boot, dispatcher",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "plane on/off"
+    },
+    {
+      "surface_id": "env:LETTA_LOCAL_BACKEND_DIR",
+      "kind": "config",
+      "owner": "src/index.ts / boot.ts / provider",
+      "consumers": "boot, dispatcher",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "local backend storage"
+    },
+    {
+      "surface_id": "tool:dispatch_molecule.py",
+      "kind": "pm_tool",
+      "owner": "tools/dispatch_molecule.py",
+      "consumers": "Letta PM agent",
+      "tests": "LettaToolService.dispatchMolecule.test, LettaToolService.listFormulas.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "dispatch_molecule sends body.motivatingBeadId (camelCase)."
+    },
+    {
+      "surface_id": "tool:list_formulas.py",
+      "kind": "pm_tool",
+      "owner": "tools/list_formulas.py",
+      "consumers": "Letta PM agent",
+      "tests": "LettaToolService.dispatchMolecule.test, LettaToolService.listFormulas.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "dispatch_molecule sends body.motivatingBeadId (camelCase)."
+    },
+    {
+      "surface_id": "tool:look_at_file.py",
+      "kind": "pm_tool",
+      "owner": "tools/look_at_file.py",
+      "consumers": "Letta PM agent",
+      "tests": "LettaToolService.dispatchMolecule.test, LettaToolService.listFormulas.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "dispatch_molecule sends body.motivatingBeadId (camelCase)."
+    },
+    {
+      "surface_id": "tool:search_folder_passages.py",
+      "kind": "pm_tool",
+      "owner": "tools/search_folder_passages.py",
+      "consumers": "Letta PM agent",
+      "tests": "LettaToolService.dispatchMolecule.test, LettaToolService.listFormulas.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "dispatch_molecule sends body.motivatingBeadId (camelCase)."
+    },
+    {
+      "surface_id": "tool:file_mount_tools.py",
+      "kind": "pm_tool",
+      "owner": "tools/file_mount_tools.py",
+      "consumers": "Letta PM agent",
+      "tests": "LettaToolService.dispatchMolecule.test, LettaToolService.listFormulas.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "dispatch_molecule sends body.motivatingBeadId (camelCase)."
+    },
+    {
+      "surface_id": "writeback-hook (molecule->motivating bead)",
+      "kind": "behavior",
+      "owner": "src/orchestration/dispatcher/writeback-hook.ts",
+      "consumers": "motivating beads, human-tracked work",
+      "tests": "writeback-hook.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "Fires on formula.completed|failed; appends note THEN stamps writeback_status (er21). Resolves motivating_bead from event then root exec (u32z). Per-invocation + subscription logs (er21/#23)."
+    },
+    {
+      "surface_id": "EventBus two-tier (persistent .beads/events.jsonl + live subscribers)",
+      "kind": "behavior",
+      "owner": "src/orchestration/events/bus.ts",
+      "consumers": "all layers, cli follow",
+      "tests": "bus.test",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "In-process live tier only; no cross-process replay. jxri.7 hardens into canonical append-only causal log."
+    },
+    {
+      "surface_id": "HealthPatrol (stalled/unhealthy detection)",
+      "kind": "behavior",
+      "owner": "src/orchestration/health",
+      "consumers": "daemon",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": ""
+    },
+    {
+      "surface_id": "idempotency: issue_mutation_idempotency UNIQUE(key,issue,action)",
+      "kind": "behavior",
+      "owner": "src/database/migrations.ts:258",
+      "consumers": "mutation routes",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "migrate",
+      "notes": "Mutation idempotency. ETag semantics in src/types/api.ts:148."
+    },
+    {
+      "surface_id": "ETag/etag on API responses",
+      "kind": "behavior",
+      "owner": "src/types/api.ts:148",
+      "consumers": "conditional requests",
+      "tests": "-",
+      "classification": "compatibility-only",
+      "kotlin_fate": "evaluate",
+      "notes": "Presence noted; If-Match handling incomplete \u2014 classify as partial."
+    },
+    {
+      "surface_id": "drift audit / teammate reconcile",
+      "kind": "behavior",
+      "owner": "boot.ts (skipped placeholder)",
+      "consumers": "-",
+      "tests": "-",
+      "classification": "missing",
+      "kotlin_fate": "design",
+      "notes": "Emits drift_audit.skipped only; not implemented. MISSING behavior to design for Kotlin."
+    },
+    {
+      "surface_id": "mobile consumer: /molecules[/:id/events] live view",
+      "kind": "external_consumer",
+      "owner": "letta-mobile",
+      "consumers": "VibeSync orchestration API",
+      "tests": "-",
+      "classification": "normative",
+      "kotlin_fate": "port",
+      "notes": "Mobile active-subagent bar consumes work-activity (ryhc) + molecule events."
+    },
+    {
+      "surface_id": "VibeSync URL / discovery issue",
+      "kind": "migration_debt",
+      "owner": "project registry (letta_base_url)",
+      "consumers": "dispatcher resolver, mobile",
+      "tests": "-",
+      "classification": "compatibility-only",
+      "kotlin_fate": "design",
+      "notes": "Per-project letta_base_url is dialed directly; no service discovery. Ephemeral shim ports (jxri-devj collision) + Dolt SIGKILL-on-restart (jxri-nl0l) make the URL unstable. Needs a discovery/handshake contract (lcp-desktop loopback handshake is the desktop analog)."
+    },
+    {
+      "surface_id": "legacy provider_kind=letta-teams rows",
+      "kind": "migration_debt",
+      "owner": "projects table",
+      "consumers": "dispatcher resolver",
+      "tests": "provider-routing.test",
+      "classification": "deprecated",
+      "kotlin_fate": "delete",
+      "notes": "Non-executable; resolver falls back to letta-code-subagent with a warn. jxri.21 cleans up."
+    },
+    {
+      "surface_id": "vibesync-2hgr: true ~240000 turn-abort source",
+      "kind": "migration_debt",
+      "owner": "letta-code-subagent-provider.ts SSE read path",
+      "consumers": "dispatcher",
+      "tests": "letta-code-subagent-provider.test",
+      "classification": "missing",
+      "kotlin_fate": "design",
+      "notes": "OPEN: env=900000 and onboard-feature sets no per-step timeout, yet aborts at ~4m0s with sse_read_error. NOT VIBESYNC_TURN_TIMEOUT_MS; NOT Bun fetch default (probed >6min no-abort with keepalive). True source unproven \u2014 must log effectiveTimeout at provider.ts:501 on a real dispatch."
+    }
+  ],
+  "summary": {
+    "total_surfaces": 119,
+    "by_classification": {
+      "normative": 111,
+      "compatibility-only": 5,
+      "missing": 2,
+      "deprecated": 1
+    },
+    "acceptance": "Every route/event/table/config/provider/tool/metadata-field mapped to owner, consumers, tests, classification, and Kotlin fate. Open unknowns flagged as classification=missing (drift audit, 2hgr timeout source) rather than left unclassified.",
+    "feeds": "vibesync-jxri.3 (versioned schemas) consumes this inventory; jxri.21 (migrate routing state); jxri.7 (EventBus hardening)."
+  }
+}
