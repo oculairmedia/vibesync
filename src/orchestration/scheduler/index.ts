@@ -71,3 +71,20 @@ export type {
   EscalationSink,
   PropulsionExecutorDeps,
 } from './propulsion-executor.js';
+
+export {
+  EscalationManager,
+  severityPriority,
+  markerLine,
+  DEFAULT_ESCALATION_CONFIG,
+} from './escalation.js';
+export type {
+  EscalationSeverity,
+  EscalationState,
+  EscalationRecord,
+  EscalationStore,
+  NotificationTransport,
+  EscalationConfig,
+  EscalationManagerDeps,
+  StaleSweepResult,
+} from './escalation.js';
