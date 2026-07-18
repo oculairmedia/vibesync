@@ -88,3 +88,45 @@ export type {
   EscalationManagerDeps,
   StaleSweepResult,
 } from './escalation.js';
+
+export { SchedulerDaemon } from './daemon.js';
+export type {
+  DaemonLogger,
+  FormulaResolver,
+  ReadyBeadSource,
+  SchedulerDaemonDeps,
+  DaemonTickResult,
+} from './daemon.js';
+
+export {
+  Refinery,
+  evaluateGates,
+} from './refinery.js';
+export type {
+  MergeRequest,
+  MergeRequestState,
+  GateName,
+  GateFailure,
+  ProcessedMergeRequest,
+  PrFacts,
+  GitHubPort,
+  RefineryEscalationSink,
+  RefineryDeps,
+} from './refinery.js';
+
+export {
+  Witness,
+  toWorkingSlot,
+  DEFAULT_RECOVERY_ESCALATION_THRESHOLD,
+} from './witness.js';
+export type {
+  RunLiveness,
+  RecoveryReason,
+  RunLivenessProbe,
+  WorkingSlot,
+  SlotReaper,
+  WitnessEscalation,
+  WitnessDeps,
+  Recovery,
+  PatrolResult,
+} from './witness.js';
