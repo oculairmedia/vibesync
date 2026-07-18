@@ -240,4 +240,54 @@ describe('SchedulerLoop.runTick (vibesync-63zx.3)', () => {
     releaseFirst();
     await first;
   });
+
+  // vibesync-63zx.3 (Meridian hardening): a FAILED dispatch (below the circuit
+  // threshold) must NOT close the context as `dispatched`. It stays OPEN so the
+  // next tick retries it — otherwise a transient dispatch error would silently
+  // drop the work bead from the queue forever.
+  it('a failed dispatch below threshold leaves the context OPEN for retry (not closed dispatched)', async () => {
+    const store = new FakeContextStore([ctx('a')]);
+    const loop = new SchedulerLoop({
+      config: config({ poolSize: 3, batchSize: 10 }),
+      capacity: { activeCount: 0 },
+      contextStore: store,
+      readyWork: readySource(['a']),
+      candidateMetadata: defaultMeta,
+      executor: { async execute() { throw new Error('transient dispatch error'); } },
+    });
+    const r = await loop.runTick();
+    expect(r.failed).toEqual(['a']);
+    expect(r.dispatched).toEqual([]);
+    // context 'ctx-a' must still be OPEN (not closed), and never closed as 'dispatched'
+    expect(store.closed).toEqual([]);
+    expect(store.contexts.find((c) => c.id === 'ctx-a')?.status).toBe('open');
+    expect(store.failures.get('ctx-a')).toBe(1);
+  });
+
+  // vibesync-63zx.3 (Meridian hardening): one rejecting executor mid-batch must
+  // NOT abort the rest of the batch — the loop iterates candidates independently,
+  // so a bad dispatch for one bead cannot starve the others.
+  it('a rejecting dispatch mid-batch does not block the other beads in the same tick', async () => {
+    const store = new FakeContextStore([ctx('a'), ctx('b'), ctx('c')]);
+    const loop = new SchedulerLoop({
+      config: config({ poolSize: 5, batchSize: 10 }),
+      capacity: { activeCount: 0 },
+      contextStore: store,
+      readyWork: readySource(['a', 'b', 'c']),
+      candidateMetadata: defaultMeta,
+      // 'b' fails; 'a' and 'c' must still dispatch.
+      executor: {
+        async execute(cand) {
+          if (cand.workBeadId === 'b') throw new Error('b is unlucky');
+        },
+      },
+    });
+    const r = await loop.runTick();
+    expect(new Set(r.dispatched)).toEqual(new Set(['a', 'c']));
+    expect(r.failed).toEqual(['b']);
+    // a and c closed as dispatched; b left open for retry
+    expect(store.contexts.find((c) => c.id === 'ctx-b')?.status).toBe('open');
+    expect(store.contexts.find((c) => c.id === 'ctx-a')?.status).toBe('closed');
+    expect(store.contexts.find((c) => c.id === 'ctx-c')?.status).toBe('closed');
+  });
 });
