@@ -27,6 +27,24 @@ describe('buildPersonaBlock (vibesync-3hj)', () => {
     expect(text).toMatch(/Do NOT dispatch the same formula twice for the same bead/i);
   });
 
+  it('requires PR review follow-through before treating work as complete', () => {
+    const text = buildPersonaBlock('vibesync', 'Vibesync');
+    expect(text).toContain('Delivery Quality Bar');
+    expect(text).toMatch(/PR creation is NOT completion/i);
+    expect(text).toMatch(/reviewer feedback is resolved/i);
+    expect(text).toMatch(/checks are green or assigned to an owner/i);
+    expect(text).toMatch(/merged, blocked, superseded, or intentionally closed/i);
+  });
+
+  it('raises the delegation bar for maintainable, extensible implementation work', () => {
+    const text = buildPersonaBlock('vibesync', 'Vibesync');
+    expect(text).toContain('Delegation Quality Bar');
+    expect(text).toMatch(/minimal, cohesive diffs/i);
+    expect(text).toMatch(/maintainability, failure-mode, observability, and architecture-boundary review/i);
+    expect(text).toMatch(/root-cause fixes/i);
+    expect(text).toMatch(/unclear ownership boundaries/i);
+  });
+
   it('tells the PM to fall back to manual delegation if the orchestration plane is offline', () => {
     const text = buildPersonaBlock('vibesync', 'Vibesync');
     expect(text).toMatch(/orchestration plane is offline/i);
