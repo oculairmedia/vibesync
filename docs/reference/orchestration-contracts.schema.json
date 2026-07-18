@@ -1,0 +1,708 @@
+{
+  "schema_version": 1,
+  "$comment": "VibeSync orchestration contract bundle (vibesync-jxri.3). Generated from zod schemas; do not hand-edit.",
+  "contracts": {
+    "Formula": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "number",
+          "const": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "when_to_use": {
+          "type": "string"
+        },
+        "steps": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "role": {
+                "type": "string",
+                "minLength": 1
+              },
+              "depends_on": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "turn_timeout_ms": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "name",
+              "role"
+            ],
+            "additionalProperties": {}
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "name",
+        "description",
+        "steps"
+      ],
+      "additionalProperties": {}
+    },
+    "RolePack": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "number",
+          "const": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "persona": {
+          "type": "string"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "replace_memory": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "schema_version",
+        "name",
+        "persona"
+      ],
+      "additionalProperties": {}
+    },
+    "MoleculeRootExec": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "formula": {
+          "type": "string",
+          "minLength": 1
+        },
+        "motivating_bead": {
+          "type": "string",
+          "minLength": 1
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "completed",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "writeback_status": {
+          "type": "string",
+          "enum": [
+            "completed",
+            "failed"
+          ]
+        }
+      },
+      "required": [
+        "formula"
+      ],
+      "additionalProperties": {}
+    },
+    "MoleculeStepExec": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "step": {
+          "type": "string",
+          "minLength": 1
+        },
+        "molecule": {
+          "type": "string",
+          "minLength": 1
+        },
+        "input_payload": {},
+        "output_payload": {},
+        "error_trace": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "provider_kind": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "conversation_id": {
+          "type": "string"
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "step",
+        "molecule"
+      ],
+      "additionalProperties": {}
+    },
+    "SessionSpec": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "number",
+          "const": 1
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "extra": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "schema_version",
+        "role"
+      ],
+      "additionalProperties": {}
+    },
+    "PromptResult": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "number",
+          "const": 1
+        },
+        "task_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version"
+      ],
+      "additionalProperties": {}
+    },
+    "SessionEvent": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "started"
+            },
+            "ts": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+            }
+          },
+          "required": [
+            "kind",
+            "ts"
+          ],
+          "additionalProperties": {}
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "first-token"
+            },
+            "ts": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+            }
+          },
+          "required": [
+            "kind",
+            "ts"
+          ],
+          "additionalProperties": {}
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "message-delta"
+            },
+            "ts": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "ts",
+            "text"
+          ],
+          "additionalProperties": {}
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "tool-call"
+            },
+            "ts": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+            },
+            "tool": {
+              "type": "string"
+            },
+            "args": {}
+          },
+          "required": [
+            "kind",
+            "ts",
+            "tool",
+            "args"
+          ],
+          "additionalProperties": {}
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "tool-result"
+            },
+            "ts": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+            },
+            "tool": {
+              "type": "string"
+            },
+            "result": {},
+            "ok": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "ts",
+            "tool",
+            "result",
+            "ok"
+          ],
+          "additionalProperties": {}
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "usage"
+            },
+            "ts": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+            },
+            "prompt": {
+              "type": "number"
+            },
+            "completion": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "ts",
+            "prompt",
+            "completion"
+          ],
+          "additionalProperties": {}
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "turn-done"
+            },
+            "ts": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+            },
+            "stopReason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "ts"
+          ],
+          "additionalProperties": {}
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "error"
+            },
+            "ts": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+            },
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "ts",
+            "code",
+            "message"
+          ],
+          "additionalProperties": {}
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "stopped"
+            },
+            "ts": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+            }
+          },
+          "required": [
+            "kind",
+            "ts"
+          ],
+          "additionalProperties": {}
+        }
+      ]
+    },
+    "OrchestrationEvent": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+        },
+        "layer": {
+          "type": "string",
+          "enum": [
+            "runtime",
+            "daemon",
+            "formula",
+            "dispatcher",
+            "molecule",
+            "health-patrol",
+            "pm-agent"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "molecule_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "teammate": {
+          "type": "string"
+        },
+        "payload": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "schema_version",
+        "id",
+        "ts",
+        "layer",
+        "kind"
+      ],
+      "additionalProperties": {}
+    },
+    "ArtifactManifest": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "number",
+          "const": 1
+        },
+        "work_bead_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pr_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "commit_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{7,40}$"
+        },
+        "created_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+        }
+      },
+      "required": [
+        "schema_version",
+        "work_bead_id",
+        "run_id",
+        "created_at"
+      ],
+      "additionalProperties": {}
+    },
+    "TraceBundle": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "number",
+          "const": 1
+        },
+        "molecule_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "root": {
+          "type": "object",
+          "properties": {
+            "formula": {
+              "type": "string",
+              "minLength": 1
+            },
+            "motivating_bead": {
+              "type": "string",
+              "minLength": 1
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "completed",
+                "failed",
+                "cancelled"
+              ]
+            },
+            "writeback_status": {
+              "type": "string",
+              "enum": [
+                "completed",
+                "failed"
+              ]
+            }
+          },
+          "required": [
+            "formula"
+          ],
+          "additionalProperties": {}
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "step": {
+                "type": "string",
+                "minLength": 1
+              },
+              "molecule": {
+                "type": "string",
+                "minLength": 1
+              },
+              "input_payload": {},
+              "output_payload": {},
+              "error_trace": {
+                "type": "string"
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "provider_kind": {
+                "type": "string"
+              },
+              "session_id": {
+                "type": "string"
+              },
+              "conversation_id": {
+                "type": "string"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "step",
+              "molecule"
+            ],
+            "additionalProperties": {}
+          }
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "schema_version": {
+                "type": "number",
+                "const": 1
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ts": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+              },
+              "layer": {
+                "type": "string",
+                "enum": [
+                  "runtime",
+                  "daemon",
+                  "formula",
+                  "dispatcher",
+                  "molecule",
+                  "health-patrol",
+                  "pm-agent"
+                ]
+              },
+              "kind": {
+                "type": "string",
+                "minLength": 1
+              },
+              "task_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "molecule_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "teammate": {
+                "type": "string"
+              },
+              "payload": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              }
+            },
+            "required": [
+              "schema_version",
+              "id",
+              "ts",
+              "layer",
+              "kind"
+            ],
+            "additionalProperties": {}
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "molecule_id",
+        "root",
+        "steps"
+      ],
+      "additionalProperties": {}
+    },
+    "ApiError": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "number",
+          "const": 1
+        },
+        "detail": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "context": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "schema_version",
+        "detail"
+      ],
+      "additionalProperties": {}
+    }
+  }
+}
