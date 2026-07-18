@@ -88,3 +88,19 @@ export type {
   EscalationManagerDeps,
   StaleSweepResult,
 } from './escalation.js';
+
+export {
+  Refinery,
+  evaluateGates,
+} from './refinery.js';
+export type {
+  MergeRequest,
+  MergeRequestState,
+  GateName,
+  GateFailure,
+  ProcessedMergeRequest,
+  PrFacts,
+  GitHubPort,
+  RefineryEscalationSink,
+  RefineryDeps,
+} from './refinery.js';
