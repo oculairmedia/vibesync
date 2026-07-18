@@ -104,3 +104,20 @@ export type {
   RefineryEscalationSink,
   RefineryDeps,
 } from './refinery.js';
+
+export {
+  Witness,
+  toWorkingSlot,
+  DEFAULT_RECOVERY_ESCALATION_THRESHOLD,
+} from './witness.js';
+export type {
+  RunLiveness,
+  RecoveryReason,
+  RunLivenessProbe,
+  WorkingSlot,
+  SlotReaper,
+  WitnessEscalation,
+  WitnessDeps,
+  Recovery,
+  PatrolResult,
+} from './witness.js';
