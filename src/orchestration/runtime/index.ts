@@ -24,6 +24,7 @@ export {
   buildPuppetMessage,
   parseSseFrame,
   translateShimEvent,
+  bunNoFetchTimeout,
 } from './letta-code-subagent-provider.js';
 export type {
   LettaCodeSubagentProviderOptions,

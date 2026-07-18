@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   LettaCodeSubagentProvider,
   buildPuppetMessage,
+  bunNoFetchTimeout,
   parseSseFrame,
   translateShimEvent,
 } from '../../../../src/orchestration/runtime/index.js';
@@ -259,6 +260,64 @@ describe('LettaCodeSubagentProvider', () => {
       // Subagent output (from Agent's tool_return) is the message-delta payload.
       const delta = events.find((e): e is Extract<SessionEvent, { kind: 'message-delta' }> => e.kind === 'message-delta');
       expect(delta?.text).toBe('review verdict: LGTM');
+    });
+
+    // vibesync-2hgr: Bun's global fetch imposes its own ~4min default request
+    // timeout that also caps the streaming SSE body read, firing
+    // "The operation timed out." (sse_read_error) independent of — and below —
+    // our AbortController deadline. Raising VIBESYNC_TURN_TIMEOUT_MS did not
+    // help because that cap lives in the fetch layer. The provider must disable
+    // Bun's fetch timeout on the SSE POST so the AbortController is the single
+    // deadline authority.
+    describe('bunNoFetchTimeout (vibesync-2hgr)', () => {
+      it('returns { timeout: false } when running under Bun', () => {
+        const g = globalThis as { Bun?: unknown };
+        const had = 'Bun' in g;
+        const prev = g.Bun;
+        g.Bun = { version: 'test' };
+        try {
+          expect(bunNoFetchTimeout()).toEqual({ timeout: false });
+        } finally {
+          if (had) g.Bun = prev; else delete g.Bun;
+        }
+      });
+
+      it('returns {} (no unknown field) when not under Bun', () => {
+        const g = globalThis as { Bun?: unknown };
+        const had = 'Bun' in g;
+        const prev = g.Bun;
+        delete g.Bun;
+        try {
+          expect(bunNoFetchTimeout()).toEqual({});
+        } finally {
+          if (had) g.Bun = prev;
+        }
+      });
+
+      it('spreads timeout:false onto the SSE /messages POST init when under Bun', async () => {
+        const g = globalThis as { Bun?: unknown };
+        const had = 'Bun' in g;
+        const prev = g.Bun;
+        g.Bun = { version: 'test' };
+        try {
+          const { fetchImpl, calls } = makeFakeFetch({ conversationId: 'conv-t' });
+          const provider = new LettaCodeSubagentProvider({
+            shimBaseUrl: 'http://localhost:8291',
+            personaLoader: fakePersonaLoader(),
+            fetchImpl,
+          });
+          const handle = await provider.start({ role: 'reviewer', extra: { parentAgentId: 'agent-pm' } });
+          await provider.prompt(handle, [{ type: 'text', text: 'go' }]);
+          await drain(provider, handle);
+
+          const messageCall = calls.find((c) => c.url.includes('/messages'));
+          expect(messageCall).toBeDefined();
+          // timeout is a Bun fetch extension not on the DOM RequestInit type.
+          expect((messageCall!.init as { timeout?: unknown }).timeout).toBe(false);
+        } finally {
+          if (had) g.Bun = prev; else delete g.Bun;
+        }
+      });
     });
 
     it('reuses a conversation across multiple prompts on the same handle', async () => {
