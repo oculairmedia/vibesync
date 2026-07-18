@@ -39,7 +39,8 @@
     "migrate-agents-md": "node migrate-agents-md.js",
     "migrate-agents-db": "node migrate-agents-to-db.js",
     "vibesync": "bun src/cli.ts",
-    "build:openapi": "bun scripts/generate-openapi.ts"
+    "build:openapi": "bun scripts/generate-openapi.ts",
+    "rig:dogfood": "bun scripts/dogfood-rig.ts"
   },
   "keywords": [
     "vibesync",
