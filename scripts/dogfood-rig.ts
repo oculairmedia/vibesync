@@ -34,12 +34,25 @@ const db = createSyncDatabase(dbPath);
 const dolt = await DoltClient.connect({}, { ...defaultDoltBootDeps, log(level, obj, msg) { log[level](obj, msg); } });
 const roleAgentBootstrapper = new RoleAgentBootstrapper({
   repo: { getRoleAgent: db.getRoleAgent.bind(db), upsertRoleAgent: db.upsertRoleAgent.bind(db) },
-  defaultModel: process.env['VIBESYNC_DOGFOOD_MODEL'] ?? 'lmstudio/sonnet-4-5',
+  defaultModel: process.env['VIBESYNC_DOGFOOD_MODEL'] ?? 'lmstudio/MiniMax-M3',
 });
 const orchestration = await bootOrchestrationPlane({
   dolt,
   providerRouting: {
-    store: { getProjectProviderRouting: db.getProjectProviderRouting.bind(db) },
+    store: {
+      getProjectProviderRouting(identifier) {
+        const row = db.getProjectProviderRouting(identifier);
+        if (identifier !== projectIdentifier) return row;
+        return {
+          ...row,
+          providerKind: row?.providerKind ?? 'letta-code-subagent',
+          lettaBaseUrl,
+          parentAgentId: agentId,
+          packDir: row?.packDir ?? 'packs/gastown',
+          storageDir: row?.storageDir ?? '/root/.letta/lc-local-backend',
+        };
+      },
+    },
     roleAgentBootstrapper,
     packDirsByProject: { [projectIdentifier]: 'packs/gastown' },
     storageDirsByProject: { [projectIdentifier]: '/root/.letta/lc-local-backend' },
@@ -94,6 +107,11 @@ console.log(`[rig-dogfood] starting one supervised tick bead=${beadId} agent=${a
 const result = await daemon.tick();
 console.log('[rig-dogfood] tick result', JSON.stringify(result, null, 2));
 await orchestration.shutdown();
+const drainMs = Number.parseInt(process.env['VIBESYNC_DOGFOOD_DRAIN_MS'] ?? '2500', 10);
+if (Number.isFinite(drainMs) && drainMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, drainMs));
+}
+process.exit(0);
 
 type Row = { id: string; description: string; tracks: string; open: boolean };
 function makeContextStore(): SlingContextStore {

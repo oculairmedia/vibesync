@@ -62,6 +62,8 @@ class FakeRepo implements RoleAgentRepository {
 interface FakeSdk extends RoleAgentSdkAdapter {
   readonly calls: CreateAgentOptions[];
   readonly knownAgents: Set<string>;
+  readonly models: Map<string, string>;
+  readonly modelUpdates: Array<{ agentId: string; model: string; lettaBaseUrl?: string }>;
   existenceProbes: number;
 }
 
@@ -69,14 +71,19 @@ function makeFakeSdk(opts?: {
   idGenerator?: () => string;
   agentExists?: boolean | ((agentId: string) => boolean);
   preCreatedAgents?: readonly string[];
+  models?: Record<string, string>;
 }): FakeSdk {
   const calls: CreateAgentOptions[] = [];
   const idGen = opts?.idGenerator ?? (() => 'agent-stub-uuid-1');
   const knownAgents = new Set<string>(opts?.preCreatedAgents ?? []);
+  const models = new Map<string, string>(Object.entries(opts?.models ?? {}));
+  const modelUpdates: Array<{ agentId: string; model: string; lettaBaseUrl?: string }> = [];
   let existenceProbes = 0;
   const sdk: FakeSdk = {
     calls,
     knownAgents,
+    models,
+    modelUpdates,
     get existenceProbes() {
       return existenceProbes;
     },
@@ -87,7 +94,15 @@ function makeFakeSdk(opts?: {
       calls.push(options);
       const id = idGen();
       knownAgents.add(id);
+      if (typeof options.model === 'string') models.set(id, options.model);
       return id;
+    },
+    async getAgentModel(agentId: string) {
+      return models.get(agentId) ?? null;
+    },
+    async updateAgentModel(agentId: string, model: string, lettaBaseUrl?: string) {
+      modelUpdates.push({ agentId, model, lettaBaseUrl });
+      models.set(agentId, model);
     },
   };
   if (opts?.agentExists !== undefined) {
@@ -161,13 +176,17 @@ function makeHarness(opts?: {
   seedFiles?: Record<string, string>;
   agentExists?: boolean | ((agentId: string) => boolean);
   preCreatedAgents?: readonly string[];
+  models?: Record<string, string>;
   envBackendDir?: string | undefined;
+  defaultModel?: string;
+  roleModels?: Readonly<Record<string, string>>;
 }): Harness {
   const repo = new FakeRepo();
   const sdk = makeFakeSdk({
     idGenerator: opts?.idGenerator ?? (() => 'agent-stub-uuid-1'),
     agentExists: opts?.agentExists,
     preCreatedAgents: opts?.preCreatedAgents,
+    models: opts?.models,
   });
   const persona = makeFakePersonaReader({ [PERSONA_PATH]: PERSONA_BODY, ...opts?.seedFiles });
   const envBackendDir: string | undefined =
@@ -177,6 +196,8 @@ function makeHarness(opts?: {
     sdk,
     readFile: persona.readFile,
     now: opts?.now ?? (() => 1700000000000),
+    defaultModel: opts?.defaultModel ?? 'lmstudio/sonnet-4-5',
+    roleModels: opts?.roleModels ?? {},
     envBackendDir: () => envBackendDir,
   });
   return { repo, sdk, persona, bootstrapper };
@@ -229,6 +250,29 @@ describe('RoleAgentBootstrapper (vibesync-1ix: SDK-based provisioning)', () => {
       // build an Anthropic thinking:{type:enabled} block without budget and
       // fail). Sonnet resolves with no thinking block.
       expect(h.sdk.calls[0]?.model).toBe('lmstudio/sonnet-4-5');
+    });
+
+    it('selects the configured model for each known role and falls back for unknown roles', async () => {
+      const roleModels = {
+        mayor: 'lmstudio/MiniMax-M3',
+        reviewer: 'lmstudio/gpt-5.6-sol',
+        coder: 'lmstudio/deepseek-v4-pro',
+      };
+      const cases = [
+        ['mayor', 'lmstudio/MiniMax-M3'],
+        ['reviewer', 'lmstudio/gpt-5.6-sol'],
+        ['coder', 'lmstudio/deepseek-v4-pro'],
+        ['custom', 'lmstudio/deepseek-v4-flash'],
+      ] as const;
+      for (const [role, expected] of cases) {
+        const h = makeHarness({
+          defaultModel: 'lmstudio/deepseek-v4-flash',
+          roleModels,
+          seedFiles: { [`${PACK_DIR}/.letta/agents/${role}.md`]: PERSONA_BODY },
+        });
+        await h.bootstrapper.ensureRoleAgent({ ...defaultInput, role });
+        expect(h.sdk.calls[0]?.model).toBe(expected);
+      }
     });
 
     it('tags the agent for vibesync/project/role/backend lookup', async () => {
@@ -304,6 +348,28 @@ describe('RoleAgentBootstrapper (vibesync-1ix: SDK-based provisioning)', () => {
       await expect(
         h.bootstrapper.ensureRoleAgent({ ...defaultInput, lettaBaseUrl: 'http://other-shim:9999' }),
       ).rejects.toThrow(/refusing to silently rebind/);
+    });
+
+    it('reconciles a cached agent whose model drifted from the configured default', async () => {
+      const h = makeHarness({ models: { 'agent-existing': 'anthropic/claude-opus-4-7' } });
+      h.repo.upsertRoleAgent(PROJECT, ROLE, 'agent-existing', BASE_URL, 1700000000000);
+
+      const cached = await h.bootstrapper.ensureRoleAgent(defaultInput);
+
+      expect(cached.agentId).toBe('agent-existing');
+      expect(h.sdk.modelUpdates).toEqual([
+        { agentId: 'agent-existing', model: 'lmstudio/sonnet-4-5', lettaBaseUrl: BASE_URL },
+      ]);
+      expect(h.sdk.models.get('agent-existing')).toBe('lmstudio/sonnet-4-5');
+    });
+
+    it('does not patch a cached agent already using the configured default model', async () => {
+      const h = makeHarness({ models: { 'agent-existing': 'lmstudio/sonnet-4-5' } });
+      h.repo.upsertRoleAgent(PROJECT, ROLE, 'agent-existing', BASE_URL, 1700000000000);
+
+      await h.bootstrapper.ensureRoleAgent(defaultInput);
+
+      expect(h.sdk.modelUpdates).toEqual([]);
     });
 
     it('uses the optional agentExists probe to validate the cached binding', async () => {

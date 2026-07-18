@@ -406,7 +406,7 @@ async function main(): Promise<void> {
         getRoleAgent: db.getRoleAgent.bind(db),
         upsertRoleAgent: db.upsertRoleAgent.bind(db),
       },
-      defaultModel: 'lmstudio/sonnet-4-5',
+      defaultModel: process.env['VIBESYNC_ROLE_AGENT_MODEL'] ?? 'lmstudio/MiniMax-M3',
       // memfs: true is the default in RoleAgentBootstrapper, no need to pass
     });
 

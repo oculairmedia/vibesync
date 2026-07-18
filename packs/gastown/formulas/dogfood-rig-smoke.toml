@@ -6,4 +6,4 @@ when_to_use = "when proving the scheduler daemon can schedule and dispatch exact
 role = "mayor"
 prompt_template = "prompts/mayor-system.md"
 wait_for = "completion"
-turn_timeout_ms = 300000
+turn_timeout_ms = 900000

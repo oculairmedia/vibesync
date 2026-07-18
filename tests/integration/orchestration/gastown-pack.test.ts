@@ -31,7 +31,7 @@ describe('gastown pack', () => {
     expect(roleNames).toEqual(['coder', 'mayor', 'refinery', 'reviewer', 'tester']);
 
     const formulaNames = pack.formulas.map((f) => f.name).sort();
-    expect(formulaNames).toEqual(['code-review', 'onboard-feature', 'refinery-sweep']);
+    expect(formulaNames).toEqual(['code-review', 'dogfood-rig-smoke', 'onboard-feature', 'refinery-sweep']);
   });
 
   it('roles carry tools array + system_prompt_template references', () => {
