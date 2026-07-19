@@ -129,6 +129,11 @@ export interface AgentIdResolver {
   ): Promise<string | null>;
 }
 
+const DEFAULT_PARENT_AGENT_MODEL =
+  process.env['VIBESYNC_PARENT_AGENT_MODEL'] ??
+  process.env['VIBESYNC_ROLE_AGENT_MODEL'] ??
+  'lmstudio/gpt-5.6-sol';
+
 export interface LettaCodeSubagentProviderOptions {
   /**
    * Base URL of the local-backend shim (e.g. http://localhost:8291).
@@ -162,6 +167,8 @@ export interface LettaCodeSubagentProviderOptions {
    * null, the provider uses the inline-persona path unchanged.
    */
   readonly agentIdResolver?: AgentIdResolver;
+  /** Desired model for the parent PM/host agent that executes Agent tool calls. */
+  readonly parentAgentModel?: string;
   /**
    * Injectable fetch. Defaults to the global. Tests inject a fake
    * that returns a fixed SSE body.
@@ -272,6 +279,7 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
       turnTimeoutMs: opts.turnTimeoutMs ?? resolveDefaultTurnTimeout(),
       personaLoader: opts.personaLoader,
       agentIdResolver: opts.agentIdResolver ?? null,
+      parentAgentModel: opts.parentAgentModel ?? DEFAULT_PARENT_AGENT_MODEL,
       fetchImpl: opts.fetchImpl ?? fetch.bind(globalThis),
     };
   }
@@ -344,6 +352,7 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
     const state = this.sessions.get(h.id);
     if (!state) return;
     state.stopped = true;
+    await this.cancelActiveRunsForConversation(state);
     this.sessions.delete(h.id);
     // Subagent lifecycle is owned by the Letta Code runtime — no
     // DELETE on the parent agent. Conversations persist server-side
@@ -608,6 +617,14 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
               if (ev.kind === 'turn-done') turnDoneEmitted = true;
               state.events.push(ev);
             }
+            if (turnDoneEmitted) {
+              // Terminal provider event observed: finish promptly instead of
+              // waiting for the SSE body/server child process to close. Some
+              // shim paths leave the stream open after completion, which can
+              // strand daemon/dogfood runs with a live child process.
+              await reader.cancel().catch(() => undefined);
+              return;
+            }
             if (translated.taskId && !state.activeTaskId) {
               state.activeTaskId = translated.taskId;
             }
@@ -624,6 +641,10 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
           for (const ev of translated.events) {
             if (ev.kind === 'turn-done') turnDoneEmitted = true;
             state.events.push(ev);
+          }
+          if (turnDoneEmitted) {
+            await reader.cancel().catch(() => undefined);
+            return;
           }
         }
       }
@@ -655,6 +676,21 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
    * If missing, auto-create it via POST /v1/agents so dispatch can proceed.
    * Throws if creation fails.
    */
+  private async cancelActiveRunsForConversation(state: SessionState): Promise<void> {
+    if (!state.conversationId) return;
+    try {
+      await this.opts.fetchImpl(`${this.opts.shimBaseUrl}/v1/conversations/${encodeURIComponent(state.conversationId)}/cancel`, {
+        method: 'POST',
+        headers: this.headers({ json: true }),
+        body: JSON.stringify({ reason: 'provider_stop' }),
+      }).catch(() => undefined);
+    } catch {
+      // Best-effort cleanup only. stop() must stay idempotent and must not turn
+      // a completed step into a failure because the shim cancel endpoint raced
+      // with natural process exit.
+    }
+  }
+
   private async ensureParentAgentExists(parentAgentId: string): Promise<void> {
     // Probe: does the agent exist?
     const getUrl = `${this.opts.shimBaseUrl}/v1/agents/${encodeURIComponent(parentAgentId)}`;
@@ -663,8 +699,11 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
       headers: this.headers({ json: false }),
     });
     if (getRes.ok) {
-      // Agent exists — no-op.
-      await getRes.body?.cancel();
+      const json = (await getRes.json().catch(() => null)) as { model?: unknown } | null;
+      const currentModel = typeof json?.model === 'string' ? json.model : null;
+      if (currentModel && currentModel !== this.opts.parentAgentModel) {
+        await this.patchParentAgentModel(parentAgentId);
+      }
       return;
     }
     if (getRes.status !== 404) {
@@ -678,10 +717,8 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
     const postUrl = `${this.opts.shimBaseUrl}/v1/agents`;
     const postBody: Record<string, unknown> = {
       id: parentAgentId,
-      // Minimal PM agent: model and tags are optional; the shim will
-      // assign defaults. The system prompt can be empty — the PM's real
-      // config lives in the letta-code backend, not this auto-heal path.
       system: 'PM agent auto-created by LettaCodeSubagentProvider to repair phantom reference.',
+      model: this.opts.parentAgentModel,
       tags: ['vibesync', 'pm', 'auto-created'],
     };
     const postRes = await this.opts.fetchImpl(postUrl, {
@@ -702,6 +739,23 @@ export class LettaCodeSubagentProvider implements RuntimeProvider {
       );
     }
     // Success — agent now exists.
+  }
+
+  private async patchParentAgentModel(parentAgentId: string): Promise<void> {
+    const patchUrl = `${this.opts.shimBaseUrl}/v1/agents/${encodeURIComponent(parentAgentId)}`;
+    const patchRes = await this.opts.fetchImpl(patchUrl, {
+      method: 'PATCH',
+      headers: this.headers({ json: true }),
+      body: JSON.stringify({ model: this.opts.parentAgentModel }),
+    });
+    if (!patchRes.ok) {
+      const body = await safeReadText(patchRes);
+      throw new Error(
+        `LettaCodeSubagentProvider: failed to reconcile parent agent ${parentAgentId} model ` +
+          `to ${this.opts.parentAgentModel} (PATCH /v1/agents/${parentAgentId} returned ${patchRes.status}): ${body}`,
+      );
+    }
+    await patchRes.body?.cancel();
   }
 
   private headers(opts: { json?: boolean; sse?: boolean }): Record<string, string> {
