@@ -106,6 +106,10 @@ export interface RoleAgentSdkAdapter {
    * trust the cached row (today's behavior).
    */
   agentExists?(agentId: string): Promise<boolean>;
+  /** Optional model read for cached-agent reconciliation. */
+  getAgentModel?(agentId: string, lettaBaseUrl?: string): Promise<string | null>;
+  /** Optional model update for cached-agent reconciliation. */
+  updateAgentModel?(agentId: string, model: string, lettaBaseUrl?: string): Promise<void>;
 }
 
 export interface RoleAgentBootstrapperDeps {
@@ -129,6 +133,8 @@ export interface RoleAgentBootstrapperDeps {
    * one. Matches PM-vibesync's model on this backend.
    */
   readonly defaultModel?: string;
+  /** Per-role model policy. Known roles override defaultModel. */
+  readonly roleModels?: Readonly<Record<string, string>>;
   /**
    * Defaults to () => process.env.LETTA_LOCAL_BACKEND_DIR. Injectable
    * so tests can simulate boot-time env without process-global mutation.
@@ -152,7 +158,15 @@ export interface RoleAgentBootstrapperDeps {
 // so no reasoning/thinking block is constructed. Override with
 // VIBESYNC_ROLE_AGENT_MODEL if a deployment wants a different model.
 const DEFAULT_MODEL =
-  process.env['VIBESYNC_ROLE_AGENT_MODEL'] ?? 'lmstudio/sonnet-4-5';
+  process.env['VIBESYNC_ROLE_AGENT_MODEL'] ?? 'lmstudio/MiniMax-M3';
+
+const DEFAULT_ROLE_MODELS: Readonly<Record<string, string>> = {
+  mayor: process.env['VIBESYNC_ROLE_MODEL_MAYOR'] ?? 'lmstudio/MiniMax-M3',
+  reviewer: process.env['VIBESYNC_ROLE_MODEL_REVIEWER'] ?? 'lmstudio/gpt-5.6-sol',
+  coder: process.env['VIBESYNC_ROLE_MODEL_CODER'] ?? 'lmstudio/deepseek-v4-pro',
+  tester: process.env['VIBESYNC_ROLE_MODEL_TESTER'] ?? 'lmstudio/deepseek-v4-pro',
+  refinery: process.env['VIBESYNC_ROLE_MODEL_REFINERY'] ?? 'lmstudio/MiniMax-M3',
+};
 
 export class RoleAgentBootstrapper {
   private readonly repo: RoleAgentRepository;
@@ -160,6 +174,7 @@ export class RoleAgentBootstrapper {
   private readonly now: () => number;
   private readonly readFile: (path: string, encoding: BufferEncoding) => Promise<string>;
   private readonly defaultModel: string;
+  private readonly roleModels: Readonly<Record<string, string>>;
   private readonly envBackendDir: () => string | undefined;
 
   /**
@@ -178,6 +193,7 @@ export class RoleAgentBootstrapper {
     this.now = deps.now ?? (() => Date.now());
     this.readFile = deps.readFile ?? ((p, enc) => readFile(p, enc));
     this.defaultModel = deps.defaultModel ?? DEFAULT_MODEL;
+    this.roleModels = deps.roleModels ?? DEFAULT_ROLE_MODELS;
     this.envBackendDir =
       deps.envBackendDir ?? (() => process.env['LETTA_LOCAL_BACKEND_DIR']);
   }
@@ -215,6 +231,7 @@ export class RoleAgentBootstrapper {
           );
         }
       }
+      await this.reconcileCachedAgentModel(input, cached);
       return cached;
     }
 
@@ -232,6 +249,21 @@ export class RoleAgentBootstrapper {
 
   // ────────────────────────────────────────────────────────────────────
 
+  private async reconcileCachedAgentModel(
+    input: RoleAgentBootstrapInput,
+    cached: ProjectRoleAgentRecord,
+  ): Promise<void> {
+    if (!this.sdk.getAgentModel || !this.sdk.updateAgentModel) return;
+    const desiredModel = this.modelForRole(input.role);
+    const currentModel = await this.sdk.getAgentModel(cached.agentId, input.lettaBaseUrl);
+    if (currentModel === null || currentModel === desiredModel) return;
+    await this.sdk.updateAgentModel(cached.agentId, desiredModel, input.lettaBaseUrl);
+  }
+
+  private modelForRole(role: string): string {
+    return this.roleModels[role] ?? this.defaultModel;
+  }
+
   private async provision(input: RoleAgentBootstrapInput): Promise<ProjectRoleAgentRecord> {
     const personaContent = await this.readPersona(input.packDir, input.role);
 
@@ -245,7 +277,7 @@ export class RoleAgentBootstrapper {
       memfs: true,
       // Model + tags carry forward from the previous hand-rolled JSON
       // so identity and routing behavior are unchanged.
-      model: this.defaultModel,
+      model: this.modelForRole(input.role),
       tags: [
         'vibesync',
         `project:${input.projectIdentifier}`,
@@ -382,6 +414,38 @@ export function createHttpShimAdapter(
         );
       }
       return json.id;
+    },
+
+    async getAgentModel(agentId: string, lettaBaseUrl?: string): Promise<string | null> {
+      if (!lettaBaseUrl) return null;
+      const url = `${lettaBaseUrl.replace(/\/+$/, '')}/v1/agents/${encodeURIComponent(agentId)}`;
+      const res = await fetchImpl(url, { method: 'GET' });
+      if (res.status === 404) return null;
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(
+          `RoleAgentBootstrapper: shim GET /v1/agents/${agentId} failed (${res.status}): ${text}`,
+        );
+      }
+      const json = (await res.json()) as { model?: unknown };
+      return typeof json.model === 'string' && json.model.length > 0 ? json.model : null;
+    },
+
+    async updateAgentModel(agentId: string, model: string, lettaBaseUrl?: string): Promise<void> {
+      if (!lettaBaseUrl) return;
+      const url = `${lettaBaseUrl.replace(/\/+$/, '')}/v1/agents/${encodeURIComponent(agentId)}`;
+      const res = await fetchImpl(url, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(
+          `RoleAgentBootstrapper: shim PATCH /v1/agents/${agentId} model failed (${res.status}): ${text}`,
+        );
+      }
+      await res.body?.cancel();
     },
   };
 }

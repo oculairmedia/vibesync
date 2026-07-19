@@ -64,6 +64,7 @@ function makeFakeFetch(opts: {
   readonly agentExistsStatus?: number;
   /** Status code for POST /v1/agents (auto-create). Default 201. Only consulted if agentExistsStatus=404. */
   readonly agentCreateStatus?: number;
+  readonly agentModel?: string;
 }): { fetchImpl: typeof fetch; calls: FakeFetchCall[] } {
   const calls: FakeFetchCall[] = [];
   const fetchImpl = (async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
@@ -73,12 +74,18 @@ function makeFakeFetch(opts: {
     if (url.match(/\/v1\/agents\/[^/]+$/) && (!init || init.method === 'GET' || !init.method)) {
       const status = opts.agentExistsStatus ?? 200;
       if (status === 200) {
-        return new Response(JSON.stringify({ id: 'agent-pm', system: 'fake pm agent' }), {
+        return new Response(JSON.stringify({ id: 'agent-pm', system: 'fake pm agent', model: opts.agentModel ?? 'lmstudio/sonnet-4-5' }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
       }
       return new Response('not found', { status });
+    }
+    if (url.match(/\/v1\/agents\/[^/]+$/) && init?.method === 'PATCH') {
+      return new Response(JSON.stringify({ id: 'agent-pm', model: JSON.parse(init.body as string).model }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
     }
     // lcp-mj0h auto-heal: POST /v1/agents (auto-create)
     if (url.endsWith('/v1/agents') && init?.method === 'POST') {
@@ -171,6 +178,36 @@ describe('LettaCodeSubagentProvider', () => {
       await expect(
         provider.start({ role: 'reviewer' }),
       ).rejects.toThrow(/parentAgentId is required/);
+    });
+
+    it('reconciles a stale parent PM agent model before starting', async () => {
+      const { fetchImpl, calls } = makeFakeFetch({ agentModel: 'anthropic/claude-opus-4-7' });
+      const provider = new LettaCodeSubagentProvider({
+        shimBaseUrl: 'http://shim.test',
+        personaLoader: fakePersonaLoader(),
+        fetchImpl,
+        parentAgentModel: 'lmstudio/sonnet-4-5',
+      });
+
+      await provider.start({ role: 'reviewer', extra: { parentAgentId: 'agent-pm' } });
+
+      const patch = calls.find((call) => call.url.endsWith('/v1/agents/agent-pm') && call.init?.method === 'PATCH');
+      expect(patch).toBeTruthy();
+      expect(JSON.parse(patch?.init?.body as string)).toEqual({ model: 'lmstudio/sonnet-4-5' });
+    });
+
+    it('does not patch a parent PM agent already using the desired model', async () => {
+      const { fetchImpl, calls } = makeFakeFetch({ agentModel: 'lmstudio/sonnet-4-5' });
+      const provider = new LettaCodeSubagentProvider({
+        shimBaseUrl: 'http://shim.test',
+        personaLoader: fakePersonaLoader(),
+        fetchImpl,
+        parentAgentModel: 'lmstudio/sonnet-4-5',
+      });
+
+      await provider.start({ role: 'reviewer', extra: { parentAgentId: 'agent-pm' } });
+
+      expect(calls.some((call) => call.url.endsWith('/v1/agents/agent-pm') && call.init?.method === 'PATCH')).toBe(false);
     });
 
     it('returns a handle tagged with the provider kind and role', async () => {
@@ -931,5 +968,84 @@ describe('translateShimEvent', () => {
   it('returns an empty event list for unknown frame types', () => {
     const out = translateShimEvent({ type: 'mystery', data: { whatever: 1 } });
     expect(out.events).toEqual([]);
+  });
+});
+
+
+describe('LettaCodeSubagentProvider cleanup regressions', () => {
+  it('asks the shim to cancel and evict the conversation on stop()', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      calls.push({ url, init });
+      if (url.endsWith('/v1/agents/agent-parent')) {
+        return new Response(JSON.stringify({ id: 'agent-parent' }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.endsWith('/v1/conversations/conv-stop/cancel')) {
+        return new Response(JSON.stringify({ id: 'conv-stop', status: 'accepted', evicted: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    const provider = new LettaCodeSubagentProvider({
+      shimBaseUrl: 'http://shim.test',
+      personaLoader: { async load() { return 'persona'; } },
+      fetchImpl,
+    });
+    const handle = await provider.start({
+      role: 'mayor',
+      extra: { parentAgentId: 'agent-parent', conversationId: 'conv-stop', agentId: 'agent-parent' },
+    });
+    await provider.stop(handle);
+
+    const cancelCall = calls.find((call) => call.url.endsWith('/v1/conversations/conv-stop/cancel'));
+    expect(cancelCall).toBeTruthy();
+    expect(cancelCall?.init?.method).toBe('POST');
+  });
+
+  it('cancels the SSE reader and completes observe() as soon as turn-done arrives', async () => {
+    let streamCancelled = false;
+    const sse = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"type":"stop","stop_reason":"stop"}\n\n'));
+      },
+      cancel() {
+        streamCancelled = true;
+      },
+    });
+
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith('/v1/agents/agent-parent')) {
+        return new Response(JSON.stringify({ id: 'agent-parent' }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.endsWith('/v1/conversations')) {
+        return new Response(JSON.stringify({ id: 'conv-test' }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.endsWith('/v1/conversations/conv-test/messages')) {
+        return new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    };
+
+    const provider = new LettaCodeSubagentProvider({
+      shimBaseUrl: 'http://shim.test',
+      personaLoader: { async load() { return 'persona'; } },
+      fetchImpl,
+      turnTimeoutMs: 10_000,
+    });
+    const handle = await provider.start({
+      role: 'mayor',
+      extra: { parentAgentId: 'agent-parent', conversationId: 'conv-test' },
+    });
+    await provider.prompt(handle, [{ type: 'text', text: 'smoke' }]);
+
+    const events: SessionEvent[] = [];
+    for await (const event of provider.observe(handle)) {
+      events.push(event);
+    }
+
+    expect(events.some((event) => event.kind === 'turn-done')).toBe(true);
+    expect(streamCancelled).toBe(true);
+    await provider.stop(handle);
   });
 });

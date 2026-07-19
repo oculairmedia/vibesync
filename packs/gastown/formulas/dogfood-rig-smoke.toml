@@ -1,0 +1,9 @@
+[formula.dogfood-rig-smoke]
+description = "One-step smoke test for the SchedulerDaemon dogfood harness. A single mayor step verifies daemon plumbing and reports status; no code edits, no PR expected."
+when_to_use = "when proving the scheduler daemon can schedule and dispatch exactly one harmless dogfood bead without running the full multi-step onboard-feature pipeline."
+
+[[formula.dogfood-rig-smoke.steps]]
+role = "mayor"
+prompt_template = "prompts/mayor-system.md"
+wait_for = "completion"
+turn_timeout_ms = 900000
