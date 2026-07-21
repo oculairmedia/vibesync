@@ -848,8 +848,8 @@ export function registerProjectRoutes(app: App, deps: RouteDeps): void {
           page: { next_cursor: null, has_more: false, total_known: summaries.length },
         });
       } catch (error) {
-        logger.error({ err: error }, 'Failed to list projects');
-        sendError(res, 500, 'Failed to list projects', { error: error instanceof Error ? error.message : 'Projects unavailable' });
+        logger.error({ err: error }, 'Failed to fetch projects');
+        sendError(res, 500, 'Failed to fetch projects', { error: error instanceof Error ? error.message : 'Projects unavailable' });
       }
     },
   });
