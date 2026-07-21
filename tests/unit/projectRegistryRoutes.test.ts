@@ -466,6 +466,21 @@ describe('project registry API routes', () => {
       expect(mockDb.getProjectIssues).not.toHaveBeenCalled();
     });
 
+    it('should honor limit for bounded capability probes', async () => {
+      const res = await makeRequest(port, 'GET', '/api/projects?limit=1');
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body.total).toBe(2);
+      expect(res.body.projects).toHaveLength(1);
+      expect(res.body.page).toEqual(
+        expect.objectContaining({
+          has_more: true,
+          total_known: 2,
+          next_cursor: expect.any(String),
+        }),
+      );
+    });
+
     it('should preserve project metadata when using summary fallback', async () => {
       const originalGetAllProjects = mockDb.getAllProjects;
       mockDb.getAllProjects = undefined;
