@@ -466,6 +466,59 @@ describe('project registry API routes', () => {
       expect(mockDb.getProjectIssues).not.toHaveBeenCalled();
     });
 
+    it('should honor limit for bounded capability probes', async () => {
+      const res = await makeRequest(port, 'GET', '/api/projects?limit=1');
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body.total).toBe(2);
+      expect(res.body.projects).toHaveLength(1);
+      expect(res.body.page).toEqual(
+        expect.objectContaining({
+          has_more: true,
+          total_known: 2,
+          next_cursor: expect.any(String),
+        }),
+      );
+    });
+
+    it('should advance to the next page using the emitted cursor', async () => {
+      const first = await makeRequest(port, 'GET', '/api/projects?limit=1');
+      const second = await makeRequest(
+        port,
+        'GET',
+        `/api/projects?limit=1&cursor=${encodeURIComponent(first.body.page.next_cursor)}`,
+      );
+
+      expect(first.body.projects[0].id).toBe('HVSYN');
+      expect(second.body.projects[0].id).toBe('PROJ-A');
+      expect(second.body.page.has_more).toBe(false);
+    });
+
+    it('should apply project filters before pagination', async () => {
+      const originalGetAllProjects = mockDb.getAllProjects;
+      mockDb.getAllProjects = vi.fn(() => [
+        ...originalGetAllProjects(),
+        {
+          identifier: 'ARCHIVED-RUST',
+          name: 'Archived Rust Project',
+          status: 'archived',
+          tech_stack: 'rust',
+          mcp_enabled: 0,
+          issue_count: 0,
+        },
+      ]);
+
+      try {
+        const res = await makeRequest(port, 'GET', '/api/projects?status=archived&tech_stack=rust&mcp_enabled=false');
+
+        expect(res.statusCode).toBe(200);
+        expect(res.body.total).toBe(1);
+        expect(res.body.projects.map(({ id }) => id)).toEqual(['ARCHIVED-RUST']);
+      } finally {
+        mockDb.getAllProjects = originalGetAllProjects;
+      }
+    });
+
     it('should preserve project metadata when using summary fallback', async () => {
       const originalGetAllProjects = mockDb.getAllProjects;
       mockDb.getAllProjects = undefined;

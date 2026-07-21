@@ -560,7 +560,11 @@ function paginate<T extends KeyedItem>(items: T[], cursor?: string, limit = DEFA
   const effectiveLimit = Math.min(limit, MAX_PAGE_LIMIT);
   let startIdx = 0;
   if (cursor) {
-    const idx = items.findIndex((item) => item.id === cursor || item.identifier === cursor);
+    const decodedCursor = Buffer.from(cursor, 'base64').toString('utf8');
+    const idx = items.findIndex((item) => {
+      const key = String(item.id ?? item.identifier ?? '');
+      return key === decodedCursor || key === cursor;
+    });
     if (idx >= 0) startIdx = idx + 1;
   }
   const slice = items.slice(startIdx, startIdx + effectiveLimit);
@@ -814,13 +818,48 @@ export function registerProjectRoutes(app: App, deps: RouteDeps): void {
 
   app.registerRoute({
     match: ({ pathname, method }) => pathname === '/api/projects' && method === 'GET',
-    handle: async ({ res }) => {
+    handle: async ({ res, url }) => {
       if (!db) { sendError(res, 503, 'Database not available'); return; }
       try {
-        const projects = db.getAllProjects?.() ?? db.getProjectSummary?.() ?? [];
-        const summaries = projects.map((project) => serializeProjectSummary(project));
-        sendJson(res, 200, { total: summaries.length, projects: summaries, timestamp: new Date().toISOString() });
-      } catch (error) { logger.error({ err: error }, 'Failed to get projects'); sendError(res, 500, 'Failed to fetch projects', { error: error instanceof Error ? error.message : 'Projects unavailable' }); }
+        const filters: { status?: string; tech_stack?: string; mcp_enabled?: boolean } = {};
+        const status = url.searchParams.get('status');
+        const techStack = url.searchParams.get('tech_stack');
+        const mcpEnabled = url.searchParams.get('mcp_enabled');
+        if (status && ALLOWED_PROJECT_STATUSES.has(status)) filters.status = status;
+        if (techStack) filters.tech_stack = techStack;
+        if (mcpEnabled !== null) filters.mcp_enabled = mcpEnabled === 'true';
+
+        const rows = db.getAllProjects?.() ?? db.getProjectSummary?.() ?? [];
+        const filteredRows = rows.filter((project) =>
+          (filters.status === undefined || project.status === filters.status) &&
+          (filters.tech_stack === undefined || project.tech_stack === filters.tech_stack) &&
+          (filters.mcp_enabled === undefined || Boolean(project.mcp_enabled) === filters.mcp_enabled)
+        );
+        const summaries = filteredRows.map((project) => serializeProjectSummary(project));
+        const cursor = url.searchParams.get('cursor');
+        const limitParam = url.searchParams.get('limit');
+        const timestamp = new Date().toISOString();
+        if (cursor !== null || limitParam !== null) {
+          const limit = Math.min(Math.max(toNumber(limitParam, DEFAULT_PAGE_LIMIT), 1), MAX_PAGE_LIMIT);
+          const page = paginate(summaries as Array<Record<string, unknown> & { id: string }>, cursor || undefined, limit);
+          sendJson(res, 200, {
+            total: page.total_known,
+            projects: page.items,
+            timestamp,
+            page: { next_cursor: page.next_cursor, has_more: page.has_more, total_known: page.total_known },
+          });
+          return;
+        }
+        sendJson(res, 200, {
+          total: summaries.length,
+          projects: summaries,
+          timestamp,
+          page: { next_cursor: null, has_more: false, total_known: summaries.length },
+        });
+      } catch (error) {
+        logger.error({ err: error }, 'Failed to fetch projects');
+        sendError(res, 500, 'Failed to fetch projects', { error: error instanceof Error ? error.message : 'Projects unavailable' });
+      }
     },
   });
 
