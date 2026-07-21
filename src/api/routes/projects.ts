@@ -560,7 +560,11 @@ function paginate<T extends KeyedItem>(items: T[], cursor?: string, limit = DEFA
   const effectiveLimit = Math.min(limit, MAX_PAGE_LIMIT);
   let startIdx = 0;
   if (cursor) {
-    const idx = items.findIndex((item) => item.id === cursor || item.identifier === cursor);
+    const decodedCursor = Buffer.from(cursor, 'base64').toString('utf8');
+    const idx = items.findIndex((item) => {
+      const key = String(item.id ?? item.identifier ?? '');
+      return key === decodedCursor || key === cursor;
+    });
     if (idx >= 0) startIdx = idx + 1;
   }
   const slice = items.slice(startIdx, startIdx + effectiveLimit);
@@ -825,8 +829,13 @@ export function registerProjectRoutes(app: App, deps: RouteDeps): void {
         if (techStack) filters.tech_stack = techStack;
         if (mcpEnabled !== null) filters.mcp_enabled = mcpEnabled === 'true';
 
-        const rows = db.getAllProjects?.(filters) ?? db.getProjectSummary?.() ?? [];
-        const summaries = rows.map((project) => serializeProjectSummary(project));
+        const rows = db.getAllProjects?.() ?? db.getProjectSummary?.() ?? [];
+        const filteredRows = rows.filter((project) =>
+          (filters.status === undefined || project.status === filters.status) &&
+          (filters.tech_stack === undefined || project.tech_stack === filters.tech_stack) &&
+          (filters.mcp_enabled === undefined || Boolean(project.mcp_enabled) === filters.mcp_enabled)
+        );
+        const summaries = filteredRows.map((project) => serializeProjectSummary(project));
         const cursor = url.searchParams.get('cursor');
         const limitParam = url.searchParams.get('limit');
         const timestamp = new Date().toISOString();
