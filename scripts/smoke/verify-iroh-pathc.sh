@@ -87,8 +87,12 @@ else
   # kv port is acceptable — the wrapper may also bind the appserver WS port
   # (4501), an extra iroh discovery port, etc. We want AT LEAST ONE of them
   # to match the kv port.
-  LISTEN_PORTS=$(ss -lunp 2>/dev/null | awk -v pid="pid=$WRAPPER_PID" '$0 ~ pid {print $5}' \
-    | sed -E 's/.*:([0-9]+).*/\1/' | sort -u)
+  # ss output format: STATE RECV-Q SEND-Q LOCAL PEER USERS — but LOCAL can have
+  # multiple forms (0.0.0.0:38723, [::]:59136) and whitespace handling is messy.
+  # Use -H (no header) plus an extract that pulls the FIRST colon-bearing chunk.
+  LISTEN_PORTS=$(ss -lunpH 2>/dev/null | awk -v pid="pid=$WRAPPER_PID" '$0 ~ pid' \
+    | sed -E 's/.*(([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]+|\[[0-9a-fA-F:]+\]:[0-9]+).*/\1/' \
+    | sed -E 's/.*://' | sort -u)
   # KV row wire format: agent-X=<nodeid>@host:port,host:port,... — the FIRST port
   # after the node id is the wrapper's own listener. extract_kv_port handles the
   # edge case where host:port contains IPv6 brackets.
