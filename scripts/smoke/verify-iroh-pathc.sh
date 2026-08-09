@@ -73,30 +73,41 @@ GRADLE_BOOT_TIMEOUT="${GRADLE_BOOT_TIMEOUT:-180}"
 SEND_TIMEOUT="${SEND_TIMEOUT:-30}"
 
 # ---- 1. kv port matches live listener port ----
+# The kv is the source of truth: every bare row points at the same host endpoint
+# port (the wrapper's UDP listener). The live listener port must match that
+# value. The wrapper changes port on every rebind (49357 -> 60008 -> 38723
+# observed in this codebase), so the script does NOT hardcode it.
 echo
 echo "1. kv port matches live listener port"
-WRAPPER_PID=$(pgrep -f app-server-serve-iroh | head -1)
+WRAPPER_PID=$(ss -lunp 2>/dev/null | awk '/app-server-serve-iroh|java/ && /pid=/ {match($0, /pid=([0-9]+)/, m); if (m[1]) {print m[1]; exit}}')
 if [ -z "$WRAPPER_PID" ]; then
-  note_fail "wrapper process not running (expected class letta-mobile.wrapper.Main app-server-serve-iroh)"
+  note_fail "could not find wrapper process via ss (no java pid owning a UDP listener)"
 else
-  LISTEN_PORT=$(ss -lunp 2>/dev/null | awk -v pid="pid=$WRAPPER_PID" '$0 ~ pid {print $5; exit}' | awk -F: '{print $NF}' | head -1)
-  if [ -z "$LISTEN_PORT" ]; then
-    note_fail "could not derive live listener port from ss for wrapper pid $WRAPPER_PID"
-  else
-    PREFIXED_PORT=$(awk -F: '/^letta_agent-/ {gsub(/.*@/,""); print $2; exit}' "$KV" 2>/dev/null)
-    BARE_PORT=$(awk -F: '/^agent-/ {gsub(/.*@/,""); print $2; exit}' "$KV" 2>/dev/null)
-    ALL_PORTS_OK=1
-    for p in "$PREFIXED_PORT" "$BARE_PORT"; do
-      if [ -n "$p" ] && [ "$p" != "$LISTEN_PORT" ]; then
-        ALL_PORTS_OK=0
-        break
-      fi
-    done
-    if [ "$ALL_PORTS_OK" = "1" ]; then
-      note_pass "all rows point at live listener ($LISTEN_PORT)"
+  # Collect every UDP port the wrapper actually owns. Any of those being the
+  # kv port is acceptable — the wrapper may also bind the appserver WS port
+  # (4501), an extra iroh discovery port, etc. We want AT LEAST ONE of them
+  # to match the kv port.
+  LISTEN_PORTS=$(ss -lunp 2>/dev/null | awk -v pid="pid=$WRAPPER_PID" '$0 ~ pid {print $5}' \
+    | sed -E 's/.*:([0-9]+).*/\1/' | sort -u)
+  # KV row wire format: agent-X=<nodeid>@host:port,host:port,... — the FIRST port
+  # after the node id is the wrapper's own listener. extract_kv_port handles the
+  # edge case where host:port contains IPv6 brackets.
+  KV_PORT=$(awk -F= '/^agent-/ {print $2; exit}' "$KV" 2>/dev/null \
+    | sed -E 's/^[0-9a-f]+@//; s/,.*//; s/.*://' )
+  PREFIXED_PORT=$(awk -F= '/^letta_agent-/ {print $2; exit}' "$KV" 2>/dev/null \
+    | sed -E 's/^[0-9a-f]+@//; s/,.*//; s/.*://' )
+
+  if [ -z "$KV_PORT" ]; then
+    note_fail "no bare row in $KV to use as the canonical port"
+  elif echo "$LISTEN_PORTS" | grep -qx "$KV_PORT"; then
+    # Confirm no prefixed row survives with a different port (the u6hwa case).
+    if [ -n "$PREFIXED_PORT" ] && [ "$PREFIXED_PORT" != "$KV_PORT" ]; then
+      note_fail "live listener matches kv ($KV_PORT) but a prefixed row survives at $PREFIXED_PORT"
     else
-      note_fail "stale row(s) detected: live=$LISTEN_PORT prefixed=$PREFIXED_PORT bare=$BARE_PORT"
+      note_pass "kv port ($KV_PORT) matches a live wrapper listener"
     fi
+  else
+    note_fail "kv port $KV_PORT is NOT in live wrapper listeners: $(echo $LISTEN_PORTS | tr '\n' ' ')"
   fi
 fi
 
