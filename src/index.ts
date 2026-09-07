@@ -14,7 +14,7 @@ import { logger } from './logger';
 import { createBookStackWatcher } from './BookStackWatcher';
 import { ProjectRegistry, type RigEvent } from './ProjectRegistry';
 import { broadcastSyncEvent } from './ApiServer';
-import { bootOrchestrationPlane, type OrchestrationHandle } from './orchestration/boot.js';
+import { bootOrchestrationPlane, releaseDoltAfterFailedBoot, type OrchestrationHandle } from './orchestration/boot.js';
 import { DoltClient, defaultDoltBootDeps } from './orchestration/store/index.js';
 import { sweepAll as sweepBeadsPorts, type SweeperProject } from './beads/PortSweeper.js';
 import { startPeriodicPortSweep } from './beads/startPeriodicPortSweep.js';
@@ -456,11 +456,11 @@ async function main(): Promise<void> {
       } catch (orchestrationError) {
         // connect cleans up its own failures. Once returned, this attempt owns
         // the pool until boot succeeds; release it before retrying failed boot.
-        if (dolt && !orchestration) {
-          await dolt.close().catch((cleanupError: unknown) => {
+        await releaseDoltAfterFailedBoot(dolt, orchestration !== undefined, {
+          onCleanupError(cleanupError) {
             logger.warn({ err: cleanupError, attempt }, 'Failed to close Dolt pool after boot failure');
-          });
-        }
+          },
+        });
         const lastAttempt = attempt >= maxBootAttempts;
         logger.warn(
           { err: orchestrationError, attempt, maxBootAttempts },

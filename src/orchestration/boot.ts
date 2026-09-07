@@ -113,6 +113,30 @@ export interface BootOrchestrationProviderRoutingOptions {
   readonly storageDirsByProject?: Readonly<Record<string, string>>;
 }
 
+/**
+ * Release a Dolt pool that a boot attempt opened but did not hand off to a
+ * live orchestration plane. `DoltClient.connect` cleans up its own failures,
+ * so once it returns the retrying caller in `main()` owns the pool until boot
+ * succeeds: on boot failure the pool must be closed before the next connect
+ * attempt, otherwise each retry leaks a pool. Cleanup errors are swallowed
+ * (reported via `onCleanupError`) so they never mask the original boot error.
+ *
+ * Extracted as a pure, awaitable helper so the retry-ownership contract can be
+ * unit-tested without standing up `main()`. See CodeRabbit review on #44.
+ */
+export async function releaseDoltAfterFailedBoot(
+  dolt: { close(): Promise<void> } | undefined,
+  orchestrationInitialized: boolean,
+  opts: { onCleanupError?: (err: unknown) => void } = {},
+): Promise<void> {
+  if (!dolt || orchestrationInitialized) return;
+  try {
+    await dolt.close();
+  } catch (cleanupError) {
+    opts.onCleanupError?.(cleanupError);
+  }
+}
+
 export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions): Promise<OrchestrationHandle> {
   // Opt-in silence of @letta-ai/letta-client "Failed to validate." spam
   // (vibesync-vkp). No-op unless LETTA_SILENCE_VALIDATION_SPAM is set.

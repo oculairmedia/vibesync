@@ -80,8 +80,11 @@ export async function provisionIsolatedBeads(shape: SchemaShape = 'fresh') {
       },
     };
   } catch (error) {
-    await client?.close();
-    try { bd('dolt', 'stop'); } catch { /* Init may not have reached server startup. */ }
+    try {
+      await client?.close();
+    } finally {
+      try { bd('dolt', 'stop'); } catch { /* Init may not have reached server startup. */ }
+    }
     throw error;
   }
 }
