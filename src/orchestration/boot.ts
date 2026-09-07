@@ -118,6 +118,12 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   // (vibesync-vkp). No-op unless LETTA_SILENCE_VALIDATION_SPAM is set.
   installLettaClientValidationFilter();
 
+  // Also protect callers using the synchronous constructor. The caller owns
+  // cleanup on boot failure; connect has already verified production clients.
+  if (typeof opts.dolt.verifyFingerprint === 'function') {
+    await opts.dolt.verifyFingerprint();
+  }
+
   // Verify the bd schema matches the version we vendored a fingerprint
   // for before any hot-path INSERT runs. See vibesync-bll.
   if (typeof (opts.dolt as { verifySchema?: () => Promise<void> }).verifySchema === 'function') {

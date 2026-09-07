@@ -9,8 +9,8 @@
  *
  * Connection discovery:
  *   - port: read from .beads/dolt-server.port (managed by bd init)
- *   - database: the configured bd prefix with dashes → underscores
- *     (today: "huly_vibe_sync" pending the deprecated prefix rename)
+ *   - linked worktrees: use the primary repository's .beads, following redirects
+ *   - database: authoritative dolt_database from .beads/metadata.json
  *   - user/auth: dolt-sql-server runs with no password by default for
  *     local connections; bd's credential key file is for remote sync,
  *     not the local server
@@ -35,17 +35,27 @@
  * See vibesync-w5z.
  */
 
-import { readFileSync } from 'node:fs';
-import { execFile } from 'node:child_process';
-import { join } from 'node:path';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { execFile, execFileSync } from 'node:child_process';
+import { basename, dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import mysql from 'mysql2/promise';
+import { v5 as uuidv5 } from 'uuid';
+
+// bd 1.2.2 (7fcf4e1634bf), internal/storage/depid: type is not edge identity.
+const dependencyId = (issueId: string, target: string): string =>
+  uuidv5(`${issueId}\x1f${target}`, 'bdd74eb9-a20a-554a-985b-54b8f3e64d8b');
 import type { Pool } from 'mysql2/promise';
-import { computeRepoId, defaultRepoFingerprintDeps, type RepoFingerprintDeps } from '../../beads/repoFingerprint.js';
+import {
+  computeRepoId,
+  defaultRepoFingerprintDeps,
+  type RepoFingerprintDeps,
+} from '../../beads/repoFingerprint.js';
 import {
   BD_FINGERPRINT_BD_VERSION,
   BD_FINGERPRINT_TABLES,
   EXPECTED_BD_SCHEMA_FINGERPRINT,
+  VERIFIED_BD_SCHEMA_FINGERPRINTS,
   WrongBdSchemaError,
   computeSchemaFingerprint,
   perTableHashes,
@@ -61,13 +71,15 @@ export interface DoltClientConfig {
   readonly beadsRoot?: string;
   /** Override port (otherwise read from .beads/dolt-server.port). */
   readonly port?: number;
-  /** Database name (defaults to bd prefix normalized: dashes → underscores). */
+  /** Database name override (otherwise metadata.json's dolt_database; never inferred). */
   readonly database?: string;
   /** Host (defaults to 127.0.0.1). */
   readonly host?: string;
   /** Connection-pool size. */
   readonly poolSize?: number;
-  /** Override the expected repo_id (otherwise computed from git remote of beadsRoot). */
+  /** Override expected repo_id; otherwise use the canonical Beads root's remote/path.
+   * With explicit port and database, a nonempty identity bypasses filesystem discovery.
+   */
   readonly expectedRepoId?: string;
   /** Injectable deps for tests; defaults read real git/fs. */
   readonly repoFingerprintDeps?: RepoFingerprintDeps;
@@ -89,7 +101,12 @@ export class WrongDoltDatabaseError extends Error {
   readonly actualRepoId: string;
   readonly database: string;
   readonly port: number;
-  constructor(args: { expectedRepoId: string; actualRepoId: string; database: string; port: number }) {
+  constructor(args: {
+    expectedRepoId: string;
+    actualRepoId: string;
+    database: string;
+    port: number;
+  }) {
     super(
       `WrongDoltDatabase: connected to ${args.database} on port ${args.port} ` +
         `with repo_id=${args.actualRepoId.slice(0, 8)}, expected ${args.expectedRepoId.slice(0, 8)} — ` +
@@ -103,12 +120,93 @@ export class WrongDoltDatabaseError extends Error {
   }
 }
 
-function resolvedBeadsRoot(cfg: DoltClientConfig): string {
-  return cfg.beadsRoot ?? process.cwd();
+interface BeadsLocation {
+  root: string;
+  beadsDir: string;
 }
 
-function portFilePath(cfg: DoltClientConfig): string {
-  return join(resolvedBeadsRoot(cfg), '.beads', 'dolt-server.port');
+const locationKey = Symbol('resolvedBeadsLocation');
+type ResolvedConfig = DoltClientConfig & { [locationKey]?: BeadsLocation };
+
+function readOptionalFile(path: string): string | null {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+function resolveBeadsLocation(cfg: ResolvedConfig): BeadsLocation {
+  if (cfg[locationKey]) return cfg[locationKey];
+  let root = resolve(cfg.beadsRoot ?? process.cwd());
+  // Only inspect this root's Git marker: a standalone project nested in
+  // another checkout must not silently inherit that checkout's Beads store.
+  const gitMarker = join(root, '.git');
+  if (existsSync(gitMarker)) {
+    try {
+      const [gitDir, commonDir] = execFileSync(
+        'git',
+        ['-C', root, 'rev-parse', '--git-dir', '--git-common-dir'],
+        {
+          encoding: 'utf8',
+          timeout: 5_000,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      )
+        .trim()
+        .split('\n');
+      if (!gitDir || !commonDir) throw new Error('missing Git directory information');
+      const commonPath = realpathSync(resolve(root, commonDir));
+      if (realpathSync(resolve(root, gitDir)) !== commonPath) {
+        if (basename(commonPath) !== '.git') {
+          throw new Error(`unsupported linked Git common directory ${commonPath}`);
+        }
+        root = dirname(commonPath);
+      }
+    } catch (err) {
+      throw new Error(`DoltClient: cannot resolve canonical Beads repository for ${root}`, {
+        cause: err,
+      });
+    }
+  }
+
+  let beadsDir = join(root, '.beads');
+  const seen = new Set<string>();
+  for (let hops = 0; hops < 32; hops += 1) {
+    if (existsSync(beadsDir)) beadsDir = realpathSync(beadsDir);
+    if (basename(beadsDir) !== '.beads') {
+      throw new Error(`DoltClient: unsupported Beads redirect layout: ${beadsDir}; expected a .beads directory`);
+    }
+    if (seen.has(beadsDir)) throw new Error(`DoltClient: Beads redirect cycle at ${beadsDir}`);
+    seen.add(beadsDir);
+    const redirect = readOptionalFile(join(beadsDir, 'redirect'));
+    if (redirect === null) return { root: dirname(beadsDir), beadsDir };
+    const target = redirect.trim();
+    if (!target || /[\r\n\0]/.test(target)) {
+      throw new Error(`DoltClient: malformed Beads redirect in ${beadsDir}`);
+    }
+    beadsDir = resolve(beadsDir, target);
+    if (!existsSync(beadsDir) || !statSync(beadsDir).isDirectory()) {
+      throw new Error(`DoltClient: Beads redirect target is not a directory: ${beadsDir}`);
+    }
+  }
+  throw new Error('DoltClient: too many Beads redirects');
+}
+
+function snapshotConfig(cfg: DoltClientConfig): ResolvedConfig {
+  // Only a fully explicit endpoint AND identity can bypass local resolution.
+  // Otherwise explicit endpoints use the same canonical identity as discovery.
+  if (cfg.port !== undefined && cfg.database !== undefined && cfg.expectedRepoId) return cfg;
+  return { ...cfg, [locationKey]: resolveBeadsLocation(cfg) };
+}
+
+function resolvedBeadsRoot(cfg: ResolvedConfig): string {
+  return cfg[locationKey]?.root ?? cfg.beadsRoot ?? process.cwd();
+}
+
+function portFilePath(cfg: ResolvedConfig): string {
+  return join(resolveBeadsLocation(cfg).beadsDir, 'dolt-server.port');
 }
 
 function parsePort(raw: string, portPath: string): number {
@@ -201,6 +299,7 @@ export async function resolveDoltPort(
 ): Promise<number> {
   if (cfg.port !== undefined) return cfg.port;
 
+  cfg = snapshotConfig(cfg);
   const portPath = portFilePath(cfg);
   const beadsRoot = resolvedBeadsRoot(cfg);
   const timeoutMs = options.timeoutMs ?? 30_000;
@@ -217,7 +316,11 @@ export async function resolveDoltPort(
   const first = deps.readPortFile(portPath);
   if (first !== null) return parsePort(first, portPath);
 
-  deps.log?.('warn', { portPath }, 'DoltClient: port file missing at boot — waiting for Dolt to come up');
+  deps.log?.(
+    'warn',
+    { portPath },
+    'DoltClient: port file missing at boot — waiting for Dolt to come up',
+  );
 
   while (elapsedMs < timeoutMs) {
     // On the first confirmed miss, if we are allowed to manage the Dolt
@@ -227,11 +330,19 @@ export async function resolveDoltPort(
     // freshly-started server writes.
     if (!attemptedStart && startServerIfMissing) {
       attemptedStart = true;
-      deps.log?.('info', { beadsRoot }, 'DoltClient: attempting to start Dolt server via `bd dolt start`');
+      deps.log?.(
+        'info',
+        { beadsRoot },
+        'DoltClient: attempting to start Dolt server via `bd dolt start`',
+      );
       try {
         await deps.startDoltServer(beadsRoot);
       } catch (err) {
-        deps.log?.('warn', { err }, 'DoltClient: `bd dolt start` failed — will keep polling for the port file');
+        deps.log?.(
+          'warn',
+          { err },
+          'DoltClient: `bd dolt start` failed — will keep polling for the port file',
+        );
       }
       // Re-check immediately after the start attempt before sleeping.
       const afterStart = deps.readPortFile(portPath);
@@ -258,27 +369,34 @@ export async function resolveDoltPort(
   );
 }
 
-function readDatabase(cfg: DoltClientConfig): string {
-  if (cfg.database) return cfg.database;
-  // bd creates a Dolt database directory at `.beads/dolt/<name>/` whose
-  // name is the bd prefix with dashes → underscores. That's the
-  // canonical source. config.yaml's `issue-prefix:` is commented-out by
-  // default at bd init, so we walk the directory.
-  const doltRoot = join(resolvedBeadsRoot(cfg), '.beads', 'dolt');
-  try {
-    // The dolt root contains a config.yaml file + exactly one database
-    // subdirectory whose name is what we want.
-    const { readdirSync } = require('node:fs') as typeof import('node:fs');
-    const entries = readdirSync(doltRoot, { withFileTypes: true });
-    const dbDir = entries.find((e) => e.isDirectory() && !e.name.startsWith('.'));
-    if (dbDir) return dbDir.name;
-  } catch {
-    // ignore — fall through to inferred name
+function validateDatabase(value: unknown, source: string): string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/.test(value)) {
+    throw new Error(
+      `DoltClient: invalid dolt_database in ${source}; expected 1-64 letters, digits, underscores or hyphens`,
+    );
   }
-  // Inferred fallback: last segment of beadsRoot, dashes → underscores
-  const segments = resolvedBeadsRoot(cfg).split('/').filter(Boolean);
-  const name = segments[segments.length - 1] ?? 'beads';
-  return name.replace(/-/g, '_');
+  return value;
+}
+
+function readDatabase(cfg: DoltClientConfig): string {
+  if (cfg.database !== undefined) return validateDatabase(cfg.database, 'database override');
+  const metadataPath = join(resolveBeadsLocation(cfg).beadsDir, 'metadata.json');
+  const raw = readOptionalFile(metadataPath);
+  if (raw === null) {
+    throw new Error(
+      `DoltClient: no reliable database name: missing ${metadataPath}; set dolt_database or an explicit database override`,
+    );
+  }
+  let metadata: unknown;
+  try {
+    metadata = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`DoltClient: malformed metadata in ${metadataPath}`, { cause: err });
+  }
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    throw new Error(`DoltClient: malformed metadata in ${metadataPath}: expected an object`);
+  }
+  return validateDatabase((metadata as Record<string, unknown>).dolt_database, metadataPath);
 }
 
 /**
@@ -363,13 +481,25 @@ export class DoltClient {
     bootDeps: DoltBootDeps = defaultDoltBootDeps,
     options: ResolveDoltPortOptions = {},
   ): Promise<DoltClient> {
+    cfg = snapshotConfig(cfg);
+    // Fail closed before polling or starting a server when metadata is invalid.
+    const database = readDatabase(cfg);
     const port = await resolveDoltPort(cfg, bootDeps, options);
-    return new DoltClient({ ...cfg, port });
+    const client = new DoltClient({ ...cfg, port, database });
+    try {
+      await client.verifyFingerprint();
+      return client;
+    } catch (err) {
+      // connect owns this pool until it returns; preserve the verification error.
+      await client.close().catch(() => {});
+      throw err;
+    }
   }
 
   constructor(cfg: DoltClientConfig = {}) {
-    const port = readPort(cfg);
+    cfg = snapshotConfig(cfg);
     const database = readDatabase(cfg);
+    const port = readPort(cfg);
     this.database = database;
     this.port = port;
     this.expectedRepoId =
@@ -413,10 +543,9 @@ export class DoltClient {
       this.fingerprintVerified = true;
       return;
     }
-    const [rows] = await this.pool.execute(
-      'SELECT value FROM metadata WHERE `key` = ? LIMIT 1',
-      ['repo_id'],
-    );
+    const [rows] = await this.pool.execute('SELECT value FROM metadata WHERE `key` = ? LIMIT 1', [
+      'repo_id',
+    ]);
     const actualRepoId = (rows as { value?: string }[])[0]?.value ?? '';
     assertFingerprintMatch({
       expectedRepoId: this.expectedRepoId,
@@ -443,7 +572,9 @@ export class DoltClient {
     if (this.schemaVerified) return;
     const rows: TableSchemaRow[] = [];
     for (const table of BD_FINGERPRINT_TABLES) {
-      const [result] = await this.pool.query<mysql.RowDataPacket[]>(`SHOW CREATE TABLE \`${table}\``);
+      const [result] = await this.pool.query<mysql.RowDataPacket[]>(
+        `SHOW CREATE TABLE \`${table}\``,
+      );
       const createTableSql = String(result[0]?.['Create Table'] ?? '');
       if (!createTableSql) {
         throw new WrongBdSchemaError({
@@ -456,7 +587,7 @@ export class DoltClient {
       rows.push({ table, createTableSql });
     }
     const actual = computeSchemaFingerprint(rows);
-    if (actual !== EXPECTED_BD_SCHEMA_FINGERPRINT) {
+    if (!VERIFIED_BD_SCHEMA_FINGERPRINTS.includes(actual)) {
       const actualPerTable = perTableHashes(rows);
       const perTableDrift = BD_FINGERPRINT_TABLES.map((table) => ({
         table,
@@ -532,19 +663,18 @@ export class DoltClient {
          VALUES (?, ?, '', '', '', '', 'open', 2, 'molecule_step', CAST(? AS JSON), 'orchestration-daemon', 'orchestration-daemon')`,
         [args.id, args.title, JSON.stringify(meta)],
       );
-      // parent-child edge to root (depends_on_id is now a generated column in
-      // bd's schema; write the issue-typed source column instead)
+      // Write typed targets and upstream deterministic IDs, never generated columns.
       await conn.execute(
-        `INSERT INTO dependencies (issue_id, depends_on_issue_id, type, created_by)
-         VALUES (?, ?, 'parent-child', 'orchestration-daemon')`,
-        [args.id, args.parentRootId],
+        `INSERT INTO dependencies (id, issue_id, depends_on_issue_id, type, created_by)
+         VALUES (?, ?, ?, 'parent-child', 'orchestration-daemon')`,
+        [dependencyId(args.id, args.parentRootId), args.id, args.parentRootId],
       );
       // blocks edges to predecessor steps
       for (const dep of args.dependsOnStepIds ?? []) {
         await conn.execute(
-          `INSERT INTO dependencies (issue_id, depends_on_issue_id, type, created_by)
-           VALUES (?, ?, 'blocks', 'orchestration-daemon')`,
-          [args.id, dep],
+          `INSERT INTO dependencies (id, issue_id, depends_on_issue_id, type, created_by)
+           VALUES (?, ?, ?, 'blocks', 'orchestration-daemon')`,
+          [dependencyId(args.id, dep), args.id, dep],
         );
       }
       await conn.commit();
@@ -570,7 +700,7 @@ export class DoltClient {
       FROM issues i
       JOIN dependencies parent_dep
         ON parent_dep.issue_id = i.id
-       AND parent_dep.depends_on_id = ?
+       AND parent_dep.depends_on_issue_id = ?
        AND parent_dep.type = 'parent-child'
       WHERE i.issue_type = 'molecule_step'
         AND i.status = 'open'
@@ -578,7 +708,7 @@ export class DoltClient {
           SELECT 1
           FROM dependencies blocks_dep
           JOIN issues blocker
-            ON blocker.id = blocks_dep.depends_on_id
+            ON blocker.id = blocks_dep.depends_on_issue_id
           WHERE blocks_dep.issue_id = i.id
             AND blocks_dep.type = 'blocks'
             AND blocker.status != 'closed'
@@ -597,7 +727,7 @@ export class DoltClient {
       FROM issues i
       JOIN dependencies parent_dep
         ON parent_dep.issue_id = i.id
-       AND parent_dep.depends_on_id = ?
+       AND parent_dep.depends_on_issue_id = ?
        AND parent_dep.type = 'parent-child'
       WHERE i.issue_type = 'molecule_step'
         AND i.status = 'in_progress'
@@ -613,12 +743,13 @@ export class DoltClient {
    * (e.g. ['open','in_progress'] for active runs); omit for all. `limit`
    * caps the result (default 50).
    */
-  async listMoleculeRoots(opts: { statuses?: readonly string[]; limit?: number } = {}): Promise<BeadRow[]> {
+  async listMoleculeRoots(
+    opts: { statuses?: readonly string[]; limit?: number } = {},
+  ): Promise<BeadRow[]> {
     const limit = Math.max(1, Math.min(opts.limit ?? 50, 500));
     const statuses = opts.statuses?.filter((s) => typeof s === 'string' && s.length > 0) ?? [];
-    const whereStatus = statuses.length > 0
-      ? `AND i.status IN (${statuses.map(() => '?').join(', ')})`
-      : '';
+    const whereStatus =
+      statuses.length > 0 ? `AND i.status IN (${statuses.map(() => '?').join(', ')})` : '';
     const [rows] = await this.pool.execute<mysql.RowDataPacket[]>(
       `
       SELECT i.*
@@ -643,12 +774,15 @@ export class DoltClient {
    * vibesync-mcz Phase D: also persists conversation_id when supplied so a
    * future resume can re-attach to the same persistent-subagent conversation.
    */
-  async recordStepTask(stepId: string, task: {
-    readonly taskId?: string;
-    readonly providerKind: string;
-    readonly sessionId: string;
-    readonly conversationId?: string;
-  }): Promise<void> {
+  async recordStepTask(
+    stepId: string,
+    task: {
+      readonly taskId?: string;
+      readonly providerKind: string;
+      readonly sessionId: string;
+      readonly conversationId?: string;
+    },
+  ): Promise<void> {
     const conn = await this.pool.getConnection();
     try {
       await conn.beginTransaction();
@@ -665,10 +799,10 @@ export class DoltClient {
         session_id: task.sessionId,
         ...(task.conversationId ? { conversation_id: task.conversationId } : {}),
       };
-      await conn.execute(
-        `UPDATE issues SET metadata = CAST(? AS JSON) WHERE id = ?`,
-        [JSON.stringify(meta), stepId],
-      );
+      await conn.execute(`UPDATE issues SET metadata = CAST(? AS JSON) WHERE id = ?`, [
+        JSON.stringify(meta),
+        stepId,
+      ]);
       await conn.commit();
     } catch (err) {
       await conn.rollback();
@@ -690,10 +824,10 @@ export class DoltClient {
       const existing = rows[0]?.['metadata'];
       const meta = typeof existing === 'string' ? JSON.parse(existing) : (existing ?? {});
       meta.exec = { ...(meta.exec ?? {}), attempts: attempt };
-      await conn.execute(
-        `UPDATE issues SET metadata = CAST(? AS JSON) WHERE id = ?`,
-        [JSON.stringify(meta), stepId],
-      );
+      await conn.execute(`UPDATE issues SET metadata = CAST(? AS JSON) WHERE id = ?`, [
+        JSON.stringify(meta),
+        stepId,
+      ]);
       await conn.commit();
     } catch (err) {
       await conn.rollback();
@@ -792,7 +926,10 @@ export class DoltClient {
    * Returns the previous stamp value (undefined when first seen) so the
    * caller can decide whether to short-circuit.
    */
-  async recordMoleculeWriteback(rootId: string, status: 'completed' | 'failed'): Promise<string | undefined> {
+  async recordMoleculeWriteback(
+    rootId: string,
+    status: 'completed' | 'failed',
+  ): Promise<string | undefined> {
     const conn = await this.pool.getConnection();
     try {
       await conn.beginTransaction();
@@ -806,12 +943,13 @@ export class DoltClient {
       const existing = rows[0]?.['metadata'];
       const meta = typeof existing === 'string' ? JSON.parse(existing) : (existing ?? {});
       const exec = typeof meta.exec === 'object' && meta.exec !== null ? meta.exec : {};
-      const previous = typeof exec.writeback_status === 'string' ? (exec.writeback_status as string) : undefined;
+      const previous =
+        typeof exec.writeback_status === 'string' ? (exec.writeback_status as string) : undefined;
       meta.exec = { ...exec, writeback_status: status };
-      await conn.execute(
-        `UPDATE issues SET metadata = CAST(? AS JSON) WHERE id = ?`,
-        [JSON.stringify(meta), rootId],
-      );
+      await conn.execute(`UPDATE issues SET metadata = CAST(? AS JSON) WHERE id = ?`, [
+        JSON.stringify(meta),
+        rootId,
+      ]);
       await conn.commit();
       return previous;
     } catch (err) {
@@ -872,7 +1010,8 @@ export class DoltClient {
   /** Read the dependencies edges of a bead. */
   async getBeadDependencies(id: string): Promise<DependencyRow[]> {
     const [rows] = await this.pool.execute<mysql.RowDataPacket[]>(
-      `SELECT issue_id, depends_on_id, type FROM dependencies WHERE issue_id = ? OR depends_on_id = ?`,
+      `SELECT issue_id, COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external) AS depends_on_id, type
+       FROM dependencies WHERE issue_id = ? OR COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external) = ?`,
       [id, id],
     );
     return rows.map((r) => ({

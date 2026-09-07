@@ -412,10 +412,11 @@ async function main(): Promise<void> {
 
     const maxBootAttempts = Number.parseInt(process.env['ORCHESTRATION_BOOT_ATTEMPTS'] ?? '5', 10);
     for (let attempt = 1; attempt <= maxBootAttempts && !orchestration; attempt += 1) {
+      let dolt: DoltClient | undefined;
       try {
         // Resolve the Dolt port with wait + `bd dolt start` fallback,
         // logging progress through the app logger.
-        const dolt = await DoltClient.connect(
+        dolt = await DoltClient.connect(
           {},
           {
             ...defaultDoltBootDeps,
@@ -453,6 +454,13 @@ async function main(): Promise<void> {
           'Orchestration plane initialized',
         );
       } catch (orchestrationError) {
+        // connect cleans up its own failures. Once returned, this attempt owns
+        // the pool until boot succeeds; release it before retrying failed boot.
+        if (dolt && !orchestration) {
+          await dolt.close().catch((cleanupError: unknown) => {
+            logger.warn({ err: cleanupError, attempt }, 'Failed to close Dolt pool after boot failure');
+          });
+        }
         const lastAttempt = attempt >= maxBootAttempts;
         logger.warn(
           { err: orchestrationError, attempt, maxBootAttempts },

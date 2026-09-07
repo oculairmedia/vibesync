@@ -1,9 +1,28 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { HealthPatrol } from '../../../src/orchestration/health/patrol.js';
+import { WrongDoltDatabaseError } from '../../../src/orchestration/store/dolt-client.js';
 
 import { bootOrchestrationPlane } from '../../../src/orchestration/boot.js';
 import { InMemoryDoltClient } from '../../_fixtures/in-memory-dolt-client.js';
 
 describe('bootOrchestrationPlane', () => {
+  it('rejects identity mismatch before schema checks or runtime startup', async () => {
+    const failure = new WrongDoltDatabaseError({
+      expectedRepoId: 'expected', actualRepoId: 'wrong', database: 'db', port: 33123,
+    });
+    const verifySchema = vi.fn();
+    const start = vi.spyOn(HealthPatrol.prototype, 'start');
+    try {
+      await expect(bootOrchestrationPlane({
+        dolt: { verifyFingerprint: vi.fn().mockRejectedValue(failure), verifySchema } as never,
+      })).rejects.toBe(failure);
+      expect(verifySchema).not.toHaveBeenCalled();
+      expect(start).not.toHaveBeenCalled();
+    } finally {
+      start.mockRestore();
+    }
+  });
+
   it('returns a wired orchestration handle', async () => {
     // vibesync-ryhc: the work-activity reporter wires an extra bus subscriber
     // when a shim URL is present in the environment (true on CI runners).

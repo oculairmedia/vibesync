@@ -82,12 +82,22 @@ export function computeSchemaFingerprint(rows: readonly TableSchemaRow[]): strin
  * other tables (e.g. wisps, events) add them to `BD_FINGERPRINT_TABLES`
  * and bump the fingerprint.
  *
- * Last verified: 2026-05-21 against bd 1.0.4 (dev).
+ * Verified with bd 1.2.2 build 7fcf4e1634bf1c18757d8f8c16a36fb2b14f7912,
+ * schema 65: disposable CLI fresh init and CLI DDL reproducing live column order.
+ * Both pass the real molecule lifecycle/CLI roundtrip suite. Live was inspected
+ * only with readonly SHOW CREATE TABLE. The sole difference is issues column
+ * order (no_history, due_at/defer_until, started_at/is_blocked versus hook fields).
+ * Keep canonicalization strict: accept only these two tested exact aggregates.
+ * The old 1.0.4 shape is not retained: it was not revalidated with current writes.
  */
-export const BD_FINGERPRINT_BD_VERSION = '1.0.4';
+export const BD_FINGERPRINT_BD_VERSION = '1.2.2';
 export const BD_FINGERPRINT_TABLES: readonly string[] = ['issues', 'dependencies', 'metadata'];
 export const EXPECTED_BD_SCHEMA_FINGERPRINT =
-  '452fb5cdb836f2c0dfe43a36676ce351ebc3c42fff9ca966d476cfe88e0390b2';
+  '55cf69b481e3086b0e8bd8b139c4dbfa598cdbdbe58d521ef791b0c72787efc5';
+export const VERIFIED_BD_SCHEMA_FINGERPRINTS: readonly string[] = [
+  EXPECTED_BD_SCHEMA_FINGERPRINT,
+  '40ad3e43c4aaef185ab2a1f414237f26aaa861aba24fef9f8eaaf4c7b4548c64',
+];
 
 /**
  * Thrown by `DoltClient.verifySchema()` when one of the bd tables we
