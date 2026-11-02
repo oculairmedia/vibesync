@@ -50,13 +50,27 @@ describe.skipIf(!LIVE)('IrohPmWakeSink (live)', () => {
 
     expect(delivered).toHaveLength(1);
     const conversationId = String(delivered[0]!['conversationId']);
-    const raw = (await conn!.rpc('message.list', { conversation_id: conversationId, limit: 100 })) as unknown;
-    const rec = raw as { messages?: unknown[] };
-    const list = (Array.isArray(raw) ? raw : (rec.messages ?? [])) as Array<Record<string, unknown>>;
     const text = formatWakeMessage(wake);
-    const hit = list.find((m) => JSON.stringify(m['content'] ?? m['text'] ?? '').includes(wake.wakeId));
-    console.log(`[live] conversation=${conversationId} listed=${list.length} found=${hit ? `${String(hit['message_type'] ?? hit['role'])} ${String(hit['id'])}` : 'NO'}`);
+    // input_accepted only means the PM HAS the message. When the PM is mid-turn the host QUEUES it
+    // (disposition 'queued', proven live: it persisted ~14 s after acceptance), so poll, bounded.
+    const find = async (): Promise<Record<string, unknown> | undefined> => {
+      const raw = (await conn!.rpc('message.list', { conversation_id: conversationId, limit: 100 })) as unknown;
+      const rec = raw as { messages?: unknown[] };
+      const list = (Array.isArray(raw) ? raw : (rec.messages ?? [])) as Array<Record<string, unknown>>;
+      return list.find((m) => m['message_type'] === 'user_message' && JSON.stringify(m['content'] ?? m['text'] ?? '').includes(wake.wakeId));
+    };
+    const deadline = Date.now() + 90_000;
+    let hit = await find();
+    let polls = 1;
+    while (!hit && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2_000));
+      hit = await find();
+      polls += 1;
+    }
+    console.log(`[live] conversation=${conversationId} disposition=${String(delivered[0]!['disposition'])} polls=${polls} found=${hit ? `${String(hit['message_type'])} ${String(hit['id'])} at ${String(hit['date'])}` : 'NO'} ms=${Date.now() - t0}`);
     expect(hit, `wake ${wake.wakeId} not found in message.list of ${conversationId}`).toBeDefined();
-    expect(JSON.stringify(hit!['content'] ?? hit!['text'])).toContain(text.replace(/"/g, '\\"'));
-  }, 60_000);
+    const persisted = (Array.isArray(hit!['content']) ? (hit!['content'] as Array<Record<string, unknown>>).map((p) => String(p['text'] ?? '')).join('') : String(hit!['content']));
+    expect(persisted).toBe(text);
+    expect(hit!['otid']).toBe(wake.wakeId);
+  }, 150_000);
 });
