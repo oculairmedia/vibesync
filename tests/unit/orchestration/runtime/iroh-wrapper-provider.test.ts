@@ -89,6 +89,15 @@ describe('IrohWrapperProvider', () => {
     await p.stop(handle);
   });
 
+  it('titles each step conversation "<formula> · <step> · <bead>" so the app list is readable', async () => {
+    const fake = new FakeIrohWrapper({ scope: SCOPE });
+    const p = mk(fake);
+    await runStep(p, baseSpec({ formulaName: 'code-review', motivatingBeadId: 'vibesync-byil' }), 'a');
+    // No bead (e.g. an API-dispatched run): formula and step only.
+    await runStep(p, baseSpec({ formulaName: 'code-review', stepName: 'step-b' }), 'b');
+    expect([...fake.conversationTitles.values()]).toEqual(['code-review · step-a · vibesync-byil', 'code-review · step-b']);
+  });
+
   it('creates one fresh conversation per session and uses a stable client_message_id from molecule+step+attempt', async () => {
     const fake = new FakeIrohWrapper({ scope: SCOPE });
     const p = mk(fake);
