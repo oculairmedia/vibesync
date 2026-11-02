@@ -19,7 +19,13 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
       - name: Install dependencies
-        run: npm ci
+        # Production installs with bun (bun.lock); npm ci took ~100 s here.
+        # --ignore-scripts: node-pty (via @letta-ai/letta-code) has no linux-x64
+        # prebuild and its script runs node-gyp@latest, which fails on the
+        # runner. Only better-sqlite3's native build is needed; rebuild it alone.
+        run: |
+          bun install --frozen-lockfile --ignore-scripts
+          npm rebuild better-sqlite3
       - name: Type check (tsc --noEmit)
         run: npm run type-check
 
@@ -38,25 +44,31 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-          cache: 'npm'
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
       - name: Install dependencies
-        run: npm ci
+        # Production installs with bun (bun.lock); npm ci took ~100 s per job.
+        # See the typecheck job for why scripts are skipped and one is rebuilt.
+        run: |
+          bun install --frozen-lockfile --ignore-scripts
+          npm rebuild better-sqlite3
 
       - name: Run linter
         run: npm run lint --if-present
         continue-on-error: true
 
+      # One test run per job. On 20.x that run also collects coverage; it used
+      # to run the full suite twice more (test:coverage, then the threshold
+      # step re-ran test:coverage), ~140 s each. The gate is the same suite.
       - name: Run tests
+        if: matrix.node-version != '20.x'
         run: npm test
 
-      - name: Generate coverage report
+      - name: Run tests with coverage
         if: matrix.node-version == '20.x'
-        continue-on-error: true
-        run: npm run test:coverage
+        run: bun run build:openapi && bunx vitest run --coverage
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
@@ -66,13 +78,10 @@ jobs:
           flags: unittests
           fail_ci_if_error: false
 
-      - name: Check coverage thresholds
+      - name: Report coverage summary
         if: matrix.node-version == '20.x'
         run: |
-          echo "Checking coverage meets minimum 60% threshold..."
-          npm run test:coverage -- --reporter=json --reporter=text | tee coverage-output.txt
-
-          # Extract coverage percentage (this is a simple check)
+          # Informational, as before: the old step never enforced a threshold.
           if [ -f coverage/coverage-summary.json ]; then
             echo "Coverage report generated successfully"
           fi
