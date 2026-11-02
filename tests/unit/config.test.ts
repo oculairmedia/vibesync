@@ -289,4 +289,65 @@ describe('config', () => {
       expect(overrides.sync.dryRun).toBe(true);
     });
   });
+
+  describe('scheduler section (vibesync-z2ws)', () => {
+    const SCHED_KEYS = Object.keys(process.env).filter((k) => k.startsWith('VIBESYNC_SCHEDULER_'));
+
+    beforeEach(() => {
+      for (const k of SCHED_KEYS) delete process.env[k];
+    });
+
+    it('is OFF by default, with safe defaults (autoMerge off, no required checks)', () => {
+      const { scheduler } = loadConfig();
+      expect(scheduler).toMatchObject({
+        enabled: false,
+        paused: false,
+        autoMerge: false,
+        intervalMs: 30000,
+        poolSize: 1,
+        batchSize: 1,
+        requiredChecks: [],
+      });
+    });
+
+    it('VIBESYNC_SCHEDULER_ENABLED=true turns it on and env keys map through', () => {
+      process.env.VIBESYNC_SCHEDULER_ENABLED = 'true';
+      process.env.VIBESYNC_SCHEDULER_PROJECT = 'vibesync';
+      process.env.VIBESYNC_SCHEDULER_INTERVAL_MS = '5000';
+      process.env.VIBESYNC_SCHEDULER_POOL_SIZE = '3';
+      process.env.VIBESYNC_SCHEDULER_BATCH_SIZE = '2';
+      process.env.VIBESYNC_SCHEDULER_PAUSED = 'true';
+      const { scheduler } = loadConfig();
+      expect(scheduler).toMatchObject({
+        enabled: true,
+        projectIdentifier: 'vibesync',
+        intervalMs: 5000,
+        poolSize: 3,
+        batchSize: 2,
+        paused: true,
+        autoMerge: false,
+      });
+    });
+
+    it('any value other than "true" leaves it off', () => {
+      process.env.VIBESYNC_SCHEDULER_ENABLED = '1';
+      expect(loadConfig().scheduler.enabled).toBe(false);
+    });
+
+    it('enabled without a project fails config validation', () => {
+      process.env.VIBESYNC_SCHEDULER_ENABLED = 'true';
+      expect(() => loadConfig()).toThrow('VIBESYNC_SCHEDULER_PROJECT');
+    });
+
+    it('autoMerge is only on with the explicit flag, and then needs required checks', () => {
+      process.env.VIBESYNC_SCHEDULER_ENABLED = 'true';
+      process.env.VIBESYNC_SCHEDULER_PROJECT = 'vibesync';
+      process.env.VIBESYNC_SCHEDULER_AUTO_MERGE = 'true';
+      expect(() => loadConfig()).toThrow('VIBESYNC_SCHEDULER_REQUIRED_CHECKS');
+      process.env.VIBESYNC_SCHEDULER_REQUIRED_CHECKS = 'typecheck, test';
+      const { scheduler } = loadConfig();
+      expect(scheduler.autoMerge).toBe(true);
+      expect(scheduler.requiredChecks).toEqual(['typecheck', 'test']);
+    });
+  });
 });

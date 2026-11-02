@@ -14,6 +14,13 @@ function parseBookMappings(raw: string | undefined): { projectIdentifier: string
     .filter((m) => m.projectIdentifier && m.bookSlug);
 }
 
+function parseCsv(raw: string | undefined): string[] {
+  return (raw ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 export function loadConfig(): AppConfig {
   const config: AppConfig = {
     sync: {
@@ -96,6 +103,21 @@ export function loadConfig(): AppConfig {
       owner: process.env.DOLTHUB_OWNER || 'oulair',
       defaultVisibility: (process.env.DOLTHUB_DEFAULT_VISIBILITY || 'private') as 'public' | 'private',
       remoteName: process.env.DOLTHUB_REMOTE_NAME || 'origin',
+    },
+    scheduler: {
+      // vibesync-z2ws: SchedulerDaemon activation. OFF unless explicitly enabled.
+      enabled: process.env.VIBESYNC_SCHEDULER_ENABLED === 'true',
+      projectIdentifier: process.env.VIBESYNC_SCHEDULER_PROJECT || '',
+      intervalMs: parseInt(process.env.VIBESYNC_SCHEDULER_INTERVAL_MS || '30000', 10),
+      poolSize: parseInt(process.env.VIBESYNC_SCHEDULER_POOL_SIZE || '1', 10),
+      batchSize: parseInt(process.env.VIBESYNC_SCHEDULER_BATCH_SIZE || '1', 10),
+      paused: process.env.VIBESYNC_SCHEDULER_PAUSED === 'true',
+      readyLabel: process.env.VIBESYNC_SCHEDULER_READY_LABEL ?? 'scheduler:eligible',
+      formula: process.env.VIBESYNC_SCHEDULER_FORMULA || 'onboard-feature',
+      packDir: process.env.VIBESYNC_SCHEDULER_PACK_DIR || 'packs/gastown',
+      // Safety: never auto-merge unless explicitly requested.
+      autoMerge: process.env.VIBESYNC_SCHEDULER_AUTO_MERGE === 'true',
+      requiredChecks: parseCsv(process.env.VIBESYNC_SCHEDULER_REQUIRED_CHECKS),
     },
   };
 
@@ -184,6 +206,9 @@ export function getConfigSummary(config: AppConfig) {
     doltHubProvisioningDryRun: config.doltHub.dryRun,
     doltHubOwner: config.doltHub.owner,
     doltHubDefaultVisibility: config.doltHub.defaultVisibility,
+    schedulerEnabled: config.scheduler.enabled,
+    schedulerProject: config.scheduler.enabled ? config.scheduler.projectIdentifier : undefined,
+    schedulerAutoMerge: config.scheduler.autoMerge,
   };
 }
 

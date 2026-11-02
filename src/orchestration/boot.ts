@@ -14,6 +14,8 @@ import {
   createDefaultPersonaLoader,
 } from './runtime/index.js';
 import type { PersonaLoader, RuntimeProvider } from './runtime/index.js';
+import { startSchedulerDaemon, SCHEDULER_START_FAILED_EVENT } from './scheduler/boot-scheduler.js';
+import type { BootSchedulerOptions, SchedulerHandle } from './scheduler/boot-scheduler.js';
 import type { DoltClient } from './store/index.js';
 import { installLettaClientValidationFilter } from '../letta/LettaClientValidationFilter.js';
 
@@ -23,6 +25,12 @@ export interface OrchestrationHandle {
   readonly bus: EventBus;
   readonly patrol: HealthPatrol;
   readonly walker: MoleculeWalker;
+  /**
+   * The running SchedulerDaemon (vibesync-z2ws), or null when
+   * `scheduler.config.enabled` is false / not supplied / failed to start.
+   * shutdown() stops it and awaits any in-flight tick.
+   */
+  readonly scheduler: SchedulerHandle | null;
   shutdown(): Promise<void>;
 }
 
@@ -49,6 +57,13 @@ export interface BootOrchestrationPlaneOptions {
    * createDefaultPersonaLoader(packs/gastown).
    */
   readonly providerRouting?: BootOrchestrationProviderRoutingOptions;
+  /**
+   * SchedulerDaemon activation (vibesync-z2ws, layering invariant 4: config is
+   * the activation mechanism). Absent or `config.enabled === false` => the
+   * daemon is never constructed: no timer, no `bd` call. Adapters (`bd`, `gh`,
+   * pool-member lookup) are injected so this plane imports no database.
+   */
+  readonly scheduler?: BootSchedulerOptions;
 }
 
 export interface ProjectProviderRoutingStore {
@@ -236,6 +251,21 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     workActivityReporter.start();
   }
 
+  // vibesync-z2ws: SchedulerDaemon. Started last so everything it dispatches
+  // through (dispatcher, bus, writeback hook) is already wired. A start failure
+  // (bad formula, no pool members) must not take the plane down with it.
+  let scheduler: SchedulerHandle | null = null;
+  if (opts.scheduler?.config.enabled) {
+    try {
+      scheduler = startSchedulerDaemon({ ...opts.scheduler, dispatcher, bus });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // eslint-disable-next-line no-console
+      console.error(`[orchestration:scheduler] SchedulerDaemon failed to start — continuing without it: ${message}`);
+      bus.emit({ layer: 'daemon', kind: SCHEDULER_START_FAILED_EVENT, payload: { error: message } });
+    }
+  }
+
   let shutDown = false;
 
   return {
@@ -244,9 +274,19 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     bus,
     patrol,
     walker,
+    scheduler,
     async shutdown(): Promise<void> {
       if (shutDown) return;
       shutDown = true;
+      // Scheduler first: its ticks dispatch through everything torn down below.
+      if (scheduler) {
+        try {
+          await scheduler.stop();
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error('[orchestration:scheduler] error while stopping SchedulerDaemon', err);
+        }
+      }
       unsubscribeWriteback?.();
       patrol.stop();
       workActivityReporter?.stop();

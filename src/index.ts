@@ -16,6 +16,7 @@ import { ProjectRegistry, type RigEvent } from './ProjectRegistry';
 import { broadcastSyncEvent } from './ApiServer';
 import { bootOrchestrationPlane, releaseDoltAfterFailedBoot, type OrchestrationHandle } from './orchestration/boot.js';
 import { DoltClient, defaultDoltBootDeps } from './orchestration/store/index.js';
+import { createCliRunner } from './orchestration/scheduler/bd-adapters.js';
 import { sweepAll as sweepBeadsPorts, type SweeperProject } from './beads/PortSweeper.js';
 import { startPeriodicPortSweep } from './beads/startPeriodicPortSweep.js';
 
@@ -352,6 +353,48 @@ if (codePerceptionWatcher && lettaService) {
 logger.info({ service: 'vibesync' }, 'Service starting');
 logger.info({ config: getConfigSummary(config) }, 'Configuration loaded');
 
+/**
+ * Clean shutdown for the orchestration plane (vibesync-z2ws): on SIGTERM/SIGINT
+ * stop the SchedulerDaemon interval, await any in-flight tick, run
+ * orchestration.shutdown(), then exit. Only installed when the plane booted, so
+ * a service without orchestration keeps its previous signal behaviour.
+ *
+ * A tick can be mid-dispatch (an LLM formula run); the wait is bounded so
+ * systemd's stop timeout never has to SIGKILL us while we politely wait.
+ */
+const SHUTDOWN_GRACE_MS = Number.parseInt(process.env['VIBESYNC_SHUTDOWN_GRACE_MS'] ?? '20000', 10);
+
+function installOrchestrationShutdownHandlers(handle: OrchestrationHandle): void {
+  let shuttingDown = false;
+  const onSignal = (signal: NodeJS.Signals): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info({ signal, graceMs: SHUTDOWN_GRACE_MS }, 'Shutdown signal received, stopping orchestration plane');
+    let timedOut = false;
+    const grace = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        timedOut = true;
+        resolve();
+      }, SHUTDOWN_GRACE_MS).unref();
+    });
+    void Promise.race([handle.shutdown(), grace])
+      .then(() => {
+        if (timedOut) {
+          logger.warn({ graceMs: SHUTDOWN_GRACE_MS }, 'Orchestration shutdown exceeded grace period, exiting anyway');
+        } else {
+          logger.info('Orchestration plane stopped cleanly');
+        }
+        process.exit(0);
+      })
+      .catch((err: unknown) => {
+        logger.error({ err }, 'Orchestration shutdown failed');
+        process.exit(1);
+      });
+  };
+  process.on('SIGTERM', onSignal);
+  process.on('SIGINT', onSignal);
+}
+
 async function main(): Promise<void> {
   logger.info('Starting sync service');
 
@@ -427,6 +470,40 @@ async function main(): Promise<void> {
         );
         orchestration = await bootOrchestrationPlane({
           dolt,
+          // vibesync-z2ws: SchedulerDaemon. Config-gated (scheduler.enabled,
+          // default false) inside bootOrchestrationPlane; with the flag off
+          // none of these closures is ever invoked.
+          scheduler: {
+            config: config.scheduler,
+            logger,
+            listPoolMembers: (projectIdentifier) =>
+              db.listRoleAgents(projectIdentifier).map((row) => ({
+                agentId: row.agentId,
+                role: row.roleName,
+                lettaBaseUrl: row.lettaBaseUrl,
+              })),
+            // bd runs against the scheduled project's own beads dir, resolved
+            // lazily from the projects table so a path change needs no restart.
+            bd: async (args) => {
+              const project = db.getProject(config.scheduler.projectIdentifier);
+              const fsPath = project?.filesystem_path;
+              if (!fsPath) {
+                throw new Error(`scheduler project "${config.scheduler.projectIdentifier}" has no filesystem_path`);
+              }
+              return createCliRunner({
+                binary: 'bd',
+                cwd: fsPath,
+                env: { BEADS_DIR: `${fsPath}/.beads`, BEADS_ACTOR: 'vibesync-scheduler' },
+              })(args);
+            },
+            gh: async (args) => {
+              const project = db.getProject(config.scheduler.projectIdentifier);
+              return createCliRunner({
+                binary: 'gh',
+                ...(project?.filesystem_path ? { cwd: project.filesystem_path } : {}),
+              })(args);
+            },
+          },
           providerRouting: {
             store: { getProjectProviderRouting: db.getProjectProviderRouting.bind(db) },
             roleAgentBootstrapper,
@@ -473,6 +550,9 @@ async function main(): Promise<void> {
           await new Promise((resolve) => setTimeout(resolve, backoffMs));
         }
       }
+    }
+    if (orchestration) {
+      installOrchestrationShutdownHandlers(orchestration);
     }
   } else {
     logger.info('Orchestration plane disabled (ENABLE_ORCHESTRATION is not true)');

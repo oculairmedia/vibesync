@@ -121,3 +121,22 @@ export type {
   Recovery,
   PatrolResult,
 } from './witness.js';
+
+export { SchedulerDaemon } from './daemon.js';
+export type {
+  DaemonLogger,
+  DaemonTickReport,
+  DaemonTickResult,
+  FormulaResolver,
+  ReadyBeadSource,
+  SchedulerDaemonDeps,
+} from './daemon.js';
+
+export {
+  startSchedulerDaemon,
+  SCHEDULER_TICK_EVENT,
+  SCHEDULER_STARTED_EVENT,
+  SCHEDULER_STOPPED_EVENT,
+  SCHEDULER_START_FAILED_EVENT,
+} from './boot-scheduler.js';
+export type { BootSchedulerOptions, SchedulerBootConfig, SchedulerHandle } from './boot-scheduler.js';
