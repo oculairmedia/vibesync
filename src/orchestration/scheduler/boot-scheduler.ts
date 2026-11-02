@@ -65,6 +65,11 @@ export interface SchedulerBootConfig {
    * Optional here so hand-built configs keep working; defaults to 5000.
    */
   readonly eventDebounceMs?: number;
+  /**
+   * Wall-clock deadline (ms) for a started run (vibesync-izn3); 0 = none.
+   * Optional here so hand-built configs keep working; defaults to 1 hour.
+   */
+  readonly runDeadlineMs?: number;
 }
 
 export interface BootSchedulerOptions {
@@ -221,6 +226,7 @@ export function startSchedulerDaemon(
     },
     config: () => ({ poolSize: effectivePoolSize, batchSize: config.batchSize, paused: config.paused }),
     ...(config.eventDebounceMs !== undefined ? { eventDebounceMs: config.eventDebounceMs } : {}),
+    ...(config.runDeadlineMs !== undefined ? { runDeadlineMs: config.runDeadlineMs } : {}),
     ...(logger ? { logger } : {}),
     onTick: (report: DaemonTickReport) => {
       const { result } = report;

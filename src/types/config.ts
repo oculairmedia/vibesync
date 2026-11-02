@@ -95,6 +95,8 @@ export interface SchedulerConfigSection {
   intervalMs: number;
   /** Min spacing between event-triggered ticks (vibesync-p489). */
   eventDebounceMs: number;
+  /** Wall-clock deadline for a started formula run, ms; 0 = none (vibesync-izn3). */
+  runDeadlineMs: number;
   poolSize: number;
   batchSize: number;
   paused: boolean;

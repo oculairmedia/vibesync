@@ -49,6 +49,24 @@ export type TickRequestOutcome = 'started' | 'debounced' | 'locked' | 'inactive'
 /** Default minimum spacing between event-triggered ticks (ms). */
 export const DEFAULT_EVENT_DEBOUNCE_MS = 5_000;
 
+/**
+ * Default wall-clock budget for a started formula run (vibesync-izn3). A run
+ * owns its pool slot until it settles (q50w/nic6), so a run that never settles
+ * would hold the slot forever; past this budget the daemon cancels it. 0 = no
+ * deadline.
+ */
+export const DEFAULT_RUN_DEADLINE_MS = 3_600_000;
+
+/**
+ * How long an expired run waits for `dispatcher.cancel()` before its slot is
+ * freed anyway (vibesync-izn3). cancel() stops provider sessions, which can
+ * hang for the very same reason the run did; the slot must not depend on it.
+ */
+export const RUN_CANCEL_GRACE_MS = 30_000;
+
+/** Largest delay setTimeout honours (2^31 - 1 ms); larger values fire after 1 ms. */
+export const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 export interface DaemonLogger {
   info?(o: unknown, m: string): void;
   warn?(o: unknown, m: string): void;
@@ -119,6 +137,17 @@ export interface SchedulerDaemonDeps {
    * {@link DEFAULT_EVENT_DEBOUNCE_MS}. Does not affect the interval timer.
    */
   readonly eventDebounceMs?: number;
+  /**
+   * Wall-clock deadline (ms) for every started run (vibesync-izn3). Default
+   * {@link DEFAULT_RUN_DEADLINE_MS}; 0 disables the deadline.
+   */
+  readonly runDeadlineMs?: number;
+  /**
+   * Per-bead deadline override seam (vibesync-bw97 will implement the budget
+   * behind it). Return `undefined` to fall back to `runDeadlineMs`. Not wired
+   * by anything yet.
+   */
+  readonly runDeadlineFor?: (workBeadId: string) => number | undefined;
   /** Called after every tick (interval- or event-driven) completes. Must not throw completes. Must not throw (errors are logged and swallowed). */
   readonly onTick?: (report: DaemonTickReport) => void;
 }
@@ -146,6 +175,8 @@ export class SchedulerDaemon {
   /** The currently running tick (any reason), so stop() can await it and no two ticks overlap. */
   private inFlight: Promise<void> | null = null;
   private readonly eventDebounceMs: number;
+  /** Live deadline/cancel-grace timers, one watch per in-flight run (vibesync-izn3). */
+  private readonly runWatches = new Set<RunWatch>();
   /** Wall-clock start of the last EVENT-triggered tick (window anchor). Interval ticks do not move it. */
   private lastEventTickAt: number | null = null;
   /** Pending trailing tick for requests coalesced inside the debounce window. */
@@ -258,29 +289,176 @@ export class SchedulerDaemon {
       throw new Error(`no formula resolved for ${candidate.workBeadId}`);
     }
 
+    // The molecule id is known only once the dispatcher has created the molecule
+    // — long before `run()` resolves. Capture it early so a hung run can still
+    // be cancelled at its deadline (vibesync-izn3).
+    let moleculeId: string | undefined;
     const run = this.deps.dispatcher.run({
       formula: resolved.formula,
       pack: resolved.pack,
       input: resolved.input,
       motivatingBeadId: candidate.workBeadId,
       projectIdentifier: resolved.projectIdentifier,
+      onStarted: (id) => { moleculeId = id; },
     });
-    const done = Promise.resolve(run).then(
-      (result): DispatchRunResult => {
-        const output = Object.values(result.outputs).join('\n');
-        // If the run produced a PR, hand it to the refinery for auto-merge.
-        this.maybeEnqueuePr(candidate.workBeadId, result.moleculeId, output);
-        return { runId: result.moleculeId, output, ok: true };
-      },
-      (err: unknown): DispatchRunResult => {
-        this.deps.logger?.warn?.(
-          { workBeadId: candidate.workBeadId, error: msg(err) },
-          'daemon: run failed',
+
+    // `done` settles EXACTLY ONCE, from whichever happens first: the run
+    // settling, or the deadline expiring. Everything downstream (executor
+    // settle -> slot free; loop onRunSettled -> failure count, in-flight delete,
+    // requestTick('run-finished')) hangs off this one promise, so slot-free and
+    // failure-count are once-only by construction.
+    const watch: RunWatch = { timer: null, graceTimer: null };
+    const startedAtMs = Date.now();
+    let finished = false;
+    let expired = false;
+    let resolveDone!: (r: DispatchRunResult) => void;
+    const done = new Promise<DispatchRunResult>((resolve) => { resolveDone = resolve; });
+    const finish = (result: DispatchRunResult): void => {
+      if (finished) return;
+      finished = true;
+      this.disposeWatch(watch);
+      resolveDone(result);
+    };
+
+    const settledByDispatcher = (result: DispatchRunResult, enqueueFrom?: { moleculeId: string; output: string }): void => {
+      if (expired) {
+        // The deadline already owns this run's outcome; a late settlement
+        // (the cancel unwinding it, or it limping home) must not count twice.
+        this.deps.logger?.info?.(
+          { workBeadId: candidate.workBeadId, moleculeId: moleculeId ?? null, ok: result.ok },
+          'daemon: run settled after its deadline expired — ignored',
         );
-        return { runId: '', output: '', ok: false, error: msg(err) };
+        return;
+      }
+      if (enqueueFrom) {
+        // A throw while enqueueing must never skip finish(): with no deadline
+        // armed nothing else would free the slot (CodeRabbit on #51).
+        try {
+          this.maybeEnqueuePr(candidate.workBeadId, enqueueFrom.moleculeId, enqueueFrom.output);
+        } catch (err) {
+          this.deps.logger?.warn?.(
+            { workBeadId: candidate.workBeadId, moleculeId: enqueueFrom.moleculeId, error: msg(err) },
+            'daemon: PR enqueue failed; run still settled',
+          );
+        }
+      }
+      finish(result);
+    };
+
+    Promise.resolve(run).then(
+      (result) => {
+        const output = Object.values(result.outputs).join('\n');
+        settledByDispatcher({ runId: result.moleculeId, output, ok: true }, { moleculeId: result.moleculeId, output });
+      },
+      (err: unknown) => {
+        if (!expired) {
+          this.deps.logger?.warn?.(
+            { workBeadId: candidate.workBeadId, error: msg(err) },
+            'daemon: run failed',
+          );
+        }
+        settledByDispatcher({ runId: '', output: '', ok: false, error: msg(err) });
       },
     );
+
+    const deadlineMs = this.runDeadlineFor(candidate.workBeadId);
+    if (deadlineMs > 0 && !this.stopping) {
+      this.runWatches.add(watch);
+      watch.timer = setTimeout(() => {
+        watch.timer = null;
+        if (finished) return;
+        expired = true;
+        void this.expireRun({
+          watch, workBeadId: candidate.workBeadId, moleculeId, deadlineMs,
+          elapsedMs: Date.now() - startedAtMs,
+          finish,
+        });
+      }, deadlineMs);
+      watch.timer.unref?.();
+    }
     return { done };
+  }
+
+  /** Effective deadline for one run: per-bead override seam, else the daemon-wide budget. */
+  private runDeadlineFor(workBeadId: string): number {
+    const override = this.deps.runDeadlineFor?.(workBeadId);
+    const ms = override ?? this.deps.runDeadlineMs ?? DEFAULT_RUN_DEADLINE_MS;
+    if (!Number.isFinite(ms) || ms <= 0) return 0;
+    // setTimeout treats delays above 2^31-1 ms as 1 ms; clamp so an oversized
+    // budget means "about 24.8 days", not "cancel immediately" (CodeRabbit on #51).
+    return Math.min(ms, MAX_TIMER_DELAY_MS);
+  }
+
+  private disposeWatch(watch: RunWatch): void {
+    if (watch.timer) clearTimeout(watch.timer);
+    if (watch.graceTimer) clearTimeout(watch.graceTimer);
+    watch.timer = null;
+    watch.graceTimer = null;
+    this.runWatches.delete(watch);
+  }
+
+  /**
+   * A run outlived its deadline: cancel its molecule (best effort — a cancel
+   * that throws, e.g. FormulaCancellationConflictError because no step is
+   * running yet, or that hangs past {@link RUN_CANCEL_GRACE_MS}, must not keep
+   * the slot) and then settle the run as FAILED through `finish`, which frees
+   * the slot and counts the failure on the sling context via the normal
+   * settlement path. Never rejects.
+   */
+  private async expireRun(args: {
+    readonly watch: RunWatch;
+    readonly workBeadId: string;
+    readonly moleculeId: string | undefined;
+    readonly deadlineMs: number;
+    readonly elapsedMs: number;
+    readonly finish: (r: DispatchRunResult) => void;
+  }): Promise<void> {
+    const { watch, workBeadId, moleculeId, deadlineMs, elapsedMs, finish } = args;
+    try {
+      this.deps.logger?.warn?.(
+        { workBeadId, moleculeId: moleculeId ?? null, elapsedMs, deadlineMs },
+        'daemon: run exceeded its deadline — cancelling',
+      );
+      if (moleculeId) {
+        const cancelled = Promise.resolve()
+          .then(() => this.deps.dispatcher.cancel(moleculeId))
+          .then(
+            () => { /* cancelled */ },
+            (err: unknown) => {
+              this.deps.logger?.warn?.(
+                { workBeadId, moleculeId, error: msg(err) },
+                'daemon: cancel of expired run failed — freeing the slot anyway',
+              );
+            },
+          );
+        const grace = new Promise<void>((resolve) => {
+          watch.graceTimer = setTimeout(() => {
+            watch.graceTimer = null;
+            this.deps.logger?.warn?.(
+              { workBeadId, moleculeId, graceMs: RUN_CANCEL_GRACE_MS },
+              'daemon: cancel of expired run still pending — freeing the slot anyway',
+            );
+            resolve();
+          }, RUN_CANCEL_GRACE_MS);
+          watch.graceTimer.unref?.();
+        });
+        await Promise.race([cancelled, grace]);
+      } else {
+        this.deps.logger?.warn?.(
+          { workBeadId, elapsedMs },
+          'daemon: expired run never reported a molecule id — nothing to cancel',
+        );
+      }
+    } catch (err) {
+      this.deps.logger?.warn?.({ workBeadId, error: msg(err) }, 'daemon: run deadline handling failed');
+    } finally {
+      finish({
+        runId: moleculeId ?? '',
+        output: '',
+        ok: false,
+        error: `run exceeded its deadline of ${deadlineMs}ms (cancelled after ${elapsedMs}ms)`,
+      });
+    }
   }
 
   /**
@@ -528,6 +706,9 @@ export class SchedulerDaemon {
     this.lastEventTickAt = null;
     const pending = this.inFlight;
     if (pending) await pending;
+    // Runs are not awaited, so their deadlines must not outlive the daemon.
+    // Cleared AFTER the in-flight tick so a run that tick just started is covered.
+    for (const watch of [...this.runWatches]) this.disposeWatch(watch);
     if (wasRunning) {
       // Runs are NOT awaited: they outlive the tick (and a short SIGTERM grace).
       // Surface which beads are still mid-run so the operator can see them.
@@ -540,6 +721,12 @@ export class SchedulerDaemon {
       );
     }
   }
+}
+
+/** Deadline + cancel-grace timers of one in-flight run (vibesync-izn3). */
+interface RunWatch {
+  timer: ReturnType<typeof setTimeout> | null;
+  graceTimer: ReturnType<typeof setTimeout> | null;
 }
 
 function msg(err: unknown): string {

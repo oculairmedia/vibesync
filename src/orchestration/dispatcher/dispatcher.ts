@@ -41,6 +41,15 @@ export interface DispatchInput {
    * caller / test that pre-dates the routing path.
    */
   readonly projectIdentifier?: string;
+  /**
+   * Called once, synchronously, as soon as the molecule exists (right after
+   * the walker created it, BEFORE the first step runs) with its id
+   * (vibesync-izn3). `run()` only returns the molecule id when the whole
+   * formula finishes, which is too late for a caller that must `cancel()` a
+   * run that never finishes. A throwing callback is logged-and-ignored by the
+   * dispatcher: it can never fail the run.
+   */
+  readonly onStarted?: (moleculeId: string) => void;
 }
 
 /**
@@ -285,6 +294,11 @@ export class FormulaDispatcher {
       steps: input.formula.steps,
     });
     const moleculeId = view.rootId;
+    try {
+      input.onStarted?.(moleculeId);
+    } catch {
+      // An observer must never fail the run it observes.
+    }
     const outputs: Record<string, string> = {};
     const rolesByName = new Map(input.pack.roles.map((role) => [role.name, role]));
 
