@@ -107,6 +107,16 @@ export interface SchedulerConfigSection {
   requiredChecks: string[];
   /** owner/repo slugs the refinery may auto-merge in (vibesync-5c8y). Required non-empty when autoMerge. */
   allowedRepos: string[];
+  /** PM wake policy (vibesync-2bgv). Off by default. */
+  pmWake: {
+    enabled: boolean;
+    /** Min spacing between wakes of the same reason (ms). */
+    minIntervalMs: number;
+    /** Wake the PM if nothing has for this long (ms). */
+    backstopMs: number;
+    /** JSON file persisting last-woken per project (operational state, not a bead). */
+    statePath: string;
+  };
 }
 
 export interface AppConfig {

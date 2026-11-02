@@ -141,6 +141,13 @@ const schedulerSchema = z
     allowedRepos: z.array(
       z.string().regex(REPO_SLUG_PATTERN, 'VIBESYNC_SCHEDULER_ALLOWED_REPOS entries must be "owner/repo"'),
     ),
+    /** PM wake policy (vibesync-2bgv). */
+    pmWake: z.object({
+      enabled: z.boolean(),
+      minIntervalMs: z.number().int().min(1000, 'VIBESYNC_PM_WAKE_MIN_INTERVAL_MS must be >= 1000'),
+      backstopMs: z.number().int().min(1000, 'VIBESYNC_PM_WAKE_BACKSTOP_MS must be >= 1000'),
+      statePath: z.string().min(1, 'VIBESYNC_PM_WAKE_STATE_PATH must not be empty'),
+    }),
   })
   .refine((data) => !data.enabled || data.projectIdentifier.trim().length > 0, {
     message: 'VIBESYNC_SCHEDULER_PROJECT must be set when VIBESYNC_SCHEDULER_ENABLED is true',

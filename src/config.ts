@@ -24,6 +24,14 @@ function parseStrictInt(raw: string | undefined, fallback: number): number {
   return /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
 }
 
+/** setTimeout/setInterval ceiling; larger values overflow to a 1 ms timer. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+function parseCappedMs(raw: string | undefined, fallback: number): number {
+  const n = parseStrictInt(raw, fallback);
+  return Number.isNaN(n) ? n : Math.min(n, MAX_TIMER_MS);
+}
+
 function parseCsv(raw: string | undefined): string[] {
   return (raw ?? '')
     .split(',')
@@ -133,6 +141,13 @@ export function loadConfig(): AppConfig {
       autoMerge: process.env.VIBESYNC_SCHEDULER_AUTO_MERGE === 'true',
       requiredChecks: parseCsv(process.env.VIBESYNC_SCHEDULER_REQUIRED_CHECKS),
       allowedRepos: parseCsv(process.env.VIBESYNC_SCHEDULER_ALLOWED_REPOS),
+      // vibesync-2bgv: PM wake policy. OFF unless explicitly enabled.
+      pmWake: {
+        enabled: process.env.VIBESYNC_PM_WAKE_ENABLED === 'true',
+        minIntervalMs: parseCappedMs(process.env.VIBESYNC_PM_WAKE_MIN_INTERVAL_MS, 1_800_000),
+        backstopMs: parseCappedMs(process.env.VIBESYNC_PM_WAKE_BACKSTOP_MS, 28_800_000),
+        statePath: process.env.VIBESYNC_PM_WAKE_STATE_PATH || '/opt/stacks/vibesync/logs/pm-wake-state.json',
+      },
     },
   };
 

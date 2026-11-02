@@ -150,6 +150,24 @@ export interface SchedulerDaemonDeps {
   readonly runDeadlineFor?: (workBeadId: string) => number | undefined;
   /** Called after every tick (interval- or event-driven) completes. Must not throw completes. Must not throw (errors are logged and swallowed). */
   readonly onTick?: (report: DaemonTickReport) => void;
+  /**
+   * Called for every `requestTick` made while the loop is running, whatever
+   * its outcome (started / debounced / locked), with the optional trigger
+   * detail (vibesync-2bgv). Lets an observer record WHY the loop was poked.
+   * Errors are logged and swallowed.
+   */
+  readonly onTickRequested?: (reason: TickReason, detail: string | undefined) => void;
+  /**
+   * Called when a started run outlives its deadline and is cancelled
+   * (vibesync-izn3), so an observer can treat it as a stall (vibesync-2bgv).
+   * Errors are logged and swallowed.
+   */
+  readonly onRunExpired?: (input: {
+    readonly workBeadId: string;
+    readonly moleculeId: string | undefined;
+    readonly deadlineMs: number;
+    readonly elapsedMs: number;
+  }) => void;
 }
 
 export interface DaemonTickResult {
@@ -185,6 +203,8 @@ export class SchedulerDaemon {
   /** Set by stop(); in-flight ticks skip their remaining (writing) phases. */
   private stopping = false;
   private tickSeq = 0;
+  /** Ready work bead ids seen by this tick's schedule phase; null when unknown (vibesync-2bgv). */
+  private lastReadyIds: ReadonlySet<string> | null = null;
   /**
    * In-process dispatch-failure counts per sling context. The SlingContextStore
    * has no update seam for `dispatch_failures`, so without this the circuit
@@ -419,6 +439,11 @@ export class SchedulerDaemon {
         { workBeadId, moleculeId: moleculeId ?? null, elapsedMs, deadlineMs },
         'daemon: run exceeded its deadline — cancelling',
       );
+      try {
+        this.deps.onRunExpired?.({ workBeadId, moleculeId, deadlineMs, elapsedMs });
+      } catch (err) {
+        this.deps.logger?.warn?.({ workBeadId, error: msg(err) }, 'daemon: onRunExpired observer failed');
+      }
       if (moleculeId) {
         const cancelled = Promise.resolve()
           .then(() => this.deps.dispatcher.cancel(moleculeId))
@@ -515,7 +540,9 @@ export class SchedulerDaemon {
    * idempotent (one open context per work bead), so re-running is safe.
    */
   private async scheduleReady(): Promise<void> {
+    this.lastReadyIds = null; // unknown until this tick's read succeeds
     const ready = await this.deps.readyBeads.readyWorkBeadIds();
+    this.lastReadyIds = ready;
     for (const workBeadId of ready) {
       const resolved = await this.deps.formulaResolver.resolve(workBeadId);
       if (!resolved) continue;
@@ -534,6 +561,20 @@ export class SchedulerDaemon {
    */
   drainRuns(): Promise<void> {
     return this.scheduler.drainRuns();
+  }
+
+  /**
+   * Backlog as of the last tick's schedule phase (no extra bd call): ready work
+   * beads that have no run in flight, and the free pool capacity (vibesync-2bgv).
+   * Null when this tick's ready read failed.
+   */
+  backlogSnapshot(): { readonly readyCount: number; readonly freeCapacity: number } | null {
+    if (!this.lastReadyIds) return null;
+    const inFlight = new Set(this.scheduler.inFlightWorkBeadIds());
+    let readyCount = 0;
+    for (const id of this.lastReadyIds) if (!inFlight.has(id)) readyCount += 1;
+    const working = this.pool.view().filter((slot) => slot.state === 'working').length;
+    return { readyCount, freeCapacity: this.deps.config().poolSize - working };
   }
 
   async tick(): Promise<DaemonTickResult> {
@@ -618,8 +659,13 @@ export class SchedulerDaemon {
    *     'locked' — never queued, never a second concurrent tick.
    * No-op ('inactive') unless the loop is running, and after stop().
    */
-  requestTick(reason: TickReason): TickRequestOutcome {
+  requestTick(reason: TickReason, detail?: string): TickRequestOutcome {
     if (!this.timer || this.stopping) return 'inactive';
+    try {
+      this.deps.onTickRequested?.(reason, detail);
+    } catch (err) {
+      this.deps.logger?.warn?.({ error: msg(err), reason }, 'daemon: onTickRequested observer failed');
+    }
     if (this.inFlight) {
       this.logLockedSkip(reason);
       return 'locked';
