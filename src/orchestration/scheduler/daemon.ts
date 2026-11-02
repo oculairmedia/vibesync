@@ -29,6 +29,25 @@ import type { DispatchCandidate } from './plan-dispatch.js';
 import { Refinery, type GitHubPort, type RefineryEscalationSink, type MergeRequest } from './refinery.js';
 import { Witness, type RunLivenessProbe, type WitnessEscalation } from './witness.js';
 
+/**
+ * Why a tick ran (vibesync-p489). `interval` is the fallback timer; the other
+ * three are event triggers funnelled through `SchedulerDaemon.requestTick`.
+ * `webhook` is reserved for vibesync-xgnf, which calls the same entry point.
+ */
+export type TickReason = 'interval' | 'webhook' | 'bead-status' | 'run-finished';
+
+/**
+ * Outcome of `requestTick`:
+ *  - `started`   — a tick was started now (leading edge).
+ *  - `debounced` — inside the debounce window; coalesced into the single trailing tick.
+ *  - `locked`    — a tick is already running; the request is skipped, NOT queued.
+ *  - `inactive`  — the daemon is not running (never started, or stopped); no-op.
+ */
+export type TickRequestOutcome = 'started' | 'debounced' | 'locked' | 'inactive';
+
+/** Default minimum spacing between event-triggered ticks (ms). */
+export const DEFAULT_EVENT_DEBOUNCE_MS = 5_000;
+
 export interface DaemonLogger {
   info?(o: unknown, m: string): void;
   warn?(o: unknown, m: string): void;
@@ -65,6 +84,8 @@ export interface ReadyBeadSource {
 export interface DaemonTickReport {
   /** 1-based sequence number of this tick since `run()` started. */
   readonly seq: number;
+  /** What caused this tick (vibesync-p489). */
+  readonly reason: TickReason;
   readonly startedAt: string;
   readonly durationMs: number;
   readonly result: DaemonTickResult;
@@ -86,7 +107,12 @@ export interface SchedulerDaemonDeps {
   readonly config: () => SchedulerConfig;
   readonly now?: () => Date;
   readonly logger?: DaemonLogger;
-  /** Called after every interval-driven tick completes. Must not throw (errors are logged and swallowed). */
+  /**
+   * Minimum spacing between EVENT-triggered ticks (vibesync-p489). Default
+   * {@link DEFAULT_EVENT_DEBOUNCE_MS}. Does not affect the interval timer.
+   */
+  readonly eventDebounceMs?: number;
+  /** Called after every tick (interval- or event-driven) completes. Must not throw completes. Must not throw (errors are logged and swallowed). */
   readonly onTick?: (report: DaemonTickReport) => void;
 }
 
@@ -110,8 +136,14 @@ export class SchedulerDaemon {
   /** work_bead_id → slot_id, so self-completion frees the right slot. */
   private readonly slotForBead = new Map<string, string>();
   private timer: ReturnType<typeof setInterval> | null = null;
-  /** The currently running interval-driven tick, so stop() can await it. */
+  /** The currently running tick (any reason), so stop() can await it and no two ticks overlap. */
   private inFlight: Promise<void> | null = null;
+  private readonly eventDebounceMs: number;
+  /** Wall-clock start of the last EVENT-triggered tick (window anchor). Interval ticks do not move it. */
+  private lastEventTickAt: number | null = null;
+  /** Pending trailing tick for requests coalesced inside the debounce window. */
+  private trailingTimer: ReturnType<typeof setTimeout> | null = null;
+  private trailingReason: TickReason | null = null;
   /** Set by stop(); in-flight ticks skip their remaining (writing) phases. */
   private stopping = false;
   private tickSeq = 0;
@@ -125,6 +157,7 @@ export class SchedulerDaemon {
 
   constructor(deps: SchedulerDaemonDeps) {
     this.deps = deps;
+    this.eventDebounceMs = deps.eventDebounceMs ?? DEFAULT_EVENT_DEBOUNCE_MS;
     const now = deps.now ?? (() => new Date());
 
     this.pool = new AgentPool({ members: deps.poolMembers, now });
@@ -172,6 +205,8 @@ export class SchedulerDaemon {
       readyWork: { readyWorkBeadIds: () => deps.readyBeads.readyWorkBeadIds() },
       candidateMetadata: { metadataFor: (r) => deps.readyBeads.metadataFor(r.params.work_bead_id) },
       executor: { execute: (c) => executor.start(c) },
+      // Trigger (c): a settled run frees capacity — ask for a prompt tick.
+      onRunSettled: () => { this.requestTick('run-finished'); },
       ...(deps.logger ? { logger: deps.logger } : {}),
     });
 
@@ -364,15 +399,79 @@ export class SchedulerDaemon {
         this.deps.logger?.info?.({ intervalMs }, 'daemon: previous tick still running — skipping this interval');
         return;
       }
-      this.inFlight = this.runObservedTick().finally(() => {
-        this.inFlight = null;
-      });
+      this.startTick('interval');
     }, intervalMs);
-    this.deps.logger?.info?.({ intervalMs, poolSize: this.deps.poolMembers.length }, 'daemon: started');
+    this.deps.logger?.info?.(
+      { intervalMs, eventDebounceMs: this.eventDebounceMs, poolSize: this.deps.poolMembers.length },
+      'daemon: started',
+    );
   }
 
-  /** One interval-driven tick plus its observation report. Never rejects. */
-  private async runObservedTick(): Promise<void> {
+  /**
+   * The SINGLE entry point for event-driven ticks (vibesync-p489): bead status
+   * changes, finished runs and (later, vibesync-xgnf) webhooks all call this.
+   * The interval timer stays as the fallback; nothing here self-reschedules.
+   *
+   * Debounce = leading edge + one trailing tick, at most one event-triggered
+   * tick per `eventDebounceMs`:
+   *   - first request after a quiet window ticks immediately;
+   *   - requests inside the window collapse into ONE trailing tick fired at the
+   *     window's end (so a burst is never lost, never multiplied);
+   *   - a request while a tick is running (interval or event) is skipped as
+   *     'locked' — never queued, never a second concurrent tick.
+   * No-op ('inactive') unless the loop is running, and after stop().
+   */
+  requestTick(reason: TickReason): TickRequestOutcome {
+    if (!this.timer || this.stopping) return 'inactive';
+    if (this.inFlight) {
+      this.logLockedSkip(reason);
+      return 'locked';
+    }
+    const now = Date.now();
+    if (this.lastEventTickAt !== null) {
+      const remaining = this.lastEventTickAt + this.eventDebounceMs - now;
+      if (remaining > 0) {
+        this.trailingReason = reason; // latest wins; the tick is one regardless of how many were coalesced
+        if (!this.trailingTimer) {
+          this.trailingTimer = setTimeout(() => this.fireTrailing(), remaining);
+        }
+        return 'debounced';
+      }
+    }
+    this.lastEventTickAt = now;
+    this.startTick(reason);
+    return 'started';
+  }
+
+  private fireTrailing(): void {
+    const reason = this.trailingReason ?? 'bead-status';
+    this.trailingTimer = null;
+    this.trailingReason = null;
+    if (!this.timer || this.stopping) return;
+    if (this.inFlight) {
+      this.logLockedSkip(reason); // dropped, not re-queued
+      return;
+    }
+    this.lastEventTickAt = Date.now();
+    this.startTick(reason);
+  }
+
+  private logLockedSkip(reason: TickReason): void {
+    this.deps.logger?.info?.(
+      { reason, skippedReason: 'locked' },
+      'SchedulerDaemon tick request skipped — locked (a tick is already running)',
+    );
+  }
+
+  /** Shared tick runner for the interval and event triggers: they can never overlap. */
+  private startTick(reason: TickReason): void {
+    this.inFlight = this.runObservedTick(reason).finally(() => {
+      this.inFlight = null;
+    });
+  }
+
+  /** One tick plus its observation report. Never rejects. */
+  private async runObservedTick(reason: TickReason): Promise<void> {
     const seq = ++this.tickSeq;
     const started = Date.now();
     const startedAt = new Date(started).toISOString();
@@ -380,13 +479,13 @@ export class SchedulerDaemon {
     try {
       result = await this.tick();
     } catch (err) {
-      this.deps.logger?.warn?.({ error: msg(err), seq }, 'daemon: tick error');
+      this.deps.logger?.warn?.({ error: msg(err), seq, reason }, 'daemon: tick error');
       return;
     }
     try {
-      this.deps.onTick?.({ seq, startedAt, durationMs: Date.now() - started, result });
+      this.deps.onTick?.({ seq, reason, startedAt, durationMs: Date.now() - started, result });
     } catch (err) {
-      this.deps.logger?.warn?.({ error: msg(err), seq }, 'daemon: onTick observer failed');
+      this.deps.logger?.warn?.({ error: msg(err), seq, reason }, 'daemon: onTick observer failed');
     }
   }
 
@@ -402,6 +501,12 @@ export class SchedulerDaemon {
       clearInterval(this.timer);
       this.timer = null;
     }
+    if (this.trailingTimer) {
+      clearTimeout(this.trailingTimer);
+      this.trailingTimer = null;
+    }
+    this.trailingReason = null;
+    this.lastEventTickAt = null;
     const pending = this.inFlight;
     if (pending) await pending;
     if (wasRunning) {

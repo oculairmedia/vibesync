@@ -122,7 +122,7 @@ export type {
   PatrolResult,
 } from './witness.js';
 
-export { SchedulerDaemon } from './daemon.js';
+export { SchedulerDaemon, DEFAULT_EVENT_DEBOUNCE_MS } from './daemon.js';
 export type {
   DaemonLogger,
   DaemonTickReport,
@@ -130,6 +130,8 @@ export type {
   FormulaResolver,
   ReadyBeadSource,
   SchedulerDaemonDeps,
+  TickReason,
+  TickRequestOutcome,
 } from './daemon.js';
 
 export {
@@ -138,5 +140,7 @@ export {
   SCHEDULER_STARTED_EVENT,
   SCHEDULER_STOPPED_EVENT,
   SCHEDULER_START_FAILED_EVENT,
+  BEADS_ISSUE_STATUS_CHANGED_EVENT,
+  TICK_TRIGGER_BEAD_STATUSES,
 } from './boot-scheduler.js';
 export type { BootSchedulerOptions, SchedulerBootConfig, SchedulerHandle } from './boot-scheduler.js';

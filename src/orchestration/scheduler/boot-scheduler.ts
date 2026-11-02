@@ -58,6 +58,11 @@ export interface SchedulerBootConfig {
   readonly packDir: string;
   readonly autoMerge: boolean;
   readonly requiredChecks: readonly string[];
+  /**
+   * Minimum spacing (ms) between event-triggered ticks (vibesync-p489).
+   * Optional here so hand-built configs keep working; defaults to 5000.
+   */
+  readonly eventDebounceMs?: number;
 }
 
 export interface BootSchedulerOptions {
@@ -90,6 +95,17 @@ export const SCHEDULER_TICK_EVENT = 'daemon/scheduler.tick';
 export const SCHEDULER_STARTED_EVENT = 'daemon/scheduler.started';
 export const SCHEDULER_STOPPED_EVENT = 'daemon/scheduler.stopped';
 export const SCHEDULER_START_FAILED_EVENT = 'daemon/scheduler.start_failed';
+
+/**
+ * Bead status transition, payload `{ issueId, from, to }` (vibesync-p489).
+ * The scheduler SUBSCRIBES to this; nothing in the repo emits it yet — the
+ * producer (bd -> bus) is a separate bead. A `to` of ready|in_progress|closed
+ * requests an immediate (debounced) tick; any other status is ignored.
+ */
+export const BEADS_ISSUE_STATUS_CHANGED_EVENT = 'beads/issue.status_changed';
+
+/** Target statuses of `beads/issue.status_changed` that trigger a tick. */
+export const TICK_TRIGGER_BEAD_STATUSES: ReadonlySet<string> = new Set(['ready', 'in_progress', 'closed']);
 
 /**
  * Build and start the daemon. Throws on misconfiguration (unknown formula, no
@@ -198,11 +214,13 @@ export function startSchedulerDaemon(
       onBlocked: (i) => escalateSafely(i.workBeadId, i.summary, i.runId),
     },
     config: () => ({ poolSize: effectivePoolSize, batchSize: config.batchSize, paused: config.paused }),
+    ...(config.eventDebounceMs !== undefined ? { eventDebounceMs: config.eventDebounceMs } : {}),
     ...(logger ? { logger } : {}),
     onTick: (report: DaemonTickReport) => {
       const { result } = report;
       const payload = {
         seq: report.seq,
+        reason: report.reason,
         durationMs: report.durationMs,
         startedAt: report.startedAt,
         project: config.projectIdentifier,
@@ -219,6 +237,13 @@ export function startSchedulerDaemon(
   });
 
   daemon.run(config.intervalMs);
+  // Trigger (b): bead status change -> immediate (debounced) tick. Layering
+  // invariant 3: observed through the bus, never by polling bd.
+  const unsubscribeStatus = bus.subscribe((event) => {
+    if (event.kind !== BEADS_ISSUE_STATUS_CHANGED_EVENT) return;
+    const to = event.payload?.['to'];
+    if (typeof to === 'string' && TICK_TRIGGER_BEAD_STATUSES.has(to)) daemon.requestTick('bead-status');
+  });
   bus.emit({
     layer: 'daemon',
     kind: SCHEDULER_STARTED_EVENT,
@@ -238,6 +263,7 @@ export function startSchedulerDaemon(
     daemon,
     stop(): Promise<void> {
       stopped ??= (async () => {
+        unsubscribeStatus();
         await daemon.stop();
         bus.emit({ layer: 'daemon', kind: SCHEDULER_STOPPED_EVENT, payload: { project: config.projectIdentifier } });
       })();

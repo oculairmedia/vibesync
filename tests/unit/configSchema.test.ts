@@ -10,6 +10,7 @@ function schedulerDefaults(overrides = {}) {
     enabled: false,
     projectIdentifier: '',
     intervalMs: 30000,
+    eventDebounceMs: 5000,
     poolSize: 1,
     batchSize: 1,
     paused: false,
@@ -212,6 +213,14 @@ describe('configSchema', () => {
       );
       expect(result.success).toBe(false);
       expect(result.error.issues[0].message).toContain('VIBESYNC_SCHEDULER_REQUIRED_CHECKS');
+    });
+
+    it('rejects a negative or fractional eventDebounceMs (vibesync-p489)', () => {
+      for (const bad of [-1, 1.5, Number.NaN]) {
+        const result = configSchema.safeParse(validConfig({ scheduler: schedulerDefaults({ eventDebounceMs: bad }) }));
+        expect(result.success).toBe(false);
+      }
+      expect(configSchema.safeParse(validConfig({ scheduler: schedulerDefaults({ eventDebounceMs: 0 }) })).success).toBe(true);
     });
 
     it('rejects an interval under 1s', () => {

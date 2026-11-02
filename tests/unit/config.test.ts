@@ -304,6 +304,7 @@ describe('config', () => {
         paused: false,
         autoMerge: false,
         intervalMs: 30000,
+        eventDebounceMs: 5000,
         poolSize: 1,
         batchSize: 1,
         requiredChecks: [],
@@ -327,6 +328,17 @@ describe('config', () => {
         paused: true,
         autoMerge: false,
       });
+    });
+
+    it('VIBESYNC_SCHEDULER_EVENT_DEBOUNCE_MS maps through; the WHOLE string must be a non-negative integer (vibesync-p489)', () => {
+      process.env.VIBESYNC_SCHEDULER_EVENT_DEBOUNCE_MS = '2500';
+      expect(loadConfig().scheduler.eventDebounceMs).toBe(2500);
+      process.env.VIBESYNC_SCHEDULER_EVENT_DEBOUNCE_MS = '0';
+      expect(loadConfig().scheduler.eventDebounceMs).toBe(0);
+      for (const bad of ['5s', '1e3', '-1', '5.5', ' 5', '0x10', 'abc']) {
+        process.env.VIBESYNC_SCHEDULER_EVENT_DEBOUNCE_MS = bad;
+        expect(() => loadConfig(), bad).toThrow('Config validation failed');
+      }
     });
 
     it('any value other than "true" leaves it off', () => {
