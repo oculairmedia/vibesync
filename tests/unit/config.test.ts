@@ -342,6 +342,39 @@ describe('config', () => {
       }
     });
 
+    it('pmWake: off by default with 30 min / 8 h defaults (vibesync-2bgv)', () => {
+      expect(loadConfig().scheduler.pmWake).toEqual({
+        enabled: false,
+        minIntervalMs: 1_800_000,
+        backstopMs: 28_800_000,
+        statePath: '/opt/stacks/vibesync/logs/pm-wake-state.json',
+      });
+    });
+
+    it('pmWake env keys map through; ms are whole-string integers capped at the timer ceiling (vibesync-2bgv)', () => {
+      process.env.VIBESYNC_PM_WAKE_ENABLED = 'true';
+      process.env.VIBESYNC_PM_WAKE_MIN_INTERVAL_MS = '60000';
+      process.env.VIBESYNC_PM_WAKE_BACKSTOP_MS = '99999999999999';
+      process.env.VIBESYNC_PM_WAKE_STATE_PATH = '/tmp/x/state.json';
+      try {
+        expect(loadConfig().scheduler.pmWake).toEqual({
+          enabled: true,
+          minIntervalMs: 60000,
+          backstopMs: 2_147_483_647,
+          statePath: '/tmp/x/state.json',
+        });
+        for (const bad of ['8h', '1e3', '-1', '5.5', ' 5', 'abc']) {
+          process.env.VIBESYNC_PM_WAKE_BACKSTOP_MS = bad;
+          expect(() => loadConfig(), bad).toThrow('Config validation failed');
+        }
+        process.env.VIBESYNC_PM_WAKE_BACKSTOP_MS = '28800000';
+        process.env.VIBESYNC_PM_WAKE_MIN_INTERVAL_MS = '1s';
+        expect(() => loadConfig()).toThrow('Config validation failed');
+      } finally {
+        for (const k of Object.keys(process.env)) if (k.startsWith('VIBESYNC_PM_WAKE_')) delete process.env[k];
+      }
+    });
+
     it('any value other than "true" leaves it off', () => {
       process.env.VIBESYNC_SCHEDULER_ENABLED = '1';
       expect(loadConfig().scheduler.enabled).toBe(false);

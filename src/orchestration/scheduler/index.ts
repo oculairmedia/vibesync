@@ -122,6 +122,19 @@ export type {
   PatrolResult,
 } from './witness.js';
 
+export {
+  PmWaker,
+  LoggingPmWakeSink,
+  formatWakeMessage,
+  registryPmAgentLookup,
+  PM_WOKEN_EVENT,
+  PM_WAKE_SKIPPED_EVENT,
+  PM_WAKE_RETRY_BACKOFF_MS,
+} from './pm-waker.js';
+export type { WakeReason, PmWakeSink, PmWakeInput, PmWakerDeps, PmBacklogSnapshot } from './pm-waker.js';
+export { FilePmWakeStateStore } from './pm-wake-state.js';
+export type { PmWakeStateStore, PmWakeProjectState } from './pm-wake-state.js';
+
 export { SchedulerDaemon, DEFAULT_EVENT_DEBOUNCE_MS } from './daemon.js';
 export type {
   DaemonLogger,

@@ -20,6 +20,7 @@ function schedulerDefaults(overrides = {}) {
     autoMerge: false,
     requiredChecks: [] as string[],
     allowedRepos: [] as string[],
+    pmWake: { enabled: false, minIntervalMs: 1_800_000, backstopMs: 28_800_000, statePath: '/tmp/pm-wake-state.json' },
     ...overrides,
   };
 }
@@ -257,6 +258,22 @@ describe('configSchema', () => {
         expect(result.success).toBe(false);
       }
       expect(configSchema.safeParse(validConfig({ scheduler: schedulerDefaults({ eventDebounceMs: 0 }) })).success).toBe(true);
+    });
+
+    it('validates the pmWake section (vibesync-2bgv)', () => {
+      const pm = (over: object) =>
+        configSchema.safeParse(
+          validConfig({
+            scheduler: schedulerDefaults({
+              pmWake: { enabled: true, minIntervalMs: 1_800_000, backstopMs: 28_800_000, statePath: '/x.json', ...over },
+            }),
+          }),
+        );
+      expect(pm({}).success).toBe(true);
+      expect(pm({ minIntervalMs: 999 }).success).toBe(false);
+      expect(pm({ backstopMs: 1.5 }).success).toBe(false);
+      expect(pm({ backstopMs: Number.NaN }).success).toBe(false);
+      expect(pm({ statePath: '' }).success).toBe(false);
     });
 
     it('rejects an interval under 1s', () => {

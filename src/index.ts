@@ -17,6 +17,7 @@ import { broadcastSyncEvent } from './ApiServer';
 import { bootOrchestrationPlane, releaseDoltAfterFailedBoot, type OrchestrationHandle } from './orchestration/boot.js';
 import { DoltClient, defaultDoltBootDeps } from './orchestration/store/index.js';
 import { createCliRunner } from './orchestration/scheduler/bd-adapters.js';
+import { registryPmAgentLookup } from './orchestration/scheduler/pm-waker.js';
 import { sweepAll as sweepBeadsPorts, type SweeperProject } from './beads/PortSweeper.js';
 import { startPeriodicPortSweep } from './beads/startPeriodicPortSweep.js';
 
@@ -482,6 +483,9 @@ async function main(): Promise<void> {
                 role: row.roleName,
                 lettaBaseUrl: row.lettaBaseUrl,
               })),
+            // vibesync-2bgv: PM wake target comes from the projects registry,
+            // never a constant. Only used when scheduler.pmWake.enabled.
+            pmWake: { lookupAgentId: registryPmAgentLookup(db) },
             // bd runs against the scheduled project's own beads dir, resolved
             // lazily from the projects table so a path change needs no restart.
             bd: async (args) => {
