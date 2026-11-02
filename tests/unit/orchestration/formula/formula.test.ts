@@ -1,3 +1,4 @@
+import { resolveRetryPolicy } from '../../../../src/orchestration/retry/index.js';
 import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 
@@ -232,5 +233,48 @@ retries = -1
 role = "worker"
 retry_backoff_ms = 1.5
 `)).toThrow(/retry_backoff_ms must be a non-negative integer/);
+  });
+
+  describe('[steps.retry] (vibesync-ynmp)', () => {
+    const one = (body: string) => parseFormulasFromToml(`
+[formula.f]
+[[formula.f.steps]]
+role = "worker"
+${body}
+`)[0]!.steps[0]!;
+
+    it('parses max_attempts, on_exhausted and backoff_ms', () => {
+      expect(one(`[formula.f.steps.retry]
+max_attempts = 3
+on_exhausted = "soft_fail"
+backoff_ms = 25`).retry).toEqual({ maxAttempts: 3, onExhausted: 'soft_fail', backoffMs: 25 });
+    });
+
+    it('defaults on_exhausted to "fail" and backoff_ms to 1000; no table = no retry policy', () => {
+      expect(one(`[formula.f.steps.retry]
+max_attempts = 2`).retry).toEqual({ maxAttempts: 2, onExhausted: 'fail', backoffMs: 1000 });
+      expect(one('').retry).toBeUndefined();
+    });
+
+    it('rejects a missing/invalid max_attempts, an unknown on_exhausted and unknown keys (a typo must not mean "no retry")', () => {
+      expect(() => one(`[formula.f.steps.retry]
+on_exhausted = "fail"`)).toThrow(/max_attempts is required and must be an integer >= 1/);
+      expect(() => one(`[formula.f.steps.retry]
+max_attempts = 0`)).toThrow(/max_attempts/);
+      expect(() => one(`[formula.f.steps.retry]
+max_attempts = 2
+on_exhausted = "ignore"`)).toThrow(/on_exhausted must be "fail" or "soft_fail"/);
+      expect(() => one(`[formula.f.steps.retry]
+max_attempts = 2
+max_attempt = 3`)).toThrow(/unknown key "max_attempt"/);
+    });
+
+    it('DECISION: the deprecated `retries` alias still parses (max_attempts = retries + 1, on_exhausted = fail) but cannot be mixed with [steps.retry]', () => {
+      expect(resolveRetryPolicy(one('retries = 2\nretry_backoff_ms = 5'))).toEqual({ maxAttempts: 3, onExhausted: 'fail', backoffMs: 5, declared: true });
+      expect(resolveRetryPolicy(one(''))).toMatchObject({ maxAttempts: 1, declared: false });
+      expect(() => one(`retries = 1
+[formula.f.steps.retry]
+max_attempts = 2`)).toThrow(/cannot be combined with the deprecated retries.*max_attempts = N \+ 1/);
+    });
   });
 });

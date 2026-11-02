@@ -360,7 +360,39 @@ export class FormulaDispatcher implements ReadyStepRunner {
       ...(input.motivatingBeadId ? { motivatingBeadId: input.motivatingBeadId } : {}),
       steps: input.formula.steps,
     });
-    const moleculeId = view.rootId;
+    return this.registerAndAwait({ input, view, provider, roleAgentContext, startedAt, outputs: {}, announce: true });
+  }
+
+  /**
+   * Take over an already-cooked, still-open molecule (vibesync-ynmp): the
+   * restart path. A new process has the molecule's beads but not its run
+   * context (formula, pack, input), so the caller supplies it; the bead graph
+   * and the retry counters on the step beads say where to continue. Outputs of
+   * steps that already closed are recovered from the beads.
+   */
+  async adopt(moleculeId: string, input: DispatchInput): Promise<DispatchResult> {
+    const view = await this.walker.load(moleculeId);
+    if (!view) throw new FormulaDispatchError(`FormulaDispatcher: molecule ${moleculeId} not found`, moleculeId);
+    if (view.root.status === 'closed') throw new FormulaDispatchError(`FormulaDispatcher: molecule ${moleculeId} is already closed`, moleculeId);
+    const provider = await this.resolveProvider(input);
+    const roleAgentContext = await this.resolveRoleAgentContext(input);
+    return this.registerAndAwait({
+      input, view, provider, roleAgentContext, startedAt: Date.now(),
+      outputs: outputsFromClosedSteps(view.steps), announce: false,
+    });
+  }
+
+  private async registerAndAwait(args: {
+    readonly input: DispatchInput;
+    readonly view: { readonly rootId: string };
+    readonly provider: RuntimeProvider;
+    readonly roleAgentContext: MoleculeRun['roleAgentContext'];
+    readonly startedAt: number;
+    readonly outputs: Record<string, string>;
+    readonly announce: boolean;
+  }): Promise<DispatchResult> {
+    const { input, provider, roleAgentContext, startedAt } = args;
+    const moleculeId = args.view.rootId;
     const done = new Promise<DispatchResult>((resolve, reject) => {
       this.live.set(moleculeId, {
         input,
@@ -368,7 +400,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
         provider,
         roleAgentContext,
         startedAt,
-        outputs: {},
+        outputs: args.outputs,
         rolesByName: new Map(input.pack.roles.map((role) => [role.name, role])),
         startedSteps: new Set(),
         running: 0,
@@ -386,7 +418,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
       // An observer must never fail the run it observes.
     }
 
-    this.emit('dispatcher/formula.started', moleculeId, undefined, {
+    this.emit(args.announce ? 'dispatcher/formula.started' : 'dispatcher/formula.adopted', moleculeId, undefined, {
       formulaName: input.formula.name,
       moleculeId,
       stepCount: input.formula.steps.length,
