@@ -41,6 +41,13 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import mysql from 'mysql2/promise';
 import { v5 as uuidv5 } from 'uuid';
+import {
+  FAILURE_CLASS_KEY,
+  INFRA_RETRIES_KEY,
+  LAST_FAILURE_CLASS_KEY,
+  RETRY_ATTEMPT_KEY,
+  RETRY_OUTCOME_KEY,
+} from '../retry/policy.js';
 
 // bd 1.2.2 (7fcf4e1634bf), internal/storage/depid: type is not edge identity.
 const dependencyId = (issueId: string, target: string): string =>
@@ -812,8 +819,50 @@ export class DoltClient {
     }
   }
 
-  /** Persist latest retry-aware execution attempt count. */
+  /**
+   * Persist the attempt the step is on. The durable counter is the flat bead
+   * metadata key `gc.retry_attempt` (vibesync-ynmp; what `bd update
+   * --set-metadata gc.retry_attempt=N` writes); `exec.attempts` mirrors it for
+   * the older readers (MoleculeStepExec.attempts).
+   */
   async recordStepAttempt(stepId: string, attempt: number): Promise<void> {
+    await this.mutateStep(stepId, {}, (meta) => {
+      meta.exec = { ...(meta.exec ?? {}), attempts: attempt };
+      meta[RETRY_ATTEMPT_KEY] = attempt;
+    });
+  }
+
+  /**
+   * Put a failed step back in the ready set for its next try (vibesync-ynmp):
+   * status 'open', closed_at/close_reason cleared (an agent may have closed it
+   * with a failure_class), the counters written to the bead, and the declared
+   * `failure_class` moved to `gc.last_failure_class` so it cannot poison the
+   * next try. This one write is what survives a restart.
+   */
+  async reopenStepForRetry(
+    stepId: string,
+    args: {
+      readonly attempt: number;
+      readonly infraRetries: number;
+      readonly failureClass: string | null;
+      readonly errorTrace: string;
+    },
+  ): Promise<void> {
+    await this.mutateStep(stepId, { reopen: true }, (meta) => {
+      meta.exec = { ...(meta.exec ?? {}), attempts: args.attempt, error_trace: args.errorTrace };
+      meta[RETRY_ATTEMPT_KEY] = args.attempt;
+      meta[INFRA_RETRIES_KEY] = args.infraRetries;
+      delete meta[FAILURE_CLASS_KEY];
+      if (args.failureClass) meta[LAST_FAILURE_CLASS_KEY] = args.failureClass;
+    });
+  }
+
+  /** Read-modify-write one step's metadata (and optionally its status columns) in a transaction. */
+  private async mutateStep(
+    stepId: string,
+    opts: { readonly reopen?: boolean },
+    mutate: (meta: Record<string, any>) => void,
+  ): Promise<void> {
     const conn = await this.pool.getConnection();
     try {
       await conn.beginTransaction();
@@ -823,8 +872,9 @@ export class DoltClient {
       );
       const existing = rows[0]?.['metadata'];
       const meta = typeof existing === 'string' ? JSON.parse(existing) : (existing ?? {});
-      meta.exec = { ...(meta.exec ?? {}), attempts: attempt };
-      await conn.execute(`UPDATE issues SET metadata = CAST(? AS JSON) WHERE id = ?`, [
+      mutate(meta);
+      const reopen = opts.reopen ? `, status = 'open', closed_at = NULL, close_reason = NULL` : '';
+      await conn.execute(`UPDATE issues SET metadata = CAST(? AS JSON)${reopen} WHERE id = ?`, [
         JSON.stringify(meta),
         stepId,
       ]);
@@ -862,8 +912,12 @@ export class DoltClient {
     }
   }
 
-  /** Mark a step as failed with an error trace recorded in metadata. */
-  async markStepFailed(stepId: string, errorTrace: string): Promise<void> {
+  /**
+   * Mark a step as failed with an error trace recorded in metadata.
+   * `retryOutcome` (vibesync-ynmp) is stamped as `gc.retry_outcome` when the
+   * failure is the end of a retry policy (soft_failed | exhausted | ...).
+   */
+  async markStepFailed(stepId: string, errorTrace: string, retryOutcome?: string): Promise<void> {
     const conn = await this.pool.getConnection();
     try {
       await conn.beginTransaction();
@@ -874,6 +928,7 @@ export class DoltClient {
       const existing = rows[0]?.['metadata'];
       const meta = typeof existing === 'string' ? JSON.parse(existing) : (existing ?? {});
       meta.exec = { ...(meta.exec ?? {}), error_trace: errorTrace };
+      if (retryOutcome) meta[RETRY_OUTCOME_KEY] = retryOutcome;
       await conn.execute(
         `UPDATE issues SET status = 'closed', closed_at = NOW(), close_reason = ?, metadata = CAST(? AS JSON) WHERE id = ?`,
         [`step failed: ${errorTrace.slice(0, 200)}`, JSON.stringify(meta), stepId],

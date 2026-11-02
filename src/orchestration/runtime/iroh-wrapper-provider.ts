@@ -93,6 +93,8 @@ interface SessionState {
   readonly moleculeId: string | null;
   readonly stepName: string | null;
   readonly attempt: number | null;
+  /** Infra failures this step already absorbed (vibesync-ynmp): they do not bump `attempt`, so they must still change the client message id. */
+  readonly infraRetries: number;
   readonly abort: AbortController;
   readonly seenTurnIds: Set<string>;
   conversationId: string | null;
@@ -161,6 +163,7 @@ export class IrohWrapperProvider implements RuntimeProvider {
       moleculeId: readStringExtra(spec, 'moleculeId') ?? null,
       stepName: readStringExtra(spec, 'stepName') ?? null,
       attempt: typeof attempt === 'number' && Number.isFinite(attempt) ? attempt : null,
+      infraRetries: readNumberExtra(spec, 'infraRetries') ?? 0,
       abort: new AbortController(),
       seenTurnIds: new Set(),
       conversationId: null,
@@ -348,7 +351,7 @@ function wakeAll(state: SessionState): void {
 /** Stable per logical prompt: the same step attempt re-sent after a redial dedupes on the wrapper. */
 function clientMessageIdFor(state: SessionState, handleId: string): string {
   if (state.moleculeId && state.stepName) {
-    const attempt = state.attempt ?? 1;
+    const attempt = `${state.attempt ?? 1}${state.infraRetries > 0 ? `r${state.infraRetries}` : ''}`;
     const seq = state.promptCount > 1 ? `:p${state.promptCount}` : '';
     return `vibesync:${state.moleculeId}:${state.stepName}:a${attempt}${seq}`;
   }

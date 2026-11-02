@@ -22,9 +22,19 @@
  *   wait_for = "completion"  # optional, default
  *   depends_on = "<step>"    # optional, single name OR array
  *   needs = ["<step>", ...]  # optional alias of depends_on; both merge (vibesync-efee)
- *   retries = 0              # optional, non-negative integer
- *   retry_backoff_ms = 1000  # optional, non-negative integer
+ *   retries = 0              # DEPRECATED alias of [steps.retry]: max_attempts = retries + 1, on_exhausted = "fail"
+ *   retry_backoff_ms = 1000  # DEPRECATED alias of retry.backoff_ms
  *   turn_timeout_ms = 600000 # optional, non-negative integer (vibesync-lcp-98y8)
+ *
+ *   [formula.<name>.steps.retry]   # optional, per-step retry policy (vibesync-ynmp)
+ *   max_attempts = 3               # required, integer >= 1: total tries including the first
+ *   on_exhausted = "soft_fail"     # "fail" (default: abort the molecule) | "soft_fail" (close the
+ *                                  # step failed, the molecule continues)
+ *   backoff_ms = 1000              # optional, non-negative integer
+ *
+ * `retry` and the legacy `retries`/`retry_backoff_ms` cannot be mixed on one step.
+ * The attempt counter lives on the step bead (gc.retry_attempt), never in memory;
+ * see ../retry/policy.ts.
  *
  * The `when_to_use` field (vibesync-cy4) is the catalog hint a PM /
  * mayor agent reads via `GET /formulas` to pick the right formula for
@@ -38,6 +48,7 @@
 import { readFileSync } from 'node:fs';
 import { parse as parseToml } from 'smol-toml';
 import type { StepSpec } from '../molecule/index.js';
+import { DEFAULT_RETRY_BACKOFF_MS, type OnExhausted, type RetryPolicy } from '../retry/policy.js';
 
 /**
  * One parsed formula: name + ordered step specs + metadata.
@@ -153,7 +164,8 @@ function parseStep(
     );
   }
   const retries = readNonNegativeInteger(raw['retries'], 0, `formula "${formulaName}": step "${name}".retries`);
-  const retryBackoffMs = readNonNegativeInteger(raw['retry_backoff_ms'], 1000, `formula "${formulaName}": step "${name}".retry_backoff_ms`);
+  const retryBackoffMs = readNonNegativeInteger(raw['retry_backoff_ms'], DEFAULT_RETRY_BACKOFF_MS, `formula "${formulaName}": step "${name}".retry_backoff_ms`);
+  const retry = parseRetryPolicy(formulaName, name, raw);
   const turnTimeoutMs = raw['turn_timeout_ms'] !== undefined
     ? readNonNegativeInteger(raw['turn_timeout_ms'], undefined as never, `formula "${formulaName}": step "${name}".turn_timeout_ms`)
     : undefined;
@@ -165,9 +177,41 @@ function parseStep(
     waitFor: 'completion',
     retries,
     retryBackoffMs,
+    ...(retry !== undefined ? { retry } : {}),
     ...(turnTimeoutMs !== undefined ? { turnTimeoutMs } : {}),
   };
   return spec;
+}
+
+const RETRY_KEYS: ReadonlySet<string> = new Set(['max_attempts', 'on_exhausted', 'backoff_ms']);
+
+/**
+ * `[steps.retry]` (vibesync-ynmp). Strict on purpose: a typo'd key or a missing
+ * max_attempts would silently mean "no retry", which is the failure you only
+ * discover when a flaky step kills a molecule. Mixing it with the legacy
+ * `retries` alias is rejected (which one wins would be a guess).
+ */
+function parseRetryPolicy(formulaName: string, stepName: string, raw: Record<string, unknown>): RetryPolicy | undefined {
+  const table = raw['retry'];
+  if (table === undefined) return undefined;
+  const label = `formula "${formulaName}": step "${stepName}".retry`;
+  if (!isRecord(table)) throw new Error(`${label} must be a table ([formula.${formulaName}.steps.retry])`);
+  if (raw['retries'] !== undefined || raw['retry_backoff_ms'] !== undefined) {
+    throw new Error(`${label} cannot be combined with the deprecated retries/retry_backoff_ms; migrate them: retries = N -> [steps.retry] max_attempts = N + 1, on_exhausted = "fail", retry_backoff_ms -> backoff_ms`);
+  }
+  for (const key of Object.keys(table)) {
+    if (!RETRY_KEYS.has(key)) throw new Error(`${label} has unknown key "${key}" (expected max_attempts, on_exhausted, backoff_ms)`);
+  }
+  const maxAttempts = table['max_attempts'];
+  if (typeof maxAttempts !== 'number' || !Number.isInteger(maxAttempts) || maxAttempts < 1) {
+    throw new Error(`${label}.max_attempts is required and must be an integer >= 1`);
+  }
+  const onExhausted = table['on_exhausted'] ?? 'fail';
+  if (onExhausted !== 'fail' && onExhausted !== 'soft_fail') {
+    throw new Error(`${label}.on_exhausted must be "fail" or "soft_fail" (got ${JSON.stringify(onExhausted)})`);
+  }
+  const backoffMs = readNonNegativeInteger(table['backoff_ms'], DEFAULT_RETRY_BACKOFF_MS, `${label}.backoff_ms`);
+  return { maxAttempts, onExhausted: onExhausted as OnExhausted, backoffMs };
 }
 
 function readDependencyList(formulaName: string, stepName: string, key: 'depends_on' | 'needs', value: unknown): string[] {

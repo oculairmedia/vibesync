@@ -22,6 +22,7 @@
  */
 
 import type { BeadRow, DependencyRow } from '../store/index.js';
+import type { RetryPolicy } from '../retry/policy.js';
 
 /**
  * Step spec — what to do at each node of a formula. Provided by the
@@ -33,7 +34,15 @@ export interface StepSpec {
   readonly promptTemplate?: string;
   readonly dependsOn?: readonly string[];
   readonly waitFor?: 'completion';
+  /**
+   * Per-step retry policy (`[steps.retry]`, vibesync-ynmp). Absent = the step
+   * gets one try unless the deprecated `retries` alias below says otherwise
+   * (see retry/policy.ts `resolveRetryPolicy`).
+   */
+  readonly retry?: RetryPolicy;
+  /** @deprecated alias of `retry`: max_attempts = retries + 1, on_exhausted = "fail". */
   readonly retries?: number;
+  /** @deprecated alias of `retry.backoffMs`. */
   readonly retryBackoffMs?: number;
   /**
    * Per-step turn timeout in milliseconds (vibesync-lcp-98y8). When
@@ -121,8 +130,15 @@ export interface MoleculeStore {
     readonly conversationId?: string;
   }): Promise<void>;
   recordStepAttempt(stepId: string, attempt: number): Promise<void>;
+  /** vibesync-ynmp: reopen a failed try so the bead graph re-offers the step; the counters live on the bead. */
+  reopenStepForRetry(stepId: string, args: {
+    readonly attempt: number;
+    readonly infraRetries: number;
+    readonly failureClass: string | null;
+    readonly errorTrace: string;
+  }): Promise<void>;
   markStepDone(stepId: string, output: unknown): Promise<void>;
-  markStepFailed(stepId: string, errorTrace: string): Promise<void>;
+  markStepFailed(stepId: string, errorTrace: string, retryOutcome?: string): Promise<void>;
   // lcp-s0wi: mark a molecule root bead as terminal with an outcome.
   markMoleculeRootStatus(rootId: string, status: 'closed', outcome: 'completed' | 'failed' | 'cancelled'): Promise<void>;
 }
@@ -325,9 +341,30 @@ export class MoleculeWalker {
     await this.store.markStepDone(stepId, output);
   }
 
-  /** Mark a step as failed. Pass-through. */
-  async failStep(stepId: string, errorTrace: string): Promise<void> {
-    await this.store.markStepFailed(stepId, errorTrace);
+  /** Mark a step as failed. Pass-through. `retryOutcome` is stamped as gc.retry_outcome when a retry policy ended it. */
+  async failStep(stepId: string, errorTrace: string, retryOutcome?: string): Promise<void> {
+    await this.store.markStepFailed(stepId, errorTrace, retryOutcome);
+  }
+
+  /** Re-read one bead (the retry counters and an agent's failure_class live on it). */
+  async readStep(stepId: string): Promise<BeadRow | null> {
+    return this.store.getBead(stepId);
+  }
+
+  /** The `blocks` predecessors of a step bead. */
+  async blockersOf(stepId: string): Promise<readonly string[]> {
+    const edges = await this.store.getBeadDependencies(stepId);
+    return edges.filter((e) => e.type === 'blocks' && e.issue_id === stepId).map((e) => e.depends_on_id);
+  }
+
+  /** Put a failed try back in the ready set with its counters on the bead (vibesync-ynmp). */
+  async reopenStepForRetry(stepId: string, args: {
+    readonly attempt: number;
+    readonly infraRetries: number;
+    readonly failureClass: string | null;
+    readonly errorTrace: string;
+  }): Promise<void> {
+    await this.store.reopenStepForRetry(stepId, args);
   }
 
   /**

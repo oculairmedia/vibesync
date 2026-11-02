@@ -140,8 +140,32 @@ export class InMemoryDoltClient {
   async recordStepAttempt(stepId: string, attempt: number): Promise<void> {
     const row = this.requireBead(stepId);
     this.updateBead(stepId, {
-      metadata: mergeExec(row.metadata, { attempts: attempt }),
+      metadata: { ...mergeExec(row.metadata, { attempts: attempt }), 'gc.retry_attempt': attempt },
     });
+  }
+
+  async reopenStepForRetry(
+    stepId: string,
+    args: { readonly attempt: number; readonly infraRetries: number; readonly failureClass: string | null; readonly errorTrace: string },
+  ): Promise<void> {
+    const row = this.requireBead(stepId);
+    const { failure_class: _declared, ...rest } = mergeExec(row.metadata, { attempts: args.attempt, error_trace: args.errorTrace });
+    this.updateBead(stepId, {
+      status: 'open',
+      closed_at: null,
+      metadata: {
+        ...rest,
+        'gc.retry_attempt': args.attempt,
+        'gc.infra_retries': args.infraRetries,
+        ...(args.failureClass ? { 'gc.last_failure_class': args.failureClass } : {}),
+      },
+    });
+  }
+
+  /** Test helper: what an agent does with `bd update <step> --set-metadata key=value`. */
+  setStepMetadata(stepId: string, patch: Record<string, unknown>): void {
+    const row = this.requireBead(stepId);
+    this.updateBead(stepId, { metadata: { ...row.metadata, ...patch } });
   }
 
   async markStepDone(stepId: string, output: unknown): Promise<void> {
@@ -153,12 +177,12 @@ export class InMemoryDoltClient {
     });
   }
 
-  async markStepFailed(stepId: string, errorTrace: string): Promise<void> {
+  async markStepFailed(stepId: string, errorTrace: string, retryOutcome?: string): Promise<void> {
     const row = this.requireBead(stepId);
     this.updateBead(stepId, {
       status: 'closed',
       closed_at: new Date(),
-      metadata: mergeExec(row.metadata, { error_trace: errorTrace }),
+      metadata: { ...mergeExec(row.metadata, { error_trace: errorTrace }), ...(retryOutcome ? { 'gc.retry_outcome': retryOutcome } : {}) },
     });
   }
 
