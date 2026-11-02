@@ -291,3 +291,53 @@ describe('SchedulerLoop.runTick (vibesync-63zx.3)', () => {
     expect(store.contexts.find((c) => c.id === 'ctx-c')?.status).toBe('closed');
   });
 });
+
+describe('SchedulerLoop async runs (vibesync-q50w)', () => {
+  const deferred = () => {
+    let resolve!: () => void; let reject!: (e: Error) => void;
+    const settled = new Promise<void>((res, rej) => { resolve = res; reject = rej; });
+    return { settled, resolve, reject };
+  };
+
+  it('returns while the run is pending, keeps the context OPEN, never re-plans the in-flight bead, closes on settle', async () => {
+    const store = new FakeContextStore([ctx('a')]);
+    const run = deferred();
+    let starts = 0;
+    const loop = new SchedulerLoop({
+      config: config({ poolSize: 5 }), capacity: { activeCount: 0 }, contextStore: store,
+      readyWork: readySource(['a']), candidateMetadata: defaultMeta,
+      executor: { async execute() { starts += 1; return { settled: run.settled }; } },
+    });
+    const t1 = await loop.runTick();
+    expect(t1.dispatched).toEqual(['a']);
+    expect(store.closed).toEqual([]); // not closed at start
+    expect(loop.inFlightWorkBeadIds()).toEqual(['a']);
+    const t2 = await loop.runTick();
+    expect(starts).toBe(1); // in-flight bead not planned again
+    expect(t2.dispatched).toEqual([]);
+    run.resolve();
+    await loop.drainRuns();
+    expect(store.closed).toEqual([{ id: 'ctx-a', reason: 'dispatched' }]);
+    expect(loop.inFlightWorkBeadIds()).toEqual([]);
+  });
+
+  it('a failing run is counted off-tick, retried until the 3rd failure, then circuit-broken and reported by the next tick', async () => {
+    const store = new FakeContextStore([ctx('a')]);
+    let starts = 0;
+    const loop = new SchedulerLoop({
+      config: config({ poolSize: 5 }), capacity: { activeCount: 0 }, contextStore: store,
+      readyWork: readySource(['a']), candidateMetadata: defaultMeta,
+      executor: { async execute() { starts += 1; return { settled: Promise.reject(new Error('run boom')) }; } },
+    });
+    const reports = [];
+    for (let i = 0; i < 4; i += 1) {
+      reports.push(await loop.runTick());
+      await loop.drainRuns();
+    }
+    expect(starts).toBe(3);
+    expect(store.closed).toEqual([{ id: 'ctx-a', reason: 'circuit-broken' }]);
+    expect(reports.flatMap((r) => r.circuitBroken)).toEqual(['ctx-a']);
+    expect(reports.flatMap((r) => r.failed)).toEqual(['a', 'a', 'a']);
+  });
+});
+

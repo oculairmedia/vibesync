@@ -5,7 +5,7 @@
  * patrol loop that actually burns down the backlog:
  *
  *   tick():
- *     1. scheduler.runTick()   — claim + dispatch ready beads under the pool cap
+ *     1. scheduler.runTick()   — START ready beads' runs under the pool cap (runs settle off the tick)
  *     2. refinery.processQueue() — auto-merge self-completed PRs (safety-gated)
  *     3. witness.patrol()      — recover crashed/zombie slots (causal, not time)
  *
@@ -84,7 +84,6 @@ export interface SchedulerDaemonDeps {
     onBlocked(input: { readonly workBeadId: string; readonly runId: string; readonly summary: string }): Promise<void>;
   };
   readonly config: () => SchedulerConfig;
-  readonly repoFor: (workBeadId: string) => string;
   readonly now?: () => Date;
   readonly logger?: DaemonLogger;
   /** Called after every interval-driven tick completes. Must not throw (errors are logged and swallowed). */
@@ -133,13 +132,24 @@ export class SchedulerDaemon {
 
     // The propulsion executor: runs the real dispatch, self-completes, and
     // frees the slot (via slotForBead) so the scheduler continues.
-    const runner: DispatchRunner = { run: (c) => this.dispatchRun(c) };
+    // The scheduler uses the two-phase `start` so a tick only STARTS runs; the
+    // run settles (classify, slot free, escalate) off the tick (vibesync-q50w).
+    const runner: DispatchRunner = {
+      start: (c) => this.startRun(c),
+      run: async (c) => (await this.startRun(c)).done,
+    };
     const executor = new PropulsionExecutor({
       runner,
       pool: { onComplete: (slotId) => this.pool.onComplete(slotId) },
       completion: { onCompleted: async () => { /* refinery enqueue happens in dispatchRun */ } },
       escalation: { onBlocked: (i) => deps.escalation.onBlocked(i) },
-      slotIdFor: (workBeadId) => this.slotForBead.get(workBeadId) ?? null,
+      // Take-and-clear: a stale mapping must never free a slot that was since
+      // re-allocated to another bead.
+      slotIdFor: (workBeadId) => {
+        const slotId = this.slotForBead.get(workBeadId) ?? null;
+        this.slotForBead.delete(workBeadId);
+        return slotId;
+      },
       ...(deps.logger ? { logger: deps.logger } : {}),
     });
 
@@ -161,7 +171,7 @@ export class SchedulerDaemon {
       },
       readyWork: { readyWorkBeadIds: () => deps.readyBeads.readyWorkBeadIds() },
       candidateMetadata: { metadataFor: (r) => deps.readyBeads.metadataFor(r.params.work_bead_id) },
-      executor,
+      executor: { execute: (c) => executor.start(c) },
       ...(deps.logger ? { logger: deps.logger } : {}),
     });
 
@@ -181,39 +191,51 @@ export class SchedulerDaemon {
   }
 
   /**
-   * The real dispatch: allocate a pool slot, map the candidate to a
-   * DispatchInput, run the formula, and (on a PR-producing completion) enqueue
-   * the PR into the refinery. Returns the normalized DispatchRunResult the
-   * propulsion executor classifies.
+   * START the real dispatch (does not wait for it to finish): allocate a pool
+   * slot, resolve the formula, and kick off the formula run. Rejects only when
+   * the run could not be started (no slot / no formula / resolver error) —
+   * that is a tick-time dispatch failure. Otherwise returns `done`, which
+   * settles when the formula finishes with the normalized DispatchRunResult the
+   * propulsion executor classifies; on a PR-producing completion the PR is
+   * handed to the refinery. `done` never rejects (a run failure is `ok:false`),
+   * so a background run can never surface as an unhandled rejection.
    */
-  private async dispatchRun(candidate: DispatchCandidate): Promise<DispatchRunResult> {
+  private async startRun(candidate: DispatchCandidate): Promise<{ readonly done: Promise<DispatchRunResult> }> {
     const alloc = this.pool.allocate({ workBeadId: candidate.workBeadId });
     if (!alloc) {
       // No slot — should not happen (scheduler respects capacity), but fail safe.
-      return { runId: '', output: '', ok: false, error: 'no pool slot available' };
+      throw new Error('no pool slot available');
     }
     this.slotForBead.set(candidate.workBeadId, alloc.slotId);
 
     const resolved = await this.deps.formulaResolver.resolve(candidate.workBeadId);
     if (!resolved) {
-      return { runId: '', output: '', ok: false, error: `no formula resolved for ${candidate.workBeadId}` };
+      throw new Error(`no formula resolved for ${candidate.workBeadId}`);
     }
 
-    try {
-      const result = await this.deps.dispatcher.run({
-        formula: resolved.formula,
-        pack: resolved.pack,
-        input: resolved.input,
-        motivatingBeadId: candidate.workBeadId,
-        projectIdentifier: resolved.projectIdentifier,
-      });
-      const output = Object.values(result.outputs).join('\n');
-      // If the run produced a PR, hand it to the refinery for auto-merge.
-      this.maybeEnqueuePr(candidate.workBeadId, result.moleculeId, output);
-      return { runId: result.moleculeId, output, ok: true };
-    } catch (err) {
-      return { runId: '', output: '', ok: false, error: err instanceof Error ? err.message : String(err) };
-    }
+    const run = this.deps.dispatcher.run({
+      formula: resolved.formula,
+      pack: resolved.pack,
+      input: resolved.input,
+      motivatingBeadId: candidate.workBeadId,
+      projectIdentifier: resolved.projectIdentifier,
+    });
+    const done = Promise.resolve(run).then(
+      (result): DispatchRunResult => {
+        const output = Object.values(result.outputs).join('\n');
+        // If the run produced a PR, hand it to the refinery for auto-merge.
+        this.maybeEnqueuePr(candidate.workBeadId, result.moleculeId, output);
+        return { runId: result.moleculeId, output, ok: true };
+      },
+      (err: unknown): DispatchRunResult => {
+        this.deps.logger?.warn?.(
+          { workBeadId: candidate.workBeadId, error: msg(err) },
+          'daemon: run failed',
+        );
+        return { runId: '', output: '', ok: false, error: msg(err) };
+      },
+    );
+    return { done };
   }
 
   /** Parse a PR url from the run output; enqueue it into the refinery if found. */
@@ -269,6 +291,14 @@ export class SchedulerDaemon {
         args: resolved.input,
       });
     }
+  }
+
+  /**
+   * Wait for every started run to settle. For supervised one-shot rigs and
+   * tests only — the interval loop and stop() never wait on runs.
+   */
+  drainRuns(): Promise<void> {
+    return this.scheduler.drainRuns();
   }
 
   async tick(): Promise<DaemonTickResult> {
@@ -358,8 +388,9 @@ export class SchedulerDaemon {
   }
 
   /**
-   * Stop the daemon loop and wait for any in-flight tick to finish, so nothing
-   * is still writing once the returned promise resolves. Idempotent.
+   * Stop the daemon loop and wait for any in-flight TICK to finish (short: a
+   * tick only starts runs), so no tick is still writing once the returned
+   * promise resolves. Formula runs are not awaited. Idempotent.
    */
   async stop(): Promise<void> {
     const wasRunning = this.timer !== null;
@@ -371,7 +402,15 @@ export class SchedulerDaemon {
     const pending = this.inFlight;
     if (pending) await pending;
     if (wasRunning) {
-      this.deps.logger?.info?.({ ticks: this.tickSeq }, 'daemon: stopped');
+      // Runs are NOT awaited: they outlive the tick (and a short SIGTERM grace).
+      // Surface which beads are still mid-run so the operator can see them.
+      const inFlightWorkBeadIds = this.scheduler.inFlightWorkBeadIds();
+      this.deps.logger?.info?.(
+        { ticks: this.tickSeq, inFlightWorkBeadIds },
+        inFlightWorkBeadIds.length > 0
+          ? 'daemon: stopped — runs still in flight were NOT awaited'
+          : 'daemon: stopped',
+      );
     }
   }
 }

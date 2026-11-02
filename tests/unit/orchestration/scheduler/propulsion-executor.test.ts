@@ -233,3 +233,52 @@ class InMemoryStore {
     return n;
   }
 }
+
+describe('PropulsionExecutor.start (vibesync-q50w: two-phase, run settles off the caller)', () => {
+  function startRunner(done: Promise<DispatchRunResult>): DispatchRunner {
+    return { async run() { return done; }, async start() { return { done }; } };
+  }
+
+  it('resolves as soon as the run STARTED; settlement frees the slot only when the run ends', async () => {
+    let finish!: (r: DispatchRunResult) => void;
+    const done = new Promise<DispatchRunResult>((r) => { finish = r; });
+    const { pool, freed } = fakePool();
+    const s = sinks();
+    const exec = new PropulsionExecutor({
+      runner: startRunner(done), pool, completion: s.completion, escalation: s.escalation,
+      slotIdFor: (id) => `slot-${id}`,
+    });
+    const handle = await exec.start(candidate('w1'));
+    expect(freed).toEqual([]); // started, not finished: slot still held
+    finish({ runId: 'mol-w1', output: 'done https://github.com/o/r/pull/9', ok: true });
+    await handle.settled;
+    expect(freed).toEqual(['slot-w1']);
+    expect(s.completed).toHaveLength(1);
+  });
+
+  it('a failed run frees the slot and `settled` rejects; a blocked run escalates and resolves', async () => {
+    const { pool, freed } = fakePool();
+    const s = sinks();
+    const mk = (r: DispatchRunResult) => new PropulsionExecutor({
+      runner: startRunner(Promise.resolve(r)), pool, completion: s.completion, escalation: s.escalation,
+      slotIdFor: (id) => `slot-${id}`,
+    });
+    const failed = await mk({ runId: 'r', output: '', ok: false, error: 'exec failed' }).start(candidate('wf'));
+    await expect(failed.settled).rejects.toThrow(/exec failed/);
+    const blocked = await mk({ runId: 'r', output: `${NEEDS_MERIDIAN_MARKER}: pick`, ok: true }).start(candidate('wb'));
+    await expect(blocked.settled).resolves.toBeUndefined();
+    expect(freed).toEqual(['slot-wf', 'slot-wb']);
+    expect(s.escalated).toHaveLength(1);
+  });
+
+  it('a start failure frees the slot and rejects start() (tick-time failure)', async () => {
+    const { pool, freed } = fakePool();
+    const s = sinks();
+    const exec = new PropulsionExecutor({
+      runner: { async run() { throw new Error('x'); }, async start() { throw new Error('no formula resolved'); } },
+      pool, completion: s.completion, escalation: s.escalation, slotIdFor: (id) => `slot-${id}`,
+    });
+    await expect(exec.start(candidate('w1'))).rejects.toThrow(/no formula resolved/);
+    expect(freed).toEqual(['slot-w1']);
+  });
+});

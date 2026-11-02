@@ -65,7 +65,6 @@ function deps(over: Partial<SchedulerDaemonDeps> = {}): { d: SchedulerDaemonDeps
       async onIsolated() {}, async onRepeatedRecovery() {}, async onBlocked() {},
     },
     config: () => ({ poolSize: 1, batchSize: 10, paused: false }),
-    repoFor: () => 'o/r',
     ...over,
   };
   return { d, state };
@@ -115,8 +114,14 @@ describe('SchedulerDaemon end-to-end (vibesync-63zx integration)', () => {
   });
 
   it('circuit breaker trips on the 3rd consecutive dispatch failure (failure count is tracked in-process)', async () => {
+    // vibesync-q50w: runs settle OFF the tick, so a run's failure is counted when
+    // it settles and is REPORTED by the next tick. Expectation changed from
+    // per-tick [0,0,1] to: 3 dispatches, then the breaker outcome shows up in the
+    // first report after the 3rd failure settled (drained + a paused tick, since
+    // this static ready fake would otherwise re-schedule the closed bead).
+    let paused = false;
     const { d, state } = deps({
-      config: () => ({ poolSize: 1, batchSize: 10, paused: false }),
+      config: () => ({ poolSize: 1, batchSize: 10, paused }),
     });
     (d.dispatcher as unknown as { run: unknown }).run = async (input: { motivatingBeadId: string }) => {
       state.dispatched.push(input.motivatingBeadId);
@@ -128,9 +133,15 @@ describe('SchedulerDaemon end-to-end (vibesync-63zx integration)', () => {
     // production; this static fake source cannot, so assert on the breaker
     // itself: it must trip on exactly the 3rd consecutive failure.
     const results = [];
-    for (let i = 0; i < 3; i += 1) results.push(await daemon.tick());
+    for (let i = 0; i < 3; i += 1) {
+      results.push(await daemon.tick());
+      await daemon.drainRuns();
+    }
+    paused = true;
+    results.push(await daemon.tick());
     expect(state.dispatched.length).toBe(3);
-    expect(results.map((r) => r.scheduler.circuitBroken.length)).toEqual([0, 0, 1]);
+    expect(results.map((r) => r.scheduler.circuitBroken.length)).toEqual([0, 0, 0, 1]);
+    expect(results.map((r) => r.scheduler.failed.length)).toEqual([0, 1, 1, 1]);
   });
 
   it('stop() awaits an in-flight interval tick and reports every tick via onTick', async () => {

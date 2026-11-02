@@ -88,6 +88,10 @@ const escalation = {
   async onBlocked(input: unknown) { log.warn(input, 'propulsion blocked; needs Meridian'); },
 };
 
+// A tick now only STARTS the run (vibesync-q50w). The rig waits for the run to
+// settle, then ticks again with dispatch paused so the refinery/witness phases
+// see the finished run's PR exactly as the old single tick did.
+let paused = false;
 const daemon = new SchedulerDaemon({
   dispatcher: orchestration.dispatcher,
   formulaResolver,
@@ -98,13 +102,16 @@ const daemon = new SchedulerDaemon({
   requiredCheckNames: () => ['typecheck', 'test (18.x)', 'test (20.x)'],
   livenessProbe,
   escalation,
-  config: () => ({ poolSize: 1, batchSize: 1, paused: false }),
-  repoFor: () => 'oculairmedia/vibesync',
+  config: () => ({ poolSize: 1, batchSize: 1, paused }),
   logger: log,
 });
 
 console.log(`[rig-dogfood] starting one supervised tick bead=${beadId} agent=${agentId} formula=${formulaName} repoRoot=${repoRoot} packRoot=${packRoot} dryRunMerge=${dryRunMerge}`);
-const result = await daemon.tick();
+const dispatchResult = await daemon.tick();
+await daemon.drainRuns();
+paused = true;
+const settleResult = await daemon.tick();
+const result = { dispatch: dispatchResult, settle: settleResult };
 console.log('[rig-dogfood] tick result', JSON.stringify(result, null, 2));
 await orchestration.shutdown();
 const drainMs = Number.parseInt(process.env['VIBESYNC_DOGFOOD_DRAIN_MS'] ?? '2500', 10);
