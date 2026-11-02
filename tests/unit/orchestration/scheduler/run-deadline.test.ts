@@ -215,6 +215,27 @@ describe('SchedulerDaemon — run deadline (vibesync-izn3)', () => {
     await h.daemon.stop();
   });
 
+  it('2b. (CodeRabbit #51) a throw while enqueueing the PR still settles the run and frees the slot, even with no deadline armed', async () => {
+    const h = harness({ beads: ['w1'], runDeadlineMs: 0 });
+    // Make the PR-enqueue step throw (stand-in for any throwing collaborator inside it).
+    (h.daemon as unknown as { maybeEnqueuePr: () => void }).maybeEnqueuePr = () => { throw new Error('enqueue exploded'); };
+    await h.daemon.tick();
+    expect(vi.getTimerCount()).toBe(0); // deadline disabled: nothing else would ever free the slot
+    h.runsFor('w1')[0]!.resolve('done https://github.com/oculairmedia/vibesync/pull/1');
+    await flush();
+    expect(h.onComplete).toHaveBeenCalledTimes(1);
+    expect(h.workingBeads()).toEqual([]);
+    expect(h.logs.some((l) => l.level === 'warn' && /enqueue/i.test(l.m))).toBe(true);
+  });
+
+  it('2c. (CodeRabbit #51) a deadline above the setTimeout maximum is clamped, not fired after 1 ms', async () => {
+    const h = harness({ beads: ['w1'], runDeadlineMs: 3_000_000_000 });
+    await h.daemon.tick();
+    await vi.advanceTimersByTimeAsync(10_000); // a 1 ms overflow would have cancelled by now
+    expect(h.cancels).toEqual([]);
+    expect(h.workingBeads()).toEqual(['w1']);
+  });
+
   it('2. a run that settles BEFORE the deadline is not cancelled and leaves no timer', async () => {
     const h = harness({ beads: ['w1'] });
     await h.daemon.tick();

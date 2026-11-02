@@ -64,6 +64,9 @@ export const DEFAULT_RUN_DEADLINE_MS = 3_600_000;
  */
 export const RUN_CANCEL_GRACE_MS = 30_000;
 
+/** Largest delay setTimeout honours (2^31 - 1 ms); larger values fire after 1 ms. */
+export const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 export interface DaemonLogger {
   info?(o: unknown, m: string): void;
   warn?(o: unknown, m: string): void;
@@ -327,7 +330,18 @@ export class SchedulerDaemon {
         );
         return;
       }
-      if (enqueueFrom) this.maybeEnqueuePr(candidate.workBeadId, enqueueFrom.moleculeId, enqueueFrom.output);
+      if (enqueueFrom) {
+        // A throw while enqueueing must never skip finish(): with no deadline
+        // armed nothing else would free the slot (CodeRabbit on #51).
+        try {
+          this.maybeEnqueuePr(candidate.workBeadId, enqueueFrom.moleculeId, enqueueFrom.output);
+        } catch (err) {
+          this.deps.logger?.warn?.(
+            { workBeadId: candidate.workBeadId, moleculeId: enqueueFrom.moleculeId, error: msg(err) },
+            'daemon: PR enqueue failed; run still settled',
+          );
+        }
+      }
       finish(result);
     };
 
@@ -369,7 +383,10 @@ export class SchedulerDaemon {
   private runDeadlineFor(workBeadId: string): number {
     const override = this.deps.runDeadlineFor?.(workBeadId);
     const ms = override ?? this.deps.runDeadlineMs ?? DEFAULT_RUN_DEADLINE_MS;
-    return Number.isFinite(ms) && ms > 0 ? ms : 0;
+    if (!Number.isFinite(ms) || ms <= 0) return 0;
+    // setTimeout treats delays above 2^31-1 ms as 1 ms; clamp so an oversized
+    // budget means "about 24.8 days", not "cancel immediately" (CodeRabbit on #51).
+    return Math.min(ms, MAX_TIMER_DELAY_MS);
   }
 
   private disposeWatch(watch: RunWatch): void {
