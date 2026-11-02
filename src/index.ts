@@ -15,6 +15,7 @@ import { createBookStackWatcher } from './BookStackWatcher';
 import { ProjectRegistry, type RigEvent } from './ProjectRegistry';
 import { broadcastSyncEvent } from './ApiServer';
 import { bootOrchestrationPlane, releaseDoltAfterFailedBoot, type OrchestrationHandle } from './orchestration/boot.js';
+import { BdVersionTooOldError, probeBdVersion } from './orchestration/bd-version.js';
 import { DoltClient, defaultDoltBootDeps } from './orchestration/store/index.js';
 import { createCliRunner } from './orchestration/scheduler/bd-adapters.js';
 import { registryPmAgentLookup } from './orchestration/scheduler/pm-waker.js';
@@ -471,6 +472,8 @@ async function main(): Promise<void> {
         );
         orchestration = await bootOrchestrationPlane({
           dolt,
+          // vibesync-efee: refuse a bd older than the minimum (formula steps use `bd ready --mol`).
+          bdVersion: probeBdVersion,
           // vibesync-z2ws: SchedulerDaemon. Config-gated (scheduler.enabled,
           // default false) inside bootOrchestrationPlane; with the flag off
           // none of these closures is ever invoked.
@@ -564,6 +567,14 @@ async function main(): Promise<void> {
             logger.warn({ err: cleanupError, attempt }, 'Failed to close Dolt pool after boot failure');
           },
         });
+        if (orchestrationError instanceof BdVersionTooOldError) {
+          // Not transient: retrying cannot upgrade bd. Say so loudly and stop.
+          logger.error(
+            { err: orchestrationError, bdVersionFound: orchestrationError.found, bdVersionRequired: orchestrationError.minimum },
+            'Orchestration plane NOT started: bd is older than the required minimum',
+          );
+          break;
+        }
         const lastAttempt = attempt >= maxBootAttempts;
         logger.warn(
           { err: orchestrationError, attempt, maxBootAttempts },

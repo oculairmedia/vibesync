@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, isAbsolute } from 'node:path';
 import { createServer } from 'node:net';
 
+import { MIN_BD_VERSION, bdVersionSatisfies } from '../../../src/orchestration/bd-version.js';
 import { DoltClient } from '../../../src/orchestration/store/dolt-client.js';
 
 // Opt-in only: never discover a store from cwd or accept a caller-owned database.
@@ -37,8 +38,10 @@ export async function provisionIsolatedBeads(shape: SchemaShape = 'fresh') {
   }).trim();
   const bd = (...args: string[]) => run(binary, ['--sandbox', '--dolt-auto-commit=off', ...args]);
   const version = bd('version');
-  if (!version.includes('1.2.2') || !version.includes(TEST_BD_COMMIT.slice(0, 12))) {
-    throw new Error(`Expected bd 1.2.2 build ${TEST_BD_COMMIT}, got ${version}`);
+  // vibesync-efee: the production bd is 1.3.2 (molecule-scoped `bd ready --mol`);
+  // the suite verifies against it. Anything below the minimum is refused.
+  if (!bdVersionSatisfies(version)) {
+    throw new Error(`Expected bd >= ${MIN_BD_VERSION}, got ${version}`);
   }
   run('git', ['init', root]);
   // Reserve an unused loopback port, then pass it explicitly to bd. Never use
@@ -57,7 +60,7 @@ export async function provisionIsolatedBeads(shape: SchemaShape = 'fresh') {
   try {
     bd('init', '--server', '--server-host=127.0.0.1', `--server-port=${port}`,
       '--prefix=schema65', `--database=${database}`, '--skip-hooks', '--skip-agents', '--non-interactive');
-    process.stdout.write(`Isolated Beads: ${root}, 127.0.0.1:${port}/${database}, ${version}, pin ${TEST_BD_COMMIT}\n`);
+    process.stdout.write(`Isolated Beads: ${root}, 127.0.0.1:${port}/${database}, ${version}, min ${MIN_BD_VERSION}\n`);
     // READONLY live SHOW CREATE TABLE reconciliation: identical definitions,
     // constraints and indexes; only issues column order differs from fresh init.
     // Reproduce that exact order via bd DDL in this disposable database only.

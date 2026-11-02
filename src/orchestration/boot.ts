@@ -19,6 +19,8 @@ import type { IrohConnection } from './runtime/index.js';
 import { createNativeIrohConnection, resolveNativeIrohConfig } from './runtime/iroh/native-dialer.js';
 import type { AgentIdResolver, PersonaLoader, RuntimeProvider } from './runtime/index.js';
 import { startSchedulerDaemon, SCHEDULER_START_FAILED_EVENT } from './scheduler/boot-scheduler.js';
+import { StepDispatcher, StoreReadyStepSource } from './scheduler/step-dispatcher.js';
+import { assertBdVersion } from './bd-version.js';
 import type { BootSchedulerOptions, SchedulerHandle } from './scheduler/boot-scheduler.js';
 import type { DoltClient } from './store/index.js';
 import { startWaitWatcher } from './waits/boot-waits.js';
@@ -31,6 +33,8 @@ export interface OrchestrationHandle {
   readonly bus: EventBus;
   readonly patrol: HealthPatrol;
   readonly walker: MoleculeWalker;
+  /** Ready-step loop (vibesync-efee). Ticked by the scheduler when it is on, by its own timer when off. */
+  readonly steps: StepDispatcher;
   /**
    * The running SchedulerDaemon (vibesync-z2ws), or null when
    * `scheduler.config.enabled` is false / not supplied / failed to start.
@@ -87,6 +91,17 @@ export interface BootOrchestrationPlaneOptions {
    * leaves this unset.
    */
   readonly irohConnectionFactory?: () => IrohConnection;
+  /**
+   * Returns the `bd --version` output. When supplied, boot refuses a bd older
+   * than MIN_BD_VERSION (vibesync-efee: formula steps rely on `bd ready --mol`)
+   * with a BdVersionTooOldError naming the version found. Production passes
+   * `probeBdVersion`; tests that never touch bd omit it.
+   */
+  readonly bdVersion?: () => Promise<string>;
+  /** Test seam: use this RuntimeProvider instead of building the env-configured default. */
+  readonly provider?: RuntimeProvider;
+  /** Fallback interval for the step loop when the scheduler is off. Default 1000 ms. */
+  readonly stepTickIntervalMs?: number;
 }
 
 export interface ProjectProviderRoutingStore {
@@ -214,6 +229,10 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   // (vibesync-vkp). No-op unless LETTA_SILENCE_VALIDATION_SPAM is set.
   installLettaClientValidationFilter();
 
+  // vibesync-efee: fail before any side effect when bd is too old for the
+  // primitives formula steps depend on.
+  if (opts.bdVersion) assertBdVersion(await opts.bdVersion());
+
   // Also protect callers using the synchronous constructor. The caller owns
   // cleanup on boot failure; connect has already verified production clients.
   if (typeof opts.dolt.verifyFingerprint === 'function') {
@@ -236,7 +255,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     return irohProvider;
   };
   const providerKind = resolveProviderKind();
-  const provider = buildDefaultRuntimeProvider({
+  const provider = opts.provider ?? buildDefaultRuntimeProvider({
     allowUnavailable: opts.providerRouting !== undefined,
     getIrohProvider,
   });
@@ -259,13 +278,23 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   const roleAgentContextResolver = opts.providerRouting
     ? buildRoleAgentContextResolver(opts.providerRouting)
     : undefined;
+  // vibesync-efee: steps are beads; the bead graph decides what is ready and
+  // the StepDispatcher offers it to the dispatcher. A cooked molecule wakes it.
+  let steps: StepDispatcher | null = null;
   const dispatcher = new FormulaDispatcher({
     provider,
     walker,
     eventBus: bus,
+    onMoleculeCooked: () => steps?.kick(),
     ...(maxConcurrentMolecules === undefined ? {} : { maxConcurrentMolecules }),
     ...(providerResolver ? { providerResolver } : {}),
     ...(roleAgentContextResolver ? { roleAgentContextResolver } : {}),
+  });
+
+  steps = new StepDispatcher({
+    source: new StoreReadyStepSource(opts.dolt, () => dispatcher.liveMoleculeIds()),
+    runner: dispatcher,
+    logger: { warn: (o, m) => console.error(`[orchestration:steps] ${m}`, o) }, // eslint-disable-line no-console
   });
 
   // Molecule → motivating-bead writeback hook (vibesync-0xo). Idempotent
@@ -332,7 +361,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   let scheduler: SchedulerHandle | null = null;
   if (opts.scheduler?.config.enabled) {
     try {
-      scheduler = startSchedulerDaemon({ ...opts.scheduler, dispatcher, bus });
+      scheduler = startSchedulerDaemon({ ...opts.scheduler, dispatcher, bus, steps });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console
@@ -353,6 +382,10 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
       console.error(`[orchestration:waits] wait watcher failed to start — continuing without it: ${message}`);
     }
   }
+  // Scheduler OFF (production default) or failed to start: nothing else ticks
+  // the step loop, so formulas would never run. Start its own fallback timer.
+  // It decides nothing; readiness still comes from the bead graph.
+  if (!scheduler) steps.start(opts.stepTickIntervalMs);
 
   let shutDown = false;
 
@@ -362,6 +395,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     bus,
     patrol,
     walker,
+    steps,
     scheduler,
     waits,
     async shutdown(): Promise<void> {
@@ -384,6 +418,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
           console.error('[orchestration:waits] error while stopping wait watcher', err);
         }
       }
+      await steps.stop();
       unsubscribeWriteback?.();
       patrol.stop();
       workActivityReporter?.stop();

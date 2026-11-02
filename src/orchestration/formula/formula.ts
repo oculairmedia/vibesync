@@ -21,6 +21,7 @@
  *   prompt_template = "<path-relative-to-formula>"
  *   wait_for = "completion"  # optional, default
  *   depends_on = "<step>"    # optional, single name OR array
+ *   needs = ["<step>", ...]  # optional alias of depends_on; both merge (vibesync-efee)
  *   retries = 0              # optional, non-negative integer
  *   retry_backoff_ms = 1000  # optional, non-negative integer
  *   turn_timeout_ms = 600000 # optional, non-negative integer (vibesync-lcp-98y8)
@@ -134,21 +135,9 @@ function parseStep(
   if (promptTemplate !== undefined && typeof promptTemplate !== 'string') {
     throw new Error(`formula "${formulaName}": step "${name}".prompt_template must be a string`);
   }
-  const dependsOnRaw = raw['depends_on'];
-  let dependsOn: string[] | undefined;
-  if (typeof dependsOnRaw === 'string') dependsOn = [dependsOnRaw];
-  else if (Array.isArray(dependsOnRaw)) {
-    if (!dependsOnRaw.every((v): v is string => typeof v === 'string')) {
-      throw new Error(
-        `formula "${formulaName}": step "${name}".depends_on must be a string or array of strings`,
-      );
-    }
-    dependsOn = dependsOnRaw;
-  } else if (dependsOnRaw !== undefined) {
-    throw new Error(
-      `formula "${formulaName}": step "${name}".depends_on must be a string or array of strings`,
-    );
-  }
+  // `needs` is an alias of `depends_on` (vibesync-efee, bd's spelling); both
+  // take a name or an array, and declaring both merges them, de-duplicated.
+  const dependsOn = mergeDependencies(formulaName, name, raw);
   // Verify all depends_on names are previously-declared steps.
   for (const dep of dependsOn ?? []) {
     if (!declaredSoFar.has(dep)) {
@@ -179,6 +168,23 @@ function parseStep(
     ...(turnTimeoutMs !== undefined ? { turnTimeoutMs } : {}),
   };
   return spec;
+}
+
+function readDependencyList(formulaName: string, stepName: string, key: 'depends_on' | 'needs', value: unknown): string[] {
+  if (value === undefined) return [];
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value) && value.every((v): v is string => typeof v === 'string')) return value;
+  throw new Error(`formula "${formulaName}": step "${stepName}".${key} must be a string or array of strings`);
+}
+
+/** depends_on + needs, in declared order, without duplicates; undefined when neither is set. */
+function mergeDependencies(formulaName: string, stepName: string, raw: Record<string, unknown>): string[] | undefined {
+  if (raw['depends_on'] === undefined && raw['needs'] === undefined) return undefined;
+  const merged = [
+    ...readDependencyList(formulaName, stepName, 'depends_on', raw['depends_on']),
+    ...readDependencyList(formulaName, stepName, 'needs', raw['needs']),
+  ];
+  return [...new Set(merged)];
 }
 
 function readNonNegativeInteger(value: unknown, defaultValue: number, label: string): number {

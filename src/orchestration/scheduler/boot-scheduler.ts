@@ -42,6 +42,7 @@ import {
   type CommandRunner,
 } from './bd-adapters.js';
 import { SchedulerDaemon, type DaemonLogger, type DaemonTickReport } from './daemon.js';
+import type { StepDispatcher } from './step-dispatcher.js';
 import { EscalationManager, type NotificationTransport } from './escalation.js';
 import { FilePmWakeStateStore, type PmWakeStateStore } from './pm-wake-state.js';
 import { LoggingPmWakeSink, PmWaker, type PmWakeSink } from './pm-waker.js';
@@ -147,7 +148,12 @@ export const TICK_TRIGGER_BEAD_STATUSES: ReadonlySet<string> = new Set(['ready',
  * surface that.
  */
 export function startSchedulerDaemon(
-  opts: BootSchedulerOptions & { readonly dispatcher: FormulaDispatcher; readonly bus: EventBus },
+  opts: BootSchedulerOptions & {
+    readonly dispatcher: FormulaDispatcher;
+    readonly bus: EventBus;
+    /** Ready-step source (vibesync-efee); ticked by the daemon, woken by its requestTick. */
+    readonly steps?: StepDispatcher;
+  },
 ): SchedulerHandle {
   const { config, bus, logger } = opts;
   if (!config.enabled) {
@@ -246,6 +252,7 @@ export function startSchedulerDaemon(
 
   const daemon = new SchedulerDaemon({
     dispatcher: opts.dispatcher,
+    ...(opts.steps ? { steps: opts.steps } : {}),
     formulaResolver,
     readyBeads,
     contextStore,
@@ -312,6 +319,9 @@ export function startSchedulerDaemon(
   });
 
   daemon.run(config.intervalMs);
+  // The step loop is now the daemon's: a cooked molecule / settled step asks the
+  // daemon for a (debounced) tick via requestStepTick instead of ticking on its own.
+  opts.steps?.setWake(() => { daemon.requestStepTick(); });
   // Trigger (b): bead status change -> immediate (debounced) tick. Layering
   // invariant 3: observed through the bus, never by polling bd.
   const unsubscribeStatus = bus.subscribe((event) => {
@@ -344,6 +354,7 @@ export function startSchedulerDaemon(
     stop(): Promise<void> {
       stopped ??= (async () => {
         unsubscribeStatus();
+        opts.steps?.setWake(null);
         await daemon.stop();
         pmWaker?.dispose();
         bus.emit({ layer: 'daemon', kind: SCHEDULER_STOPPED_EVENT, payload: { project: config.projectIdentifier } });

@@ -10,6 +10,7 @@ import { MoleculeWalker, newMoleculeStepId } from '../../../../src/orchestration
 import type { Pack } from '../../../../src/orchestration/packs/index.js';
 import type { SessionEvent, SessionSpec } from '../../../../src/orchestration/runtime/index.js';
 import { newFakeProvider } from '../../../_fixtures/fake-provider.js';
+import { newDriven } from '../../../_fixtures/step-driver.js';
 import { InMemoryDoltClient } from '../../../_fixtures/in-memory-dolt-client.js';
 
 function isDispatcherEvent(event: Event): boolean {
@@ -468,7 +469,7 @@ describe('FormulaDispatcher', () => {
       const provider = newFakeProvider({ kind: 'default', script: scriptByRole({ worker: 'ok' }) });
       const altProvider = newFakeProvider({ kind: 'alt', script: scriptByRole({ worker: 'alt' }) });
       const eventBus = new EventBus({ noPersist: true });
-      const dispatcher = new FormulaDispatcher({
+      const dispatcher = newDriven(store, {
         provider,
         walker: new MoleculeWalker(store),
         eventBus,
@@ -488,7 +489,7 @@ describe('FormulaDispatcher', () => {
       const provider = newFakeProvider({ kind: 'default', script: scriptByRole({ worker: 'default ran' }) });
       const altProvider = newFakeProvider({ kind: 'alt', script: scriptByRole({ worker: 'alt ran' }) });
       const eventBus = new EventBus({ noPersist: true });
-      const dispatcher = new FormulaDispatcher({
+      const dispatcher = newDriven(store, {
         provider,
         walker: new MoleculeWalker(store),
         eventBus,
@@ -509,7 +510,7 @@ describe('FormulaDispatcher', () => {
       const store = new InMemoryDoltClient();
       const provider = newFakeProvider({ kind: 'default', script: scriptByRole({ worker: 'ok' }) });
       const eventBus = new EventBus({ noPersist: true });
-      const dispatcher = new FormulaDispatcher({
+      const dispatcher = newDriven(store, {
         provider,
         walker: new MoleculeWalker(store),
         eventBus,
@@ -529,7 +530,7 @@ describe('FormulaDispatcher', () => {
       const provider = newFakeProvider({ kind: 'default', script: scriptByRole({ worker: 'DEFAULT' }) });
       const altProvider = newFakeProvider({ kind: 'alt', script: scriptByRole({ worker: 'ALT' }) });
       const eventBus = new EventBus({ noPersist: true });
-      const dispatcher = new FormulaDispatcher({
+      const dispatcher = newDriven(store, {
         provider,
         walker: new MoleculeWalker(store),
         eventBus,
@@ -562,7 +563,7 @@ describe('FormulaDispatcher', () => {
       const store = new InMemoryDoltClient();
       const altProvider = newFakeProvider({ kind: 'alt', script: scriptByRole({ worker: 'ok' }) });
       const eventBus = new EventBus({ noPersist: true });
-      const dispatcher = new FormulaDispatcher({
+      const dispatcher = newDriven(store, {
         provider: newFakeProvider({ kind: 'default', script: scriptByRole({ worker: 'unused' }) }),
         walker: new MoleculeWalker(store),
         eventBus,
@@ -584,7 +585,7 @@ describe('FormulaDispatcher', () => {
       const eventBus = new EventBus({ noPersist: true });
       const events: Event[] = [];
       eventBus.subscribe((event) => events.push(event));
-      const dispatcher = new FormulaDispatcher({
+      const dispatcher = newDriven(store, {
         provider: newFakeProvider({ kind: 'default-test', script: scriptByRole({ worker: 'unused' }) }),
         walker: new MoleculeWalker(store),
         eventBus,
@@ -647,7 +648,7 @@ describe('FormulaDispatcher', () => {
       const store = new InMemoryDoltClient();
       const provider = newFakeProvider({ kind: 'fake', script: scriptByRole({ worker: 'ok' }) });
       const eventBus = new EventBus({ noPersist: true });
-      const dispatcher = new FormulaDispatcher({
+      const dispatcher = newDriven(store, {
         provider,
         walker: new MoleculeWalker(store),
         eventBus,
@@ -668,7 +669,7 @@ describe('FormulaDispatcher', () => {
       const provider = newFakeProvider({ kind: 'fake', script: scriptByRole({ worker: 'ok' }) });
       const eventBus = new EventBus({ noPersist: true });
       const { calls, bootstrapper } = recordingBootstrapper();
-      const dispatcher = new FormulaDispatcher({
+      const dispatcher = newDriven(store, {
         provider,
         walker: new MoleculeWalker(store),
         eventBus,
@@ -693,7 +694,7 @@ describe('FormulaDispatcher', () => {
       const provider = newFakeProvider({ kind: 'fake', script: scriptByRole({ worker: 'ok' }) });
       const eventBus = new EventBus({ noPersist: true });
       const { calls, bootstrapper } = recordingBootstrapper();
-      const dispatcher = new FormulaDispatcher({
+      const dispatcher = newDriven(store, {
         provider,
         walker: new MoleculeWalker(store),
         eventBus,
@@ -721,7 +722,7 @@ describe('FormulaDispatcher', () => {
       const eventBus = new EventBus({ noPersist: true });
       const { calls, bootstrapper } = recordingBootstrapper('agent-worker-vibesync');
       const { gen } = deterministicConvGen();
-      const dispatcher = new FormulaDispatcher({
+      const dispatcher = newDriven(store, {
         provider,
         walker: new MoleculeWalker(store),
         eventBus,
@@ -765,7 +766,7 @@ describe('FormulaDispatcher', () => {
       const eventBus = new EventBus({ noPersist: true });
       const { calls, bootstrapper } = recordingBootstrapper('agent-stub');
       const { gen } = deterministicConvGen();
-      const dispatcher = new FormulaDispatcher({
+      const dispatcher = newDriven(store, {
         provider,
         walker: new MoleculeWalker(store),
         eventBus,
@@ -800,7 +801,7 @@ describe('FormulaDispatcher', () => {
       const eventBus = new EventBus({ noPersist: true });
       const { bootstrapper } = recordingBootstrapper();
       const { gen } = deterministicConvGen();
-      const dispatcher = new FormulaDispatcher({
+      const dispatcher = newDriven(store, {
         provider,
         walker: new MoleculeWalker(store),
         eventBus,
@@ -839,7 +840,7 @@ describe('FormulaDispatcher', () => {
           throw new Error('persona md missing');
         },
       };
-      const dispatcher = new FormulaDispatcher({
+      const dispatcher = newDriven(store, {
         provider,
         walker: new MoleculeWalker(store),
         eventBus,
@@ -878,7 +879,7 @@ describe('FormulaDispatcher', () => {
       const events: Event[] = [];
       eventBus.subscribe((event) => events.push(event));
       const { bootstrapper } = recordingBootstrapper('agent-emitted');
-      const dispatcher = new FormulaDispatcher({
+      const dispatcher = newDriven(store, {
         provider,
         walker: new MoleculeWalker(store),
         eventBus,
@@ -909,7 +910,7 @@ describe('FormulaDispatcher', () => {
       const provider = newFakeProvider({ kind: 'fake' });
       const eventBus = new EventBus({ noPersist: true });
       const { bootstrapper } = recordingBootstrapper();
-      const dispatcher = new FormulaDispatcher({
+      const dispatcher = newDriven(store, {
         provider,
         walker: new MoleculeWalker(store),
         eventBus,
@@ -942,7 +943,7 @@ function newHarness(args: {
   const eventBus = new EventBus({ noPersist: true });
   const events: Event[] = [];
   eventBus.subscribe((event) => events.push(event));
-  const dispatcher = new FormulaDispatcher({
+  const dispatcher = newDriven(store, {
     provider,
     walker: new MoleculeWalker(store),
     eventBus,

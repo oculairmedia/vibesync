@@ -99,6 +99,57 @@ prompt_template = "x"
     expect(() => parseFormulasFromToml(toml)).toThrow(/missing role/);
   });
 
+  it('accepts `needs` as an alias of depends_on and merges both, de-duplicated (vibesync-efee)', () => {
+    const toml = `
+[formula.f]
+[[formula.f.steps]]
+role = "a"
+[[formula.f.steps]]
+role = "b"
+[[formula.f.steps]]
+role = "c"
+needs = "a"
+[[formula.f.steps]]
+role = "d"
+needs = ["b", "c"]
+[[formula.f.steps]]
+role = "e"
+depends_on = ["a", "b"]
+needs = ["b", "c"]
+`;
+    const steps = parseFormulasFromToml(toml)[0]!.steps;
+    expect(steps.find((s) => s.name === 'c')!.dependsOn).toEqual(['a']);
+    expect(steps.find((s) => s.name === 'd')!.dependsOn).toEqual(['b', 'c']);
+    expect(steps.find((s) => s.name === 'e')!.dependsOn).toEqual(['a', 'b', 'c']);
+    expect(steps.find((s) => s.name === 'a')!.dependsOn).toBeUndefined();
+  });
+
+  it('validates `needs` like depends_on: declared earlier, string or array of strings', () => {
+    expect(() => parseFormulasFromToml(`
+[formula.f]
+[[formula.f.steps]]
+role = "a"
+needs = "later"
+[[formula.f.steps]]
+role = "later"
+`)).toThrow(/needs|depends_on "later" which is not declared earlier/);
+    expect(() => parseFormulasFromToml(`
+[formula.f]
+[[formula.f.steps]]
+role = "a"
+needs = 3
+`)).toThrow(/needs must be a string or array of strings/);
+    expect(() => parseFormulasFromToml(`
+[formula.f]
+[[formula.f.steps]]
+role = "a"
+[[formula.f.steps]]
+role = "b"
+depends_on = "a"
+needs = ["zzz"]
+`)).toThrow(/"zzz" which is not declared earlier/);
+  });
+
   it('rejects a forward-reference depends_on', () => {
     const toml = `
 [formula.broken]
