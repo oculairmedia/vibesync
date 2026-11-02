@@ -116,6 +116,8 @@ const schedulerSchema = z
     /** Project whose beads are scheduled and whose project_role_agents rows form the pool. */
     projectIdentifier: z.string(),
     intervalMs: z.number().int().min(1000, 'VIBESYNC_SCHEDULER_INTERVAL_MS must be >= 1000'),
+    /** Min spacing between event-triggered ticks (vibesync-p489). 0 disables debouncing. */
+    eventDebounceMs: z.number().int().min(0, 'VIBESYNC_SCHEDULER_EVENT_DEBOUNCE_MS must be >= 0'),
     poolSize: z.number().int().min(1, 'VIBESYNC_SCHEDULER_POOL_SIZE must be >= 1'),
     batchSize: z.number().int().min(1, 'VIBESYNC_SCHEDULER_BATCH_SIZE must be >= 1'),
     paused: z.boolean(),

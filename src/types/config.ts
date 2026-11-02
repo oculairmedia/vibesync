@@ -93,6 +93,8 @@ export interface SchedulerConfigSection {
   enabled: boolean;
   projectIdentifier: string;
   intervalMs: number;
+  /** Min spacing between event-triggered ticks (vibesync-p489). */
+  eventDebounceMs: number;
   poolSize: number;
   batchSize: number;
   paused: boolean;
