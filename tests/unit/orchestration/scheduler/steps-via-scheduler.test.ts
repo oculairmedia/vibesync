@@ -152,9 +152,10 @@ describe('the dispatcher no longer drives its own molecules (vibesync-efee)', ()
 describe('scheduler ON: all three steps are dispatched by the scheduler loop', () => {
   it('a formula run completes through daemon ticks; the step loop never ticks on its own', async () => {
     const bd = fakeBd();
+    // Spy BEFORE boot: boot is what would start the fallback timer.
+    const selfTick = vi.spyOn(StepDispatcher.prototype, 'start');
     const { handle, store, provider, events } = await boot({ scheduler: schedulerOptions(bd) });
     expect(handle.scheduler).not.toBeNull();
-    const selfTick = vi.spyOn(handle.steps, 'start');
 
     const result = await handle.dispatcher.run({ formula: formula(), pack: pack(), input: 'go' });
 
@@ -165,6 +166,7 @@ describe('scheduler ON: all three steps are dispatched by the scheduler loop', (
     }
     expect((await store.getBead(result.moleculeId))?.metadata).toMatchObject({ exec: { outcome: 'completed' } });
     expect(selfTick).not.toHaveBeenCalled(); // the scheduler owns the loop
+    selfTick.mockRestore();
     // The steps were run by daemon ticks, woken by the cook / step settle - not by the 600 s interval.
     const ticks = events.filter((e) => e.kind === TICK);
     expect(ticks.length).toBeGreaterThanOrEqual(3);
@@ -189,7 +191,10 @@ describe('scheduler ON: all three steps are dispatched by the scheduler loop', (
 
 describe('scheduler OFF (the production default): formula runs still execute', () => {
   it('a formula run completes with scheduler=null via the step loop boot starts', async () => {
+    const selfTick = vi.spyOn(StepDispatcher.prototype, 'start');
     const { handle, store, provider } = await boot();
+    expect(selfTick).toHaveBeenCalledTimes(1); // boot started the fallback timer
+    selfTick.mockRestore();
     expect(handle.scheduler).toBeNull();
 
     const result = await handle.dispatcher.run({ formula: formula(), pack: pack(), input: 'go' });
