@@ -132,11 +132,64 @@ describe('GhCliGitHubPort', () => {
       }
       if (args[0] === 'api') return '0\n';
       return '';
-    });
+    }, ['o/r']);
     const facts = await port.fetchFacts('o/r', 5, ['typecheck', 'test']);
     expect(facts).toEqual({ requiredChecks: { typecheck: 'SUCCESS', test: 'IN_PROGRESS' }, mergeable: 'MERGEABLE', deletedFiles: 0, behindBase: false });
     expect(await port.merge('o/r', 5)).toBe('abc123');
     expect(calls.at(-1)).toEqual(expect.arrayContaining(['pr', 'merge', '--match-head-commit', 'abc123']));
     await expect(port.merge('o/r', 99)).rejects.toThrow('no verified head sha');
+  });
+});
+
+// vibesync-5c8y: the side-effect boundary refuses repos outside the allowlist
+// even if something upstream enqueued one.
+describe('GhCliGitHubPort repo allowlist (vibesync-5c8y)', () => {
+  function guarded(allowed: readonly string[]) {
+    const calls: string[][] = [];
+    const port = new GhCliGitHubPort(async (args) => {
+      calls.push([...args]);
+      if (args[0] === 'pr' && args[1] === 'view') {
+        return JSON.stringify({ mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', headRefOid: 'abc', statusCheckRollup: [] });
+      }
+      if (args[0] === 'api') return '0\n';
+      return '';
+    }, allowed);
+    return { port, calls };
+  }
+
+  it('merge() for a non-allowed repo throws and gh is NEVER invoked', async () => {
+    const { port, calls } = guarded(['oculairmedia/vibesync']);
+    await expect(port.merge('evil/other', 7)).rejects.toThrow(/not in .*allow/i);
+    expect(calls).toEqual([]);
+  });
+
+  it('fetchFacts() for a non-allowed repo throws and gh is NEVER invoked', async () => {
+    const { port, calls } = guarded(['oculairmedia/vibesync']);
+    await expect(port.fetchFacts('evil/other', 7, ['ci'])).rejects.toThrow(/not in .*allow/i);
+    expect(calls).toEqual([]);
+  });
+
+  it('an empty allowlist refuses everything (fail closed), with no gh call', async () => {
+    const { port, calls } = guarded([]);
+    await expect(port.fetchFacts('o/r', 1, [])).rejects.toThrow();
+    await expect(port.merge('o/r', 1)).rejects.toThrow();
+    expect(calls).toEqual([]);
+  });
+
+  it('a look-alike repo (prefix/suffix/extra segment) is not allowed', async () => {
+    const { port, calls } = guarded(['oculairmedia/vibesync']);
+    for (const repo of ['oculairmedia/vibesync-evil', 'xoculairmedia/vibesync', 'oculairmedia/vibesync/x', 'oculairmedia', '']) {
+      await expect(port.fetchFacts(repo, 1, []), repo).rejects.toThrow();
+      await expect(port.merge(repo, 1), repo).rejects.toThrow();
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it('an allowed repo (case-insensitive, trailing .git tolerated) reaches gh and can merge the verified sha', async () => {
+    const { port, calls } = guarded(['oculairmedia/vibesync']);
+    await port.fetchFacts('OculairMedia/VibeSync', 3, []);
+    expect(calls.length).toBeGreaterThan(0);
+    expect(await port.merge('OculairMedia/VibeSync', 3)).toBe('abc');
+    expect(calls.at(-1)).toEqual(expect.arrayContaining(['pr', 'merge']));
   });
 });

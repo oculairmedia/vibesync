@@ -76,6 +76,7 @@ function schedulerConfig(over: Partial<BootSchedulerOptions['config']> = {}): Bo
     packDir: 'packs/gastown',
     autoMerge: false,
     requiredChecks: [],
+    allowedRepos: [],
     ...over,
   };
 }
@@ -241,7 +242,7 @@ describe('bootOrchestrationPlane — SchedulerDaemon wiring (vibesync-z2ws)', ()
     const bd = fakeBd({ ready: () => [{ id: 'work-1', title: 'T', priority: 1, dependent_count: 0 }] });
     const info = vi.fn();
     const handle = await boot({
-      config: schedulerConfig({ poolSize: 1 }),
+      config: schedulerConfig({ poolSize: 1, allowedRepos: ['o/r'] }),
       listPoolMembers: () => POOL,
       bd: bd.run,
       logger: { info, warn: vi.fn() },
@@ -296,7 +297,7 @@ describe('bootOrchestrationPlane — SchedulerDaemon wiring (vibesync-z2ws)', ()
     const bd = fakeBd();
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const handle = await boot({
-      config: schedulerConfig({ autoMerge: true, requiredChecks: ['ci'] }),
+      config: schedulerConfig({ autoMerge: true, requiredChecks: ['ci'], allowedRepos: ['o/r'] }),
       listPoolMembers: () => POOL,
       bd: bd.run, // no gh runner supplied
       appRoot: process.cwd(),
