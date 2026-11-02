@@ -45,7 +45,9 @@ import { SchedulerDaemon, type DaemonLogger, type DaemonTickReport } from './dae
 import type { StepDispatcher } from './step-dispatcher.js';
 import { EscalationManager, type NotificationTransport } from './escalation.js';
 import { FilePmWakeStateStore, type PmWakeStateStore } from './pm-wake-state.js';
+import { IrohPmWakeSink } from './iroh-pm-wake-sink.js';
 import { LoggingPmWakeSink, PmWaker, type PmWakeSink } from './pm-waker.js';
+import type { IrohConnection } from '../runtime/iroh/connection.js';
 import type { GitHubPort } from './refinery.js';
 
 /** The `scheduler` config section (structurally identical to AppConfig['scheduler']). */
@@ -77,6 +79,10 @@ export interface SchedulerBootConfig {
     readonly minIntervalMs: number;
     readonly backstopMs: number;
     readonly statePath: string;
+    /** 'log' (default) or 'iroh' (vibesync-2bgv). Absent = 'log'. */
+    readonly sink?: 'log' | 'iroh';
+    /** Fixed conversation for 'iroh' wakes; absent/'' = the PM's most recent interactive one. */
+    readonly conversationId?: string;
   };
   /**
    * Wall-clock deadline (ms) for a started run (vibesync-izn3); 0 = none.
@@ -109,6 +115,13 @@ export interface BootSchedulerOptions {
   readonly pmWake?: {
     readonly lookupAgentId: (projectIdentifier: string) => string | null | undefined;
     readonly sink?: PmWakeSink;
+    /**
+     * The plane's shared Iroh connection (vibesync-2bgv). Required when
+     * `config.pmWake.sink === 'iroh'` and no explicit `sink` is supplied; boot
+     * injects it from the memoized Iroh provider so a wake never dials a second
+     * connection.
+     */
+    readonly getIrohConnection?: () => IrohConnection;
     readonly store?: PmWakeStateStore;
     readonly now?: () => number;
   };
@@ -225,10 +238,21 @@ export function startSchedulerDaemon(
       logger?.warn?.({ project: config.projectIdentifier }, 'pm-wake: enabled but no PM registry lookup supplied — PM wake not started');
     } else {
       const pw = config.pmWake;
+      let sink = opts.pmWake.sink;
+      if (!sink && pw.sink === 'iroh') {
+        if (!opts.pmWake.getIrohConnection) {
+          throw new Error("scheduler.pmWake.sink='iroh' but no Iroh connection getter was supplied (provider kind must be letta-code-iroh)");
+        }
+        sink = new IrohPmWakeSink({
+          getConnection: opts.pmWake.getIrohConnection,
+          ...(pw.conversationId ? { conversationId: pw.conversationId } : {}),
+          ...(logger ? { logger } : {}),
+        });
+      }
       pmWaker = new PmWaker({
         projectIdentifier: config.projectIdentifier,
         lookupAgentId: opts.pmWake.lookupAgentId,
-        sink: opts.pmWake.sink ?? new LoggingPmWakeSink(logger),
+        sink: sink ?? new LoggingPmWakeSink(logger),
         store: opts.pmWake.store ?? new FilePmWakeStateStore(pw.statePath, logger),
         backlog: () => daemon.backlogSnapshot(),
         emit: (kind, payload) => bus.emit({ layer: 'daemon', kind, payload }),

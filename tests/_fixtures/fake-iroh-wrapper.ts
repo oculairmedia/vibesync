@@ -80,6 +80,8 @@ export class FakeIrohWrapper {
   dropAfterAccept: false | 'drop' | 'restart' = false;
   /** Reply input_accepted:false with this error. */
   rejectInput: string | null = null;
+  /** admin_rpc methods answered with `method not found` (a host that predates them). */
+  readonly unsupportedMethods = new Set<string>();
   /**
    * Order of message.list. The LIVE wrapper returns NEWEST-FIRST (proven
    * against the real host, vibesync-jni4); 'oldest-first' is kept so older
@@ -96,6 +98,12 @@ export class FakeIrohWrapper {
   private readonly runtimes = new Set<string>();
   /** conversation id -> the agent it was created on (a conversation belongs to exactly one agent). */
   readonly conversationAgent = new Map<string, string>();
+  /** conversation id -> the record fields `conversation.list` serves (the real host lists these; see seedConversation). */
+  private readonly conversationMeta = new Map<string, { created_at: string; last_message_at: string; archived: boolean; extra: F }>();
+  /** permission mode `permission_mode.get` reports per `agent/conversation` (absent = runtime never started: `{}`). */
+  readonly permissionModes = new Map<string, string>();
+  /** `conversation.list` order. The LIVE host serves NEWEST-FIRST by last_message_at (proven live, vibesync-2bgv). */
+  conversationListOrder: 'newest-first' | 'oldest-first' = 'newest-first';
   private readonly messages = new Map<string, F[]>();
   private readonly parked = new Map<string, F[]>();
   private readonly seenCmids = new Set<string>();
@@ -106,6 +114,22 @@ export class FakeIrohWrapper {
   constructor(opts: { scope?: string[]; authToken?: string | null } = {}) {
     this.scope = opts.scope ?? ['agent-parent'];
     this.authToken = opts.authToken ?? null;
+  }
+
+  /**
+   * Pre-existing conversation on `agent` (what a human thread looks like to a
+   * wake sink). `extra` rides on the listed record verbatim (e.g.
+   * `conversation_class: 'autonomous'`, `hidden: true`).
+   */
+  seedConversation(agent: string, c: { id: string; lastMessageAt: string; archived?: boolean; extra?: F }): void {
+    this.messages.set(c.id, []);
+    this.conversationAgent.set(c.id, agent);
+    this.conversationMeta.set(c.id, { created_at: c.lastMessageAt, last_message_at: c.lastMessageAt, archived: c.archived ?? false, extra: c.extra ?? {} });
+  }
+
+  /** Every user message text persisted on `conv` (what the PM would see). */
+  userTexts(conv: string): string[] {
+    return (this.messages.get(conv) ?? []).filter((m) => m['message_type'] === 'user_message').map((m) => String(m['content']));
   }
 
   inputsFor(cmid: string): F[] {
@@ -251,6 +275,9 @@ export class FakeIrohWrapper {
     const rid = f['request_id'];
     const method = f['method'];
     const params = (f['params'] ?? {}) as F;
+    if (typeof method === 'string' && this.unsupportedMethods.has(method)) {
+      return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: false, error: `method not found: ${method}` });
+    }
     if (method === 'conversation.create') {
       const agent = String(params['agent_id']);
       if (!this.scope.includes(agent)) return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: false, error: "forbidden: agent not in this device's scope" });
@@ -258,7 +285,30 @@ export class FakeIrohWrapper {
       const id = `conv-${this.convCounter}`;
       this.messages.set(id, []);
       this.conversationAgent.set(id, agent);
+      const at = this.nextDate();
+      this.conversationMeta.set(id, { created_at: at, last_message_at: at, archived: false, extra: {} });
       return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: true, result: { id } });
+    }
+    if (method === 'conversation.list') {
+      const agent = String(params['agent_id']);
+      if (!this.scope.includes(agent)) return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: false, error: "forbidden: agent not in this device's scope" });
+      const rows = [...this.conversationMeta.entries()]
+        .filter(([id]) => this.conversationAgent.get(id) === agent)
+        .map(([id, m]) => ({ id, agent_id: agent, archived: m.archived, created_at: m.created_at, updated_at: m.last_message_at, last_message_at: m.last_message_at, summary: null, ...m.extra }))
+        .sort((a, b) => (a.last_message_at < b.last_message_at ? -1 : a.last_message_at > b.last_message_at ? 1 : 0));
+      const ordered = this.conversationListOrder === 'newest-first' ? rows.reverse() : rows;
+      const limit = typeof params['limit'] === 'number' ? (params['limit'] as number) : ordered.length;
+      return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: true, result: ordered.slice(0, limit) });
+    }
+    if (method === 'conversation.list_agent') {
+      // The paired vibesync grant is refused here on the LIVE host (proven live, vibesync-2bgv).
+      return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: false, error: 'forbidden' });
+    }
+    if (method === 'permission_mode.get') {
+      const agent = String(params['agent_id']);
+      if (!this.scope.includes(agent)) return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: false, error: "forbidden: agent not in this device's scope" });
+      const mode = this.permissionModes.get(`${agent}/${String(params['conversation_id'])}`);
+      return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: true, result: mode ? { mode } : {} });
     }
     if (method === 'message.list') {
       const conv = String(params['conversation_id']);
@@ -309,7 +359,11 @@ export class FakeIrohWrapper {
     this.lastCmidByConv.set(conv, cmid);
     this.parked.set(conv, []);
     const text = ((f['payload'] as F)['messages'] as F[])[0]!['content'];
-    this.messages.get(conv)?.push({ id: this.nextMsgId(), date: this.nextDate(), message_type: 'user_message', role: 'user', content: text, otid: cmid, turn_id: cmid });
+    const userId = this.nextMsgId(); // id first: nextDate() derives from the sequence it bumps
+    const userDate = this.nextDate();
+    this.messages.get(conv)?.push({ id: userId, date: userDate, message_type: 'user_message', role: 'user', content: text, otid: cmid, turn_id: cmid });
+    const meta = this.conversationMeta.get(conv);
+    if (meta) meta.last_message_at = userDate;
     this.reply(l, { type: 'input_accepted', request_id: rid, runtime: rt, accepted: true, disposition: 'started' });
     this.turnsExecuted += 1;
     const mode = this.dropAfterAccept;

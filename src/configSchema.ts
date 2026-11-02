@@ -147,6 +147,10 @@ const schedulerSchema = z
       minIntervalMs: z.number().int().min(1000, 'VIBESYNC_PM_WAKE_MIN_INTERVAL_MS must be >= 1000'),
       backstopMs: z.number().int().min(1000, 'VIBESYNC_PM_WAKE_BACKSTOP_MS must be >= 1000'),
       statePath: z.string().min(1, 'VIBESYNC_PM_WAKE_STATE_PATH must not be empty'),
+      /** vibesync-2bgv: 'log' (default) records the wake; 'iroh' delivers it to the PM. */
+      sink: z.enum(['log', 'iroh'], { message: 'VIBESYNC_PM_WAKE_SINK must be "log" or "iroh"' }).default('log'),
+      /** Fixed target conversation for 'iroh' wakes; '' = the PM's most recent interactive conversation. */
+      conversationId: z.string().default(''),
     }),
   })
   .refine((data) => !data.enabled || data.projectIdentifier.trim().length > 0, {

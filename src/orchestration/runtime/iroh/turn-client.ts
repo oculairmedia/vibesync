@@ -113,6 +113,51 @@ export async function createConversation(conn: IrohConnection, agentId: string):
   return conv;
 }
 
+export type InputSubmission =
+  | { readonly accepted: true; readonly disposition: string | null }
+  | { readonly accepted: false; readonly error: string };
+
+/**
+ * `runtime_start(mode)` then ONE `input` carrying `clientMessageId`, and the
+ * wrapper's `input_accepted` answer: acceptance ONLY, no waiting for the turn
+ * (vibesync-2bgv: a PM wake is "the PM got the message", not "the PM finished").
+ * `disposition` is the host's word for what it did with an accepted input
+ * ('started', or 'queued' behind an active turn). A refusal (forbidden, method
+ * not found, runtime_start failure) throws {@link IrohRefusedError}; any other
+ * rejection comes back as `{accepted:false, error}`. Link loss throws the
+ * retryable connection errors; the same `clientMessageId` can then be re-sent
+ * (the wrapper dedupes).
+ */
+export async function submitInput(
+  conn: IrohConnection,
+  req: { readonly agentId: string; readonly conversationId: string; readonly text: string; readonly clientMessageId: string },
+  mode: string = DEFAULTS.mode,
+): Promise<InputSubmission> {
+  if (!req.clientMessageId) throw new Error('submitInput: clientMessageId is required (stable per prompt)');
+  const rs = await conn.request({
+    type: 'runtime_start',
+    agent_id: req.agentId,
+    conversation_id: req.conversationId,
+    mode,
+  });
+  if (rs['success'] !== true) throw refusalFrom('runtime_start', rs['error'] ?? 'runtime_start failed');
+
+  const accepted = await conn.request({
+    type: 'input',
+    runtime: { agent_id: req.agentId, conversation_id: req.conversationId },
+    payload: {
+      kind: 'create_message',
+      messages: [{ role: 'user', content: req.text, client_message_id: req.clientMessageId }],
+    },
+  });
+  if (accepted['accepted'] !== true) {
+    const err = str(accepted['error']) ?? 'input not accepted';
+    if (/forbidden|not found|unknown method|unsupported/i.test(err)) throw refusalFrom('input', err);
+    return { accepted: false, error: err };
+  }
+  return { accepted: true, disposition: str(accepted['disposition']) };
+}
+
 export async function runTurn(conn: IrohConnection, req: TurnRequest, opts: RunTurnOptions = {}): Promise<TurnResult> {
   if (!req.clientMessageId) throw new Error('runTurn: clientMessageId is required (stable per prompt)');
   const o = { ...DEFAULTS, ...stripUndefined(opts) };
@@ -150,7 +195,6 @@ async function attempt(
   deadline: number,
   redialed: boolean,
 ): Promise<Outcome> {
-  const scope = { agent_id: req.agentId, conversation_id: conversationId };
   // Mutable holder: the frame listener runs in a closure, so plain `let`s would
   // be narrowed to their initial value by the control-flow analysis below.
   const st = {
@@ -224,31 +268,15 @@ async function attempt(
 
   try {
     await conn.connect();
-    const rs = await conn.request({
-      type: 'runtime_start',
-      agent_id: req.agentId,
-      conversation_id: conversationId,
-      mode: o.mode,
-    });
-    if (rs['success'] !== true) throw refusalFrom('runtime_start', rs['error'] ?? 'runtime_start failed');
-
-    const accepted = await conn.request({
-      type: 'input',
-      runtime: scope,
-      payload: {
-        kind: 'create_message',
-        messages: [{ role: 'user', content: req.text, client_message_id: req.clientMessageId }],
-      },
-    });
-    if (accepted['accepted'] !== true) {
-      const err = str(accepted['error']) ?? 'input not accepted';
-      if (/forbidden|not found|unknown method|unsupported/i.test(err)) throw refusalFrom('input', err);
+    const submitted = await submitInput(conn, { agentId: req.agentId, conversationId, text: req.text, clientMessageId: req.clientMessageId }, o.mode);
+    if (!submitted.accepted) {
       return {
         kind: 'terminal',
-        frame: { type: 'turn_finished', stop_reason: 'error', error: err, __input_rejected: true },
+        frame: { type: 'turn_finished', stop_reason: 'error', error: submitted.error, __input_rejected: true },
       };
     }
-    o.onProgress?.({ kind: 'accepted', ...(str(accepted['disposition']) ? { disposition: str(accepted['disposition'])! } : {}) });
+    const accepted = { disposition: submitted.disposition };
+    o.onProgress?.({ kind: 'accepted', ...(accepted.disposition ? { disposition: accepted.disposition } : {}) });
 
     // Wait for the authoritative end of the turn.
     let nextReconcile = redialed ? Date.now() + o.replayWaitMs : Number.POSITIVE_INFINITY;
