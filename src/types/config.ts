@@ -103,6 +103,8 @@ export interface SchedulerConfigSection {
   packDir: string;
   autoMerge: boolean;
   requiredChecks: string[];
+  /** owner/repo slugs the refinery may auto-merge in (vibesync-5c8y). Required non-empty when autoMerge. */
+  allowedRepos: string[];
 }
 
 export interface AppConfig {

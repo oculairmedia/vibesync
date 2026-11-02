@@ -19,6 +19,7 @@ function schedulerDefaults(overrides = {}) {
     packDir: 'packs/gastown',
     autoMerge: false,
     requiredChecks: [] as string[],
+    allowedRepos: [] as string[],
     ...overrides,
   };
 }
@@ -213,6 +214,41 @@ describe('configSchema', () => {
       );
       expect(result.success).toBe(false);
       expect(result.error.issues[0].message).toContain('VIBESYNC_SCHEDULER_REQUIRED_CHECKS');
+    });
+
+    it('rejects autoMerge with an empty allowedRepos (vibesync-5c8y)', () => {
+      const result = configSchema.safeParse(
+        validConfig({
+          scheduler: schedulerDefaults({ enabled: true, projectIdentifier: 'p', autoMerge: true, requiredChecks: ['ci'] }),
+        }),
+      );
+      expect(result.success).toBe(false);
+      expect(result.error.issues.map((i: { message: string }) => i.message).join(';')).toContain(
+        'VIBESYNC_SCHEDULER_ALLOWED_REPOS',
+      );
+    });
+
+    it('accepts autoMerge once allowedRepos is non-empty, and an empty allowedRepos while autoMerge is off', () => {
+      expect(
+        configSchema.safeParse(
+          validConfig({
+            scheduler: schedulerDefaults({
+              enabled: true, projectIdentifier: 'p', autoMerge: true, requiredChecks: ['ci'], allowedRepos: ['o/r'],
+            }),
+          }),
+        ).success,
+      ).toBe(true);
+      expect(configSchema.safeParse(validConfig({ scheduler: schedulerDefaults({ allowedRepos: [] }) })).success).toBe(true);
+    });
+
+    it('rejects malformed allowedRepos entries (vibesync-5c8y)', () => {
+      for (const bad of ['not-a-repo', 'a/b/c', '/r', 'o/', 'o/r x', 'https://github.com/o/r', '']) {
+        const result = configSchema.safeParse(validConfig({ scheduler: schedulerDefaults({ allowedRepos: [bad] }) }));
+        expect(result.success, bad).toBe(false);
+      }
+      expect(
+        configSchema.safeParse(validConfig({ scheduler: schedulerDefaults({ allowedRepos: ['Oculair-Media/vibe.sync_2'] }) })).success,
+      ).toBe(true);
     });
 
     it('rejects a negative or fractional eventDebounceMs (vibesync-p489)', () => {

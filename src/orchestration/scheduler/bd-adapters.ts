@@ -16,6 +16,7 @@
  * escalations are bd comments on the work bead.
  */
 
+import { isRepoAllowed } from './repo-allowlist.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
@@ -372,9 +373,23 @@ export const disabledGitHubPort: GitHubPort = {
 export class GhCliGitHubPort implements GitHubPort {
   private readonly headOids = new Map<string, string>();
 
-  constructor(private readonly gh: CommandRunner) {}
+  /**
+   * @param allowedRepos owner/repo allowlist (vibesync-5c8y). Required, no default:
+   *   an empty list refuses every repo. Defence in depth behind the daemon's own check.
+   */
+  constructor(
+    private readonly gh: CommandRunner,
+    private readonly allowedRepos: readonly string[],
+  ) {}
+
+  private assertAllowed(repo: string): void {
+    if (!isRepoAllowed(repo, this.allowedRepos)) {
+      throw new Error(`refusing GitHub access to ${JSON.stringify(repo)}: repo is not in scheduler.allowedRepos`);
+    }
+  }
 
   async fetchFacts(repo: string, prNumber: number, requiredCheckNames: readonly string[]): Promise<PrFacts> {
+    this.assertAllowed(repo);
     const view = parseJsonOutput(
       await this.gh(['pr', 'view', String(prNumber), '-R', repo, '--json', 'mergeable,mergeStateStatus,statusCheckRollup,headRefOid']),
       `gh pr view ${repo}#${prNumber}`,
@@ -409,6 +424,7 @@ export class GhCliGitHubPort implements GitHubPort {
   }
 
   async merge(repo: string, prNumber: number): Promise<string> {
+    this.assertAllowed(repo);
     const oid = this.headOids.get(`${repo}#${prNumber}`);
     if (!oid) throw new Error(`refusing to merge ${repo}#${prNumber}: no verified head sha from fetchFacts`);
     // --match-head-commit: merge only the exact commit whose gates we checked.

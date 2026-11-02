@@ -27,6 +27,7 @@ import { SlingContextManager, type SlingContextStore } from './sling-context.js'
 import { PropulsionExecutor, type DispatchRunner, type DispatchRunResult } from './propulsion-executor.js';
 import type { DispatchCandidate } from './plan-dispatch.js';
 import { Refinery, type GitHubPort, type RefineryEscalationSink, type MergeRequest } from './refinery.js';
+import { isRepoAllowed } from './repo-allowlist.js';
 import { Witness, type RunLivenessProbe, type WitnessEscalation } from './witness.js';
 
 /**
@@ -98,6 +99,12 @@ export interface SchedulerDaemonDeps {
   readonly contextStore: SlingContextStore;
   readonly poolMembers: readonly PoolMemberIdentity[];
   readonly github: GitHubPort;
+  /**
+   * owner/repo allowlist for PRs parsed out of (untrusted) run output
+   * (vibesync-5c8y). A PR url for any other repo is ignored with a WARN.
+   * Empty = nothing is ever enqueued.
+   */
+  readonly allowedRepos: readonly string[];
   readonly requiredCheckNames: (repo: string) => readonly string[];
   readonly livenessProbe: RunLivenessProbe;
   readonly escalation: RefineryEscalationSink & WitnessEscalation & {
@@ -276,19 +283,31 @@ export class SchedulerDaemon {
     return { done };
   }
 
-  /** Parse a PR url from the run output; enqueue it into the refinery if found. */
+  /**
+   * Parse PR urls from the run output; enqueue those whose repo is in
+   * `allowedRepos` (vibesync-5c8y). Output is untrusted, so EVERY url is
+   * considered: allowed ones are enqueued, each other one is WARN-logged and
+   * dropped (one rejected url never suppresses an allowed one).
+   */
   private maybeEnqueuePr(workBeadId: string, runId: string, output: string): void {
-    const m = /https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)/i.exec(output);
-    if (!m) return;
-    const mr: MergeRequest = {
-      id: `mr-${m[2]}`,
-      repo: m[1]!,
-      prNumber: Number(m[2]),
-      workBeadId,
-      enqueuedAt: (this.deps.now ?? (() => new Date()))().toISOString(),
-    };
-    this.refinery.enqueue(mr);
-    this.deps.logger?.info?.({ workBeadId, prNumber: mr.prNumber, runId }, 'daemon: PR queued for refinery');
+    const re = /https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/(\d+)/gi;
+    for (const m of output.matchAll(re)) {
+      const repo = m[1]!.replace(/\.git$/i, '');
+      const prNumber = Number(m[2]);
+      if (!isRepoAllowed(repo, this.deps.allowedRepos)) {
+        this.deps.logger?.warn?.({ workBeadId, runId, repo, prNumber }, 'daemon: PR url for non-allowed repo ignored');
+        continue;
+      }
+      const mr: MergeRequest = {
+        id: `mr-${repo.toLowerCase()}#${prNumber}`,
+        repo,
+        prNumber,
+        workBeadId,
+        enqueuedAt: (this.deps.now ?? (() => new Date()))().toISOString(),
+      };
+      this.refinery.enqueue(mr);
+      this.deps.logger?.info?.({ workBeadId, prNumber, runId }, 'daemon: PR queued for refinery');
+    }
   }
 
   private async recordFailure(contextId: string, _err: string): Promise<number> {

@@ -130,6 +130,7 @@ export function loadConfig(): AppConfig {
       // Safety: never auto-merge unless explicitly requested.
       autoMerge: process.env.VIBESYNC_SCHEDULER_AUTO_MERGE === 'true',
       requiredChecks: parseCsv(process.env.VIBESYNC_SCHEDULER_REQUIRED_CHECKS),
+      allowedRepos: parseCsv(process.env.VIBESYNC_SCHEDULER_ALLOWED_REPOS),
     },
   };
 
