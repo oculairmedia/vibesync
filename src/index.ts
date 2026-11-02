@@ -508,6 +508,25 @@ async function main(): Promise<void> {
               })(args);
             },
           },
+          // vibesync-9g24: durable waits. Config-gated (waits.enabled, default
+          // false) inside bootOrchestrationPlane; the closure is never invoked
+          // with the flag off. Same project beads dir as the scheduler.
+          waits: {
+            config: config.waits,
+            logger,
+            bd: async (args) => {
+              const project = db.getProject(config.scheduler.projectIdentifier);
+              const fsPath = project?.filesystem_path;
+              if (!fsPath) {
+                throw new Error(`waits project "${config.scheduler.projectIdentifier}" has no filesystem_path`);
+              }
+              return createCliRunner({
+                binary: 'bd',
+                cwd: fsPath,
+                env: { BEADS_DIR: `${fsPath}/.beads`, BEADS_ACTOR: 'vibesync-waits' },
+              })(args);
+            },
+          },
           providerRouting: {
             store: { getProjectProviderRouting: db.getProjectProviderRouting.bind(db) },
             roleAgentBootstrapper,

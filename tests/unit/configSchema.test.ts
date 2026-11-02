@@ -87,6 +87,7 @@ function validConfig(overrides = {}) {
       remoteName: 'origin',
     },
     scheduler: schedulerDefaults(),
+    waits: { enabled: false, reconcileIntervalMs: 60000, maxWakeAttempts: 5 },
     ...overrides,
   };
 }
@@ -288,6 +289,18 @@ describe('configSchema', () => {
     it('rejects an interval under 1s', () => {
       const result = configSchema.safeParse(validConfig({ scheduler: schedulerDefaults({ intervalMs: 10 }) }));
       expect(result.success).toBe(false);
+    });
+  });
+
+  describe('waits section (vibesync-9g24)', () => {
+    it('accepts the default (disabled)', () => {
+      expect(configSchema.safeParse(validConfig()).success).toBe(true);
+    });
+    it('requires the section and rejects out-of-range values', () => {
+      const { waits: _omit, ...rest } = validConfig() as Record<string, unknown>;
+      expect(configSchema.safeParse(rest).success).toBe(false);
+      expect(configSchema.safeParse(validConfig({ waits: { enabled: false, reconcileIntervalMs: -1, maxWakeAttempts: 5 } })).success).toBe(false);
+      expect(configSchema.safeParse(validConfig({ waits: { enabled: false, reconcileIntervalMs: 0, maxWakeAttempts: 0 } })).success).toBe(false);
     });
   });
 });
