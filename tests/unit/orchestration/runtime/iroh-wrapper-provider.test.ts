@@ -11,6 +11,12 @@ const ROLE_AGENT = 'agent-role-1';
 const CODER = 'agent-395ae3a2-6b32-46d1-87ca-e94bb9620fae';
 const REVIEWER = 'agent-0248f563-0fd2-4ff4-8a9e-f77288e731a0';
 const PERSONA_MARKER = 'PERSONA-TEXT-THAT-MUST-NOT-BE-SENT';
+/**
+ * The pre-jni4 constructor REQUIRED a personaLoader. Callers that still pass one
+ * (and the pre-fix code, in the fail-on-revert run) must behave: the new provider
+ * ignores it and never sends persona text.
+ */
+const legacyPersonaOption = { personaLoader: { load: async (role: string) => `${PERSONA_MARKER} (${role})` } } as object;
 
 let provider: IrohWrapperProvider | null = null;
 afterEach(async () => {
@@ -23,7 +29,7 @@ const SCOPE = [PARENT, ROLE_AGENT, CODER, REVIEWER];
 
 function mk(fake: FakeIrohWrapper, extra: Partial<ConstructorParameters<typeof IrohWrapperProvider>[0]> = {}): IrohWrapperProvider {
   const connection = new IrohConnection({ dial: fake.dial, peerName: 'vibesync-test', sleep: async () => undefined, backoff: { initialMs: 1, capMs: 2, maxAttempts: 3 } });
-  provider = new IrohWrapperProvider({ connection, turnTimeoutMs: 5_000, ...extra });
+  provider = new IrohWrapperProvider({ connection, turnTimeoutMs: 5_000, ...legacyPersonaOption, ...extra } as ConstructorParameters<typeof IrohWrapperProvider>[0]);
   return provider;
 }
 

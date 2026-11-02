@@ -40,7 +40,9 @@ function harness(fake: FakeIrohWrapper) {
     connection,
     turnTimeoutMs: 5_000,
     agentIdResolver: { resolveRoleAgent: async (role) => ROLE_AGENTS[role] ?? null },
-  });
+    // pre-jni4 constructor required this; the new provider must ignore it (see iroh-wrapper-provider.test.ts).
+    ...({ personaLoader: { load: async () => 'PERSONA-TEXT-THAT-MUST-NOT-BE-SENT' } } as object),
+  } as ConstructorParameters<typeof IrohWrapperProvider>[0]);
   const store = new InMemoryDoltClient();
   const dispatcher = new FormulaDispatcher({
     provider: wrapWithParentAgentId(provider, PARENT),
@@ -83,6 +85,7 @@ describe('FormulaDispatcher + IrohWrapperProvider: direct role dispatch (vibesyn
     expect(inputs[1]).toContain(reports.reviewer);
     expect(inputs[2]).toContain(reports.coder);
     expect(inputs.join('\n')).not.toContain('ORCHESTRATION_SUBAGENT_DISPATCH');
+    expect(inputs.join('\n')).not.toContain('PERSONA-TEXT-THAT-MUST-NOT-BE-SENT');
 
     // trace fields (null on the live run)
     const view = await new MoleculeWalker(store).load(result.moleculeId);
