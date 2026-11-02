@@ -149,6 +149,12 @@ export function loadConfig(): AppConfig {
         statePath: process.env.VIBESYNC_PM_WAKE_STATE_PATH || '/opt/stacks/vibesync/logs/pm-wake-state.json',
       },
     },
+    waits: {
+      // vibesync-9g24: durable wait watcher. OFF unless explicitly enabled.
+      enabled: process.env.VIBESYNC_WAITS_ENABLED === 'true',
+      reconcileIntervalMs: parseStrictInt(process.env.VIBESYNC_WAITS_RECONCILE_INTERVAL_MS, 60_000),
+      maxWakeAttempts: parseStrictInt(process.env.VIBESYNC_WAITS_MAX_WAKE_ATTEMPTS, 5),
+    },
   };
 
   const result = configSchema.safeParse(config);

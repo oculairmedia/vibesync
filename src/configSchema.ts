@@ -161,6 +161,18 @@ const schedulerSchema = z
       'VIBESYNC_SCHEDULER_ALLOWED_REPOS must list at least one owner/repo when VIBESYNC_SCHEDULER_AUTO_MERGE is true',
   });
 
+/**
+ * Durable waits (vibesync-9g24). Layering invariant 4: the wait watcher exists
+ * iff this section says `enabled`. Default is OFF.
+ */
+const waitsSchema = z.object({
+  enabled: z.boolean(),
+  /** Slow safety-net reconcile (ms). The bus event is only a hint; 0 disables the interval. */
+  reconcileIntervalMs: z.number().int().min(0, 'VIBESYNC_WAITS_RECONCILE_INTERVAL_MS must be >= 0'),
+  /** Sink failures before a wait is closed `failed`. */
+  maxWakeAttempts: z.number().int().min(1, 'VIBESYNC_WAITS_MAX_WAKE_ATTEMPTS must be >= 1'),
+});
+
 export const configSchema = z.object({
   sync: syncSchema,
   reconciliation: reconciliationSchema,
@@ -172,6 +184,7 @@ export const configSchema = z.object({
   projectMcp: projectMcpSchema,
   doltHub: doltHubSchema,
   scheduler: schedulerSchema,
+  waits: waitsSchema,
 });
 
 export type AppConfig = z.infer<typeof configSchema>;

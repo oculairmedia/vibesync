@@ -21,6 +21,8 @@ import type { PersonaLoader, RuntimeProvider } from './runtime/index.js';
 import { startSchedulerDaemon, SCHEDULER_START_FAILED_EVENT } from './scheduler/boot-scheduler.js';
 import type { BootSchedulerOptions, SchedulerHandle } from './scheduler/boot-scheduler.js';
 import type { DoltClient } from './store/index.js';
+import { startWaitWatcher } from './waits/boot-waits.js';
+import type { BootWaitsOptions, WaitsHandle } from './waits/boot-waits.js';
 import { installLettaClientValidationFilter } from '../letta/LettaClientValidationFilter.js';
 
 export interface OrchestrationHandle {
@@ -35,6 +37,11 @@ export interface OrchestrationHandle {
    * shutdown() stops it and awaits any in-flight tick.
    */
   readonly scheduler: SchedulerHandle | null;
+  /**
+   * The running durable-wait watcher (vibesync-9g24), or null when
+   * `waits.config.enabled` is false / not supplied / failed to start.
+   */
+  readonly waits: WaitsHandle | null;
   shutdown(): Promise<void>;
 }
 
@@ -68,6 +75,12 @@ export interface BootOrchestrationPlaneOptions {
    * pool-member lookup) are injected so this plane imports no database.
    */
   readonly scheduler?: BootSchedulerOptions;
+  /**
+   * Durable wait-on-beads watcher (vibesync-9g24, invariant 4). Absent or
+   * `config.enabled === false` => nothing is constructed: no watcher, no timer,
+   * no `bd` call.
+   */
+  readonly waits?: BootWaitsOptions;
   /**
    * Test seam for provider kind 'letta-code-iroh' (vibesync-x38j): supplies the
    * Iroh connection instead of the native @number0/iroh dialer. Production
@@ -302,6 +315,19 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     }
   }
 
+  // vibesync-9g24: durable waits. Independent of the scheduler (no shared code);
+  // a start failure must not take the plane down.
+  let waits: WaitsHandle | null = null;
+  if (opts.waits?.config.enabled) {
+    try {
+      waits = startWaitWatcher({ ...opts.waits, bus });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // eslint-disable-next-line no-console
+      console.error(`[orchestration:waits] wait watcher failed to start — continuing without it: ${message}`);
+    }
+  }
+
   let shutDown = false;
 
   return {
@@ -311,6 +337,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     patrol,
     walker,
     scheduler,
+    waits,
     async shutdown(): Promise<void> {
       if (shutDown) return;
       shutDown = true;
@@ -321,6 +348,14 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
         } catch (err) {
           // eslint-disable-next-line no-console
           console.error('[orchestration:scheduler] error while stopping SchedulerDaemon', err);
+        }
+      }
+      if (waits) {
+        try {
+          await waits.stop();
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error('[orchestration:waits] error while stopping wait watcher', err);
         }
       }
       unsubscribeWriteback?.();

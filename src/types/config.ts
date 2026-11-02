@@ -119,6 +119,13 @@ export interface SchedulerConfigSection {
   };
 }
 
+export interface WaitsConfigSection {
+  /** vibesync-9g24: durable wait watcher. OFF unless explicitly enabled. */
+  enabled: boolean;
+  reconcileIntervalMs: number;
+  maxWakeAttempts: number;
+}
+
 export interface AppConfig {
   sync: SyncConfig;
   reconciliation: ReconciliationConfig;
@@ -130,6 +137,7 @@ export interface AppConfig {
   projectMcp: ProjectMcpConfig;
   doltHub: DoltHubConfig;
   scheduler: SchedulerConfigSection;
+  waits: WaitsConfigSection;
 }
 
 export interface HealthSnapshot {
