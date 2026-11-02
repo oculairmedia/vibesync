@@ -51,7 +51,10 @@ describe.skipIf(!LIVE)('direct role dispatch over Iroh (live)', () => {
     expect(errors).toEqual([]);
     expect(prompt.conversationId).toMatch(/\S/);
     expect(deltas).toHaveLength(1);
-    expect(output).toContain('LGTM');
+    // The whole reply must be the requested verdict (CodeRabbit #57): a reply that
+    // merely mentions LGTM ("I cannot approve; LGTM was requested") must fail.
+    // Trailing punctuation is allowed: the live reviewer answers "LGTM.".
+    expect(output.trim()).toMatch(/^LGTM[.!]?$/);
     expect(output).not.toContain('Waiting for');
     // run_id/turn match is enforced inside the provider (turn-client); a message of another turn yields empty_output (an error above).
     assertNotFalsePass({ output, durationMs });
