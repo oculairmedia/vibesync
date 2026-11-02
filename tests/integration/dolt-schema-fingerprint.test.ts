@@ -1,43 +1,16 @@
-/**
- * Integration guard for vibesync-bll: the vendored bd schema fingerprint
- * must match the live bd schema in `.beads/dolt/`.
- *
- * This test confirms two things at once:
- *   1. The canonicalization in schema-fingerprint.ts produces a stable
- *      hash against a real Dolt instance's `SHOW CREATE TABLE` output.
- *   2. The vendored `EXPECTED_BD_SCHEMA_FINGERPRINT` is current — if a
- *      bd upgrade changes a relevant table, this test fails and the
- *      operator is forced to re-verify before bumping the constant.
- *
- * Skipped when `.beads/dolt-server.port` is missing (e.g. CI runners
- * that don't spin up Dolt).
- */
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { EXPECTED_BD_SCHEMA_FINGERPRINT } from '../../src/orchestration/store/schema-fingerprint.js';
+import { provisionIsolatedBeads, RUN_ISOLATED_BEADS } from './orchestration/isolated-beads.js';
 
-import { existsSync } from 'node:fs';
-import { describe, expect, it, afterAll } from 'vitest';
+// VIBESYNC_TEST_BD=/absolute/path/to/pinned/bd npx vitest run tests/integration/dolt-schema-fingerprint.test.ts
+// No opt-in means no CLI calls, server startup, or connection to cwd's .beads.
+describe.skipIf(!RUN_ISOLATED_BEADS)('vendored schema against disposable Beads', () => {
+  let store: Awaited<ReturnType<typeof provisionIsolatedBeads>> | undefined;
+  beforeAll(async () => { store = await provisionIsolatedBeads(); }, 120_000);
+  afterAll(async () => { await store?.close(); }, 120_000);
 
-import { DoltClient } from '../../src/orchestration/store/dolt-client.js';
-import {
-  EXPECTED_BD_SCHEMA_FINGERPRINT,
-} from '../../src/orchestration/store/schema-fingerprint.js';
-
-const portFile = '.beads/dolt-server.port';
-const haveDolt = existsSync(portFile);
-const describeOrSkip = haveDolt ? describe : describe.skip;
-
-describeOrSkip('vendored bd schema fingerprint matches live bd', () => {
-  let client: DoltClient | null = null;
-
-  afterAll(async () => {
-    if (client) await client.close();
-  });
-
-  it('verifySchema() succeeds against the running Dolt server', async () => {
-    client = new DoltClient();
-    await expect(client.verifySchema()).resolves.toBeUndefined();
-    // The expected constant is non-empty and 64 hex chars — sanity check
-    // so a future "set to empty string" diff fails here instead of
-    // silently passing.
+  it('preserves the production schema gate', async () => {
     expect(EXPECTED_BD_SCHEMA_FINGERPRINT).toMatch(/^[0-9a-f]{64}$/);
+    await expect(store!.client.verifySchema()).resolves.toBeUndefined();
   });
 });
