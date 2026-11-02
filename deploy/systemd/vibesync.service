@@ -1,0 +1,30 @@
+[Unit]
+Description=Vibesync project registry and PM-agent coordination service (TS)
+Documentation=https://github.com/oculairmedia/vibesync
+After=network-online.target docker.service
+Wants=network-online.target
+# Start limits belong in [Unit]; in [Service] systemd ignored StartLimitIntervalSec.
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/stacks/vibesync
+EnvironmentFile=/opt/stacks/vibesync/.env
+Environment=NODE_ENV=production
+Environment=PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/root
+ExecStart=/root/.bun/bin/bun src/index.ts
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vibesync
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
