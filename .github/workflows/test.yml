@@ -20,7 +20,12 @@ jobs:
         uses: oven-sh/setup-bun@v2
       - name: Install dependencies
         # Production installs with bun (bun.lock); npm ci took ~100 s here.
-        run: bun install --frozen-lockfile
+        # --ignore-scripts: node-pty (via @letta-ai/letta-code) has no linux-x64
+        # prebuild and its script runs node-gyp@latest, which fails on the
+        # runner. Only better-sqlite3's native build is needed; rebuild it alone.
+        run: |
+          bun install --frozen-lockfile --ignore-scripts
+          npm rebuild better-sqlite3
       - name: Type check (tsc --noEmit)
         run: npm run type-check
 
@@ -45,7 +50,10 @@ jobs:
 
       - name: Install dependencies
         # Production installs with bun (bun.lock); npm ci took ~100 s per job.
-        run: bun install --frozen-lockfile
+        # See the typecheck job for why scripts are skipped and one is rebuilt.
+        run: |
+          bun install --frozen-lockfile --ignore-scripts
+          npm rebuild better-sqlite3
 
       - name: Run linter
         run: npm run lint --if-present
