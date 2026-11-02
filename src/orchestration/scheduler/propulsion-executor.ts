@@ -33,7 +33,7 @@
  */
 
 import type { DispatchCandidate } from './plan-dispatch.js';
-import type { DispatchExecutor } from './scheduler-loop.js';
+import type { DispatchExecutor, DispatchRunHandle } from './scheduler-loop.js';
 
 /** How a dispatched run ended. */
 export type PropulsionOutcome = 'completed' | 'blocked' | 'failed';
@@ -67,7 +67,15 @@ export interface DispatchRunResult {
  * stays pure and testable and does not import the dispatcher directly.
  */
 export interface DispatchRunner {
+  /** Run to completion (resolves when the formula FINISHES). */
   run(candidate: DispatchCandidate): Promise<DispatchRunResult>;
+  /**
+   * Two-phase variant for the async scheduler (vibesync-q50w). Resolves once
+   * the run has STARTED, with `done` settling when it finishes. Rejects (or
+   * throws) only when the run could not be started. `done` must not reject:
+   * run failures are reported as `{ ok: false }`.
+   */
+  start?(candidate: DispatchCandidate): Promise<{ readonly done: Promise<DispatchRunResult> }>;
 }
 
 /** The pool free-slot signal (63zx.2 AgentPool.onComplete). */
@@ -184,7 +192,41 @@ export class PropulsionExecutor implements DispatchExecutor {
       this.freeSlot(candidate.workBeadId);
       throw err instanceof Error ? err : new Error(String(err));
     }
+    await this.settle(candidate, result);
+  }
 
+  /**
+   * Start a dispatch WITHOUT waiting for the run to finish (vibesync-q50w).
+   * Resolves with a handle as soon as the run has started; the handle's
+   * `settled` promise performs the same classify / self-complete / escalate /
+   * free-slot work as {@link execute} when the run ends, and rejects on a
+   * failed run (after freeing the slot). A start failure frees the slot and
+   * rejects here, so the loop counts it as a tick-time dispatch failure.
+   * Requires `runner.start`.
+   */
+  async start(candidate: DispatchCandidate): Promise<DispatchRunHandle> {
+    const start = this.deps.runner.start;
+    if (!start) throw new Error('PropulsionExecutor.start requires DispatchRunner.start');
+    let done: Promise<DispatchRunResult>;
+    try {
+      ({ done } = await start.call(this.deps.runner, candidate));
+    } catch (err) {
+      this.freeSlot(candidate.workBeadId);
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+    const settled = done.then(
+      (result) => this.settle(candidate, result),
+      (err: unknown) => {
+        // `done` should not reject, but a runner that does must not leak the slot.
+        this.freeSlot(candidate.workBeadId);
+        throw err instanceof Error ? err : new Error(String(err));
+      },
+    );
+    return { settled };
+  }
+
+  /** Classify a finished run, self-complete or escalate, ALWAYS free the slot. */
+  private async settle(candidate: DispatchCandidate, result: DispatchRunResult): Promise<void> {
     const outcome = classifyOutcome(result);
     try {
       if (outcome === 'completed') {

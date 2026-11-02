@@ -198,7 +198,6 @@ export function startSchedulerDaemon(
       onBlocked: (i) => escalateSafely(i.workBeadId, i.summary, i.runId),
     },
     config: () => ({ poolSize: effectivePoolSize, batchSize: config.batchSize, paused: config.paused }),
-    repoFor: () => '',
     ...(logger ? { logger } : {}),
     onTick: (report: DaemonTickReport) => {
       const { result } = report;

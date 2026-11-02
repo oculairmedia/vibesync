@@ -8,9 +8,18 @@
  *   count active (AgentPool 63zx.2) → query open sling contexts
  *   (SlingContextManager 63zx.1) → join with `bd ready` (unblocked beads only) →
  *   PlanDispatch(capacity, batchSize, ready) → for each planned bead:
- *     Execute (dispatch via the Letta executor) →
- *       OnSuccess: close context (reason: dispatched)
- *       OnFailure: dispatch_failures++, store last_failure, circuit-break at 3
+ *     Execute (START the run via the Letta executor; do NOT await its end) →
+ *       start failure: dispatch_failures++, store last_failure, circuit-break at 3
+ *       started: record the bead as IN FLIGHT; the run settles off the tick:
+ *         run OK     → close context (reason: dispatched)
+ *         run FAILED → dispatch_failures++, circuit-break at 3 (context stays
+ *                      open otherwise, so the next tick retries the bead)
+ *
+ * A tick DISPATCHES AND RETURNS (vibesync-q50w). A formula run takes minutes;
+ * awaiting it inside the tick would leave poolSize>1 unused and stall the
+ * refinery/witness phases for the whole run. The sling context stays OPEN while
+ * the run is in flight, and in-flight work beads are filtered out of planning,
+ * so one bead never has two concurrent runs.
  *
  * TOKEN EFFICIENCY INVARIANT: the loop itself spends ZERO LLM tokens. All the
  * loop does is bookkeeping (pool counts, sling-context queries, a pure
@@ -77,7 +86,26 @@ export interface CandidateMetadataSource {
  * failure (the loop turns a rejection into a dispatch_failures increment).
  */
 export interface DispatchExecutor {
-  execute(candidate: DispatchCandidate): Promise<void>;
+  /**
+   * Resolves once the dispatch has been handled:
+   *  - `void`: the run already finished successfully (synchronous executor);
+   *    the loop closes the context immediately.
+   *  - a {@link DispatchRunHandle}: the run has STARTED and is still going. The
+   *    loop does not wait for it; it tracks the bead as in flight and settles
+   *    the context when `handle.settled` settles.
+   * Rejects when the dispatch could not be started (counted as a failure now).
+   */
+  execute(candidate: DispatchCandidate): Promise<void | DispatchRunHandle>;
+}
+
+/** A started, still-running dispatch. */
+export interface DispatchRunHandle {
+  /**
+   * Resolves when the run finished successfully (completed or blocked-and-
+   * escalated); REJECTS when it failed. The loop attaches handlers, so the
+   * rejection is never unhandled.
+   */
+  readonly settled: Promise<void>;
 }
 
 /**
@@ -125,9 +153,14 @@ export interface SchedulerLoopDeps {
 export interface TickResult {
   readonly skippedReason?: 'paused' | 'locked' | 'no-capacity' | 'no-ready';
   readonly plan?: DispatchPlan;
-  readonly dispatched: readonly string[]; // workBeadIds successfully dispatched
-  readonly failed: readonly string[]; // workBeadIds whose dispatch failed this tick
-  readonly circuitBroken: readonly string[]; // contextIds closed circuit-broken
+  readonly dispatched: readonly string[]; // workBeadIds whose run was started this tick
+  /**
+   * workBeadIds whose dispatch failed since the previous tick report: start
+   * failures from this tick plus runs that failed off-tick in between.
+   */
+  readonly failed: readonly string[];
+  /** contextIds closed circuit-broken since the previous tick report. */
+  readonly circuitBroken: readonly string[];
 }
 
 /** Default in-process mutex lock (single-node dispatch serialization). */
@@ -147,6 +180,13 @@ export class SchedulerLoop {
   private readonly deps: SchedulerLoopDeps;
   private readonly lock: DispatchLock;
   private readonly threshold: number;
+  /** work_bead_id → context id for runs that started and have not settled. */
+  private readonly inFlight = new Map<string, string>();
+  /** Settlement chains of started runs, so a caller can drain them (rig/tests). */
+  private readonly settlements = new Set<Promise<void>>();
+  /** Off-tick failure outcomes not yet reported in a TickResult. */
+  private settledFailed: string[] = [];
+  private settledBroken: string[] = [];
 
   constructor(deps: SchedulerLoopDeps) {
     this.deps = deps;
@@ -161,11 +201,11 @@ export class SchedulerLoop {
   async runTick(): Promise<TickResult> {
     const cfg = this.deps.config();
     if (cfg.paused) {
-      return { skippedReason: 'paused', dispatched: [], failed: [], circuitBroken: [] };
+      return { skippedReason: 'paused', dispatched: [], ...this.drainSettled() };
     }
 
     if (!(await this.lock.tryAcquire())) {
-      return { skippedReason: 'locked', dispatched: [], failed: [], circuitBroken: [] };
+      return { skippedReason: 'locked', dispatched: [], ...this.drainSettled() };
     }
     try {
       return await this.runTickLocked(cfg);
@@ -174,19 +214,48 @@ export class SchedulerLoop {
     }
   }
 
+  /** Work bead ids whose run has started and not yet settled. */
+  inFlightWorkBeadIds(): string[] {
+    return [...this.inFlight.keys()];
+  }
+
+  /** Take (and clear) the off-tick failure outcomes for the next TickResult. */
+  private drainSettled(extraFailed: readonly string[] = [], extraBroken: readonly string[] = []): {
+    failed: string[];
+    circuitBroken: string[];
+  } {
+    const out = {
+      failed: [...this.settledFailed, ...extraFailed],
+      circuitBroken: [...this.settledBroken, ...extraBroken],
+    };
+    this.settledFailed = [];
+    this.settledBroken = [];
+    return out;
+  }
+
   private async runTickLocked(cfg: SchedulerConfig): Promise<TickResult> {
     // Capacity = poolSize - active. No capacity → nothing to do this tick.
     const capacity = cfg.poolSize - this.deps.capacity.activeCount;
     if (capacity <= 0) {
-      return { skippedReason: 'no-capacity', dispatched: [], failed: [], circuitBroken: [] };
+      return { skippedReason: 'no-capacity', dispatched: [], ...this.drainSettled() };
     }
 
+    // Snapshot the in-flight set BEFORE reading contexts: a run that settles
+    // after this point is still excluded (it is in the snapshot), and one that
+    // settled before it has already closed its context (close precedes the
+    // in-flight delete), so the pending read below cannot return it.
+    const busy = new Set(this.inFlight.keys());
+
     // Query open sling contexts and join against bd ready (unblocked beads).
-    const pending = await this.deps.contextStore.queryPending();
+    // A bead with a run in flight keeps its context OPEN until the run settles
+    // but must never be planned again — no two concurrent runs for one bead.
+    const pending = (await this.deps.contextStore.queryPending()).filter(
+      (c) => !busy.has(c.params.work_bead_id),
+    );
     const readyIds = await this.deps.readyWork.readyWorkBeadIds();
     const readyContexts = pending.filter((c) => readyIds.has(c.params.work_bead_id));
     if (readyContexts.length === 0) {
-      return { skippedReason: 'no-ready', dispatched: [], failed: [], circuitBroken: [] };
+      return { skippedReason: 'no-ready', dispatched: [], ...this.drainSettled() };
     }
 
     // Build candidates (priority / unblock-count / files) for planning.
@@ -213,36 +282,114 @@ export class SchedulerLoop {
     const circuitBroken: string[] = [];
 
     for (const candidate of plan.toDispatch) {
+      if (this.inFlight.has(candidate.workBeadId)) continue; // defensive: never two runs per bead
       try {
-        await this.deps.executor.execute(candidate);
-        await this.deps.contextStore.closeContext(candidate.contextId, 'dispatched');
+        const handle = await this.deps.executor.execute(candidate);
+        if (handle) {
+          // Run STARTED. Do not await it: track it and settle off the tick.
+          this.trackRun(candidate, handle);
+        } else {
+          await this.deps.contextStore.closeContext(candidate.contextId, 'dispatched');
+        }
         dispatched.push(candidate.workBeadId);
         this.deps.logger?.info?.(
-          { workBeadId: candidate.workBeadId, contextId: candidate.contextId },
+          { workBeadId: candidate.workBeadId, contextId: candidate.contextId, async: handle !== undefined },
           'scheduler: dispatched',
         );
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const failures = await this.deps.contextStore.recordDispatchFailure(candidate.contextId, message);
+        // Synchronous start failure: still a tick-time dispatch failure.
         failed.push(candidate.workBeadId);
-        if (failures >= this.threshold) {
-          // Circuit breaker: close the context so it stops retrying. Work bead
-          // is untouched — a human/Meridian decides what to do next.
-          await this.deps.contextStore.closeContext(candidate.contextId, 'circuit-broken');
-          circuitBroken.push(candidate.contextId);
-          this.deps.logger?.warn?.(
-            { workBeadId: candidate.workBeadId, contextId: candidate.contextId, failures, error: message },
-            'scheduler: circuit-broken (>=3 dispatch failures)',
-          );
-        } else {
-          this.deps.logger?.warn?.(
-            { workBeadId: candidate.workBeadId, contextId: candidate.contextId, failures, error: message },
-            'scheduler: dispatch failed (will retry next tick)',
-          );
-        }
+        if (await this.accountFailure(candidate, err)) circuitBroken.push(candidate.contextId);
       }
     }
 
-    return { plan, dispatched, failed, circuitBroken };
+    return { plan, dispatched, ...this.drainSettled(failed, circuitBroken) };
   }
+
+  /**
+   * Count a failure on the context; circuit-break (close) at the threshold.
+   * Returns true when the context was circuit-broken. Shared by start failures
+   * (tick time) and run failures (settlement time).
+   */
+  private async accountFailure(candidate: DispatchCandidate, err: unknown): Promise<boolean> {
+    const message = err instanceof Error ? err.message : String(err);
+    const failures = await this.deps.contextStore.recordDispatchFailure(candidate.contextId, message);
+    if (failures >= this.threshold) {
+      // Circuit breaker: close the context so it stops retrying. Work bead
+      // is untouched — a human/Meridian decides what to do next.
+      await this.deps.contextStore.closeContext(candidate.contextId, 'circuit-broken');
+      this.deps.logger?.warn?.(
+        { workBeadId: candidate.workBeadId, contextId: candidate.contextId, failures, error: message },
+        'scheduler: circuit-broken (>=3 dispatch failures)',
+      );
+      return true;
+    }
+    this.deps.logger?.warn?.(
+      { workBeadId: candidate.workBeadId, contextId: candidate.contextId, failures, error: message },
+      'scheduler: dispatch failed (will retry next tick)',
+    );
+    return false;
+  }
+
+  /** Record a started run as in flight and attach its settlement handlers. */
+  private trackRun(candidate: DispatchCandidate, handle: DispatchRunHandle): void {
+    this.inFlight.set(candidate.workBeadId, candidate.contextId);
+    const chain: Promise<void> = handle.settled
+      .then(
+        () => this.onRunSettled(candidate, null),
+        (err: unknown) => this.onRunSettled(candidate, err ?? new Error('run failed')),
+      )
+      .catch((err: unknown) => {
+        // onRunSettled never rejects; this is the last-resort guard so a
+        // background run can never become an unhandled rejection.
+        this.deps.logger?.warn?.(
+          { workBeadId: candidate.workBeadId, contextId: candidate.contextId, error: errMessage(err) },
+          'scheduler: run settlement handler failed',
+        );
+      })
+      .finally(() => {
+        this.settlements.delete(chain);
+      });
+    this.settlements.add(chain);
+  }
+
+  /**
+   * Wait for every started run to settle (and its bookkeeping to finish). NOT
+   * used by the daemon loop or stop(); for supervised one-shot rigs and tests.
+   */
+  async drainRuns(): Promise<void> {
+    while (this.settlements.size > 0) await Promise.all([...this.settlements]);
+  }
+
+  /**
+   * Off-tick settlement. The bead leaves the in-flight set only AFTER its
+   * context has been closed (success / circuit-broken) or its failure counted,
+   * so a concurrent tick can neither re-plan it early nor see a stale open
+   * context for a finished run.
+   */
+  private async onRunSettled(candidate: DispatchCandidate, error: unknown): Promise<void> {
+    try {
+      if (error === null) {
+        await this.deps.contextStore.closeContext(candidate.contextId, 'dispatched');
+        this.deps.logger?.info?.(
+          { workBeadId: candidate.workBeadId, contextId: candidate.contextId },
+          'scheduler: run settled — context closed (dispatched)',
+        );
+      } else {
+        this.settledFailed.push(candidate.workBeadId);
+        if (await this.accountFailure(candidate, error)) this.settledBroken.push(candidate.contextId);
+      }
+    } catch (err) {
+      this.deps.logger?.warn?.(
+        { workBeadId: candidate.workBeadId, contextId: candidate.contextId, error: errMessage(err) },
+        'scheduler: run settlement bookkeeping failed',
+      );
+    } finally {
+      this.inFlight.delete(candidate.workBeadId);
+    }
+  }
+}
+
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
