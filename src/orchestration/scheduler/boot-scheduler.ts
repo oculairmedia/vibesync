@@ -284,6 +284,10 @@ export function startSchedulerDaemon(
           onTickRequested: (reason: string, detail: string | undefined) => {
             if (reason === 'webhook' || reason === 'bead-status') pmWaker?.noteEvent(reason, detail ?? '');
           },
+          // A run cancelled at its deadline is a stall the PM should hear about.
+          onRunExpired: (i: { workBeadId: string; deadlineMs: number; elapsedMs: number }) => {
+            pmWaker?.noteStall(i.workBeadId, `run exceeded its deadline of ${i.deadlineMs}ms (${i.elapsedMs}ms)`);
+          },
         }
       : {}),
     onTick: (report: DaemonTickReport) => {

@@ -157,6 +157,17 @@ export interface SchedulerDaemonDeps {
    * Errors are logged and swallowed.
    */
   readonly onTickRequested?: (reason: TickReason, detail: string | undefined) => void;
+  /**
+   * Called when a started run outlives its deadline and is cancelled
+   * (vibesync-izn3), so an observer can treat it as a stall (vibesync-2bgv).
+   * Errors are logged and swallowed.
+   */
+  readonly onRunExpired?: (input: {
+    readonly workBeadId: string;
+    readonly moleculeId: string | undefined;
+    readonly deadlineMs: number;
+    readonly elapsedMs: number;
+  }) => void;
 }
 
 export interface DaemonTickResult {
@@ -428,6 +439,11 @@ export class SchedulerDaemon {
         { workBeadId, moleculeId: moleculeId ?? null, elapsedMs, deadlineMs },
         'daemon: run exceeded its deadline — cancelling',
       );
+      try {
+        this.deps.onRunExpired?.({ workBeadId, moleculeId, deadlineMs, elapsedMs });
+      } catch (err) {
+        this.deps.logger?.warn?.({ workBeadId, error: msg(err) }, 'daemon: onRunExpired observer failed');
+      }
       if (moleculeId) {
         const cancelled = Promise.resolve()
           .then(() => this.deps.dispatcher.cancel(moleculeId))

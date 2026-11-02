@@ -373,6 +373,20 @@ describe('PM wake (vibesync-2bgv)', () => {
     expect(s.calls[0]!.detail).toContain('recovered 3x');
   });
 
+  it('5b. a run-deadline expiry (vibesync-izn3) -> "stall" wake naming the bead and the deadline', async () => {
+    const s = fakeSink();
+    const { handle } = await boot({ sink: s.sink });
+    const daemon = handle.scheduler!.daemon as unknown as { deps: { onRunExpired?: (i: { workBeadId: string; moleculeId?: string; deadlineMs: number; elapsedMs: number }) => void } };
+    // The daemon reports an expiry through its observer seam; boot must route it to the waker.
+    expect(typeof daemon.deps.onRunExpired).toBe('function');
+    daemon.deps.onRunExpired!({ workBeadId: 'wd', moleculeId: 'mol-wd-1', deadlineMs: 3_600_000, elapsedMs: 3_600_004 });
+    await vi.advanceTimersByTimeAsync(MIN);
+    expect(s.calls).toHaveLength(1);
+    expect(s.calls[0]!.reason).toBe('stall');
+    expect(s.calls[0]!.detail).toContain('wd');
+    expect(s.calls[0]!.detail).toContain('deadline');
+  });
+
   it('6. PM target comes from the injected lookup; null -> no wake and exactly one warn', async () => {
     const s = fakeSink();
     const warn = vi.fn();

@@ -32,8 +32,8 @@
  * reuses the same wakeId. Nothing here ever throws into the tick, and the sink
  * call is never awaited by the tick (a turn can take minutes).
  *
- * TODO(vibesync-izn3): run-deadline expiries should call `noteStall` too once
- * that bead lands; only the witness escalation is wired today.
+ * Stall sources: witness repeated-recovery escalations and run-deadline
+ * expiries (vibesync-izn3), both routed to `noteStall` by boot-scheduler.
  *
  * Layering: pure scheduler-layer module — no bus, db or HTTP import. The bus,
  * registry lookup, clock and state store are injected.
@@ -162,7 +162,7 @@ export class PmWaker {
     if (this.pendingEvents.length > 50) this.pendingEvents.shift();
   }
 
-  /** The witness escalated a repeatedly-recovered slot (or, later, a run deadline expired). */
+  /** The witness escalated a repeatedly-recovered slot, or a run deadline expired. */
   noteStall(workBeadId: string, detail: string): void {
     if (this.disposed) return;
     this.pendingStalls.set(workBeadId, detail);
