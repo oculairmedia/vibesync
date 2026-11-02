@@ -56,6 +56,20 @@ export interface ReadyBeadSource {
   }>;
 }
 
+/**
+ * Per-tick observation record handed to `SchedulerDaemonDeps.onTick` after every
+ * interval-driven tick (vibesync-z2ws). The boot composition turns it into a log
+ * line AND an EventBus event (layering invariant 3) — the daemon itself stays
+ * free of any bus import and just reports through this callback.
+ */
+export interface DaemonTickReport {
+  /** 1-based sequence number of this tick since `run()` started. */
+  readonly seq: number;
+  readonly startedAt: string;
+  readonly durationMs: number;
+  readonly result: DaemonTickResult;
+}
+
 export interface SchedulerDaemonDeps {
   readonly dispatcher: FormulaDispatcher;
   readonly formulaResolver: FormulaResolver;
@@ -73,6 +87,8 @@ export interface SchedulerDaemonDeps {
   readonly repoFor: (workBeadId: string) => string;
   readonly now?: () => Date;
   readonly logger?: DaemonLogger;
+  /** Called after every interval-driven tick completes. Must not throw (errors are logged and swallowed). */
+  readonly onTick?: (report: DaemonTickReport) => void;
 }
 
 export interface DaemonTickResult {
@@ -95,6 +111,18 @@ export class SchedulerDaemon {
   /** work_bead_id → slot_id, so self-completion frees the right slot. */
   private readonly slotForBead = new Map<string, string>();
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** The currently running interval-driven tick, so stop() can await it. */
+  private inFlight: Promise<void> | null = null;
+  /** Set by stop(); in-flight ticks skip their remaining (writing) phases. */
+  private stopping = false;
+  private tickSeq = 0;
+  /**
+   * In-process dispatch-failure counts per sling context. The SlingContextStore
+   * has no update seam for `dispatch_failures`, so without this the circuit
+   * breaker would never trip (count always 1) and a permanently failing bead
+   * would be re-dispatched — an LLM run — on every tick.
+   */
+  private readonly failureCounts = new Map<string, number>();
 
   constructor(deps: SchedulerDaemonDeps) {
     this.deps = deps;
@@ -204,12 +232,15 @@ export class SchedulerDaemon {
   }
 
   private async recordFailure(contextId: string, _err: string): Promise<number> {
-    // Delegate to the sling context store's failure accounting via closeContext
-    // semantics is not exposed here; the SchedulerLoop already handles the
-    // circuit-breaker via the returned count. We re-query the context.
+    // The SchedulerLoop trips the circuit breaker from the returned count. The
+    // store cannot persist dispatch_failures, so count in-process (resets on
+    // restart) on top of whatever the context already carries.
     const pending = await this.sling.queryPending();
     const ctx = pending.find((c) => c.id === contextId);
-    return (ctx?.params.dispatch_failures ?? 0) + 1;
+    const persisted = ctx?.params.dispatch_failures ?? 0;
+    const next = Math.max(this.failureCounts.get(contextId) ?? persisted, persisted) + 1;
+    this.failureCounts.set(contextId, next);
+    return next;
   }
 
   /**
@@ -250,6 +281,9 @@ export class SchedulerDaemon {
     }
 
     let scheduler: TickResult;
+    if (this.stopping) {
+      return { scheduler: { dispatched: [], failed: [], circuitBroken: [], skippedReason: 'paused' }, merged: [], recovered: [] };
+    }
     try {
       scheduler = await this.scheduler.runTick();
     } catch (err) {
@@ -258,6 +292,9 @@ export class SchedulerDaemon {
     }
 
     const merged: number[] = [];
+    // Once stop() was requested, do not start the externally-visible refinery
+    // (merge) or witness phases: shutdown must not be followed by new writes.
+    if (this.stopping) return { scheduler, merged, recovered: [] };
     try {
       const processed = await this.refinery.processQueue();
       for (const p of processed) if (p.state === 'merged') merged.push(p.request.prNumber);
@@ -266,6 +303,7 @@ export class SchedulerDaemon {
     }
 
     const recovered: string[] = [];
+    if (this.stopping) return { scheduler, merged, recovered };
     try {
       const patrol = await this.witness.patrol(this.pool.view());
       for (const r of patrol.recovered) {
@@ -279,21 +317,61 @@ export class SchedulerDaemon {
     return { scheduler, merged, recovered };
   }
 
-  /** Start the daemon loop at the given interval (ms). Idempotent. */
+  /**
+   * Start the daemon loop at the given interval (ms). Idempotent. Ticks never
+   * overlap (a slow tick makes the interval skip), and the interval callback
+   * never throws: every failure is logged with context.
+   */
   run(intervalMs: number): void {
     if (this.timer) return;
+    this.stopping = false;
     this.timer = setInterval(() => {
-      void this.tick().catch((err) => this.deps.logger?.warn?.({ error: msg(err) }, 'daemon: tick error'));
+      if (this.stopping) return;
+      if (this.inFlight) {
+        this.deps.logger?.info?.({ intervalMs }, 'daemon: previous tick still running — skipping this interval');
+        return;
+      }
+      this.inFlight = this.runObservedTick().finally(() => {
+        this.inFlight = null;
+      });
     }, intervalMs);
     this.deps.logger?.info?.({ intervalMs, poolSize: this.deps.poolMembers.length }, 'daemon: started');
   }
 
-  /** Stop the daemon loop. */
-  stop(): void {
+  /** One interval-driven tick plus its observation report. Never rejects. */
+  private async runObservedTick(): Promise<void> {
+    const seq = ++this.tickSeq;
+    const started = Date.now();
+    const startedAt = new Date(started).toISOString();
+    let result: DaemonTickResult;
+    try {
+      result = await this.tick();
+    } catch (err) {
+      this.deps.logger?.warn?.({ error: msg(err), seq }, 'daemon: tick error');
+      return;
+    }
+    try {
+      this.deps.onTick?.({ seq, startedAt, durationMs: Date.now() - started, result });
+    } catch (err) {
+      this.deps.logger?.warn?.({ error: msg(err), seq }, 'daemon: onTick observer failed');
+    }
+  }
+
+  /**
+   * Stop the daemon loop and wait for any in-flight tick to finish, so nothing
+   * is still writing once the returned promise resolves. Idempotent.
+   */
+  async stop(): Promise<void> {
+    const wasRunning = this.timer !== null;
+    this.stopping = true;
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
-      this.deps.logger?.info?.({}, 'daemon: stopped');
+    }
+    const pending = this.inFlight;
+    if (pending) await pending;
+    if (wasRunning) {
+      this.deps.logger?.info?.({ ticks: this.tickSeq }, 'daemon: stopped');
     }
   }
 }

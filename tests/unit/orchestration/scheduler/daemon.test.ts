@@ -109,8 +109,50 @@ describe('SchedulerDaemon end-to-end (vibesync-63zx integration)', () => {
     const daemon = new SchedulerDaemon(d);
     daemon.run(10_000);
     daemon.run(10_000); // idempotent — no second timer
-    daemon.stop();
-    daemon.stop(); // idempotent
+    await daemon.stop();
+    await daemon.stop(); // idempotent
     expect(true).toBe(true);
+  });
+
+  it('circuit breaker trips on the 3rd consecutive dispatch failure (failure count is tracked in-process)', async () => {
+    const { d, state } = deps({
+      config: () => ({ poolSize: 1, batchSize: 10, paused: false }),
+    });
+    (d.dispatcher as unknown as { run: unknown }).run = async (input: { motivatingBeadId: string }) => {
+      state.dispatched.push(input.motivatingBeadId);
+      throw new Error('provider down');
+    };
+    state.readySet = new Set(['w1']);
+    const daemon = new SchedulerDaemon(d);
+    // Terminal contexts are excluded from `bd ready` by BdReadyBeadSource in
+    // production; this static fake source cannot, so assert on the breaker
+    // itself: it must trip on exactly the 3rd consecutive failure.
+    const results = [];
+    for (let i = 0; i < 3; i += 1) results.push(await daemon.tick());
+    expect(state.dispatched.length).toBe(3);
+    expect(results.map((r) => r.scheduler.circuitBroken.length)).toEqual([0, 0, 1]);
+  });
+
+  it('stop() awaits an in-flight interval tick and reports every tick via onTick', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const reports: number[] = [];
+    const { d } = deps({
+      onTick: (r) => { reports.push(r.seq); },
+      readyBeads: {
+        async readyWorkBeadIds() { await gate; return new Set<string>(); },
+        async metadataFor() { return { priority: 2, unblockCount: 0, files: [] }; },
+      },
+    });
+    const daemon = new SchedulerDaemon(d);
+    daemon.run(5);
+    await new Promise((r) => setTimeout(r, 30)); // first tick is now blocked on the gate
+    let stopped = false;
+    const p = daemon.stop().then(() => { stopped = true; });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(stopped).toBe(false);
+    release();
+    await p;
+    expect(reports).toEqual([1]);
   });
 });

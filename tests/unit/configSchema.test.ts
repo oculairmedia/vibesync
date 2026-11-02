@@ -5,6 +5,23 @@
 import { describe, it, expect } from 'vitest';
 import { configSchema } from '../../src/configSchema';
 
+function schedulerDefaults(overrides = {}) {
+  return {
+    enabled: false,
+    projectIdentifier: '',
+    intervalMs: 30000,
+    poolSize: 1,
+    batchSize: 1,
+    paused: false,
+    readyLabel: 'scheduler:eligible',
+    formula: 'onboard-feature',
+    packDir: 'packs/gastown',
+    autoMerge: false,
+    requiredChecks: [] as string[],
+    ...overrides,
+  };
+}
+
 function validConfig(overrides = {}) {
   return {
     sync: {
@@ -65,6 +82,7 @@ function validConfig(overrides = {}) {
       defaultVisibility: 'private',
       remoteName: 'origin',
     },
+    scheduler: schedulerDefaults(),
     ...overrides,
   };
 }
@@ -175,5 +193,30 @@ describe('configSchema', () => {
     });
     const result = configSchema.safeParse(cfg);
     expect(result.success).toBe(true);
+  });
+
+  describe('scheduler section (vibesync-z2ws)', () => {
+    it('accepts the disabled defaults', () => {
+      expect(configSchema.safeParse(validConfig()).success).toBe(true);
+    });
+
+    it('rejects enabled without a project', () => {
+      const result = configSchema.safeParse(validConfig({ scheduler: schedulerDefaults({ enabled: true }) }));
+      expect(result.success).toBe(false);
+      expect(result.error.issues[0].message).toContain('VIBESYNC_SCHEDULER_PROJECT');
+    });
+
+    it('rejects autoMerge without required checks', () => {
+      const result = configSchema.safeParse(
+        validConfig({ scheduler: schedulerDefaults({ enabled: true, projectIdentifier: 'p', autoMerge: true }) }),
+      );
+      expect(result.success).toBe(false);
+      expect(result.error.issues[0].message).toContain('VIBESYNC_SCHEDULER_REQUIRED_CHECKS');
+    });
+
+    it('rejects an interval under 1s', () => {
+      const result = configSchema.safeParse(validConfig({ scheduler: schedulerDefaults({ intervalMs: 10 }) }));
+      expect(result.success).toBe(false);
+    });
   });
 });
