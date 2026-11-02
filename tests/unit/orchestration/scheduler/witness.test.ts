@@ -132,3 +132,51 @@ describe('Witness.patrol (vibesync-63zx.7)', () => {
     expect(r.healthy).toBe(2);
   });
 });
+
+describe('Witness.patrol — in-flight runs (vibesync-nic6)', () => {
+  function inflightHarness(inFlight: Set<string>, threshold?: number) {
+    const freed: string[] = [];
+    const escalated: Array<{ workBeadId: string; recoveries: number }> = [];
+    const debug: string[] = [];
+    const witness = new Witness({
+      probe: probeMap({ w1: 'bead-closed', w2: 'bead-closed' }),
+      reaper: { onComplete(slotId) { freed.push(slotId); return true; } },
+      escalation: { async onRepeatedRecovery(i) { escalated.push({ workBeadId: i.workBeadId, recoveries: i.recoveries }); } },
+      isRunInFlight: (id) => inFlight.has(id),
+      logger: { debug: (_o, m) => { debug.push(m); } },
+      ...(threshold !== undefined ? { recoveryEscalationThreshold: threshold } : {}),
+    });
+    return { witness, freed, escalated, debug };
+  }
+
+  it('isRunInFlight true → no reaper call, slot in skippedInFlight, not a recovery, debug-logged', async () => {
+    const { witness, freed, debug } = inflightHarness(new Set(['w1']));
+    const r = await witness.patrol([workingView('s1', 'w1'), workingView('s2', 'w2')]);
+    expect(r.skippedInFlight).toEqual(['s1']);
+    expect(freed).toEqual(['s2']); // only the NOT-in-flight bead is reaped
+    expect(r.recovered.map((x) => x.slotId)).toEqual(['s2']);
+    expect(debug).toHaveLength(1);
+  });
+
+  it('skipped in-flight slots never bump the repeated-recovery escalation counter', async () => {
+    const inFlight = new Set(['w1']);
+    const { witness, freed, escalated } = inflightHarness(inFlight, 2);
+    for (let i = 0; i < 5; i += 1) await witness.patrol([workingView('s1', 'w1')]);
+    expect(freed).toEqual([]);
+    expect(escalated).toEqual([]);
+    // Once the run is no longer in flight, the count starts from 0: 1st reap → no escalation yet.
+    inFlight.clear();
+    await witness.patrol([workingView('s1', 'w1')]);
+    expect(freed).toEqual(['s1']);
+    expect(escalated).toEqual([]);
+    await witness.patrol([workingView('s1', 'w1')]);
+    expect(escalated).toEqual([{ workBeadId: 'w1', recoveries: 2 }]);
+  });
+
+  it('default (no isRunInFlight seam): nothing is in flight, behaviour unchanged', async () => {
+    const { witness, freed } = harness(probeMap({ w1: 'bead-closed' }));
+    const r = await witness.patrol([workingView('s1', 'w1')]);
+    expect(freed).toEqual(['s1']);
+    expect(r.skippedInFlight).toEqual([]);
+  });
+});

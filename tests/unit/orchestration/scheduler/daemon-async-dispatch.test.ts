@@ -19,6 +19,8 @@ import {
   tryParseParams,
   type SlingContextStore,
 } from '../../../../src/orchestration/scheduler/sling-context.js';
+import type { RunLiveness } from '../../../../src/orchestration/scheduler/witness.js';
+import type { AgentPool } from '../../../../src/orchestration/scheduler/agent-pool.js';
 import type { PrFacts } from '../../../../src/orchestration/scheduler/refinery.js';
 
 interface Deferred {
@@ -73,6 +75,8 @@ function harness(opts: { beads: string[]; poolSize: number }) {
   const runs: Deferred[] = [];
   const merged: number[] = [];
   const probeCalls: string[] = [];
+  /** Per-bead probe verdict override (default 'alive'). */
+  const verdicts = new Map<string, RunLiveness>();
   const logs: Array<{ level: 'info' | 'warn'; o: unknown; m: string }> = [];
   const store = makeStore();
   const ready = new Set(opts.beads);
@@ -131,7 +135,7 @@ function harness(opts: { beads: string[]; poolSize: number }) {
       async merge(_repo, prNumber) { merged.push(prNumber); return `sha-${prNumber}`; },
     },
     requiredCheckNames: () => ['ci'],
-    livenessProbe: { async probe(slot) { probeCalls.push(slot.workBeadId); return 'alive'; } },
+    livenessProbe: { async probe(slot) { probeCalls.push(slot.workBeadId); return verdicts.get(slot.workBeadId) ?? 'alive'; } },
     escalation: { async onIsolated() {}, async onRepeatedRecovery() {}, async onBlocked() {} },
     config: () => ({ poolSize: opts.poolSize, batchSize: 10, paused: false }),
     logger: {
@@ -142,7 +146,7 @@ function harness(opts: { beads: string[]; poolSize: number }) {
 
   const daemon = new SchedulerDaemon(deps);
   return {
-    daemon, runs, merged, probeCalls, logs, store,
+    daemon, runs, merged, probeCalls, logs, store, verdicts,
     maxConcurrentByBead: () => maxConcurrentByBead,
     runsFor: (id: string) => runs.filter((r) => r.beadId === id),
   };
@@ -289,5 +293,96 @@ describe('SchedulerDaemon — dispatch off the tick (vibesync-q50w)', () => {
       expect(h.runsFor('w1')).toHaveLength(2);
     }, { timeout: 1500 });
     expect(h.maxConcurrentByBead()).toBe(1);
+  });
+});
+
+/**
+ * vibesync-nic6 — the witness must not reap a slot whose run is still in
+ * flight. A coder normally closes its own bead before its formula run ends, so
+ * the probe says 'bead-closed' while the run is genuinely unfinished.
+ *
+ * The dispatcher fakes are deferreds that stay pending across every witness
+ * patrol; a fake that resolved before the patrol would pass vacuously.
+ */
+describe('SchedulerDaemon — witness vs in-flight runs (vibesync-nic6)', () => {
+  const cleanups: Array<() => void> = [];
+  afterEach(() => {
+    for (const c of cleanups.splice(0)) c();
+  });
+
+  function track(h: ReturnType<typeof harness>) {
+    cleanups.push(() => {
+      for (const r of h.runs) r.resolve('released by test cleanup');
+    });
+    return h;
+  }
+
+  const poolOf = (h: ReturnType<typeof harness>) => (h.daemon as unknown as { pool: AgentPool }).pool;
+  const working = (h: ReturnType<typeof harness>) =>
+    poolOf(h).view().filter((s) => s.state === 'working').map((s) => s.session!.workBeadId);
+
+  it('1. bead closed while its run is in flight: witness patrols, slot NOT freed, next bead NOT dispatched', async () => {
+    const h = track(harness({ beads: ['w1', 'w2'], poolSize: 1 }));
+    await tickReturns(h.daemon);
+    expect(h.runs.map((r) => r.beadId)).toEqual(['w1']); // pool=1 → w2 waits
+    h.verdicts.set('w1', 'bead-closed'); // agent closed its own bead; the run is NOT finished
+    h.probeCalls.length = 0;
+
+    const t = await tickReturns(h.daemon);
+    expect(h.probeCalls, 'the witness must actually have patrolled w1').toEqual(['w1']);
+    expect(t.recovered, 'in-flight slot must not be reaped').toEqual([]);
+    expect(working(h)).toEqual(['w1']);
+    expect(t.scheduler.dispatched).toEqual([]);
+    expect(h.runs.map((r) => r.beadId)).toEqual(['w1']); // w2 NOT started on w1's capacity
+    // and it stays that way across further ticks
+    for (let i = 0; i < 3; i += 1) await tickReturns(h.daemon);
+    expect(working(h)).toEqual(['w1']);
+    expect(h.runs).toHaveLength(1);
+  });
+
+  it('2. when the in-flight run settles its slot is freed exactly once; w2 then dispatches; pool never exceeds poolSize', async () => {
+    const h = track(harness({ beads: ['w1', 'w2'], poolSize: 1 }));
+    const maxWorking = { n: 0 };
+    const sample = () => { maxWorking.n = Math.max(maxWorking.n, working(h).length); };
+    const freeCalls: string[] = [];
+    const pool = poolOf(h);
+    const origOnComplete = pool.onComplete.bind(pool);
+    pool.onComplete = (slotId: string) => {
+      const freed = origOnComplete(slotId);
+      if (freed) freeCalls.push(slotId);
+      return freed;
+    };
+
+    await tickReturns(h.daemon); sample();
+    h.verdicts.set('w1', 'bead-closed');
+    for (let i = 0; i < 3; i += 1) { await tickReturns(h.daemon); sample(); }
+    expect(h.runs).toHaveLength(1);
+    expect(freeCalls).toEqual([]); // nothing freed while in flight
+
+    h.runsFor('w1')[0]!.resolve('done, no pr');
+    await vi.waitFor(async () => {
+      await tickReturns(h.daemon); sample();
+      expect(h.runs.map((r) => r.beadId)).toContain('w2');
+    }, { timeout: 1500 });
+    sample();
+    for (let i = 0; i < 3; i += 1) { await tickReturns(h.daemon); sample(); }
+
+    expect(freeCalls, 'w1 slot freed exactly once (by its settlement)').toHaveLength(1);
+    expect(working(h)).toEqual(['w2']);
+    expect(h.runs.map((r) => r.beadId)).toEqual(['w1', 'w2']);
+    expect(maxWorking.n).toBe(1);
+    expect(poolOf(h).view().filter((s) => s.state === 'idle')).toHaveLength(0);
+  });
+
+  it('3. NO run in flight + bead closed (crash/zombie): witness still reaps the slot', async () => {
+    const h = track(harness({ beads: [], poolSize: 1 }));
+    // A working slot whose run the scheduler does not track (lost dispatch).
+    const alloc = poolOf(h).allocate({ workBeadId: 'wz' });
+    expect(alloc).not.toBeNull();
+    h.verdicts.set('wz', 'bead-closed');
+
+    const t = await tickReturns(h.daemon);
+    expect(t.recovered).toEqual([alloc!.slotId]);
+    expect(working(h)).toEqual([]);
   });
 });
