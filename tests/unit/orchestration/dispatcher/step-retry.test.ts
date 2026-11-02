@@ -132,6 +132,20 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
     expect((await h.store.getBead(rootId))?.metadata).toMatchObject({ exec: { outcome: 'failed' } });
   });
 
+  it('2g. (CodeRabbit #59) a store error AFTER a successful agent turn never re-runs the agent', async () => {
+    const h = harness({ worker: [{ kind: 'ok', text: 'did the work once' }, { kind: 'ok', text: 'did the work AGAIN' }] });
+    // The agent's turn succeeds; persisting its result then fails transiently.
+    const realDone = h.store.markStepDone.bind(h.store);
+    let failed = false;
+    h.store.markStepDone = (async (...args: Parameters<typeof realDone>) => {
+      if (!failed) { failed = true; throw new Error('transient store error after success'); }
+      return realDone(...args);
+    }) as typeof h.store.markStepDone;
+    await h.dispatcher.run({ formula: formula(worker({ maxAttempts: 3, onExhausted: 'fail', backoffMs: 0 })), pack: pack(), input: 'go' }).catch(() => undefined);
+    // Re-running a completed turn can repeat side effects (a second commit). It must run exactly once.
+    expect(h.starts('worker')).toBe(1);
+  });
+
   it('2e. a formula WITHOUT retry fails on the first error, infra included (behaviour unchanged)', async () => {
     const h = harness({ worker: [{ kind: 'error', code: 'iroh_error' }, { kind: 'ok' }] });
     await expect(h.dispatcher.run({ formula: formula(worker()), pack: pack(), input: 'go' })).rejects.toBeInstanceOf(FormulaDispatchError);

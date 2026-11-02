@@ -728,9 +728,14 @@ export class FormulaDispatcher implements ReadyStepRunner {
       },
     });
 
-    let failure: { readonly signal: FailureSignal; readonly error: unknown; readonly failureClass: string | null };
+    let failure: { readonly signal: FailureSignal; readonly error: unknown; readonly failureClass: string | null } | null = null;
+    // Only the AGENT TURN is retryable. Anything after it succeeded (reading the
+    // bead, persisting the result) runs outside this try: a store error there
+    // must fail the molecule, never re-run a turn that already completed and
+    // may have had side effects (CodeRabbit on #59).
+    let output: Awaited<ReturnType<FormulaDispatcher['runStepAttempt']>> | null = null;
     try {
-      const output = await this.runStepAttempt({
+      output = await this.runStepAttempt({
         stepId: args.step.id,
         stepName,
         role: stepSpec.role,
@@ -745,8 +750,19 @@ export class FormulaDispatcher implements ReadyStepRunner {
         roleAgentContext: args.roleAgentContext,
         ...(stepSpec.turnTimeoutMs !== undefined ? { turnTimeoutMs: stepSpec.turnTimeoutMs } : {}),
       });
-      // The agent declares a retryable failure by writing failure_class on the
-      // step bead during its turn (and may close the step). Success carries none.
+    } catch (error) {
+      const bead = await this.walker.readStep(args.step.id).catch(() => null);
+      failure = {
+        signal: error instanceof AttemptFailure ? error.signal : { origin: 'call' },
+        error,
+        failureClass: bead ? readFailureClass(bead.metadata) : null,
+      };
+    }
+
+    if (output !== null) {
+      // The turn completed. The agent declares a retryable failure by writing
+      // failure_class on the step bead during its turn; success carries none.
+      // Store errors from here on propagate (fail the molecule), never retry.
       const bead = await this.walker.readStep(args.step.id);
       const declared = bead ? readFailureClass(bead.metadata) : null;
       if (declared === null) {
@@ -766,13 +782,11 @@ export class FormulaDispatcher implements ReadyStepRunner {
         error: new Error(`step declared failure_class=${declared}`),
         failureClass: declared,
       };
-    } catch (error) {
-      const bead = await this.walker.readStep(args.step.id).catch(() => null);
-      failure = {
-        signal: error instanceof AttemptFailure ? error.signal : { origin: 'call' },
-        error,
-        failureClass: bead ? readFailureClass(bead.metadata) : null,
-      };
+    }
+    if (failure === null) {
+      // Unreachable: the turn either threw (failure set in catch) or completed
+      // (success returned above, or a declared failure_class set it).
+      throw new Error(`step ${args.step.id}: attempt ended with neither an output nor a failure`);
     }
 
     // A failure_class on the bead means the agent RAN and declared it: that burns
