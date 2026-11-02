@@ -1,9 +1,61 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { HealthPatrol } from '../../../src/orchestration/health/patrol.js';
+import { WrongDoltDatabaseError } from '../../../src/orchestration/store/dolt-client.js';
 
-import { bootOrchestrationPlane } from '../../../src/orchestration/boot.js';
+import { bootOrchestrationPlane, releaseDoltAfterFailedBoot } from '../../../src/orchestration/boot.js';
 import { InMemoryDoltClient } from '../../_fixtures/in-memory-dolt-client.js';
 
 describe('bootOrchestrationPlane', () => {
+  it('rejects identity mismatch before schema checks or runtime startup', async () => {
+    const failure = new WrongDoltDatabaseError({
+      expectedRepoId: 'expected', actualRepoId: 'wrong', database: 'db', port: 33123,
+    });
+    const verifySchema = vi.fn();
+    const start = vi.spyOn(HealthPatrol.prototype, 'start');
+    try {
+      await expect(bootOrchestrationPlane({
+        dolt: { verifyFingerprint: vi.fn().mockRejectedValue(failure), verifySchema } as never,
+      })).rejects.toBe(failure);
+      expect(verifySchema).not.toHaveBeenCalled();
+      expect(start).not.toHaveBeenCalled();
+    } finally {
+      start.mockRestore();
+    }
+  });
+
+  // vibesync-fxu4 / CodeRabbit #44: main's retry loop owns the Dolt pool once
+  // DoltClient.connect returns. On boot failure it must close that pool before
+  // the next connect attempt, and cleanup failures must not mask the boot error.
+  describe('releaseDoltAfterFailedBoot (retry pool ownership)', () => {
+    it('awaits close when boot failed and no orchestration was produced', async () => {
+      const close = vi.fn().mockResolvedValue(undefined);
+      await releaseDoltAfterFailedBoot({ close }, false);
+      expect(close).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not close when orchestration was initialized (handle owns the pool)', async () => {
+      const close = vi.fn().mockResolvedValue(undefined);
+      await releaseDoltAfterFailedBoot({ close }, true);
+      expect(close).not.toHaveBeenCalled();
+    });
+
+    it('is a no-op when connect never returned a client', async () => {
+      // Should not throw despite an undefined client.
+      await expect(releaseDoltAfterFailedBoot(undefined, false)).resolves.toBeUndefined();
+    });
+
+    it('swallows cleanup errors and reports them instead of masking the boot error', async () => {
+      const cleanupError = new Error('pool close failed');
+      const close = vi.fn().mockRejectedValue(cleanupError);
+      const onCleanupError = vi.fn();
+      await expect(
+        releaseDoltAfterFailedBoot({ close }, false, { onCleanupError }),
+      ).resolves.toBeUndefined();
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(onCleanupError).toHaveBeenCalledWith(cleanupError);
+    });
+  });
+
   it('returns a wired orchestration handle', async () => {
     // vibesync-ryhc: the work-activity reporter wires an extra bus subscriber
     // when a shim URL is present in the environment (true on CI runners).

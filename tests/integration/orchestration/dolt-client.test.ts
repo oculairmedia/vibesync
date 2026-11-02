@@ -1,126 +1,100 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { DoltClient } from '../../../src/orchestration/store/dolt-client.js';
+import { computeSchemaFingerprint, WrongBdSchemaError } from '../../../src/orchestration/store/schema-fingerprint.js';
+import { provisionIsolatedBeads, RUN_ISOLATED_BEADS, SCHEMA65_FINGERPRINT, FRESH65_FINGERPRINT } from './isolated-beads.js';
 
-import { DoltClient } from '../../../src/orchestration/store/index.js';
-
-/**
- * Integration: roundtrip a tiny molecule (root + 2 dependent steps) through
- * the direct-SQL client, then verify bd's CLI view sees the same data.
- *
- * Marked `.skipIf(...)` so CI without a running bd/dolt server skips
- * silently. Locally, run from the repository root with bd already initialized.
- *
- * huly-vibe-sync-w5z acceptance: "daemon inserts a molecule root, queries
- * it back via the bd CLI to confirm bd sees the same data". The bd CLI
- * confirmation is left as a manual smoke step; the test confirms the SQL
- * side.
+/** Exact-shape compatibility: only newly CLI-provisioned temporary databases
+ * are exercised, with the production schema gate required before operations.
+ * Run with VIBESYNC_TEST_BD=/absolute/path/to/pinned/bd npx vitest run tests/integration/orchestration/dolt-client.test.ts
  */
+describe.skipIf(!RUN_ISOLATED_BEADS).each(['fresh', 'live'] as const)('DoltClient (disposable schema65 %s)', (shape) => {
+  let store: Awaited<ReturnType<typeof provisionIsolatedBeads>> | undefined;
+  beforeAll(async () => { store = await provisionIsolatedBeads(shape); }, 120_000);
+  afterAll(async () => { await store?.close(); }, 120_000);
 
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+  it('roundtrips production molecule operations and compares the readonly bd view', async () => {
+    const { client, bd } = store!;
+    const schemas = ['issues', 'dependencies', 'metadata'].map(table => ({
+      table, createTableSql: JSON.parse(bd('--readonly', 'sql', `SHOW CREATE TABLE ${table}`, '--json'))[0]['Create Table'],
+    }));
+    expect(computeSchemaFingerprint(schemas)).toBe(shape === 'live' ? SCHEMA65_FINGERPRINT : FRESH65_FINGERPRINT);
+    await client.verifySchema();
+    const cliBead = (id: string) => {
+      const rows = JSON.parse(bd('--readonly', 'show', id, '--json'));
+      expect(rows).toHaveLength(1);
+      return rows[0];
+    };
+    const root = 'schema65-mol-root';
+    const first = 'schema65-mol-first';
+    const second = 'schema65-mol-second';
+    await client.insertMoleculeRoot({ id: root, formulaName: 'compatibility', title: 'Schema compatibility', metadata: { preserved: true } });
+    expect(await client.getBead(root)).toMatchObject({ issue_type: 'molecule_root', status: 'open', metadata: { preserved: true, exec: { formula: 'compatibility' } } });
+    expect(cliBead(root)).toMatchObject({ issue_type: 'molecule_root', status: 'open' });
+    await client.insertMoleculeStep({ id: first, parentRootId: root, stepName: 'first', title: 'First', inputPayload: { input: 1 } });
+    await client.insertMoleculeStep({ id: second, parentRootId: root, stepName: 'second', title: 'Second', dependsOnStepIds: [first] });
+    expect(await client.getBeadDependencies(second)).toEqual(expect.arrayContaining([
+      { issue_id: second, depends_on_id: root, type: 'parent-child' },
+      { issue_id: second, depends_on_id: first, type: 'blocks' },
+    ]));
+    expect(cliBead(second).dependencies).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: first, dependency_type: 'blocks' }),
+      expect.objectContaining({ id: root, dependency_type: 'parent-child' }),
+    ]));
+    const edgeRows = () => JSON.parse(bd('--readonly', 'sql',
+      `SELECT id, type FROM dependencies WHERE issue_id = '${second}' AND depends_on_issue_id = '${first}'`, '--json'));
+    const originalEdge = edgeRows();
+    expect(originalEdge).toHaveLength(1);
+    expect(originalEdge[0].id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    bd('dep', 'remove', second, first);
+    bd('dep', 'add', second, first, '--type=blocks');
+    expect(edgeRows()).toEqual(originalEdge); // CLI independently derives the same ID.
+    bd('dep', 'add', second, first, '--type=blocks');
+    expect(edgeRows()).toEqual(originalEdge); // No duplicate logical edge.
+    await expect(client.insertMoleculeStep({ id: 'schema65-duplicate', parentRootId: root,
+      stepName: 'duplicate', title: 'Duplicate', dependsOnStepIds: [first, first] })).rejects.toThrow();
+    expect(await client.getBead('schema65-duplicate')).toBeNull();
+    expect(await client.getBeadDependencies('schema65-duplicate')).toEqual([]);
+    expect((await client.findReadyStepsForMolecule(root)).map(b => b.id)).toEqual([first]);
+    await client.markStepRunning(first);
+    expect((await client.findRunningStepsForMolecule(root)).map(b => b.id)).toEqual([first]);
+    expect(cliBead(first).status).toBe('in_progress');
+    await client.recordStepTask(first, { taskId: 'task-1', providerKind: 'test-provider', sessionId: 'session-1', conversationId: 'conversation-1' });
+    await client.recordStepAttempt(first, 2);
+    await client.markStepDone(first, { result: 'ok' });
+    const completed = await client.getBead(first);
+    expect(completed).toMatchObject({ status: 'closed', metadata: { exec: {
+      task_id: 'task-1', provider_kind: 'test-provider', session_id: 'session-1',
+      conversation_id: 'conversation-1', attempts: 2, output_payload: { result: 'ok' }, input_payload: { input: 1 },
+    } } });
+    expect(completed?.closed_at).toBeInstanceOf(Date);
+    expect(cliBead(first)).toMatchObject({ status: 'closed', metadata: completed!.metadata });
+    expect((await client.findReadyStepsForMolecule(root)).map(b => b.id)).toEqual([second]);
+    expect(await client.findRunningStepsForMolecule(root)).toEqual([]);
+    await client.markStepFailed(second, 'simulated failure');
+    expect(await client.getBead(second)).toMatchObject({ status: 'closed', metadata: { exec: { error_trace: 'simulated failure' } } });
+    expect(cliBead(second)).toMatchObject({ status: 'closed', close_reason: 'step failed: simulated failure', metadata: { exec: { error_trace: 'simulated failure' } } });
+    expect(await client.findReadyStepsForMolecule(root)).toEqual([]);
+    await client.appendNoteToBead(root, 'First writeback');
+    await client.appendNoteToBead(root, 'Second writeback');
+    expect(await client.recordMoleculeWriteback(root, 'completed')).toBeUndefined();
+    expect(await client.recordMoleculeWriteback(root, 'failed')).toBe('completed');
+    await client.markMoleculeRootStatus(root, 'closed', 'failed');
+    expect(cliBead(root)).toMatchObject({ status: 'closed', notes: 'First writeback\n\nSecond writeback', metadata: { preserved: true, exec: { formula: 'compatibility', writeback_status: 'failed', outcome: 'failed' } } });
+    expect((await client.listMoleculeRoots({ statuses: ['closed'], limit: 1 })).map(b => b.id)).toEqual([root]);
+    expect(await client.listMoleculeRoots({ statuses: ['open'] })).toEqual([]);
+    expect(await client.getBead('schema65-missing')).toBeNull();
+    await expect(client.appendNoteToBead('schema65-missing', 'not written')).rejects.toThrow('not found');
+  }, 120_000);
 
-const BEADS_ROOT = process.cwd();
-const PORT_FILE = join(BEADS_ROOT, '.beads', 'dolt-server.port');
-const RUN = existsSync(PORT_FILE);
-
-describe.skipIf(!RUN)('DoltClient (integration)', () => {
-  let client: DoltClient;
-  const testRoot = `${Math.random().toString(36).slice(2, 8)}-mol-root`;
-  const testStep1 = `${testRoot}-step-1`;
-  const testStep2 = `${testRoot}-step-2`;
-
-  beforeAll(() => {
-    client = new DoltClient({ beadsRoot: BEADS_ROOT });
-  });
-
-  afterAll(async () => {
-    // Cleanup test rows we created (best-effort)
-    if (client) {
-      try {
-        const pool = (client as unknown as {
-          pool: { execute: (q: string, p: unknown[]) => Promise<unknown> };
-        }).pool;
-        await pool.execute(
-          'DELETE FROM dependencies WHERE issue_id IN (?, ?, ?) OR depends_on_id IN (?, ?, ?)',
-          [testRoot, testStep1, testStep2, testRoot, testStep1, testStep2],
-        );
-        await pool.execute('DELETE FROM issues WHERE id IN (?, ?, ?)', [
-          testRoot,
-          testStep1,
-          testStep2,
-        ]);
-      } catch {
-        // cleanup is best-effort; manual sweep covers leakage if needed
-      }
-      await client.close();
+  it('rejects unverified drift rather than accepting arbitrary schema65 variants', async () => {
+    const { bd, root, port, database } = store!;
+    bd('sql', 'ALTER TABLE issues ADD COLUMN unverified_probe int');
+    const candidate = new DoltClient({ beadsRoot: root, host: '127.0.0.1', port, database });
+    try {
+      await candidate.verifyFingerprint();
+      await expect(candidate.verifySchema()).rejects.toBeInstanceOf(WrongBdSchemaError);
+    } finally {
+      await candidate.close();
     }
-  });
-
-  it('inserts a molecule root and reads it back with metadata', async () => {
-    await client.insertMoleculeRoot({
-      id: testRoot,
-      formulaName: 'integration-test',
-      title: '[formula:integration-test] dolt-client smoke',
-      metadata: { extra: 'value' },
-    });
-    const row = await client.getBead(testRoot);
-    expect(row).not.toBeNull();
-    expect(row!.issue_type).toBe('molecule_root');
-    expect(row!.status).toBe('open');
-    expect((row!.metadata as Record<string, unknown>)['exec']).toMatchObject({
-      formula: 'integration-test',
-    });
-  });
-
-  it('inserts dependent steps with parent-child + blocks edges', async () => {
-    await client.insertMoleculeStep({
-      id: testStep1,
-      parentRootId: testRoot,
-      stepName: 'first',
-      title: '[formula:integration-test/step:first] first',
-    });
-    await client.insertMoleculeStep({
-      id: testStep2,
-      parentRootId: testRoot,
-      stepName: 'second',
-      title: '[formula:integration-test/step:second] second',
-      dependsOnStepIds: [testStep1],
-    });
-
-    const deps2 = await client.getBeadDependencies(testStep2);
-    const parentEdge = deps2.find((d) => d.type === 'parent-child');
-    const blocksEdge = deps2.find((d) => d.type === 'blocks');
-    expect(parentEdge?.depends_on_id).toBe(testRoot);
-    expect(blocksEdge?.depends_on_id).toBe(testStep1);
-  });
-
-  it('findReadyStepsForMolecule returns only steps with satisfied deps', async () => {
-    // Initially: step1 has no blockers → ready. step2 blocks on step1 → not ready.
-    const beforeClose = await client.findReadyStepsForMolecule(testRoot);
-    const beforeIds = beforeClose.map((b) => b.id);
-    expect(beforeIds).toContain(testStep1);
-    expect(beforeIds).not.toContain(testStep2);
-
-    // Close step1 → step2 becomes ready.
-    await client.markStepDone(testStep1, { result: 'ok' });
-    const afterClose = await client.findReadyStepsForMolecule(testRoot);
-    const afterIds = afterClose.map((b) => b.id);
-    expect(afterIds).not.toContain(testStep1); // closed
-    expect(afterIds).toContain(testStep2);
-
-    // Step1's metadata carries the output payload.
-    const step1 = await client.getBead(testStep1);
-    expect(step1?.status).toBe('closed');
-    expect((step1?.metadata as Record<string, unknown>)['exec']).toMatchObject({
-      output_payload: { result: 'ok' },
-    });
-  });
-
-  it('markStepFailed records error_trace and closes the step', async () => {
-    await client.markStepFailed(testStep2, 'simulated failure');
-    const step2 = await client.getBead(testStep2);
-    expect(step2?.status).toBe('closed');
-    expect((step2?.metadata as Record<string, unknown>)['exec']).toMatchObject({
-      error_trace: 'simulated failure',
-    });
-  });
+  }, 120_000);
 });
