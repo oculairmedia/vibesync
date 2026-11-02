@@ -146,6 +146,13 @@ export interface SchedulerLoopDeps {
   readonly executor: DispatchExecutor;
   readonly lock?: DispatchLock;
   readonly circuitBreakerThreshold?: number;
+  /**
+   * Called after a started run has settled (success or failure) and its
+   * bookkeeping finished — the capacity it held is free again (vibesync-p489).
+   * An interface seam: the loop never imports the daemon. Must not throw
+   * (errors are logged and swallowed).
+   */
+  readonly onRunSettled?: () => void;
   readonly logger?: { info?(o: unknown, m: string): void; warn?(o: unknown, m: string): void };
 }
 
@@ -386,6 +393,14 @@ export class SchedulerLoop {
       );
     } finally {
       this.inFlight.delete(candidate.workBeadId);
+      try {
+        this.deps.onRunSettled?.();
+      } catch (err) {
+        this.deps.logger?.warn?.(
+          { workBeadId: candidate.workBeadId, error: errMessage(err) },
+          'scheduler: onRunSettled observer failed',
+        );
+      }
     }
   }
 }

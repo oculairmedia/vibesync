@@ -14,6 +14,16 @@ function parseBookMappings(raw: string | undefined): { projectIdentifier: string
     .filter((m) => m.projectIdentifier && m.bookSlug);
 }
 
+/**
+ * Strict non-negative integer parse: the WHOLE string must be digits. Anything
+ * else ('5s', '1e3', '-1', '5.5', ' ') yields NaN so schema validation rejects
+ * it instead of parseInt silently truncating.
+ */
+function parseStrictInt(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw === '') return fallback;
+  return /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+}
+
 function parseCsv(raw: string | undefined): string[] {
   return (raw ?? '')
     .split(',')
@@ -109,6 +119,8 @@ export function loadConfig(): AppConfig {
       enabled: process.env.VIBESYNC_SCHEDULER_ENABLED === 'true',
       projectIdentifier: process.env.VIBESYNC_SCHEDULER_PROJECT || '',
       intervalMs: parseInt(process.env.VIBESYNC_SCHEDULER_INTERVAL_MS || '30000', 10),
+      // vibesync-p489: min spacing between event-triggered ticks.
+      eventDebounceMs: parseStrictInt(process.env.VIBESYNC_SCHEDULER_EVENT_DEBOUNCE_MS, 5000),
       poolSize: parseInt(process.env.VIBESYNC_SCHEDULER_POOL_SIZE || '1', 10),
       batchSize: parseInt(process.env.VIBESYNC_SCHEDULER_BATCH_SIZE || '1', 10),
       paused: process.env.VIBESYNC_SCHEDULER_PAUSED === 'true',
