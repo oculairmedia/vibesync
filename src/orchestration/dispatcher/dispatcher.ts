@@ -742,6 +742,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
         roleConfig,
         moleculeId: args.moleculeId,
         formulaName: args.input.formula.name,
+        ...(args.input.motivatingBeadId ? { motivatingBeadId: args.input.motivatingBeadId } : {}),
         rendered,
         attempt: state.attempt,
         infraRetries: state.infraRetries,
@@ -854,6 +855,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     readonly roleConfig: RoleConfig;
     readonly moleculeId: string;
     readonly formulaName: string;
+    readonly motivatingBeadId?: string;
     readonly rendered: string;
     readonly attempt: number;
     readonly infraRetries: number;
@@ -921,6 +923,8 @@ export class FormulaDispatcher implements ReadyStepRunner {
         extra: {
           moleculeId: args.moleculeId,
           stepName: args.stepName,
+          formulaName: args.formulaName,
+          ...(args.motivatingBeadId ? { motivatingBeadId: args.motivatingBeadId } : {}),
           attempt: args.attempt,
           infraRetries: args.infraRetries,
           stepId: args.stepId,

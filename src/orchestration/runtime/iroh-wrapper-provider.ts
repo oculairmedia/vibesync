@@ -92,6 +92,8 @@ interface SessionState {
   readonly stepTimeoutMs: number | null;
   readonly moleculeId: string | null;
   readonly stepName: string | null;
+  /** Title for the step's conversation in the app list (see stepConversationTitle). */
+  readonly title: string | null;
   readonly attempt: number | null;
   /** Infra failures this step already absorbed (vibesync-ynmp): they do not bump `attempt`, so they must still change the client message id. */
   readonly infraRetries: number;
@@ -162,6 +164,11 @@ export class IrohWrapperProvider implements RuntimeProvider {
       stepTimeoutMs: readNumberExtra(spec, 'turnTimeoutMs') ?? null,
       moleculeId: readStringExtra(spec, 'moleculeId') ?? null,
       stepName: readStringExtra(spec, 'stepName') ?? null,
+      title: stepConversationTitle(
+        readStringExtra(spec, 'formulaName') ?? null,
+        readStringExtra(spec, 'stepName') ?? null,
+        readStringExtra(spec, 'motivatingBeadId') ?? null,
+      ),
       attempt: typeof attempt === 'number' && Number.isFinite(attempt) ? attempt : null,
       infraRetries: readNumberExtra(spec, 'infraRetries') ?? 0,
       abort: new AbortController(),
@@ -283,7 +290,7 @@ export class IrohWrapperProvider implements RuntimeProvider {
     // Always a fresh conversation on the ROLE agent: a retried attempt must not
     // inherit a half-finished turn, and concurrent steps of one role must not
     // share context.
-    state.conversationId ??= await createConversation(this.conn, state.agentId);
+    state.conversationId ??= await createConversation(this.conn, state.agentId, state.title ?? undefined);
     conversationKnown(state.conversationId);
     let firstToken = false;
     const result = await runTurn(
@@ -379,4 +386,14 @@ function nowIso(): string {
 }
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * "<formula> · <step> · <bead>" (bead omitted when the run has none). Shown as
+ * the conversation title in the app, so a run's turns are findable by formula,
+ * step and the bead that motivated it. Null when there is nothing to name.
+ */
+export function stepConversationTitle(formulaName: string | null, stepName: string | null, motivatingBeadId: string | null): string | null {
+  const parts = [formulaName, stepName, motivatingBeadId].filter((p): p is string => typeof p === 'string' && p.length > 0);
+  return parts.length > 0 ? parts.join(' · ') : null;
 }

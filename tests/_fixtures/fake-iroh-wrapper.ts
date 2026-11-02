@@ -98,6 +98,8 @@ export class FakeIrohWrapper {
   private readonly runtimes = new Set<string>();
   /** conversation id -> the agent it was created on (a conversation belongs to exactly one agent). */
   readonly conversationAgent = new Map<string, string>();
+  /** conversation id -> title (`summary`) passed to conversation.create. */
+  readonly conversationTitles = new Map<string, string>();
   /** conversation id -> the record fields `conversation.list` serves (the real host lists these; see seedConversation). */
   private readonly conversationMeta = new Map<string, { created_at: string; last_message_at: string; archived: boolean; extra: F }>();
   /** permission mode `permission_mode.get` reports per `agent/conversation` (absent = runtime never started: `{}`). */
@@ -287,6 +289,8 @@ export class FakeIrohWrapper {
       this.conversationAgent.set(id, agent);
       const at = this.nextDate();
       this.conversationMeta.set(id, { created_at: at, last_message_at: at, archived: false, extra: {} });
+      // Real host stores `summary` as the conversation title shown in the app list.
+      if (typeof params['summary'] === 'string') this.conversationTitles.set(id, params['summary']);
       return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: true, result: { id } });
     }
     if (method === 'conversation.list') {

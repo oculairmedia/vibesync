@@ -105,8 +105,14 @@ type Outcome =
   | { readonly kind: 'aborted' }
   | { readonly kind: 'reconciled'; readonly text: string; readonly runId: string | null };
 
-export async function createConversation(conn: IrohConnection, agentId: string): Promise<string> {
-  const result = await withRedial(conn, () => conn.rpc('conversation.create', { agent_id: agentId }), 3);
+/**
+ * Create a conversation on `agentId`. `title` is stored as the conversation's
+ * `summary`, which is what the app's conversation list shows (otherwise the
+ * host shows "Conversation <n>" or auto-titles from the first reply).
+ */
+export async function createConversation(conn: IrohConnection, agentId: string, title?: string): Promise<string> {
+  const params = title ? { agent_id: agentId, summary: title } : { agent_id: agentId };
+  const result = await withRedial(conn, () => conn.rpc('conversation.create', params), 3);
   const r = asRecord(result);
   const conv = str(r?.['id']) ?? str(asRecord(r?.['conversation'])?.['id']) ?? str(r?.['conversation_id']);
   if (!conv) throw new IrohRefusedError('conversation.create returned no conversation id');
