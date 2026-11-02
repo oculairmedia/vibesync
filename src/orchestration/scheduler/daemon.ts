@@ -5,6 +5,7 @@
  * patrol loop that actually burns down the backlog:
  *
  *   tick():
+ *     0. steps.tick()          — offer ready formula STEPS of open molecules (vibesync-efee)
  *     1. scheduler.runTick()   — START ready beads' runs under the pool cap (runs settle off the tick)
  *     2. refinery.processQueue() — auto-merge self-completed PRs (safety-gated)
  *     3. witness.patrol()      — recover crashed/zombie slots (causal, not time)
@@ -148,6 +149,12 @@ export interface SchedulerDaemonDeps {
    * by anything yet.
    */
   readonly runDeadlineFor?: (workBeadId: string) => number | undefined;
+  /**
+   * Ready formula steps (vibesync-efee). When supplied, every tick offers the
+   * ready steps of open molecules to the runner — a SEPARATE source from
+   * `readyBeads` (work beads). Optional so a daemon without formulas works.
+   */
+  readonly steps?: { tick(): Promise<unknown> };
   /** Called after every tick (interval- or event-driven) completes. Must not throw completes. Must not throw (errors are logged and swallowed). */
   readonly onTick?: (report: DaemonTickReport) => void;
   /**
@@ -200,6 +207,8 @@ export class SchedulerDaemon {
   /** Pending trailing tick for requests coalesced inside the debounce window. */
   private trailingTimer: ReturnType<typeof setTimeout> | null = null;
   private trailingReason: TickReason | null = null;
+  /** A step-wake arrived while a tick was running; replayed when that tick ends. */
+  private stepTickPending = false;
   /** Set by stop(); in-flight ticks skip their remaining (writing) phases. */
   private stopping = false;
   private tickSeq = 0;
@@ -590,6 +599,17 @@ export class SchedulerDaemon {
     if (this.stopping) {
       return { scheduler: { dispatched: [], failed: [], circuitBroken: [], skippedReason: 'paused' }, merged: [], recovered: [] };
     }
+
+    // Phase 0b: offer ready formula STEPS (molecule-scoped readiness from the
+    // bead graph) to the dispatcher. Offering returns at once; steps run off the
+    // tick. Honors the town-wide pause like every other dispatch.
+    if (this.deps.steps && !this.deps.config().paused) {
+      try {
+        await this.deps.steps.tick();
+      } catch (err) {
+        this.deps.logger?.warn?.({ error: msg(err) }, 'daemon: step phase failed');
+      }
+    }
     try {
       scheduler = await this.scheduler.runTick();
     } catch (err) {
@@ -686,6 +706,22 @@ export class SchedulerDaemon {
     return 'started';
   }
 
+  /**
+   * Ask for a tick because formula steps may have become ready (a molecule was
+   * cooked, a step settled). Unlike a plain `requestTick`, a request made while
+   * a tick is running is NOT dropped: the cook that triggers it usually lands
+   * after that tick's step phase, so it is replayed (debounced) the moment the
+   * tick ends. This is the wake `boot-scheduler` hands the StepDispatcher.
+   */
+  requestStepTick(): void {
+    if (!this.timer || this.stopping) return;
+    if (this.inFlight) {
+      this.stepTickPending = true;
+      return;
+    }
+    this.requestTick('run-finished');
+  }
+
   private fireTrailing(): void {
     const reason = this.trailingReason ?? 'bead-status';
     this.trailingTimer = null;
@@ -710,6 +746,10 @@ export class SchedulerDaemon {
   private startTick(reason: TickReason): void {
     this.inFlight = this.runObservedTick(reason).finally(() => {
       this.inFlight = null;
+      if (this.stepTickPending) {
+        this.stepTickPending = false;
+        this.requestStepTick();
+      }
     });
   }
 

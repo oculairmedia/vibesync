@@ -26,6 +26,7 @@ import { existsSync, readFileSync, readlinkSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { MIN_BD_VERSION, bdVersionSatisfies, parseBdVersion } from '../../src/orchestration/bd-version.js';
 
 export interface CheckResult {
   readonly name: string;
@@ -214,6 +215,7 @@ export function preflight(projectRoot: string, deps: PreflightDeps = defaultDeps
   // 7. bd binary on PATH
   if (whichOk('bd', deps)) {
     checks.push({ name: 'bd-binary', level: 'ok', detail: 'on PATH' });
+    checks.push(checkBdVersion(deps));
   } else {
     checks.push({ name: 'bd-binary', level: 'error', detail: 'bd CLI not on PATH — install before working' });
   }
@@ -271,6 +273,20 @@ export function preflight(projectRoot: string, deps: PreflightDeps = defaultDeps
   }
 
   return finalize(projectRoot, checks);
+}
+
+/** vibesync-efee: formula steps rely on bd >= MIN_BD_VERSION (`bd ready --mol`, gates). */
+export function checkBdVersion(deps: PreflightDeps = defaultDeps): CheckResult {
+  const result = deps.tryExec('bd --version');
+  const text = `${result.stdout}${result.stderr}`;
+  const version = parseBdVersion(text);
+  if (!result.ok || version === null) {
+    return { name: 'bd-version', level: 'warn', detail: `could not read bd version (need >= ${MIN_BD_VERSION}): ${text.trim().slice(0, 120)}` };
+  }
+  if (!bdVersionSatisfies(text)) {
+    return { name: 'bd-version', level: 'error', detail: `bd ${version} is older than the required minimum ${MIN_BD_VERSION}` };
+  }
+  return { name: 'bd-version', level: 'ok', detail: `bd ${version} (>= ${MIN_BD_VERSION})` };
 }
 
 function finalize(projectRoot: string, checks: CheckResult[]): Report {

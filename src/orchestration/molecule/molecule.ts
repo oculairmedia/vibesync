@@ -163,14 +163,10 @@ function randomToken(length: number): string {
 }
 
 /**
- * The molecule walker. Owns the rules for "what runs next" given a
- * molecule's current state. Pure logic — the daemon (out of scope for
- * this bead) is responsible for actually dispatching ready steps via
- * the RuntimeProvider seam.
- *
- * Today the walker delegates the heavy SQL to DoltClient. As the daemon
- * grows we may move ready-step selection into the walker itself with an
- * in-memory projection; for now the SQL query is correct and small.
+ * The molecule walker: COOK (root + step beads with parent-child and `blocks`
+ * edges) and WRITEBACK (step/root lifecycle writes, loads). It does NOT decide
+ * what runs next (vibesync-efee): the bead graph does, read per molecule by
+ * the scheduler's StepDispatcher (scheduler/step-dispatcher.ts).
  */
 export class MoleculeWalker {
   constructor(private readonly store: MoleculeStore) {}
@@ -203,16 +199,6 @@ export class MoleculeWalker {
       if (stepName) byName.set(stepName, step);
     }
     return { rootId, root, steps, byName, edges: dedupeEdges([...edges, ...stepEdges]) };
-  }
-
-  /**
-   * Return step beads whose `blocks` dependencies are all closed and
-   * that are themselves still `open`. Delegates to DoltClient's
-   * ready-query (vibesync-w5z), which encodes the dep-satisfaction
-   * SQL.
-   */
-  async findReady(rootId: string): Promise<readonly BeadRow[]> {
-    return this.store.findReadyStepsForMolecule(rootId);
   }
 
   /** Return step beads currently marked as running for this molecule. */
@@ -262,7 +248,7 @@ export class MoleculeWalker {
   /**
    * Dispatch the molecule from a formula spec: create the root + every
    * step bead with the right edges, but do NOT run anything yet. The
-   * daemon polls findReady() and runs steps as they become ready.
+   * scheduler's StepDispatcher offers steps as the graph makes them ready.
    *
    * Returns the materialized MoleculeView for follow-up.
    */

@@ -57,7 +57,7 @@ describe('MoleculeWalker', () => {
     expect(await walker.load(newMoleculeStepId(view.rootId, 'first'))).toBeNull();
   });
 
-  it('findReady returns dependency roots first and unblocks dependents after finish', async () => {
+  it('the store reports ready steps: dependency roots first and unblocks dependents after finish', async () => {
     const store = new InMemoryDoltClient();
     const walker = new MoleculeWalker(store);
     const view = await walker.dispatch({
@@ -71,15 +71,16 @@ describe('MoleculeWalker', () => {
       ],
     });
 
-    await expectReadyStepNames(walker, view.rootId, ['a']);
+    await expectReadyStepNames(store, view.rootId, ['a']);
     await walker.finishStep(newMoleculeStepId(view.rootId, 'a'), { ok: true });
-    await expectReadyStepNames(walker, view.rootId, ['b']);
+    await expectReadyStepNames(store, view.rootId, ['b']);
     await walker.finishStep(newMoleculeStepId(view.rootId, 'b'), { ok: true });
-    await expectReadyStepNames(walker, view.rootId, ['c']);
+    await expectReadyStepNames(store, view.rootId, ['c']);
   });
 
   it('treats independent open steps as ready together', async () => {
-    const walker = new MoleculeWalker(new InMemoryDoltClient());
+    const store = new InMemoryDoltClient();
+    const walker = new MoleculeWalker(store);
     const view = await walker.dispatch({
       prefix: 'vibesync',
       formulaName: 'fan-out',
@@ -90,7 +91,7 @@ describe('MoleculeWalker', () => {
       ],
     });
 
-    await expectReadyStepNames(walker, view.rootId, ['a', 'b']);
+    await expectReadyStepNames(store, view.rootId, ['a', 'b']);
   });
 
   it('throws when a step depends on a forward reference', async () => {
@@ -173,8 +174,8 @@ async function dispatchSingleStep(walker: MoleculeWalker) {
   });
 }
 
-async function expectReadyStepNames(walker: MoleculeWalker, rootId: string, names: readonly string[]): Promise<void> {
-  const ready = await walker.findReady(rootId);
+async function expectReadyStepNames(store: InMemoryDoltClient, rootId: string, names: readonly string[]): Promise<void> {
+  const ready = await store.findReadyStepsForMolecule(rootId);
   expect(ready.map(stepName)).toEqual(names);
 }
 

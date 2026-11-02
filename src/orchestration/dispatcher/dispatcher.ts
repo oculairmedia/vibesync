@@ -6,6 +6,7 @@ import type { MoleculeWalker } from '../molecule/index.js';
 import type { BeadRow } from '../store/index.js';
 import type { Pack, RoleConfig } from '../packs/index.js';
 import type { RuntimeProvider, SessionEvent, SessionHandle } from '../runtime/index.js';
+import type { ReadyStep, ReadyStepRunner, StepRunOutcome } from '../scheduler/step-dispatcher.js';
 import { renderTemplate } from './render.js';
 
 /**
@@ -14,9 +15,12 @@ import { renderTemplate } from './render.js';
  * Whole-molecule runs can be capped with `maxConcurrentMolecules`; calls
  * above that limit wait in a FIFO in-process queue so a burst of formula runs
  * cannot consume every runtime teammate slot at once.
- * Ready steps fan out in parallel up to `maxParallelSteps`; dependency ordering
- * still comes from MoleculeWalker, so formulas can opt into parallelism by
- * declaring independent steps.
+ * The dispatcher no longer decides what runs next (vibesync-efee): it cooks the
+ * molecule (root + step beads with `blocks` edges), registers the run context,
+ * and waits. The bead graph says which steps are ready; the StepDispatcher
+ * (scheduler/step-dispatcher.ts) offers them one at a time to `runReadyStep`.
+ * Ready steps fan out in parallel up to `maxParallelSteps`, so formulas opt
+ * into parallelism by declaring independent steps.
  *
  * Example restart recovery:
  *
@@ -172,11 +176,42 @@ export interface FormulaDispatcherOptions {
    * call into this generator.
    */
   readonly conversationIdGenerator?: ConversationIdGenerator;
+  /**
+   * Called (never throws) right after a molecule is cooked and registered, so
+   * the step loop can pick up its first ready steps promptly instead of waiting
+   * for its next interval. Boot wires this to `StepDispatcher.kick`.
+   */
+  readonly onMoleculeCooked?: (moleculeId: string) => void;
 }
 
 interface QueuedMoleculeRun {
   readonly input: DispatchInput;
   readonly resolve: () => void;
+}
+
+/** In-process run context of one cooked molecule (formula, pack, input, outputs). */
+interface MoleculeRun {
+  readonly input: DispatchInput;
+  readonly moleculeId: string;
+  readonly provider: RuntimeProvider;
+  readonly roleAgentContext: {
+    readonly bootstrapper: RoleAgentBootstrapperLike;
+    readonly packDir: string;
+    readonly lettaBaseUrl: string;
+    readonly storageDir: string;
+  } | null;
+  readonly startedAt: number;
+  readonly outputs: Record<string, string>;
+  readonly rolesByName: ReadonlyMap<string, RoleConfig>;
+  /** Step bead ids already run: a step never runs twice in one molecule (retries live inside runStep). */
+  readonly startedSteps: Set<string>;
+  running: number;
+  failed: boolean;
+  failure: unknown;
+  cancelled: boolean;
+  finalized: boolean;
+  readonly resolve: (result: DispatchResult) => void;
+  readonly reject: (error: unknown) => void;
 }
 
 export class FormulaDispatchError extends Error {
@@ -197,7 +232,7 @@ export class FormulaCancellationConflictError extends FormulaDispatchError {
   }
 }
 
-export class FormulaDispatcher {
+export class FormulaDispatcher implements ReadyStepRunner {
   private readonly defaultProvider: RuntimeProvider;
   private readonly walker: MoleculeWalker;
   private readonly eventBus: EventBus;
@@ -207,7 +242,9 @@ export class FormulaDispatcher {
   private readonly providerResolver: ProviderResolver | null;
   private readonly roleAgentContextResolver: RoleAgentBootstrapContextResolver | null;
   private readonly conversationIdGenerator: ConversationIdGenerator;
+  private readonly onMoleculeCooked: ((moleculeId: string) => void) | null;
   private readonly moleculeQueue: QueuedMoleculeRun[] = [];
+  private readonly live = new Map<string, MoleculeRun>();
   private activeMolecules = 0;
 
   constructor(opts: FormulaDispatcherOptions) {
@@ -221,6 +258,7 @@ export class FormulaDispatcher {
     this.roleAgentContextResolver = opts.roleAgentContextResolver ?? null;
     this.conversationIdGenerator =
       opts.conversationIdGenerator ?? createDefaultConversationIdGenerator();
+    this.onMoleculeCooked = opts.onMoleculeCooked ?? null;
   }
 
   /**
@@ -268,7 +306,7 @@ export class FormulaDispatcher {
   async run(input: DispatchInput): Promise<DispatchResult> {
     await this.acquireMoleculeSlot(input);
     try {
-      return await this.runNow(input);
+      return await this.cookAndAwait(input);
     } finally {
       this.releaseMoleculeSlot();
     }
@@ -282,7 +320,21 @@ export class FormulaDispatcher {
     return this.activeMolecules;
   }
 
-  private async runNow(input: DispatchInput): Promise<DispatchResult> {
+  /**
+   * Molecules this process cooked and can still run (their formula/pack/input
+   * live here). The StepDispatcher asks the bead graph which of THEIR steps are
+   * ready; molecules left open by a previous process are `resume()`'s.
+   */
+  liveMoleculeIds(): readonly string[] {
+    return [...this.live.keys()];
+  }
+
+  /**
+   * Cook the molecule and wait for it to settle. Nothing here runs a step: the
+   * StepDispatcher does, as the bead graph makes steps ready, and the last step
+   * to settle finalizes the molecule (`settleMolecule`).
+   */
+  private async cookAndAwait(input: DispatchInput): Promise<DispatchResult> {
     const startedAt = Date.now();
     const provider = await this.resolveProvider(input);
     const roleAgentContext = await this.resolveRoleAgentContext(input);
@@ -294,13 +346,30 @@ export class FormulaDispatcher {
       steps: input.formula.steps,
     });
     const moleculeId = view.rootId;
+    const done = new Promise<DispatchResult>((resolve, reject) => {
+      this.live.set(moleculeId, {
+        input,
+        moleculeId,
+        provider,
+        roleAgentContext,
+        startedAt,
+        outputs: {},
+        rolesByName: new Map(input.pack.roles.map((role) => [role.name, role])),
+        startedSteps: new Set(),
+        running: 0,
+        failed: false,
+        failure: undefined,
+        cancelled: false,
+        finalized: false,
+        resolve,
+        reject,
+      });
+    });
     try {
       input.onStarted?.(moleculeId);
     } catch {
       // An observer must never fail the run it observes.
     }
-    const outputs: Record<string, string> = {};
-    const rolesByName = new Map(input.pack.roles.map((role) => [role.name, role]));
 
     this.emit('dispatcher/formula.started', moleculeId, undefined, {
       formulaName: input.formula.name,
@@ -309,43 +378,106 @@ export class FormulaDispatcher {
       providerKind: provider.kind,
       ...(input.projectIdentifier ? { projectIdentifier: input.projectIdentifier } : {}),
     });
-
+    // A formula with no steps has nothing to settle it.
+    if (input.formula.steps.length === 0) await this.settleMolecule(this.live.get(moleculeId)!);
     try {
-      while (!(await this.walker.isComplete(moleculeId))) {
-        const ready = await this.walker.findReady(moleculeId);
-        if (ready.length === 0) {
-          throw new FormulaDispatchError(`FormulaDispatcher: molecule ${moleculeId} has no ready steps but is incomplete`, moleculeId);
-        }
-        const batch = ready.slice(0, this.maxParallelSteps);
-        const settled = await Promise.allSettled(batch.map((step) => this.runStep({ input, step, moleculeId, outputs, rolesByName, provider, roleAgentContext })));
-        const failed = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected');
-        if (failed) throw failed.reason;
-      }
-    } catch (error) {
-      await this.walker.markMoleculeRootStatus(moleculeId, 'closed', 'failed');
-      this.emit('dispatcher/formula.failed', moleculeId, undefined, {
-        moleculeId,
-        error: stringifyError(error),
-        // vibesync-u32z: carry the motivating bead on the completion event so
-        // the writeback hook can resolve it directly from the event, without
-        // depending solely on re-reading the persisted molecule_root row (a
-        // single point of failure if any dispatch path or Dolt write dropped
-        // the exec.motivating_bead stamp).
-        ...(input.motivatingBeadId ? { motivating_bead: input.motivatingBeadId } : {}),
-      });
-      throw error;
+      this.onMoleculeCooked?.(moleculeId);
+    } catch {
+      // Waking the step loop is best-effort; its interval is the fallback.
     }
+    return done;
+  }
 
-    await this.walker.markMoleculeRootStatus(moleculeId, 'closed', 'completed');
-    this.emit('dispatcher/formula.completed', moleculeId, undefined, {
-      moleculeId,
-      durationMs: Date.now() - startedAt,
-      // vibesync-u32z: see the failure branch above — the completion event is
-      // now self-describing so the writeback hook never has to reverse-engineer
-      // the motivating bead from a row that may not carry it.
-      ...(input.motivatingBeadId ? { motivating_bead: input.motivatingBeadId } : {}),
-    });
-    return { moleculeId, outputs };
+  /**
+   * Run ONE ready step of a live molecule (the {@link ReadyStepRunner} port).
+   * Resolves, never rejects, once the step has settled; a step failure fails
+   * the molecule. `skipped` = nothing was run (unknown/finished/failed/cancelled
+   * molecule, the step already ran, or `maxParallelSteps` reached).
+   */
+  async runReadyStep(ready: ReadyStep): Promise<StepRunOutcome> {
+    const run = this.live.get(ready.moleculeId);
+    if (!run || run.failed || run.cancelled || run.startedSteps.has(ready.step.id)) return 'skipped';
+    if (run.running >= this.maxParallelSteps) return 'skipped';
+    run.startedSteps.add(ready.step.id);
+    run.running++;
+    let outcome: StepRunOutcome = 'finished';
+    try {
+      await this.runStep({
+        input: run.input,
+        step: ready.step,
+        moleculeId: run.moleculeId,
+        outputs: run.outputs,
+        rolesByName: run.rolesByName,
+        provider: run.provider,
+        roleAgentContext: run.roleAgentContext,
+      });
+    } catch (error) {
+      if (!run.failed) {
+        run.failed = true;
+        run.failure = error;
+      }
+      outcome = 'failed';
+    } finally {
+      run.running--;
+    }
+    await this.settleMolecule(run);
+    return outcome;
+  }
+
+  /**
+   * Finalize a molecule once none of its steps is running: failed if any step
+   * failed (siblings in flight finish first), completed once every step bead is
+   * closed. Otherwise the next ready steps are the StepDispatcher's to offer.
+   */
+  private async settleMolecule(run: MoleculeRun): Promise<void> {
+    if (run.finalized || run.running > 0) return;
+    try {
+      if (run.cancelled) {
+        // cancel() already closed the root as 'cancelled' and emitted
+        // formula.cancelled. The step it stopped may well have thrown on the way
+        // down; that must not turn the cancelled root into a 'failed' one.
+        run.finalized = true;
+        this.live.delete(run.moleculeId);
+        run.reject(new FormulaDispatchError(`FormulaDispatcher: molecule ${run.moleculeId} was cancelled`, run.moleculeId));
+        return;
+      }
+      if (run.failed) {
+        run.finalized = true;
+        this.live.delete(run.moleculeId);
+        await this.walker.markMoleculeRootStatus(run.moleculeId, 'closed', 'failed');
+        this.emit('dispatcher/formula.failed', run.moleculeId, undefined, {
+          moleculeId: run.moleculeId,
+          error: stringifyError(run.failure),
+          // vibesync-u32z: carry the motivating bead on the completion event so
+          // the writeback hook can resolve it directly from the event, without
+          // depending solely on re-reading the persisted molecule_root row (a
+          // single point of failure if any dispatch path or Dolt write dropped
+          // the exec.motivating_bead stamp).
+          ...(run.input.motivatingBeadId ? { motivating_bead: run.input.motivatingBeadId } : {}),
+        });
+        run.reject(run.failure);
+        return;
+      }
+      if (!(await this.walker.isComplete(run.moleculeId)) || run.finalized) return;
+      run.finalized = true;
+      this.live.delete(run.moleculeId);
+      await this.walker.markMoleculeRootStatus(run.moleculeId, 'closed', 'completed');
+      this.emit('dispatcher/formula.completed', run.moleculeId, undefined, {
+        moleculeId: run.moleculeId,
+        durationMs: Date.now() - run.startedAt,
+        // vibesync-u32z: see the failure branch above — the completion event is
+        // now self-describing so the writeback hook never has to reverse-engineer
+        // the motivating bead from a row that may not carry it.
+        ...(run.input.motivatingBeadId ? { motivating_bead: run.input.motivatingBeadId } : {}),
+      });
+      run.resolve({ moleculeId: run.moleculeId, outputs: run.outputs });
+    } catch (error) {
+      // Persisting the outcome failed: settle the caller's promise anyway so a
+      // run (and the pool slot / molecule slot behind it) is never stuck.
+      run.finalized = true;
+      this.live.delete(run.moleculeId);
+      run.reject(error);
+    }
   }
 
   private acquireMoleculeSlot(input: DispatchInput): Promise<void> {
@@ -450,6 +582,11 @@ export class FormulaDispatcher {
       throw new FormulaCancellationConflictError(`FormulaDispatcher: molecule ${moleculeId} has no running steps to cancel`, moleculeId);
     }
 
+    // Closing the running steps below unblocks their dependents in the bead
+    // graph; mark the run so none of them is started.
+    const liveRun = this.live.get(moleculeId);
+    if (liveRun) liveRun.cancelled = true;
+
     let cancelledStepCount = 0;
     for (const step of running) {
       const stepName = readStepName(step);
@@ -476,6 +613,8 @@ export class FormulaDispatcher {
       moleculeId,
       cancelledStepCount,
     });
+    // Release the run() caller now if no step of this process is still unwinding.
+    if (liveRun) await this.settleMolecule(liveRun);
     return { moleculeId, cancelledStepCount };
   }
 
