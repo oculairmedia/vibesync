@@ -155,7 +155,7 @@ export interface SchedulerDaemonDeps {
    * `readyBeads` (work beads). Optional so a daemon without formulas works.
    */
   readonly steps?: { tick(): Promise<unknown> };
-  /** Called after every tick (interval- or event-driven) completes. Must not throw completes. Must not throw (errors are logged and swallowed). */
+  /** Called after every tick (interval- or event-driven) completes. Must not throw (errors are logged and swallowed). */
   readonly onTick?: (report: DaemonTickReport) => void;
   /**
    * Called for every `requestTick` made while the loop is running, whatever
