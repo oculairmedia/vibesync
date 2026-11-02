@@ -89,6 +89,20 @@ export interface DoltHubConfig {
   remoteName: string;
 }
 
+export interface SchedulerConfigSection {
+  enabled: boolean;
+  projectIdentifier: string;
+  intervalMs: number;
+  poolSize: number;
+  batchSize: number;
+  paused: boolean;
+  readyLabel: string;
+  formula: string;
+  packDir: string;
+  autoMerge: boolean;
+  requiredChecks: string[];
+}
+
 export interface AppConfig {
   sync: SyncConfig;
   reconciliation: ReconciliationConfig;
@@ -99,6 +113,7 @@ export interface AppConfig {
   bookstack: BookStackConfig;
   projectMcp: ProjectMcpConfig;
   doltHub: DoltHubConfig;
+  scheduler: SchedulerConfigSection;
 }
 
 export interface HealthSnapshot {

@@ -106,6 +106,37 @@ const doltHubSchema = z
     message: 'DOLTHUB_API_TOKEN must be set when DoltHub provisioning is enabled',
   });
 
+/**
+ * Orchestration scheduler (vibesync-z2ws). Layering invariant 4: the daemon
+ * exists iff this section says `enabled`. Default is OFF.
+ */
+const schedulerSchema = z
+  .object({
+    enabled: z.boolean(),
+    /** Project whose beads are scheduled and whose project_role_agents rows form the pool. */
+    projectIdentifier: z.string(),
+    intervalMs: z.number().int().min(1000, 'VIBESYNC_SCHEDULER_INTERVAL_MS must be >= 1000'),
+    poolSize: z.number().int().min(1, 'VIBESYNC_SCHEDULER_POOL_SIZE must be >= 1'),
+    batchSize: z.number().int().min(1, 'VIBESYNC_SCHEDULER_BATCH_SIZE must be >= 1'),
+    paused: z.boolean(),
+    /** Only ready beads carrying this label are scheduled. Empty string = every ready bead. */
+    readyLabel: z.string(),
+    /** Formula (from the pack at packDir) every scheduled bead is dispatched as. */
+    formula: z.string().min(1),
+    packDir: z.string().min(1),
+    /** Safety: the refinery only merges PRs when this is explicitly true. */
+    autoMerge: z.boolean(),
+    /** Check names that must be SUCCESS before an auto-merge. Required non-empty when autoMerge. */
+    requiredChecks: z.array(z.string()),
+  })
+  .refine((data) => !data.enabled || data.projectIdentifier.trim().length > 0, {
+    message: 'VIBESYNC_SCHEDULER_PROJECT must be set when VIBESYNC_SCHEDULER_ENABLED is true',
+  })
+  .refine((data) => !data.autoMerge || data.requiredChecks.length > 0, {
+    message:
+      'VIBESYNC_SCHEDULER_REQUIRED_CHECKS must list at least one check when VIBESYNC_SCHEDULER_AUTO_MERGE is true',
+  });
+
 export const configSchema = z.object({
   sync: syncSchema,
   reconciliation: reconciliationSchema,
@@ -116,6 +147,7 @@ export const configSchema = z.object({
   bookstack: bookstackSchema,
   projectMcp: projectMcpSchema,
   doltHub: doltHubSchema,
+  scheduler: schedulerSchema,
 });
 
 export type AppConfig = z.infer<typeof configSchema>;
