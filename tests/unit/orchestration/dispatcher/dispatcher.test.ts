@@ -417,6 +417,40 @@ describe('FormulaDispatcher', () => {
     expect(String((thrown as Error).message)).toContain('has no running steps to cancel');
   });
 
+  describe('onStarted (vibesync-izn3)', () => {
+    it('reports the molecule id once, after the molecule exists and BEFORE the first step runs', async () => {
+      const { dispatcher, events, store } = newHarness({ script: scriptByRole({ reviewer: 'a', coder: 'b', tester: 'c' }) });
+      const seen: Array<{ id: string; eventKindsSoFar: string[]; rootExists: boolean }> = [];
+      let pendingRoot: Promise<unknown> | null = null;
+      const result = await dispatcher.run({
+        formula: codeReviewFormula(),
+        pack: newPack(),
+        input: 'go',
+        onStarted: (id) => {
+          seen.push({ id, eventKindsSoFar: events.filter(isDispatcherEvent).map((e) => e.kind), rootExists: false });
+          pendingRoot = store.getBead(id).then((row) => { seen[0]!.rootExists = row !== null && row !== undefined; });
+        },
+      });
+      await pendingRoot;
+      expect(seen).toHaveLength(1);
+      expect(seen[0]!.id).toBe(result.moleculeId);
+      expect(seen[0]!.rootExists).toBe(true);
+      // Nothing beyond the (pre-step) lifecycle had happened when the callback fired.
+      expect(seen[0]!.eventKindsSoFar).not.toContain('dispatcher/step.started');
+    });
+
+    it('a throwing onStarted never fails the run', async () => {
+      const { dispatcher } = newHarness({ script: scriptByRole({ reviewer: 'a', coder: 'b', tester: 'c' }) });
+      const result = await dispatcher.run({
+        formula: codeReviewFormula(),
+        pack: newPack(),
+        input: 'go',
+        onStarted: () => { throw new Error('observer exploded'); },
+      });
+      expect(result.outputs).toEqual({ reviewer: 'a', coder: 'b', tester: 'c' });
+    });
+  });
+
   describe('per-project provider routing (vibesync-f5g)', () => {
     it('uses the default provider when no resolver is wired', async () => {
       const { dispatcher, provider } = newHarness({ script: scriptByRole({ worker: 'ran on default' }) });

@@ -11,6 +11,7 @@ function schedulerDefaults(overrides = {}) {
     projectIdentifier: '',
     intervalMs: 30000,
     eventDebounceMs: 5000,
+    runDeadlineMs: 3600000,
     poolSize: 1,
     batchSize: 1,
     paused: false,
@@ -274,6 +275,14 @@ describe('configSchema', () => {
       expect(pm({ backstopMs: 1.5 }).success).toBe(false);
       expect(pm({ backstopMs: Number.NaN }).success).toBe(false);
       expect(pm({ statePath: '' }).success).toBe(false);
+    });
+
+    it('rejects a negative or fractional runDeadlineMs; 0 (no deadline) is valid (vibesync-izn3)', () => {
+      for (const bad of [-1, 1.5, Number.NaN]) {
+        const result = configSchema.safeParse(validConfig({ scheduler: schedulerDefaults({ runDeadlineMs: bad }) }));
+        expect(result.success).toBe(false);
+      }
+      expect(configSchema.safeParse(validConfig({ scheduler: schedulerDefaults({ runDeadlineMs: 0 }) })).success).toBe(true);
     });
 
     it('rejects an interval under 1s', () => {

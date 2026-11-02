@@ -119,6 +119,12 @@ const schedulerSchema = z
     intervalMs: z.number().int().min(1000, 'VIBESYNC_SCHEDULER_INTERVAL_MS must be >= 1000'),
     /** Min spacing between event-triggered ticks (vibesync-p489). 0 disables debouncing. */
     eventDebounceMs: z.number().int().min(0, 'VIBESYNC_SCHEDULER_EVENT_DEBOUNCE_MS must be >= 0'),
+    /** Wall-clock deadline for a started formula run (vibesync-izn3). 0 disables it. */
+    runDeadlineMs: z
+      .number()
+      .int()
+      .min(0, 'VIBESYNC_SCHEDULER_RUN_DEADLINE_MS must be >= 0')
+      .max(2_147_483_647, 'VIBESYNC_SCHEDULER_RUN_DEADLINE_MS must be <= 2147483647 (setTimeout maximum)'),
     poolSize: z.number().int().min(1, 'VIBESYNC_SCHEDULER_POOL_SIZE must be >= 1'),
     batchSize: z.number().int().min(1, 'VIBESYNC_SCHEDULER_BATCH_SIZE must be >= 1'),
     paused: z.boolean(),

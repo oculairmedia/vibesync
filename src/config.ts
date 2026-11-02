@@ -129,6 +129,8 @@ export function loadConfig(): AppConfig {
       intervalMs: parseInt(process.env.VIBESYNC_SCHEDULER_INTERVAL_MS || '30000', 10),
       // vibesync-p489: min spacing between event-triggered ticks.
       eventDebounceMs: parseStrictInt(process.env.VIBESYNC_SCHEDULER_EVENT_DEBOUNCE_MS, 5000),
+      // vibesync-izn3: wall-clock budget for a started run; 0 = no deadline.
+      runDeadlineMs: parseStrictInt(process.env.VIBESYNC_SCHEDULER_RUN_DEADLINE_MS, 3_600_000),
       poolSize: parseInt(process.env.VIBESYNC_SCHEDULER_POOL_SIZE || '1', 10),
       batchSize: parseInt(process.env.VIBESYNC_SCHEDULER_BATCH_SIZE || '1', 10),
       paused: process.env.VIBESYNC_SCHEDULER_PAUSED === 'true',
