@@ -100,6 +100,8 @@ export interface IrohConnectionOptions {
   readonly random?: () => number;
   readonly newRequestId?: () => string;
   readonly log?: (message: string) => void;
+  /** Called once from close() (e.g. to close the native endpoint). */
+  readonly dispose?: () => Promise<void>;
 }
 
 interface Pending {
@@ -142,7 +144,8 @@ export class IrohConnection {
   private generationCounter = 0;
   private readonly frameListeners = new Set<(frame: Frame) => void>();
   private readonly disconnectListeners = new Set<(generation: number) => void>();
-  private readonly o: Required<Omit<IrohConnectionOptions, 'backoff' | 'token' | 'capabilities'>> & {
+  private readonly o: Required<Omit<IrohConnectionOptions, 'backoff' | 'token' | 'capabilities' | 'dispose'>> & {
+    readonly dispose: (() => Promise<void>) | null;
     readonly token: string;
     readonly capabilities: readonly string[];
     readonly backoff: Required<NonNullable<IrohConnectionOptions['backoff']>>;
@@ -161,6 +164,7 @@ export class IrohConnection {
       random: opts.random ?? Math.random,
       newRequestId: opts.newRequestId ?? defaultRequestId,
       log: opts.log ?? (() => undefined),
+      dispose: opts.dispose ?? null,
       backoff: {
         initialMs: opts.backoff?.initialMs ?? DEFAULTS.initialMs,
         factor: opts.backoff?.factor ?? DEFAULTS.factor,
@@ -234,6 +238,8 @@ export class IrohConnection {
       this.killSession(s, new IrohConnectionLostError('iroh connection closed'));
       await s.link.close().catch(() => undefined);
     }
+    const d = this.o.dispose;
+    if (d) await d().catch(() => undefined);
   }
 
   // ───────────────────────── internals ─────────────────────────
