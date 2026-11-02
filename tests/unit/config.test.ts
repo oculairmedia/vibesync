@@ -305,6 +305,7 @@ describe('config', () => {
         autoMerge: false,
         intervalMs: 30000,
         eventDebounceMs: 5000,
+        runDeadlineMs: 3600000,
         poolSize: 1,
         batchSize: 1,
         requiredChecks: [],
@@ -337,6 +338,17 @@ describe('config', () => {
       expect(loadConfig().scheduler.eventDebounceMs).toBe(0);
       for (const bad of ['5s', '1e3', '-1', '5.5', ' 5', '0x10', 'abc']) {
         process.env.VIBESYNC_SCHEDULER_EVENT_DEBOUNCE_MS = bad;
+        expect(() => loadConfig(), bad).toThrow('Config validation failed');
+      }
+    });
+
+    it('VIBESYNC_SCHEDULER_RUN_DEADLINE_MS maps through; 0 = no deadline; the WHOLE string must be a non-negative integer (vibesync-izn3)', () => {
+      process.env.VIBESYNC_SCHEDULER_RUN_DEADLINE_MS = '120000';
+      expect(loadConfig().scheduler.runDeadlineMs).toBe(120000);
+      process.env.VIBESYNC_SCHEDULER_RUN_DEADLINE_MS = '0';
+      expect(loadConfig().scheduler.runDeadlineMs).toBe(0);
+      for (const bad of ['1h', '1e3', '-1', '5.5', ' 5', '0x10', 'abc']) {
+        process.env.VIBESYNC_SCHEDULER_RUN_DEADLINE_MS = bad;
         expect(() => loadConfig(), bad).toThrow('Config validation failed');
       }
     });
