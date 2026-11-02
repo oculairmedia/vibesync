@@ -134,6 +134,7 @@ function harness(opts: { beads: string[]; poolSize: number }) {
       async fetchFacts() { return facts; },
       async merge(_repo, prNumber) { merged.push(prNumber); return `sha-${prNumber}`; },
     },
+    allowedRepos: ['o/r'],
     requiredCheckNames: () => ['ci'],
     livenessProbe: { async probe(slot) { probeCalls.push(slot.workBeadId); return verdicts.get(slot.workBeadId) ?? 'alive'; } },
     escalation: { async onIsolated() {}, async onRepeatedRecovery() {}, async onBlocked() {} },

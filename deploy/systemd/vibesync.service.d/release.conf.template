@@ -1,0 +1,8 @@
+# Rendered by scripts/deploy/swap.sh into
+# /etc/systemd/system/vibesync.service.d/release.conf.
+# @RELEASE_DIR@ is a detached release worktree of a reviewed main commit.
+[Service]
+WorkingDirectory=@RELEASE_DIR@
+EnvironmentFile=
+EnvironmentFile=@RELEASE_DIR@/.env
+Environment=VIBESYNC_DB_PATH=/opt/stacks/vibesync/logs/sync-state.db

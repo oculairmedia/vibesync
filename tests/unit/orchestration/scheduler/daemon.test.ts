@@ -59,6 +59,7 @@ function deps(over: Partial<SchedulerDaemonDeps> = {}): { d: SchedulerDaemonDeps
       async fetchFacts() { return facts; },
       async merge(_repo, prNumber) { state.merged.push(prNumber); return `sha-${prNumber}`; },
     },
+    allowedRepos: ['o/r'],
     requiredCheckNames: () => ['ci'],
     livenessProbe: { async probe() { return 'alive'; } },
     escalation: {
@@ -165,5 +166,87 @@ describe('SchedulerDaemon end-to-end (vibesync-63zx integration)', () => {
     release();
     await p;
     expect(reports).toEqual([1]);
+  });
+});
+
+// vibesync-5c8y: agent output must not be able to steer the refinery at an arbitrary repo.
+describe('SchedulerDaemon PR repo allowlist (vibesync-5c8y)', () => {
+  function allowlistHarness(output: string, allowedRepos: readonly string[]) {
+    const seen: Array<{ fn: string; repo: string; pr: number }> = [];
+    const logs: Array<{ level: string; o: Record<string, unknown>; m: string }> = [];
+    const { d, state } = deps({
+      allowedRepos,
+      dispatcher: {
+        async run(input: { motivatingBeadId: string }) {
+          state.dispatched.push(input.motivatingBeadId);
+          return { moleculeId: `mol-${input.motivatingBeadId}`, outputs: { result: output } };
+        },
+      } as unknown as FormulaDispatcher,
+      github: {
+        async fetchFacts(repo, pr) {
+          seen.push({ fn: 'fetchFacts', repo, pr });
+          return { requiredChecks: { ci: 'SUCCESS' }, mergeable: 'MERGEABLE', deletedFiles: 0, behindBase: false };
+        },
+        async merge(repo, pr) {
+          seen.push({ fn: 'merge', repo, pr });
+          return `sha-${pr}`;
+        },
+      },
+      logger: {
+        info: (o: Record<string, unknown>, m: string) => { logs.push({ level: 'info', o, m }); },
+        warn: (o: Record<string, unknown>, m: string) => { logs.push({ level: 'warn', o, m }); },
+      } as never,
+    });
+    state.readySet = new Set(['w1']);
+    return { daemon: new SchedulerDaemon(d), seen, logs };
+  }
+
+  it('a PR url for a non-allowed repo is NOT enqueued (never reaches the GitHub port) and a WARN names it', async () => {
+    const h = allowlistHarness('see https://github.com/evil/other/pull/7', ['oculairmedia/vibesync']);
+    const t = await h.daemon.tick();
+    expect(t.merged).toEqual([]);
+    expect(h.seen).toEqual([]); // neither fetchFacts nor merge was ever asked about evil/other
+    const warn = h.logs.find((l) => l.level === 'warn' && l.m === 'daemon: PR url for non-allowed repo ignored');
+    expect(warn?.o).toMatchObject({ workBeadId: 'w1', runId: 'mol-w1', repo: 'evil/other', prNumber: 7 });
+    expect(h.logs.some((l) => l.m === 'daemon: PR queued for refinery')).toBe(false);
+  });
+
+  it('the allowlist match is case-insensitive on owner/repo (GitHub names are)', async () => {
+    const h = allowlistHarness('https://github.com/OculairMedia/VibeSync/pull/9', ['oculairmedia/vibesync']);
+    const t = await h.daemon.tick();
+    expect(t.merged).toEqual([9]);
+    expect(h.seen.filter((s) => s.fn === 'merge')).toHaveLength(1);
+    expect(h.logs.some((l) => l.level === 'warn' && l.m === 'daemon: PR url for non-allowed repo ignored')).toBe(false);
+  });
+
+  it('a trailing .git on the repo segment is stripped before matching', async () => {
+    const h = allowlistHarness('https://github.com/oculairmedia/vibesync.git/pull/4', ['oculairmedia/vibesync']);
+    const t = await h.daemon.tick();
+    expect(t.merged).toEqual([4]);
+  });
+
+  it('several PR urls in one output: only the allowed ones are enqueued, each rejected one is warned', async () => {
+    const h = allowlistHarness(
+      'a https://github.com/evil/other/pull/7 b https://github.com/oculairmedia/vibesync/pull/12 c https://github.com/evil/third/pull/3',
+      ['oculairmedia/vibesync'],
+    );
+    const t = await h.daemon.tick();
+    expect(t.merged).toEqual([12]);
+    expect(h.seen.every((s) => s.repo === 'oculairmedia/vibesync')).toBe(true);
+    const rejected = h.logs.filter((l) => l.m === 'daemon: PR url for non-allowed repo ignored').map((l) => l.o['repo']);
+    expect(rejected).toEqual(['evil/other', 'evil/third']);
+  });
+
+  it('an EMPTY allowlist enqueues nothing (fail closed)', async () => {
+    const h = allowlistHarness('https://github.com/o/r/pull/5', []);
+    const t = await h.daemon.tick();
+    expect(t.merged).toEqual([]);
+    expect(h.seen).toEqual([]);
+  });
+
+  it('same PR number in two allowed repos are two distinct merge requests', async () => {
+    const h = allowlistHarness('https://github.com/a/one/pull/5 https://github.com/a/two/pull/5', ['a/one', 'a/two']);
+    await h.daemon.tick();
+    expect(h.seen.filter((s) => s.fn === 'merge').map((s) => s.repo).sort()).toEqual(['a/one', 'a/two']);
   });
 });

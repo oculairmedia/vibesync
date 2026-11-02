@@ -99,6 +99,8 @@ const daemon = new SchedulerDaemon({
   contextStore,
   poolMembers,
   github,
+  // vibesync-5c8y: PR urls are only honoured for these owner/repo slugs (CSV). Empty = none.
+  allowedRepos: (process.env['VIBESYNC_SCHEDULER_ALLOWED_REPOS'] ?? '').split(',').map((s) => s.trim()).filter(Boolean),
   requiredCheckNames: () => ['typecheck', 'test (18.x)', 'test (20.x)'],
   livenessProbe,
   escalation,

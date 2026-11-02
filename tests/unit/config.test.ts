@@ -309,6 +309,7 @@ describe('config', () => {
         poolSize: 1,
         batchSize: 1,
         requiredChecks: [],
+        allowedRepos: [],
       });
     });
 
@@ -369,9 +370,23 @@ describe('config', () => {
       process.env.VIBESYNC_SCHEDULER_AUTO_MERGE = 'true';
       expect(() => loadConfig()).toThrow('VIBESYNC_SCHEDULER_REQUIRED_CHECKS');
       process.env.VIBESYNC_SCHEDULER_REQUIRED_CHECKS = 'typecheck, test';
+      // vibesync-5c8y: checks alone are not enough — the repos must be named too.
+      expect(() => loadConfig()).toThrow('VIBESYNC_SCHEDULER_ALLOWED_REPOS');
+      process.env.VIBESYNC_SCHEDULER_ALLOWED_REPOS = 'oculairmedia/vibesync';
       const { scheduler } = loadConfig();
       expect(scheduler.autoMerge).toBe(true);
       expect(scheduler.requiredChecks).toEqual(['typecheck', 'test']);
+      expect(scheduler.allowedRepos).toEqual(['oculairmedia/vibesync']);
+    });
+
+    it('VIBESYNC_SCHEDULER_ALLOWED_REPOS is parsed as trimmed CSV and every entry is validated (vibesync-5c8y)', () => {
+      process.env.VIBESYNC_SCHEDULER_ALLOWED_REPOS = ' oculairmedia/vibesync , o/r ,,';
+      expect(loadConfig().scheduler.allowedRepos).toEqual(['oculairmedia/vibesync', 'o/r']);
+      for (const bad of ['not-a-repo', 'a/b/c', 'o/r,evil', 'o/r;rm', 'o/r,']) {
+        process.env.VIBESYNC_SCHEDULER_ALLOWED_REPOS = bad;
+        if (bad === 'o/r,') { expect(loadConfig().scheduler.allowedRepos).toEqual(['o/r']); continue; }
+        expect(() => loadConfig(), bad).toThrow('VIBESYNC_SCHEDULER_ALLOWED_REPOS');
+      }
     });
   });
 });

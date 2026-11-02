@@ -58,6 +58,8 @@ export interface SchedulerBootConfig {
   readonly packDir: string;
   readonly autoMerge: boolean;
   readonly requiredChecks: readonly string[];
+  /** owner/repo slugs the refinery may enqueue/merge (vibesync-5c8y). Required non-empty when autoMerge. */
+  readonly allowedRepos: readonly string[];
   /**
    * Minimum spacing (ms) between event-triggered ticks (vibesync-p489).
    * Optional here so hand-built configs keep working; defaults to 5000.
@@ -171,8 +173,11 @@ export function startSchedulerDaemon(
     if (config.requiredChecks.length === 0) {
       throw new Error('scheduler.autoMerge=true requires at least one scheduler.requiredChecks name');
     }
-    github = new GhCliGitHubPort(opts.gh);
-    logger?.warn?.({ requiredChecks: config.requiredChecks }, 'scheduler: AUTO-MERGE ENABLED — refinery may merge PRs that pass all gates');
+    if (config.allowedRepos.length === 0) {
+      throw new Error('scheduler.autoMerge=true requires at least one scheduler.allowedRepos owner/repo');
+    }
+    github = new GhCliGitHubPort(opts.gh, config.allowedRepos);
+    logger?.warn?.({ requiredChecks: config.requiredChecks, allowedRepos: config.allowedRepos }, 'scheduler: AUTO-MERGE ENABLED — refinery may merge PRs that pass all gates');
   }
 
   const escalationManager = new EscalationManager({
@@ -198,6 +203,7 @@ export function startSchedulerDaemon(
     contextStore,
     poolMembers: members,
     github,
+    allowedRepos: config.allowedRepos,
     requiredCheckNames: () => config.requiredChecks,
     livenessProbe: new BdLivenessProbe(opts.bd),
     escalation: {

@@ -1,3 +1,4 @@
+import { REPO_SLUG_PATTERN } from './orchestration/scheduler/repo-allowlist.js';
 import { z } from 'zod';
 
 const syncSchema = z.object({
@@ -132,6 +133,10 @@ const schedulerSchema = z
     autoMerge: z.boolean(),
     /** Check names that must be SUCCESS before an auto-merge. Required non-empty when autoMerge. */
     requiredChecks: z.array(z.string()),
+    /** owner/repo slugs the refinery may enqueue/merge (vibesync-5c8y). Required non-empty when autoMerge. */
+    allowedRepos: z.array(
+      z.string().regex(REPO_SLUG_PATTERN, 'VIBESYNC_SCHEDULER_ALLOWED_REPOS entries must be "owner/repo"'),
+    ),
   })
   .refine((data) => !data.enabled || data.projectIdentifier.trim().length > 0, {
     message: 'VIBESYNC_SCHEDULER_PROJECT must be set when VIBESYNC_SCHEDULER_ENABLED is true',
@@ -139,6 +144,10 @@ const schedulerSchema = z
   .refine((data) => !data.autoMerge || data.requiredChecks.length > 0, {
     message:
       'VIBESYNC_SCHEDULER_REQUIRED_CHECKS must list at least one check when VIBESYNC_SCHEDULER_AUTO_MERGE is true',
+  })
+  .refine((data) => !data.autoMerge || data.allowedRepos.length > 0, {
+    message:
+      'VIBESYNC_SCHEDULER_ALLOWED_REPOS must list at least one owner/repo when VIBESYNC_SCHEDULER_AUTO_MERGE is true',
   });
 
 export const configSchema = z.object({
