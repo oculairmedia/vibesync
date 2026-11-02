@@ -122,7 +122,7 @@ export type {
   PatrolResult,
 } from './witness.js';
 
-export { SchedulerDaemon, DEFAULT_EVENT_DEBOUNCE_MS } from './daemon.js';
+export { SchedulerDaemon, DEFAULT_EVENT_DEBOUNCE_MS, DEFAULT_RUN_DEADLINE_MS } from './daemon.js';
 export type {
   DaemonLogger,
   DaemonTickReport,
