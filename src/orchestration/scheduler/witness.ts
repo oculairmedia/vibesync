@@ -24,6 +24,13 @@
  *                           (dispatch record lost). Treated as dead.
  * A slot whose run is 'alive' (progressing) is LEFT UNTOUCHED — no matter how long.
  *
+ * IN-FLIGHT RUNS ARE NOT THE WITNESS'S TO REAP (vibesync-nic6). A run the
+ * scheduler still tracks as in flight owns its slot and frees it itself when it
+ * settles. A coder agent normally closes its own bead BEFORE its formula run
+ * finishes, so 'bead-closed' on an in-flight run is the NORMAL path, not a lost
+ * completion signal. The injected `isRunInFlight` seam makes the witness skip
+ * such slots (reported in `skippedInFlight`, never counted as a recovery).
+ *
  * On recovery the witness frees the slot (pool.onComplete) and records the
  * recovery so a persistent bad slot can be escalated (63zx.5). It does NOT force
  * the work bead to any state — the sling context / scheduler retry + circuit
@@ -87,7 +94,17 @@ export interface WitnessDeps {
    * Default 3.
    */
   readonly recoveryEscalationThreshold?: number;
-  readonly logger?: { info?(o: unknown, m: string): void; warn?(o: unknown, m: string): void };
+  /**
+   * True when the scheduler still tracks a started, unsettled run for this work
+   * bead. Such a slot is owned by that run's settlement and is never reaped.
+   * Optional; default "nothing in flight" (pre-nic6 behaviour).
+   */
+  readonly isRunInFlight?: (workBeadId: string) => boolean;
+  readonly logger?: {
+    info?(o: unknown, m: string): void;
+    warn?(o: unknown, m: string): void;
+    debug?(o: unknown, m: string): void;
+  };
 }
 
 export const DEFAULT_RECOVERY_ESCALATION_THRESHOLD = 3;
@@ -105,6 +122,11 @@ export interface PatrolResult {
   readonly recovered: readonly Recovery[];
   /** Working slots probed and found alive (left untouched). */
   readonly healthy: number;
+  /**
+   * Slot ids with a dead/closed verdict that were NOT reaped because their run
+   * is still in flight (settlement frees them). Not recoveries.
+   */
+  readonly skippedInFlight: readonly string[];
 }
 
 /** Extract the WorkingSlot view from a pool slot, or null if not a working slot. */
@@ -136,6 +158,7 @@ export class Witness {
 
   async patrol(slots: readonly PoolSlotView[]): Promise<PatrolResult> {
     const recovered: Recovery[] = [];
+    const skippedInFlight: string[] = [];
     let healthy = 0;
 
     for (const view of slots) {
@@ -160,6 +183,17 @@ export class Witness {
         continue; // progressing → never reaped, regardless of elapsed time
       }
 
+      // The scheduler tracks a live run for this bead: its settlement owns the
+      // slot (e.g. the agent closed its bead before the formula run finished).
+      if (this.deps.isRunInFlight?.(slot.workBeadId)) {
+        skippedInFlight.push(slot.slotId);
+        this.deps.logger?.debug?.(
+          { slotId: slot.slotId, workBeadId: slot.workBeadId, reason: liveness },
+          'witness: run still in flight — slot owned by its run, not reaped',
+        );
+        continue;
+      }
+
       // Contradiction proven → recover the slot.
       this.deps.reaper.onComplete(slot.slotId);
       recovered.push({ slotId: slot.slotId, workBeadId: slot.workBeadId, reason: liveness });
@@ -176,7 +210,7 @@ export class Witness {
       }
     }
 
-    return { recovered, healthy };
+    return { recovered, healthy, skippedInFlight };
   }
 
   private async safeEscalate(slot: WorkingSlot, reason: RecoveryReason, recoveries: number): Promise<void> {
