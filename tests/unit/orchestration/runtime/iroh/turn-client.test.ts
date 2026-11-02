@@ -106,6 +106,24 @@ describe('turn-client against a wrapper that enforces the real preconditions', (
     expect(r.stopReason).toBe('requires_approval');
   });
 
+  it('(CodeRabbit #55) idle THEN pending_approvals (reverse order) -> still requires_approval, not a turn timeout', async () => {
+    vi.useFakeTimers();
+    const fake = new FakeIrohWrapper();
+    fake.script = {
+      deltas: [],
+      stallWith: [
+        { type: 'update_loop_status', loop_status: { status: 'WAITING_ON_APPROVAL', active_run_ids: [] } },
+        { type: 'pending_approvals', approvals: [{ approval_id: 'a1', tool_call_id: 't1', tool_name: 'Bash' }] },
+      ],
+    };
+    conn = mk(fake);
+    const p = runTurn(conn, { agentId: AGENT, conversationId: null, text: 'hi', clientMessageId: 'cm-pa-rev' }, { approvalGraceMs: 500, turnTimeoutMs: 60_000 });
+    await vi.advanceTimersByTimeAsync(2_000); // far below the 60 s turn timeout
+    const r = await p;
+    expect(r.failureReason).toBe('requires_approval');
+    expect(r.boundary).toBe('failed');
+  });
+
   it('an unknown mid-turn stop_reason is not terminal: keep reading, bounded by the turn timeout', async () => {
     vi.useFakeTimers();
     const fake = new FakeIrohWrapper();

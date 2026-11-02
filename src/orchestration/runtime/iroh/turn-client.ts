@@ -157,6 +157,8 @@ async function attempt(
     terminal: null as Frame | null,
     pendingApprovals: 0,
     idleWithApproval: false,
+    /** Loop is idle (waiting, no active runs). Tracked on its own so frame order does not matter. */
+    loopIdle: false,
     sawActivity: false,
     disconnected: false,
     wake: null as (() => void) | null,
@@ -182,7 +184,8 @@ async function attempt(
       case 'pending_approvals': {
         const list = f['approvals'];
         st.pendingApprovals = Array.isArray(list) ? list.length : 0;
-        if (st.pendingApprovals === 0) st.idleWithApproval = false;
+        // Either frame may arrive first (CodeRabbit #55): idle + pending = stalled on approval.
+        st.idleWithApproval = st.loopIdle && st.pendingApprovals > 0;
         break;
       }
       case 'update_loop_status': {
@@ -191,10 +194,11 @@ async function attempt(
         const active = Array.isArray(ls?.['active_run_ids']) ? (ls?.['active_run_ids'] as unknown[]).length : 0;
         if (status !== 'WAITING_ON_INPUT' && status !== 'WAITING_ON_APPROVAL') {
           st.sawActivity = true;
-          st.idleWithApproval = false;
-        } else if (active === 0 && st.pendingApprovals > 0) {
-          st.idleWithApproval = true;
+          st.loopIdle = false;
+        } else {
+          st.loopIdle = active === 0;
         }
+        st.idleWithApproval = st.loopIdle && st.pendingApprovals > 0;
         break;
       }
       case 'turn_finished': {

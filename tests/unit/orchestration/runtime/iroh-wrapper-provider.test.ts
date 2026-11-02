@@ -52,6 +52,32 @@ describe('IrohWrapperProvider', () => {
     expect(fake.violations).toEqual([]);
   });
 
+  it('(CodeRabbit #55) two concurrent observers both wake on a live event (one notify slot loses a wakeup)', async () => {
+    const p = mk(new FakeIrohWrapper());
+    const handle = await p.start(baseSpec());
+    // Drive the session state directly: a prompt that never settles, events pushed one at a time while
+    // BOTH observers are parked waiting. With a single notify slot the second observer overwrites the
+    // first's wakeup, so the first never sees the live event until promptDone settles (it never does).
+    const st = (p as unknown as { sessions: Map<string, { promptDone: Promise<void> | null }> }).sessions.get((handle as { id: string }).id)!;
+    st.promptDone = new Promise<void>(() => {});
+    const push = (ev: SessionEvent) => (p as unknown as { push(s: unknown, e: SessionEvent): void }).push(st, ev);
+    const got: Record<'a' | 'b', string[]> = { a: [], b: [] };
+    const run = async (k: 'a' | 'b') => { for await (const ev of p.observe(handle)) got[k].push(ev.kind); };
+    const a = run('a');
+    await new Promise((r) => setTimeout(r, 20)); // a parks first
+    const b = run('b');
+    await new Promise((r) => setTimeout(r, 20)); // b parks and (buggy) steals a's slot
+    push({ kind: 'started', ts: 't' });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(got.a).toEqual(['started']);
+    expect(got.b).toEqual(['started']);
+    push({ kind: 'turn-done', ts: 't' });
+    await Promise.race([Promise.all([a, b]), new Promise((r) => setTimeout(r, 1_000))]);
+    expect(got.a).toEqual(['started', 'turn-done']);
+    expect(got.b).toEqual(['started', 'turn-done']);
+    await p.stop(handle);
+  });
+
   it('creates one fresh conversation per session and uses a stable client_message_id from molecule+step+attempt', async () => {
     const fake = new FakeIrohWrapper();
     const p = mk(fake);

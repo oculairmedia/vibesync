@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 
 import { IrohConfigError } from '../../../../../src/orchestration/runtime/iroh/connection.js';
 import {
+  createNativeIrohConnection,
+  type NativeIrohLib,
   parseHostAddress,
   readHostFromKv,
   readSecretKey,
@@ -53,5 +55,77 @@ describe('native-dialer config helpers', () => {
   });
   it('resolves env keys', () => {
     expect(resolveNativeIrohConfig({ VIBESYNC_IROH_HOST_ADDR: 'a', VIBESYNC_IROH_PEER_NAME: 'n' })).toEqual({ hostAddr: 'a', secretKeyPath: undefined, peerName: 'n' });
+  });
+});
+
+
+/** Fake native lib: bind and openBi can be told to fail; tracks closes. */
+function fakeLib(o: { bindFails?: number; openBiFailsOn?: number } = {}) {
+  const st = { binds: 0, bindAttempts: 0, connects: 0, connCloses: 0, epCloses: 0, opens: 0 };
+  const lib: NativeIrohLib = {
+    Endpoint: {
+      builder() {
+        return {
+          applyN0DisableRelay() {},
+          secretKey() {},
+          async bind() {
+            st.bindAttempts += 1;
+            if (st.bindAttempts <= (o.bindFails ?? 0)) throw new Error('bind failed (transient)');
+            st.binds += 1;
+            return {
+              async connect() {
+                st.connects += 1;
+                return {
+                  async openBi() {
+                    st.opens += 1;
+                    if (o.openBiFailsOn !== undefined && st.opens === o.openBiFailsOn) throw new Error('openBi failed');
+                    return { send: { async writeAll() {}, async finish() {} }, recv: { async read() { return null; } } };
+                  },
+                  close() { st.connCloses += 1; },
+                };
+              },
+              async close() { st.epCloses += 1; },
+            };
+          },
+        };
+      },
+    },
+    EndpointAddr: class { constructor(..._a: unknown[]) {} } as never,
+    EndpointId: { fromString: (h: string) => h },
+  };
+  return { lib, st };
+}
+
+function keyFile(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'iroh-key-'));
+  const p = join(dir, 'k');
+  writeFileSync(p, Buffer.alloc(32, 1));
+  chmodSync(p, 0o600);
+  return p;
+}
+
+/** Reach the private dial function the connection holds, without opening a real socket. */
+function dialOf(conn: unknown): () => Promise<{ close(): Promise<void> }> {
+  return (conn as { o: { dial: () => Promise<{ close(): Promise<void> }> } }).o.dial;
+}
+
+describe('native-dialer dial (CodeRabbit #55)', () => {
+  it('a failed bind is NOT cached: the next dial binds again and succeeds', async () => {
+    const { lib, st } = fakeLib({ bindFails: 1 });
+    const conn = createNativeIrohConnection({ hostAddr: `${NODE}@127.0.0.1:4501`, secretKeyPath: keyFile(), loadLib: async () => lib });
+    const dial = dialOf(conn);
+    await expect(dial()).rejects.toThrow(/bind failed/);
+    const link = await dial();
+    expect(st.bindAttempts).toBe(2);
+    expect(st.binds).toBe(1);
+    await link.close();
+  });
+
+  it('when openBi fails after connect, the QUIC connection is closed (no leak per retry)', async () => {
+    const { lib, st } = fakeLib({ openBiFailsOn: 2 }); // control opens, stream fails
+    const conn = createNativeIrohConnection({ hostAddr: `${NODE}@127.0.0.1:4501`, secretKeyPath: keyFile(), loadLib: async () => lib });
+    await expect(dialOf(conn)()).rejects.toThrow(/openBi failed/);
+    expect(st.connects).toBe(1);
+    expect(st.connCloses).toBe(1);
   });
 });

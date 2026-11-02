@@ -88,7 +88,8 @@ interface SessionState {
   stopped: boolean;
   events: SessionEvent[];
   promptDone: Promise<void> | null;
-  notify: (() => void) | null;
+  /** Every parked observer's wakeup (CodeRabbit #55: one slot let a second observer steal the first's). */
+  waiters: Set<() => void>;
 }
 
 export class IrohWrapperProvider implements RuntimeProvider {
@@ -158,7 +159,7 @@ export class IrohWrapperProvider implements RuntimeProvider {
       stopped: false,
       events: [],
       promptDone: null,
-      notify: null,
+      waiters: new Set(),
     });
     return handle;
   }
@@ -170,7 +171,7 @@ export class IrohWrapperProvider implements RuntimeProvider {
     state.stopped = true;
     // The turn itself keeps running on the host (parked there); we only stop waiting.
     state.abort.abort();
-    state.notify?.();
+    wakeAll(state);
     this.sessions.delete(h.id);
   }
 
@@ -223,11 +224,13 @@ export class IrohWrapperProvider implements RuntimeProvider {
         yield { kind: 'stopped', ts: nowIso() };
         return;
       }
+      let wake!: () => void;
       const settled = await new Promise<'event' | 'done'>((resolve) => {
-        state.notify = () => resolve('event');
+        wake = () => resolve('event');
+        state.waiters.add(wake);
         void state.promptDone!.then(() => resolve('done'));
       });
-      state.notify = null;
+      state.waiters.delete(wake);
       if (settled === 'done' && cursor >= state.events.length) {
         // prompt settled without a terminal event: never leave the dispatcher hanging.
         yield { kind: 'turn-done', ts: nowIso(), stopReason: 'closed' };
@@ -325,8 +328,12 @@ export class IrohWrapperProvider implements RuntimeProvider {
 
   private push(state: SessionState, ev: SessionEvent): void {
     state.events.push(ev);
-    state.notify?.();
+    wakeAll(state);
   }
+}
+
+function wakeAll(state: SessionState): void {
+  for (const w of [...state.waiters]) w();
 }
 
 /** Stable per logical prompt: the same step attempt re-sent after a redial dedupes on the wrapper. */

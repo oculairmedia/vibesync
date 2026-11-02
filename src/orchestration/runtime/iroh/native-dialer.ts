@@ -73,6 +73,8 @@ export interface NativeIrohConfig {
   readonly secretKeyPath?: string | undefined;
   readonly peerName?: string | undefined;
   readonly addressesKvPath?: string | undefined;
+  /** Test seam: the native module loader. Default imports `@number0/iroh` lazily. */
+  readonly loadLib?: () => Promise<NativeIrohLib>;
 }
 
 export function resolveNativeIrohConfig(env: NodeJS.ProcessEnv = process.env): NativeIrohConfig {
@@ -90,6 +92,16 @@ type NativeStream = {
 };
 type NativeConn = { openBi(): Promise<NativeStream>; close(code: bigint, reason: number[]): void };
 type NativeEndpoint = { connect(addr: unknown, alpn: number[]): Promise<NativeConn>; close(): Promise<void> };
+
+/** The slice of `@number0/iroh` the dialer uses. Injectable so tests can fail bind/openBi. */
+export interface NativeIrohLib {
+  Endpoint: { builder(): { applyN0DisableRelay(): void; secretKey(b: number[]): void; bind(): Promise<NativeEndpoint> } };
+  EndpointAddr: new (id: unknown, relay: null, addrs: string[]) => unknown;
+  EndpointId: { fromString(hex: string): unknown };
+}
+
+const loadNativeIroh = async (): Promise<NativeIrohLib> =>
+  (await import('@number0/iroh')) as unknown as NativeIrohLib;
 
 function duplex(s: NativeStream): DuplexLike {
   return {
@@ -114,42 +126,58 @@ export function createNativeIrohConnection(
   const host = cfg.hostAddr ? parseHostAddress(cfg.hostAddr) : readHostFromKv(cfg.addressesKvPath);
   const keyPath = cfg.secretKeyPath ?? DEFAULT_IROH_SECRET_KEY_PATH;
   const alpn = Array.from(new TextEncoder().encode(IROH_ALPN));
+  const loadLib = cfg.loadLib ?? loadNativeIroh;
   let endpointP: Promise<NativeEndpoint> | null = null;
 
   const endpoint = (): Promise<NativeEndpoint> => {
-    endpointP ??= (async () => {
-      const key = readSecretKey(keyPath); // validated before any socket is bound
-      const lib = (await import('@number0/iroh')) as unknown as {
-        Endpoint: { builder(): { applyN0DisableRelay(): void; secretKey(b: number[]): void; bind(): Promise<NativeEndpoint> } };
-      };
-      const b = lib.Endpoint.builder();
-      b.applyN0DisableRelay();
-      b.secretKey(key);
-      return b.bind();
-    })();
+    if (!endpointP) {
+      const attempt = (async () => {
+        const key = readSecretKey(keyPath); // validated before any socket is bound
+        const lib = await loadLib();
+        const b = lib.Endpoint.builder();
+        b.applyN0DisableRelay();
+        b.secretKey(key);
+        return b.bind();
+      })();
+      endpointP = attempt;
+      // A failed bind or key read must not be cached: the next dial retries
+      // (a transient bind error, or an operator fixing key permissions).
+      attempt.catch(() => {
+        if (endpointP === attempt) endpointP = null;
+      });
+    }
     return endpointP;
+  };
+
+  const closeQuietly = (conn: NativeConn): void => {
+    try {
+      conn.close(0n, []);
+    } catch {
+      /* already closed */
+    }
   };
 
   const dial = async (): Promise<IrohLink> => {
     const ep = await endpoint();
-    const lib = (await import('@number0/iroh')) as unknown as {
-      EndpointAddr: new (id: unknown, relay: null, addrs: string[]) => unknown;
-      EndpointId: { fromString(hex: string): unknown };
-    };
+    const lib = await loadLib();
     const addr = new lib.EndpointAddr(lib.EndpointId.fromString(host.nodeId), null, [...host.addrs]);
     const conn = await ep.connect(addr, alpn);
-    // Order matters: control first, then stream.
-    const control = await conn.openBi();
-    const stream = await conn.openBi();
+    // Order matters: control first, then stream. If either open fails the
+    // connection is closed here, so a retried dial does not leak one per attempt.
+    let control: NativeStream;
+    let stream: NativeStream;
+    try {
+      control = await conn.openBi();
+      stream = await conn.openBi();
+    } catch (err) {
+      closeQuietly(conn);
+      throw err;
+    }
     return {
       control: duplex(control),
       stream: duplex(stream),
       close: async () => {
-        try {
-          conn.close(0n, []);
-        } catch {
-          /* already closed */
-        }
+        closeQuietly(conn);
       },
     };
   };
@@ -160,7 +188,11 @@ export function createNativeIrohConnection(
     token: '', // paired key: reconnect auth succeeds with an empty token
     capabilities: [FRAME_PART_CAPABILITY],
     dispose: async () => {
-      if (endpointP) await (await endpointP).close();
+      const ep = endpointP;
+      endpointP = null;
+      if (!ep) return;
+      const bound = await ep.catch(() => null); // a failed bind has nothing to close
+      if (bound) await bound.close();
     },
     ...extra,
   });
