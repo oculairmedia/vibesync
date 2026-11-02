@@ -20,6 +20,7 @@ import { IrohWrapperProvider } from '../../../../src/orchestration/runtime/iroh-
 import { wrapWithParentAgentId } from '../../../../src/orchestration/boot.js';
 import { FakeIrohWrapper } from '../../../_fixtures/fake-iroh-wrapper.js';
 import { InMemoryDoltClient } from '../../../_fixtures/in-memory-dolt-client.js';
+import { newDriven } from '../../../_fixtures/step-driver.js';
 
 const PARENT = 'agent-parent';
 const ROLE_AGENTS: Record<string, string> = {
@@ -44,7 +45,9 @@ function harness(fake: FakeIrohWrapper) {
     ...({ personaLoader: { load: async () => 'PERSONA-TEXT-THAT-MUST-NOT-BE-SENT' } } as object),
   } as ConstructorParameters<typeof IrohWrapperProvider>[0]);
   const store = new InMemoryDoltClient();
-  const dispatcher = new FormulaDispatcher({
+  // Since vibesync-efee (#58) the dispatcher only cooks and waits; a step
+  // dispatcher drives ready steps from the bead graph, wired as boot wires it.
+  const dispatcher = newDriven(store, {
     provider: wrapWithParentAgentId(provider, PARENT),
     walker: new MoleculeWalker(store),
     eventBus: new EventBus({ noPersist: true }),
