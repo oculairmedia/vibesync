@@ -185,6 +185,9 @@ export class SchedulerDaemon {
     this.witness = new Witness({
       probe: deps.livenessProbe,
       reaper: { onComplete: (slotId) => this.pool.onComplete(slotId) },
+      // A run still in flight owns its slot (it frees it on settle); the witness
+      // must not reap it just because the agent already closed its bead (nic6).
+      isRunInFlight: (workBeadId) => this.scheduler.inFlightWorkBeadIds().includes(workBeadId),
       escalation: { onRepeatedRecovery: (i) => deps.escalation.onRepeatedRecovery(i) },
       ...(deps.logger ? { logger: deps.logger } : {}),
     });
