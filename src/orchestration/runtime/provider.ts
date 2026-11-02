@@ -53,6 +53,12 @@ export interface SessionHandle {
  */
 export interface PromptResult {
   readonly taskId?: string;
+  /**
+   * The host-side conversation the prompt runs in, when the provider creates it
+   * (vibesync-jni4). The dispatcher records it on the step trace in preference
+   * to an id it minted itself (a minted id never exists on the host).
+   */
+  readonly conversationId?: string;
 }
 
 /**

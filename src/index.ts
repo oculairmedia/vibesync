@@ -530,6 +530,9 @@ async function main(): Promise<void> {
           providerRouting: {
             store: { getProjectProviderRouting: db.getProjectProviderRouting.bind(db) },
             roleAgentBootstrapper,
+            // vibesync-jni4: letta-code-iroh dispatches each step directly to the
+            // role agent recorded in project_role_agents (no fallback agent).
+            roleAgentLookup: { getRoleAgent: db.getRoleAgent.bind(db) },
             // lcp-kamu: per-project pack + storage dirs are now read from the
             // projects.pack_dir and projects.storage_dir DB columns with
             // defaults (packs/gastown, /root/.letta/lc-local-backend). New

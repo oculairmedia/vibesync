@@ -138,7 +138,7 @@ export async function runTurn(conn: IrohConnection, req: TurnRequest, opts: RunT
       await conn.connect(); // bounded exponential backoff inside; auth/config errors surface here
       continue;
     }
-    return finish(conn, conversationId, outcome, o);
+    return finish(conn, conversationId, req.clientMessageId, outcome, o);
   }
 }
 
@@ -304,6 +304,7 @@ async function attempt(
 async function finish(
   conn: IrohConnection,
   conversationId: string,
+  clientMessageId: string,
   outcome: Exclude<Outcome, { kind: 'disconnect' }>,
   o: Required<Omit<RunTurnOptions, 'ignoreTurnIds' | 'onProgress' | 'signal'>> & RunTurnOptions,
 ): Promise<TurnResult> {
@@ -342,7 +343,7 @@ async function finish(
     return { ...base, usage, stopReason, boundary: 'cancelled', failureReason: 'cancelled', error, turnId, runId, finalText: '' };
   }
   const messages = await listMessages(conn, conversationId, o.messageListLimit);
-  const finalText = lastAssistantText(messages, runId);
+  const finalText = lastAssistantText(messages, runId, clientMessageId);
   return { ...base, usage, stopReason, boundary: 'completed', failureReason: null, error: null, turnId, runId, finalText };
 }
 
@@ -362,12 +363,73 @@ function isUser(m: Record<string, unknown>): boolean {
   return m['message_type'] === 'user_message' || m['role'] === 'user';
 }
 
-/** Last assistant message (preferring ones stamped with `runId`). Order: oldest → newest. */
-export function lastAssistantText(messages: readonly Record<string, unknown>[], runId: string | null): string {
-  const assistants = messages.filter(isAssistant);
+/**
+ * Oldest → newest. The live wrapper's message.list returns NEWEST-FIRST (proven
+ * live, vibesync-jni4: with `.at(-1)` on that order a multi-message turn yielded
+ * its FIRST message, e.g. "FIRST" for the second turn of a conversation). Other
+ * hosts / the older fake return oldest-first. Decide from the message dates, then
+ * the numeric tail of the ids; when neither is conclusive keep the given order.
+ */
+export function chronological(messages: readonly Record<string, unknown>[]): Record<string, unknown>[] {
+  if (messages.length < 2) return [...messages];
+  const first = messages[0]!;
+  const last = messages.at(-1)!;
+  const t0 = Date.parse(String(first['date'] ?? ''));
+  const t1 = Date.parse(String(last['date'] ?? ''));
+  if (Number.isFinite(t0) && Number.isFinite(t1) && t0 !== t1) return t0 > t1 ? [...messages].reverse() : [...messages];
+  const n0 = idTail(first['id']);
+  const n1 = idTail(last['id']);
+  if (n0 !== null && n1 !== null && n0 !== n1) return n0 > n1 ? [...messages].reverse() : [...messages];
+  return [...messages];
+}
+function idTail(id: unknown): number | null {
+  const m = typeof id === 'string' ? /(\d+)(?!.*\d)/.exec(id.split(':')[0]!) : null;
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * The role agent's FINAL assistant message of THIS turn.
+ *
+ * A message belongs to the turn when (in order of preference):
+ *   1. it carries `run_id === runId` (turn_finished.run_id; the live host does not
+ *      stamp run_id on messages today, so 2/3 are the working path there), or
+ *   2. its `turn_id` is the input's client_message_id (what the live wrapper stamps), or
+ *   3. it comes after the user message that carries the input's client_message_id.
+ * A message stamped with a different run_id is never used. Of the candidates the chronologically LAST wins (text before a tool call is not the
+ * answer). If nothing can be tied to this turn the result is '' (the provider
+ * turns that into an `empty_output` error): an unrelated older assistant message
+ * (a "Waiting for ..." placeholder, a previous turn) must never become the output.
+ */
+export function lastAssistantText(
+  messages: readonly Record<string, unknown>[],
+  runId: string | null,
+  clientMessageId: string | null = null,
+): string {
+  const ordered = chronological(messages);
+  const assistants = ordered.filter(isAssistant);
   if (assistants.length === 0) return '';
   const byRun = runId ? assistants.filter((m) => m['run_id'] === runId) : [];
-  const pick = (byRun.length > 0 ? byRun : assistants).at(-1)!;
+  if (byRun.length > 0) return contentText(byRun.at(-1)!['content'] ?? byRun.at(-1)!['text']);
+  if (clientMessageId) {
+    // A message stamped with a DIFFERENT run_id is another run's output, whatever its position.
+    const notOtherRun = (m: Record<string, unknown>): boolean => !(runId && typeof m['run_id'] === 'string' && m['run_id'] !== runId);
+    const byTurn = assistants.filter((m) => m['turn_id'] === clientMessageId && notOtherRun(m));
+    if (byTurn.length > 0) return contentText(byTurn.at(-1)!['content'] ?? byTurn.at(-1)!['text']);
+    let userIdx = -1;
+    ordered.forEach((m, i) => {
+      if (isUser(m) && (m['client_message_id'] === clientMessageId || m['otid'] === clientMessageId)) userIdx = i;
+    });
+    if (userIdx >= 0) {
+      // Bounded by the NEXT user message: a later turn's answer is not this turn's.
+      const rest = ordered.slice(userIdx + 1);
+      const nextUser = rest.findIndex(isUser);
+      const after = (nextUser < 0 ? rest : rest.slice(0, nextUser)).filter((m) => isAssistant(m) && notOtherRun(m));
+      if (after.length > 0) return contentText(after.at(-1)!['content'] ?? after.at(-1)!['text']);
+    }
+    return '';
+  }
+  // No client_message_id to tie to (legacy callers): old behaviour, last assistant message.
+  const pick = assistants.at(-1)!;
   return contentText(pick['content'] ?? pick['text']);
 }
 
@@ -379,7 +441,7 @@ async function tryReconcile(
 ): Promise<{ text: string; runId: string | null } | null> {
   let messages: Record<string, unknown>[];
   try {
-    messages = await conn.connect().then(() => listMessages(conn, conversationId, o.messageListLimit));
+    messages = chronological(await conn.connect().then(() => listMessages(conn, conversationId, o.messageListLimit)));
   } catch (err) {
     if (isRetryable(err)) return null;
     throw err;

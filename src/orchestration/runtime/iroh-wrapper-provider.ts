@@ -2,33 +2,44 @@
  * IrohWrapperProvider — RuntimeProvider that runs formula steps through the
  * Letta Iroh wrapper as a paired peer (vibesync-x38j / vibesync-57mi).
  *
- * Replaces the retired admin-shim HTTP transport of LettaCodeSubagentProvider.
- * ONLY the transport differs: the puppet message (the parent PM agent is told
- * to call Agent(subagent_type=…, agent_id=<role agent>, …) and return its
- * output) and the persona/agent-id resolution come from the shared
- * `subagent-dispatch.ts`, which both providers import.
+ * DIRECT ROLE DISPATCH (vibesync-jni4). Each step goes straight to the role
+ * agent that owns the step's role: conversation.create on THAT agent,
+ * runtime_start, ONE input carrying only the rendered step prompt (task +
+ * prior outputs), wait for turn_finished, then read the role agent's own final
+ * assistant message for that turn. There is no parent PM agent and no Agent
+ * tool in the path. The previous design puppeted the parent into calling the
+ * Agent tool; in letta-code 0.34.x that tool ALWAYS runs in the background and
+ * returns "Task running in background ..." at once, so the parent ended its
+ * turn with a "Waiting for ..." placeholder and the step closed green with the
+ * placeholder as its output while no work had been done.
  *
- * Per session: one fresh conversation on the parent agent (conversation.create)
- * unless SessionSpec.extra.conversationId names one that exists on the host.
- * One IrohConnection is shared by every session of a provider instance.
+ * Role agents carry their persona in their own system prompt, so none is
+ * inlined. The role agent id comes from SessionSpec.extra.agentId, else the
+ * injected AgentIdResolver (project_role_agents). If neither yields an id the
+ * step FAILS with that reason; it never falls back to another agent.
+ *
+ * Per session: one fresh conversation on the role agent. One IrohConnection is
+ * shared by every session of a provider instance.
  *
  * Event contract with the dispatcher (it concatenates EVERY message-delta into
  * the step output): live stream deltas are progress only and are surfaced as
  * first-token / tool-call events, never as message-delta. The step output is
- * the final assistant message read back with message.list after turn_finished,
- * emitted as the single message-delta. A turn that ends in anything but a
- * completed boundary (including requires_approval) is an `error` event, so a
- * step can never close green without having done its work.
+ * the role agent's final assistant message of THIS turn (matched by the
+ * turn_finished run_id, see turn-client.lastAssistantText), read back with
+ * message.list after turn_finished and emitted as the single message-delta. A
+ * turn that ends in anything but a completed boundary (including
+ * requires_approval) is an `error` event, so a step can never close green
+ * without having done its work.
  *
- * SessionSpec.extra: parentAgentId (required), subagentType, agentId,
- * personaContent, conversationId, projectIdentifier, moleculeId, stepName,
- * attempt, turnTimeoutMs — same keys as LettaCodeSubagentProvider.
+ * SessionSpec.extra: parentAgentId (required; only passed to the resolver as
+ * context, never messaged), agentId, projectIdentifier, moleculeId, stepName,
+ * attempt, turnTimeoutMs. Others (subagentType, personaContent,
+ * conversationId) are ignored: the conversation is always fresh.
  */
 
 import { randomUUID } from 'node:crypto';
 
 import type { IrohConnection } from './iroh/connection.js';
-import { IrohRefusedError } from './iroh/connection.js';
 import { REQUIRES_APPROVAL } from './iroh/stop-reason.js';
 import { createConversation, runTurn } from './iroh/turn-client.js';
 import type { RunTurnOptions, TurnResult } from './iroh/turn-client.js';
@@ -41,21 +52,23 @@ import type {
   SessionSpec,
 } from './provider.js';
 import {
-  buildPuppetMessage,
   contentToText,
   readNumberExtra,
   readStringExtra,
   resolveDefaultTurnTimeout,
 } from './subagent-dispatch.js';
-import type { AgentIdResolver, PersonaLoader } from './subagent-dispatch.js';
+import type { AgentIdResolver } from './subagent-dispatch.js';
 
 export const IROH_PROVIDER_KIND = 'letta-code-iroh';
 
 export interface IrohWrapperProviderOptions {
   /** Shared, lazily-dialed connection. The provider never dials at construction. */
   readonly connection: IrohConnection;
-  /** Fallback when no persistent role agent id resolves (same contract as LettaCodeSubagentProvider). */
-  readonly personaLoader: PersonaLoader;
+  /**
+   * Resolves the role agent id for (role, project) when SessionSpec.extra.agentId
+   * is absent. Production wires project_role_agents. No resolver and no
+   * extra.agentId => start() fails (there is no fallback agent).
+   */
   readonly agentIdResolver?: AgentIdResolver;
   readonly turnTimeoutMs?: number;
   /** Runtime start mode. Unattended steps need 'unrestricted' (Meridian decision). */
@@ -68,15 +81,14 @@ export interface IrohWrapperProviderOptions {
 interface IrohSessionHandle extends SessionHandle {
   readonly providerKind: typeof IROH_PROVIDER_KIND;
   readonly role: string;
-  readonly parentAgentId: string;
+  /** The role agent the step is dispatched to. */
+  readonly agentId: string;
 }
 
 interface SessionState {
   readonly role: string;
-  readonly parentAgentId: string;
-  readonly subagentType: string;
-  readonly personaContent: string;
-  readonly agentId: string | null;
+  /** The role agent every call of this session targets. */
+  readonly agentId: string;
   readonly stepTimeoutMs: number | null;
   readonly moleculeId: string | null;
   readonly stepName: string | null;
@@ -95,7 +107,6 @@ interface SessionState {
 export class IrohWrapperProvider implements RuntimeProvider {
   readonly kind = IROH_PROVIDER_KIND;
   private readonly conn: IrohConnection;
-  private readonly personaLoader: PersonaLoader;
   private readonly agentIdResolver: AgentIdResolver | null;
   private readonly turnTimeoutMs: number;
   private readonly runtimeMode: string;
@@ -106,9 +117,7 @@ export class IrohWrapperProvider implements RuntimeProvider {
 
   constructor(opts: IrohWrapperProviderOptions) {
     if (!opts.connection) throw new Error('IrohWrapperProvider: connection is required');
-    if (!opts.personaLoader) throw new Error('IrohWrapperProvider: personaLoader is required');
     this.conn = opts.connection;
-    this.personaLoader = opts.personaLoader;
     this.agentIdResolver = opts.agentIdResolver ?? null;
     this.turnTimeoutMs = opts.turnTimeoutMs ?? resolveDefaultTurnTimeout();
     this.runtimeMode = opts.runtimeMode ?? 'unrestricted';
@@ -117,44 +126,44 @@ export class IrohWrapperProvider implements RuntimeProvider {
   }
 
   async start(spec: SessionSpec): Promise<SessionHandle> {
-    const parentAgentId = readStringExtra(spec, 'parentAgentId');
-    if (!parentAgentId) {
-      throw new Error('IrohWrapperProvider.start: SessionSpec.extra.parentAgentId is required');
-    }
-    const subagentType = readStringExtra(spec, 'subagentType') ?? 'general-purpose';
     const projectIdentifier = readStringExtra(spec, 'projectIdentifier') ?? null;
+    // Only context for the resolver; the parent is never messaged by this provider.
+    const parentAgentId = readStringExtra(spec, 'parentAgentId') ?? '';
 
-    // Same precedence as LettaCodeSubagentProvider: explicit agentId, resolver, inline persona.
-    let resolvedAgentId = readStringExtra(spec, 'agentId') ?? null;
-    if (resolvedAgentId === null && this.agentIdResolver) {
-      resolvedAgentId = await this.agentIdResolver.resolveRoleAgent(spec.role, parentAgentId, projectIdentifier);
+    // Explicit agentId (dispatcher/bootstrapper) wins, then the resolver. There is
+    // deliberately NO fallback agent: dispatching a role's work to anyone else
+    // (the parent PM, an inline persona) is how steps closed green without work.
+    let agentId = readStringExtra(spec, 'agentId') ?? null;
+    if (agentId === null && this.agentIdResolver) {
+      agentId = await this.agentIdResolver.resolveRoleAgent(spec.role, parentAgentId, projectIdentifier);
     }
-    const personaContent =
-      resolvedAgentId !== null
-        ? ''
-        : readStringExtra(spec, 'personaContent') ?? (await this.personaLoader.load(spec.role));
+    if (!agentId) {
+      throw new Error(
+        `IrohWrapperProvider.start: no role agent id for role "${spec.role}"` +
+          `${projectIdentifier ? ` in project "${projectIdentifier}"` : ' (no projectIdentifier on the dispatch)'}: ` +
+          'SessionSpec.extra.agentId is absent and the resolver (project_role_agents) returned none. ' +
+          'Refusing to fall back to another agent.',
+      );
+    }
 
     this.handleCounter += 1;
     const handle: IrohSessionHandle = {
-      id: `${IROH_PROVIDER_KIND}:${parentAgentId}:${spec.role}:${this.handleCounter}`,
+      id: `${IROH_PROVIDER_KIND}:${agentId}:${spec.role}:${this.handleCounter}`,
       providerKind: IROH_PROVIDER_KIND,
       role: spec.role,
-      parentAgentId,
+      agentId,
     };
     const attempt = spec.extra?.['attempt'];
     this.sessions.set(handle.id, {
       role: spec.role,
-      parentAgentId,
-      subagentType,
-      personaContent,
-      agentId: resolvedAgentId,
+      agentId,
       stepTimeoutMs: readNumberExtra(spec, 'turnTimeoutMs') ?? null,
       moleculeId: readStringExtra(spec, 'moleculeId') ?? null,
       stepName: readStringExtra(spec, 'stepName') ?? null,
       attempt: typeof attempt === 'number' && Number.isFinite(attempt) ? attempt : null,
       abort: new AbortController(),
       seenTurnIds: new Set(),
-      conversationId: readStringExtra(spec, 'conversationId') ?? null,
+      conversationId: null,
       promptCount: 0,
       stopped: false,
       events: [],
@@ -181,22 +190,27 @@ export class IrohWrapperProvider implements RuntimeProvider {
     if (!state) throw new Error(`IrohWrapperProvider.prompt: unknown session ${h.id}`);
     if (state.stopped) throw new Error(`IrohWrapperProvider.prompt: session ${h.id} already stopped`);
 
-    const puppet = buildPuppetMessage({
-      subagentType: state.subagentType,
-      personaContent: state.personaContent,
-      role: state.role,
-      input: contentToText(content),
-      agentId: state.agentId,
-    });
+    // ONE input: the rendered step prompt (task + prior outputs) and nothing else.
+    // The role agent already carries its persona in its own system prompt.
+    const text = contentToText(content);
     state.promptCount += 1;
     const clientMessageId = clientMessageIdFor(state, h.id);
     state.events = [];
 
-    state.promptDone = this.runPrompt(state, puppet, clientMessageId).catch((err: unknown) => {
-      this.push(state, { kind: 'error', ts: nowIso(), code: errorCode(err), message: errorMessage(err) });
-      this.push(state, { kind: 'turn-done', ts: nowIso(), stopReason: 'error' });
+    // Surface the conversation id to the dispatcher (step trace) as soon as the
+    // fresh conversation exists. A creation failure still flows as an error event.
+    let conversationKnown!: (id: string | null) => void;
+    const known = new Promise<string | null>((resolve) => {
+      conversationKnown = resolve;
     });
-    return {};
+    state.promptDone = this.runPrompt(state, text, clientMessageId, conversationKnown)
+      .catch((err: unknown) => {
+        this.push(state, { kind: 'error', ts: nowIso(), code: errorCode(err), message: errorMessage(err) });
+        this.push(state, { kind: 'turn-done', ts: nowIso(), stopReason: 'error' });
+      })
+      .finally(() => conversationKnown(null));
+    const conversationId = await known;
+    return conversationId ? { conversationId } : {};
   }
 
   async nudge(_handle: SessionHandle): Promise<void> {
@@ -246,19 +260,23 @@ export class IrohWrapperProvider implements RuntimeProvider {
 
   // ───────────────────────── internals ─────────────────────────
 
-  private async runPrompt(state: SessionState, puppet: string, clientMessageId: string): Promise<void> {
+  private async runPrompt(
+    state: SessionState,
+    text: string,
+    clientMessageId: string,
+    conversationKnown: (id: string | null) => void,
+  ): Promise<void> {
     this.push(state, { kind: 'started', ts: nowIso() });
     await this.conn.connect();
-    if (state.conversationId) {
-      state.conversationId = await this.confirmConversation(state.parentAgentId, state.conversationId);
-    }
-    if (!state.conversationId) {
-      state.conversationId = await createConversation(this.conn, state.parentAgentId);
-    }
+    // Always a fresh conversation on the ROLE agent: a retried attempt must not
+    // inherit a half-finished turn, and concurrent steps of one role must not
+    // share context.
+    state.conversationId ??= await createConversation(this.conn, state.agentId);
+    conversationKnown(state.conversationId);
     let firstToken = false;
     const result = await runTurn(
       this.conn,
-      { agentId: state.parentAgentId, conversationId: state.conversationId, text: puppet, clientMessageId },
+      { agentId: state.agentId, conversationId: state.conversationId, text, clientMessageId },
       {
         ...this.turnOptions,
         mode: this.runtimeMode,
@@ -270,10 +288,6 @@ export class IrohWrapperProvider implements RuntimeProvider {
             firstToken = true;
             this.push(state, { kind: 'first-token', ts: nowIso() });
           } else if (p.kind === 'tool-call') {
-            if (!firstToken && (p.tool === 'Agent' || p.tool === 'Task')) {
-              firstToken = true;
-              this.push(state, { kind: 'first-token', ts: nowIso() });
-            }
             this.push(state, { kind: 'tool-call', ts: nowIso(), tool: p.tool ?? 'unknown', args: p.args ?? null });
           } else if (p.kind === 'redial') {
             this.log(`iroh turn redialing (conv=${state.conversationId})`);
@@ -283,20 +297,6 @@ export class IrohWrapperProvider implements RuntimeProvider {
     );
     if (state.stopped) return; // observe() reports 'stopped'
     this.finishTurn(state, result);
-  }
-
-  /** An id minted by the dispatcher may not exist on the host; fall back to a fresh conversation then. */
-  private async confirmConversation(agentId: string, conversationId: string): Promise<string | null> {
-    try {
-      await this.conn.rpc('message.list', { conversation_id: conversationId, limit: 1 });
-      return conversationId;
-    } catch (err) {
-      if (err instanceof IrohRefusedError && err.code !== 'forbidden') {
-        this.log(`iroh: conversation ${conversationId} not found on host for ${agentId}; creating a fresh one`);
-        return null;
-      }
-      throw err;
-    }
   }
 
   private finishTurn(state: SessionState, r: TurnResult): void {

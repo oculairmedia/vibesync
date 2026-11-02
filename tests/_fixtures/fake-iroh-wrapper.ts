@@ -26,6 +26,21 @@ export interface TurnScript {
   error?: string;
   /** What message.list returns as the assistant message. */
   finalText?: string;
+  /**
+   * run_id stamped on turn_finished AND on the final assistant message (default 'run-1').
+   * Use a per-script value to prove the provider matches on it.
+   */
+  runId?: string;
+  /**
+   * Assistant messages persisted BEFORE the matching one, with the given run_ids
+   * (e.g. the parent's "Waiting for ..." placeholder, a previous turn's answer).
+   * They must never become the step output.
+   */
+  earlierAssistant?: Array<{ text: string; runId: string | null }>;
+  /** Assistant messages persisted AFTER the matching one under a different run_id (a late task-notification turn). */
+  laterAssistant?: Array<{ text: string; runId: string | null }>;
+  /** Delay before turn_finished, so a live test/false-pass guard can see a plausible latency. */
+  turnDelayMs?: number;
   /** After streaming, emit these frames instead of turn_finished (approval case). */
   stallWith?: F[];
   /** Extra frames before the terminal (e.g. unknown mid-turn stop reason). */
@@ -65,6 +80,12 @@ export class FakeIrohWrapper {
   dropAfterAccept: false | 'drop' | 'restart' = false;
   /** Reply input_accepted:false with this error. */
   rejectInput: string | null = null;
+  /**
+   * Order of message.list. The LIVE wrapper returns NEWEST-FIRST (proven
+   * against the real host, vibesync-jni4); 'oldest-first' is kept so older
+   * tests keep exercising the other shape.
+   */
+  listOrder: 'oldest-first' | 'newest-first' = 'oldest-first';
 
   dials = 0;
   readonly received: F[] = [];
@@ -73,6 +94,8 @@ export class FakeIrohWrapper {
 
   private convCounter = 0;
   private readonly runtimes = new Set<string>();
+  /** conversation id -> the agent it was created on (a conversation belongs to exactly one agent). */
+  readonly conversationAgent = new Map<string, string>();
   private readonly messages = new Map<string, F[]>();
   private readonly parked = new Map<string, F[]>();
   private readonly seenCmids = new Set<string>();
@@ -234,13 +257,18 @@ export class FakeIrohWrapper {
       this.convCounter += 1;
       const id = `conv-${this.convCounter}`;
       this.messages.set(id, []);
+      this.conversationAgent.set(id, agent);
       return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: true, result: { id } });
     }
     if (method === 'message.list') {
       const conv = String(params['conversation_id']);
       const list = this.messages.get(conv);
       if (!list) return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: false, error: 'conversation not found' });
-      return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: true, result: { messages: list } });
+      const limit = typeof params['limit'] === 'number' ? (params['limit'] as number) : list.length;
+      // Real host semantics: `limit` keeps the NEWEST messages.
+      const newest = list.slice(Math.max(0, list.length - limit));
+      const out = this.listOrder === 'newest-first' ? [...newest].reverse() : newest;
+      return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: true, result: { messages: out } });
     }
     return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: false, error: `method not found: ${String(method)}` });
   }
@@ -253,6 +281,11 @@ export class FakeIrohWrapper {
     const reject = (error: string): void =>
       this.reply(l, { type: 'input_accepted', request_id: rid, runtime: rt, accepted: false, error });
     if (!this.scope.includes(agent)) return reject("forbidden: agent not in this device's scope");
+    const owner = this.conversationAgent.get(conv);
+    if (owner !== undefined && owner !== agent) {
+      this.violations.push(`input for agent ${agent} on a conversation that belongs to ${owner}`);
+      return reject('conversation does not belong to this agent');
+    }
     if (!this.runtimes.has(`${agent}/${conv}`)) {
       this.violations.push('input before runtime_start');
       return reject('runtime not started');
@@ -276,12 +309,21 @@ export class FakeIrohWrapper {
     this.lastCmidByConv.set(conv, cmid);
     this.parked.set(conv, []);
     const text = ((f['payload'] as F)['messages'] as F[])[0]!['content'];
-    this.messages.get(conv)?.push({ message_type: 'user_message', role: 'user', content: text, otid: cmid });
+    this.messages.get(conv)?.push({ id: this.nextMsgId(), date: this.nextDate(), message_type: 'user_message', role: 'user', content: text, otid: cmid, turn_id: cmid });
     this.reply(l, { type: 'input_accepted', request_id: rid, runtime: rt, accepted: true, disposition: 'started' });
     this.turnsExecuted += 1;
     const mode = this.dropAfterAccept;
     this.dropAfterAccept = false;
     void this.runTurn(agent, conv, mode === 'drop' ? () => this.dropLinks() : mode === 'restart' ? () => this.restartAfterFinish() : null);
+  }
+
+  private msgSeq = 0;
+  private nextMsgId(): string {
+    this.msgSeq += 1;
+    return `ui-msg-${1000 + this.msgSeq}`;
+  }
+  private nextDate(): string {
+    return new Date(Date.UTC(2026, 10, 2, 5, 0, 0) + this.msgSeq * 1000).toISOString();
   }
 
   private restartAfterFinish(): void {
@@ -316,16 +358,26 @@ export class FakeIrohWrapper {
       }
       return;
     }
-    if (s.finalText !== undefined) {
-      this.messages.get(conv)?.push({ message_type: 'assistant_message', role: 'assistant', run_id: 'run-1', content: [{ type: 'text', text: s.finalText }] });
-    }
+    const runId = s.runId ?? 'run-1';
+    const assistant = (text: string, rid: string | null): F => ({
+      id: this.nextMsgId(),
+      date: this.nextDate(),
+      message_type: 'assistant_message',
+      role: 'assistant',
+      ...(rid ? { run_id: rid } : {}),
+      content: [{ type: 'text', text }],
+    });
+    for (const e of s.earlierAssistant ?? []) this.messages.get(conv)?.push(assistant(e.text, e.runId));
+    if (s.finalText !== undefined) this.messages.get(conv)?.push(assistant(s.finalText, runId));
+    for (const e of s.laterAssistant ?? []) this.messages.get(conv)?.push(assistant(e.text, e.runId));
+    if (s.turnDelayMs) await new Promise((r) => setTimeout(r, s.turnDelayMs));
     await tick();
     this.emitStream(
       conv,
       this.frame('turn_finished', agent, conv, {
         turn_id: `turn-${this.turnsExecuted}`,
         stop_reason: s.stopReason === undefined ? 'end_turn' : s.stopReason,
-        run_id: 'run-1',
+        run_id: runId,
         ...(s.error ? { error: s.error } : {}),
         usage: { prompt_tokens: 3, completion_tokens: 1 },
       }),
