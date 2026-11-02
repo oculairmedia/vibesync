@@ -10,9 +10,13 @@ import { EventBus, WorkActivityReporter } from './events/index.js';
 import { HealthPatrol } from './health/index.js';
 import { MoleculeWalker } from './molecule/index.js';
 import {
+  IROH_PROVIDER_KIND,
+  IrohWrapperProvider,
   LettaCodeSubagentProvider,
   createDefaultPersonaLoader,
 } from './runtime/index.js';
+import type { IrohConnection } from './runtime/index.js';
+import { createNativeIrohConnection, resolveNativeIrohConfig } from './runtime/iroh/native-dialer.js';
 import type { PersonaLoader, RuntimeProvider } from './runtime/index.js';
 import { startSchedulerDaemon, SCHEDULER_START_FAILED_EVENT } from './scheduler/boot-scheduler.js';
 import type { BootSchedulerOptions, SchedulerHandle } from './scheduler/boot-scheduler.js';
@@ -64,6 +68,12 @@ export interface BootOrchestrationPlaneOptions {
    * pool-member lookup) are injected so this plane imports no database.
    */
   readonly scheduler?: BootSchedulerOptions;
+  /**
+   * Test seam for provider kind 'letta-code-iroh' (vibesync-x38j): supplies the
+   * Iroh connection instead of the native @number0/iroh dialer. Production
+   * leaves this unset.
+   */
+  readonly irohConnectionFactory?: () => IrohConnection;
 }
 
 export interface ProjectProviderRoutingStore {
@@ -126,6 +136,13 @@ export interface BootOrchestrationProviderRoutingOptions {
    * Legacy static map for tests.
    */
   readonly storageDirsByProject?: Readonly<Record<string, string>>;
+  /**
+   * vibesync-x38j: shared Iroh provider for projects routed to
+   * 'letta-code-iroh'. Boot passes a memoized getter so the default provider
+   * and per-project routing share ONE connection; when absent (direct use of
+   * buildProviderResolver) the resolver builds its own from the environment.
+   */
+  readonly irohProvider?: () => IrohWrapperProvider;
 }
 
 /**
@@ -170,8 +187,19 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   }
 
   const bus = new EventBus({ noPersist: opts.persistEvents === false });
+  // vibesync-x38j: ONE Iroh provider (one dialed connection) shared by the
+  // default path and per-project routing; built lazily so nothing binds a
+  // socket unless a 'letta-code-iroh' route is actually used.
+  const personaLoader = opts.providerRouting?.personaLoader ?? createDefaultPersonaLoader('packs/gastown');
+  let irohProvider: IrohWrapperProvider | null = null;
+  const getIrohProvider = (): IrohWrapperProvider => {
+    irohProvider ??= buildIrohProvider(personaLoader, opts.irohConnectionFactory);
+    return irohProvider;
+  };
+  const providerKind = resolveProviderKind();
   const provider = buildDefaultRuntimeProvider({
     allowUnavailable: opts.providerRouting !== undefined,
+    getIrohProvider,
   });
   const patrol = new HealthPatrol(bus);
   patrol.start();
@@ -187,7 +215,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   const walker = new MoleculeWalker(opts.dolt);
   const maxConcurrentMolecules = opts.maxConcurrentMolecules ?? readMaxConcurrentMoleculesFromEnv();
   const providerResolver = opts.providerRouting
-    ? buildProviderResolver(opts.providerRouting)
+    ? buildProviderResolver({ ...opts.providerRouting, irohProvider: opts.providerRouting.irohProvider ?? getIrohProvider })
     : undefined;
   const roleAgentContextResolver = opts.providerRouting
     ? buildRoleAgentContextResolver(opts.providerRouting)
@@ -238,10 +266,18 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   // vibesync-ryhc: work-activity reporter for mobile active-subagent bar.
   // Enabled only when shimBaseUrl is configured AND VIBESYNC_WORK_ACTIVITY_REPORT
   // is not explicitly disabled.
+  // vibesync-x38j: the reporter POSTs to the retired admin shim, so it is only
+  // constructed for the letta-code-subagent provider kind. Under
+  // letta-code-iroh a leftover VIBESYNC_LETTA_CODE_SHIM_URL must not make boot
+  // start a reporter that hammers a dead endpoint. (Follow-up: port it to Iroh.)
   let workActivityReporter: WorkActivityReporter | null = null;
   const shimBaseUrl = process.env['VIBESYNC_LETTA_CODE_SHIM_URL'] ?? process.env['LETTA_CODE_SHIM_URL'];
   const workActivityEnabled = process.env['VIBESYNC_WORK_ACTIVITY_REPORT'] !== '0';
-  if (shimBaseUrl && workActivityEnabled) {
+  if (providerKind === IROH_PROVIDER_KIND && shimBaseUrl && workActivityEnabled) {
+    // eslint-disable-next-line no-console
+    console.log('[orchestration:work-activity] reporter NOT started: it targets the retired admin shim and provider kind is letta-code-iroh');
+  }
+  if (providerKind === 'letta-code-subagent' && shimBaseUrl && workActivityEnabled) {
     const password = process.env['VIBESYNC_LETTA_CODE_PASSWORD'] ?? process.env['LETTA_CODE_PASSWORD'];
     workActivityReporter = new WorkActivityReporter({
       eventBus: bus,
@@ -290,17 +326,61 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
       unsubscribeWriteback?.();
       patrol.stop();
       workActivityReporter?.stop();
+      if (irohProvider) {
+        try {
+          await irohProvider.close();
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error('[orchestration:iroh] error while closing the Iroh connection', err);
+        }
+      }
     },
   };
 }
 
-function buildDefaultRuntimeProvider(opts: { readonly allowUnavailable?: boolean } = {}): RuntimeProvider {
+const SUPPORTED_PROVIDER_KINDS = ['letta-code-subagent', IROH_PROVIDER_KIND] as const;
+
+function resolveProviderKind(): string {
   const providerKind = process.env['VIBESYNC_ORCHESTRATION_PROVIDER'] ?? 'letta-code-subagent';
-  if (providerKind !== 'letta-code-subagent') {
-    throw new Error(`Unsupported orchestration provider "${providerKind}". Letta Teams was removed; use VIBESYNC_ORCHESTRATION_PROVIDER=letta-code-subagent.`);
+  if (!(SUPPORTED_PROVIDER_KINDS as readonly string[]).includes(providerKind)) {
+    throw new Error(`Unsupported orchestration provider "${providerKind}". Letta Teams was removed; use VIBESYNC_ORCHESTRATION_PROVIDER=letta-code-subagent or letta-code-iroh.`);
+  }
+  return providerKind;
+}
+
+/**
+ * vibesync-x38j: the Iroh provider. Config (activation by config, invariant 4):
+ *   VIBESYNC_IROH_HOST_ADDR       optional; <nodehex>@<ip:port>[,...]; default: `host:` row of the wrapper's address kv
+ *   VIBESYNC_IROH_SECRET_KEY_PATH default /root/.letta/vibesync/iroh-secret.key
+ *   VIBESYNC_IROH_PEER_NAME       default vibesync-orchestrator
+ * Nothing is dialed here; the connection is lazy.
+ */
+function buildIrohProvider(personaLoader: PersonaLoader, factory?: () => IrohConnection): IrohWrapperProvider {
+  const connection = factory ? factory() : createNativeIrohConnection(resolveNativeIrohConfig(), {
+    log: (m) => console.warn(`[orchestration:iroh] ${m}`), // eslint-disable-line no-console
+  });
+  return new IrohWrapperProvider({ connection, personaLoader });
+}
+
+function buildDefaultRuntimeProvider(opts: {
+  readonly allowUnavailable?: boolean;
+  readonly getIrohProvider: () => IrohWrapperProvider;
+}): RuntimeProvider {
+  const providerKind = resolveProviderKind();
+  const parentAgentId = process.env['VIBESYNC_LETTA_CODE_PARENT_AGENT_ID'] ?? process.env['LETTA_CODE_PARENT_AGENT_ID'];
+  if (providerKind === IROH_PROVIDER_KIND) {
+    if (!parentAgentId) {
+      if (opts.allowUnavailable) {
+        return buildUnavailableDefaultProvider(
+          'letta-code-iroh orchestration requires VIBESYNC_LETTA_CODE_PARENT_AGENT_ID for default-project dispatch',
+          IROH_PROVIDER_KIND,
+        );
+      }
+      throw new Error('letta-code-iroh orchestration requires VIBESYNC_LETTA_CODE_PARENT_AGENT_ID');
+    }
+    return wrapWithParentAgentId(opts.getIrohProvider(), parentAgentId);
   }
   const shimBaseUrl = process.env['VIBESYNC_LETTA_CODE_SHIM_URL'] ?? process.env['LETTA_CODE_SHIM_URL'];
-  const parentAgentId = process.env['VIBESYNC_LETTA_CODE_PARENT_AGENT_ID'] ?? process.env['LETTA_CODE_PARENT_AGENT_ID'];
   if (!shimBaseUrl || !parentAgentId) {
     if (opts.allowUnavailable) {
       // Per-project routing can still supply both the shim URL and PM
@@ -319,12 +399,12 @@ function buildDefaultRuntimeProvider(opts: { readonly allowUnavailable?: boolean
   }), parentAgentId);
 }
 
-function buildUnavailableDefaultProvider(message: string): RuntimeProvider {
+function buildUnavailableDefaultProvider(message: string, kind = 'letta-code-subagent'): RuntimeProvider {
   const fail = async (): Promise<never> => {
     throw new Error(message);
   };
   return {
-    kind: 'letta-code-subagent',
+    kind,
     start: fail,
     stop: async () => {},
     prompt: fail,
@@ -355,6 +435,7 @@ export function buildProviderResolver(opts: BootOrchestrationProviderRoutingOpti
   const cache = new Map<string, RuntimeProvider>();
   const cacheKey = (kind: string, url: string): string => `${kind}@${url}`;
   const personaLoader = opts.personaLoader ?? createDefaultPersonaLoader('packs/gastown');
+  let irohShared: IrohWrapperProvider | null = null;
   return {
     resolve(input): RuntimeProvider | null {
       const projectId = input.projectIdentifier;
@@ -407,6 +488,20 @@ export function buildProviderResolver(opts: BootOrchestrationProviderRoutingOpti
         });
         if (opts.cacheLimit === undefined || opts.cacheLimit > 0) cache.set(key, provider);
         return wrapWithParentAgentId(provider, parentAgentId);
+      }
+      if (row.providerKind === IROH_PROVIDER_KIND) {
+        // vibesync-x38j: Iroh transport needs no letta_base_url (the host is
+        // configured via VIBESYNC_IROH_*), only the PM parent agent id.
+        const parentAgentId = row.parentAgentId ?? opts.parentAgentIds?.[projectId];
+        if (!parentAgentId) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[boot] provider routing: project ${projectId} routes to letta-code-iroh but no parent agent id supplied — falling back to default`,
+          );
+          return null;
+        }
+        irohShared ??= opts.irohProvider ? opts.irohProvider() : buildIrohProvider(personaLoader);
+        return wrapWithParentAgentId(irohShared, parentAgentId);
       }
       // Unknown provider kind — log once and fall back.
       // eslint-disable-next-line no-console
