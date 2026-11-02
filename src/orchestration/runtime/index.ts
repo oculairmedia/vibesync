@@ -32,6 +32,11 @@ export type {
   AgentIdResolver,
 } from './letta-code-subagent-provider.js';
 
+export { IrohWrapperProvider, IROH_PROVIDER_KIND } from './iroh-wrapper-provider.js';
+export type { IrohWrapperProviderOptions } from './iroh-wrapper-provider.js';
+export { IrohConnection } from './iroh/connection.js';
+export type { IrohConnectionOptions, IrohDialer, IrohLink } from './iroh/connection.js';
+
 export { A2UIProvider } from './a2ui-provider.js';
 export type { A2uiCapability } from './a2ui-provider.js';
 

@@ -59,6 +59,8 @@ export interface RunTurnOptions {
   readonly messageListLimit?: number;
   /** turn ids already consumed on this conversation (guards against replayed old terminals). */
   readonly ignoreTurnIds?: Set<string>;
+  /** Abort the wait (session stopped). The turn itself keeps running on the host. */
+  readonly signal?: AbortSignal;
   readonly onProgress?: (p: TurnProgress) => void;
 }
 
@@ -100,6 +102,7 @@ type Outcome =
   | { readonly kind: 'approval_stuck' }
   | { readonly kind: 'disconnect' }
   | { readonly kind: 'timeout' }
+  | { readonly kind: 'aborted' }
   | { readonly kind: 'reconciled'; readonly text: string; readonly runId: string | null };
 
 export async function createConversation(conn: IrohConnection, agentId: string): Promise<string> {
@@ -143,7 +146,7 @@ async function attempt(
   conn: IrohConnection,
   req: TurnRequest,
   conversationId: string,
-  o: Required<Omit<RunTurnOptions, 'ignoreTurnIds' | 'onProgress'>> & RunTurnOptions,
+  o: Required<Omit<RunTurnOptions, 'ignoreTurnIds' | 'onProgress' | 'signal'>> & RunTurnOptions,
   deadline: number,
   redialed: boolean,
 ): Promise<Outcome> {
@@ -208,6 +211,8 @@ async function attempt(
     }
     ping();
   });
+  const onAbort = (): void => ping();
+  o.signal?.addEventListener('abort', onAbort);
   const unDisc = conn.onDisconnect(() => {
     st.disconnected = true;
     ping();
@@ -247,6 +252,7 @@ async function attempt(
     let prevRec: { text: string; runId: string | null } | null = null;
     for (;;) {
       if (st.terminal) return { kind: 'terminal', frame: st.terminal };
+      if (o.signal?.aborted) return { kind: 'aborted' };
       if (st.disconnected) return { kind: 'disconnect' };
       const now = Date.now();
       if (now >= deadline) return { kind: 'timeout' };
@@ -287,6 +293,7 @@ async function attempt(
   } finally {
     unFrame();
     unDisc();
+    o.signal?.removeEventListener('abort', onAbort);
   }
 }
 
@@ -294,11 +301,14 @@ async function finish(
   conn: IrohConnection,
   conversationId: string,
   outcome: Exclude<Outcome, { kind: 'disconnect' }>,
-  o: Required<Omit<RunTurnOptions, 'ignoreTurnIds' | 'onProgress'>> & RunTurnOptions,
+  o: Required<Omit<RunTurnOptions, 'ignoreTurnIds' | 'onProgress' | 'signal'>> & RunTurnOptions,
 ): Promise<TurnResult> {
   const base = { conversationId, usage: null as Record<string, unknown> | null, reconciled: false };
   if (outcome.kind === 'timeout') {
     return { ...base, stopReason: null, boundary: 'failed', failureReason: 'turn_timeout', error: `turn did not finish within ${o.turnTimeoutMs}ms`, turnId: null, runId: null, finalText: '' };
+  }
+  if (outcome.kind === 'aborted') {
+    return { ...base, stopReason: null, boundary: 'cancelled', failureReason: 'cancelled', error: 'session stopped before the turn finished', turnId: null, runId: null, finalText: '' };
   }
   if (outcome.kind === 'approval_stuck') {
     return { ...base, stopReason: REQUIRES_APPROVAL, boundary: 'failed', failureReason: 'requires_approval', error: 'runtime idle with a pending approval; no approver for unattended steps', turnId: null, runId: null, finalText: '' };
