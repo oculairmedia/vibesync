@@ -662,12 +662,15 @@ export class FormulaDispatcher {
       // than synchronously on prompt() (the LettaCodeSubagentProvider
       // case). Persist what we have; absent fields are simply not
       // written.
-      if (promptResult.taskId || conversationId) {
+      // vibesync-jni4: a provider that creates the conversation itself reports the
+      // real host-side id; it wins over the id minted above (which never exists there).
+      const traceConversationId = promptResult.conversationId ?? conversationId;
+      if (promptResult.taskId || traceConversationId) {
         await this.walker.recordStepTask(args.stepId, {
           ...(promptResult.taskId ? { taskId: promptResult.taskId } : {}),
           providerKind: handle.providerKind,
           sessionId: handle.id,
-          ...(conversationId ? { conversationId } : {}),
+          ...(traceConversationId ? { conversationId: traceConversationId } : {}),
         });
         this.emit('dispatcher/step.task_recorded', args.moleculeId, promptResult.taskId, {
           stepName: args.stepName,
@@ -675,7 +678,7 @@ export class FormulaDispatcher {
           stepId: args.stepId,
           sessionId: handle.id,
           attempt: args.attempt,
-          ...(conversationId ? { conversationId } : {}),
+          ...(traceConversationId ? { conversationId: traceConversationId } : {}),
         });
       }
       for await (const event of args.provider.observe(handle)) {
@@ -689,7 +692,7 @@ export class FormulaDispatcher {
           providerKind: handle.providerKind,
           sessionId: handle.id,
           ...(promptResult.taskId ? { taskId: promptResult.taskId } : {}),
-          ...(conversationId ? { conversationId } : {}),
+          ...(traceConversationId ? { conversationId: traceConversationId } : {}),
           ...(bootstrappedAgentId ? { agentId: bootstrappedAgentId } : {}),
           ...(args.projectIdentifier ? { projectIdentifier: args.projectIdentifier } : {}),
         });

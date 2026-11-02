@@ -138,19 +138,20 @@ describe('bootOrchestrationPlane', () => {
       await handle.shutdown();
     });
 
-    it('the default provider really dispatches over Iroh with the configured parent agent', async () => {
-      const fake = new FakeIrohWrapper({ scope: ['agent-parent'] });
+    it('the default provider really dispatches over Iroh DIRECTLY to the role agent (not the parent)', async () => {
+      const fake = new FakeIrohWrapper({ scope: ['agent-parent', 'agent-role'] });
       const handle = await bootForTest(
         { VIBESYNC_ORCHESTRATION_PROVIDER: 'letta-code-iroh' },
         { irohConnectionFactory: irohFactory(fake) },
       );
-      const h = await handle.provider.start({ role: 'r', extra: { personaContent: 'p', moleculeId: 'm', stepName: 's' } });
+      const h = await handle.provider.start({ role: 'r', extra: { agentId: 'agent-role', moleculeId: 'm', stepName: 's' } });
       await handle.provider.prompt(h, [{ type: 'text', text: 'hello' }]);
       const events = [];
       for await (const e of handle.provider.observe(h)) events.push(e);
       await handle.provider.stop(h);
       expect(events.find((e) => e.kind === 'message-delta')).toMatchObject({ text: 'PONG' });
       expect(fake.received.some((f) => f['type'] === 'input')).toBe(true);
+      expect([...fake.conversationAgent.values()]).toEqual(['agent-role']);
       expect(fake.violations).toEqual([]);
       await handle.shutdown();
     });
@@ -187,8 +188,9 @@ describe('bootOrchestrationPlane', () => {
       ).rejects.toThrow('letta-code-iroh orchestration requires VIBESYNC_LETTA_CODE_PARENT_AGENT_ID');
     });
 
-    it('per-project routing row provider_kind=letta-code-iroh resolves to the shared Iroh provider (no letta_base_url needed)', async () => {
-      const fake = new FakeIrohWrapper({ scope: ['agent-project-parent'] });
+    it('per-project routing row provider_kind=letta-code-iroh resolves to the shared Iroh provider (no letta_base_url needed); the role agent comes from project_role_agents', async () => {
+      const fake = new FakeIrohWrapper({ scope: ['agent-project-parent', 'agent-p1-reviewer'] });
+      const lookups: Array<[string, string]> = [];
       const handle = await bootForTest(
         {},
         {
@@ -197,14 +199,31 @@ describe('bootOrchestrationPlane', () => {
             store: {
               getProjectProviderRouting: (id) => (id === 'p1' ? { lettaBaseUrl: null, providerKind: 'letta-code-iroh', parentAgentId: 'agent-project-parent' } : null),
             },
+            roleAgentLookup: {
+              getRoleAgent: (project, role) => {
+                lookups.push([project, role]);
+                return project === 'p1' && role === 'reviewer' ? { agentId: 'agent-p1-reviewer' } : null;
+              },
+            },
           },
         },
       );
-      const resolver = (handle.dispatcher as never as { providerResolver: { resolve(i: unknown): { kind: string; start(s: unknown): Promise<{ id: string }> } | null } }).providerResolver;
+      const resolver = (handle.dispatcher as never as { providerResolver: { resolve(i: unknown): { kind: string; start(s: unknown): Promise<{ id: string }>; prompt(h: unknown, c: unknown): Promise<{ conversationId?: string }>; observe(h: unknown): AsyncIterable<{ kind: string; text?: string }>; stop(h: unknown): Promise<void> } | null } }).providerResolver;
       const routed = resolver.resolve({ projectIdentifier: 'p1' });
       expect(routed?.kind).toBe('letta-code-iroh');
-      const h = await routed!.start({ role: 'r', extra: { personaContent: 'p' } });
-      expect(h.id).toContain('agent-project-parent');
+      // end to end: wrapWithParentAgentId -> IrohWrapperProvider -> resolver -> project_role_agents -> role agent
+      const h = await routed!.start({ role: 'reviewer', extra: { projectIdentifier: 'p1', moleculeId: 'm', stepName: 's' } });
+      expect(h.id).toContain('agent-p1-reviewer');
+      expect(h.id).not.toContain('agent-project-parent');
+      const pr = await routed!.prompt(h, [{ type: 'text', text: 'go' }]);
+      for await (const _ of routed!.observe(h)) { /* drain */ }
+      await routed!.stop(h);
+      expect(lookups).toEqual([['p1', 'reviewer']]);
+      expect([...fake.conversationAgent.values()]).toEqual(['agent-p1-reviewer']);
+      expect(pr.conversationId).toBe('conv-1');
+      // a role with no project_role_agents row fails loudly instead of going to the parent
+      await expect(routed!.start({ role: 'tester', extra: { projectIdentifier: 'p1' } })).rejects.toThrow(/no role agent id for role "tester" in project "p1"/);
+      expect(JSON.stringify(fake.received)).not.toContain('agent-project-parent');
       await handle.shutdown();
     });
 

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IrohAuthError, IrohConnection, IrohRefusedError } from '../../../../../src/orchestration/runtime/iroh/connection.js';
-import { runTurn, createConversation } from '../../../../../src/orchestration/runtime/iroh/turn-client.js';
+import { runTurn, createConversation, lastAssistantText, chronological } from '../../../../../src/orchestration/runtime/iroh/turn-client.js';
 import { FakeIrohWrapper } from '../../../../_fixtures/fake-iroh-wrapper.js';
 
 const AGENT = 'agent-parent';
@@ -236,5 +236,38 @@ describe('turn-client against a wrapper that enforces the real preconditions', (
     const noCmid = await conn.request({ type: 'input', runtime: { agent_id: AGENT, conversation_id: conv }, payload: { kind: 'create_message', messages: [{ role: 'user', content: 'x' }] } });
     expect(noCmid['accepted']).toBe(false);
     expect(fake.violations).toEqual(['input before runtime_start', 'input without client_message_id']);
+  });
+});
+
+// vibesync-jni4: selecting THE turn's final message
+describe('lastAssistantText / chronological (vibesync-jni4)', () => {
+  const a = (id: number, text: string, extra: Record<string, unknown> = {}) => ({ id: `ui-msg-${id}`, date: new Date(Date.UTC(2026, 10, 2, 5, 0, id)).toISOString(), message_type: 'assistant_message', content: [{ type: 'text', text }], ...extra });
+  const u = (id: number, cmid: string) => ({ id: `ui-msg-${id}`, date: new Date(Date.UTC(2026, 10, 2, 5, 0, id)).toISOString(), message_type: 'user_message', otid: cmid, turn_id: cmid, content: 'q' });
+
+  it('orders newest-first and oldest-first lists the same way (by date, then id)', () => {
+    const asc = [u(1, 'c1'), a(2, 'one'), u(3, 'c2'), a(4, 'two')];
+    expect(chronological([...asc].reverse()).map((m) => m['id'])).toEqual(asc.map((m) => m['id']));
+    expect(chronological(asc).map((m) => m['id'])).toEqual(asc.map((m) => m['id']));
+    // no dates: fall back to the numeric id tail
+    const noDate = asc.map(({ date: _d, ...rest }) => rest);
+    expect(chronological([...noDate].reverse()).map((m) => m['id'])).toEqual(noDate.map((m) => m['id']));
+  });
+
+  it('on a newest-first host the LAST message of the second turn is returned, not the first message of the conversation (the live bug)', () => {
+    const list = [a(4, 'SECOND'), u(3, 'c2'), a(2, 'FIRST'), u(1, 'c1')]; // newest-first, as the live wrapper returns
+    expect(lastAssistantText(list, null, 'c2')).toBe('SECOND');
+    expect(lastAssistantText(list, null, 'c1')).toBe('FIRST');
+  });
+
+  it('prefers run_id, ignores an earlier and a later message of other runs', () => {
+    const list = [a(5, 'late notification', { run_id: 'run-3' }), a(4, 'THE ANSWER', { run_id: 'run-2' }), a(2, 'Waiting for the coder', { run_id: 'run-1' })];
+    expect(lastAssistantText(list, 'run-2', 'c')).toBe('THE ANSWER');
+  });
+
+  it('without run_id stamps, a message of ANOTHER run after the input is not adopted; with nothing for this turn the result is empty', () => {
+    const list = [a(3, "Waiting for the coder's output.", { run_id: 'run-OTHER' }), u(2, 'c9'), a(1, 'old', { run_id: 'run-old' })];
+    expect(lastAssistantText(list, 'run-9', 'c9')).toBe('');
+    // an unstamped, unmatched older message is also not adopted
+    expect(lastAssistantText([a(1, 'stale placeholder')], 'run-9', 'c9')).toBe('');
   });
 });

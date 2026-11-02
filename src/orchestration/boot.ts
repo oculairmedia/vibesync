@@ -17,7 +17,7 @@ import {
 } from './runtime/index.js';
 import type { IrohConnection } from './runtime/index.js';
 import { createNativeIrohConnection, resolveNativeIrohConfig } from './runtime/iroh/native-dialer.js';
-import type { PersonaLoader, RuntimeProvider } from './runtime/index.js';
+import type { AgentIdResolver, PersonaLoader, RuntimeProvider } from './runtime/index.js';
 import { startSchedulerDaemon, SCHEDULER_START_FAILED_EVENT } from './scheduler/boot-scheduler.js';
 import type { BootSchedulerOptions, SchedulerHandle } from './scheduler/boot-scheduler.js';
 import type { DoltClient } from './store/index.js';
@@ -156,6 +156,33 @@ export interface BootOrchestrationProviderRoutingOptions {
    * buildProviderResolver) the resolver builds its own from the environment.
    */
   readonly irohProvider?: () => IrohWrapperProvider;
+  /**
+   * vibesync-jni4: read side of project_role_agents. A project routed to
+   * 'letta-code-iroh' dispatches each step DIRECTLY to the role agent this
+   * returns for (project, role); there is no fallback agent, so without it (and
+   * without extra.agentId) every Iroh step fails loudly. Production wires
+   * `db.getRoleAgent`.
+   */
+  readonly roleAgentLookup?: RoleAgentLookup;
+}
+
+/** Minimal read view of project_role_agents (structural subset of SyncDatabase.getRoleAgent). */
+export interface RoleAgentLookup {
+  getRoleAgent(projectIdentifier: string, roleName: string): { readonly agentId: string } | null;
+}
+
+/**
+ * vibesync-jni4: AgentIdResolver over project_role_agents for the Iroh provider.
+ * Returns null (=> the step fails with a clear reason) when there is no row.
+ */
+export function createRoleAgentTableResolver(lookup: RoleAgentLookup | undefined): AgentIdResolver | undefined {
+  if (!lookup) return undefined;
+  return {
+    async resolveRoleAgent(role, _parentAgentId, projectIdentifier) {
+      if (!projectIdentifier) return null;
+      return lookup.getRoleAgent(projectIdentifier, role)?.agentId ?? null;
+    },
+  };
 }
 
 /**
@@ -203,10 +230,9 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   // vibesync-x38j: ONE Iroh provider (one dialed connection) shared by the
   // default path and per-project routing; built lazily so nothing binds a
   // socket unless a 'letta-code-iroh' route is actually used.
-  const personaLoader = opts.providerRouting?.personaLoader ?? createDefaultPersonaLoader('packs/gastown');
   let irohProvider: IrohWrapperProvider | null = null;
   const getIrohProvider = (): IrohWrapperProvider => {
-    irohProvider ??= buildIrohProvider(personaLoader, opts.irohConnectionFactory);
+    irohProvider ??= buildIrohProvider(createRoleAgentTableResolver(opts.providerRouting?.roleAgentLookup), opts.irohConnectionFactory);
     return irohProvider;
   };
   const providerKind = resolveProviderKind();
@@ -390,11 +416,11 @@ function resolveProviderKind(): string {
  *   VIBESYNC_IROH_PEER_NAME       default vibesync-orchestrator
  * Nothing is dialed here; the connection is lazy.
  */
-function buildIrohProvider(personaLoader: PersonaLoader, factory?: () => IrohConnection): IrohWrapperProvider {
+function buildIrohProvider(agentIdResolver: AgentIdResolver | undefined, factory?: () => IrohConnection): IrohWrapperProvider {
   const connection = factory ? factory() : createNativeIrohConnection(resolveNativeIrohConfig(), {
     log: (m) => console.warn(`[orchestration:iroh] ${m}`), // eslint-disable-line no-console
   });
-  return new IrohWrapperProvider({ connection, personaLoader });
+  return new IrohWrapperProvider({ connection, ...(agentIdResolver ? { agentIdResolver } : {}) });
 }
 
 function buildDefaultRuntimeProvider(opts: {
@@ -535,7 +561,7 @@ export function buildProviderResolver(opts: BootOrchestrationProviderRoutingOpti
           );
           return null;
         }
-        irohShared ??= opts.irohProvider ? opts.irohProvider() : buildIrohProvider(personaLoader);
+        irohShared ??= opts.irohProvider ? opts.irohProvider() : buildIrohProvider(createRoleAgentTableResolver(opts.roleAgentLookup));
         return wrapWithParentAgentId(irohShared, parentAgentId);
       }
       // Unknown provider kind — log once and fall back.
