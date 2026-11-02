@@ -349,7 +349,37 @@ describe('config', () => {
         minIntervalMs: 1_800_000,
         backstopMs: 28_800_000,
         statePath: '/opt/stacks/vibesync/logs/pm-wake-state.json',
+        sink: 'log',
+        conversationId: '',
       });
+    });
+
+    it("pmWake.sink: default 'log'; 'iroh' needs VIBESYNC_ORCHESTRATION_PROVIDER=letta-code-iroh, else load fails with a clear message (vibesync-2bgv)", () => {
+      try {
+        delete process.env.VIBESYNC_PM_WAKE_SINK;
+        expect(loadConfig().scheduler.pmWake.sink).toBe('log');
+
+        process.env.VIBESYNC_PM_WAKE_SINK = 'iroh';
+        // provider kind unset (= letta-code-subagent default) and explicitly the wrong one: both refuse
+        delete process.env.VIBESYNC_ORCHESTRATION_PROVIDER;
+        expect(() => loadConfig()).toThrow(/VIBESYNC_PM_WAKE_SINK=iroh requires VIBESYNC_ORCHESTRATION_PROVIDER=letta-code-iroh/);
+        process.env.VIBESYNC_ORCHESTRATION_PROVIDER = 'letta-code-subagent';
+        expect(() => loadConfig()).toThrow(/requires VIBESYNC_ORCHESTRATION_PROVIDER=letta-code-iroh/);
+
+        process.env.VIBESYNC_ORCHESTRATION_PROVIDER = 'letta-code-iroh';
+        process.env.VIBESYNC_PM_WAKE_CONVERSATION_ID = 'conv-fixed';
+        expect(loadConfig().scheduler.pmWake).toMatchObject({ sink: 'iroh', conversationId: 'conv-fixed' });
+
+        // whole-string enum: no trimming, no case folding, no near misses
+        for (const bad of ['IROH', 'iroh ', ' log', 'matrix', 'log,iroh']) {
+          process.env.VIBESYNC_PM_WAKE_SINK = bad;
+          expect(() => loadConfig(), bad).toThrow('Config validation failed');
+        }
+      } finally {
+        delete process.env.VIBESYNC_PM_WAKE_SINK;
+        delete process.env.VIBESYNC_PM_WAKE_CONVERSATION_ID;
+        delete process.env.VIBESYNC_ORCHESTRATION_PROVIDER;
+      }
     });
 
     it('pmWake env keys map through; ms are whole-string integers capped at the timer ceiling (vibesync-2bgv)', () => {
@@ -363,6 +393,8 @@ describe('config', () => {
           minIntervalMs: 60000,
           backstopMs: 2_147_483_647,
           statePath: '/tmp/x/state.json',
+          sink: 'log',
+          conversationId: '',
         });
         for (const bad of ['8h', '1e3', '-1', '5.5', ' 5', 'abc']) {
           process.env.VIBESYNC_PM_WAKE_BACKSTOP_MS = bad;

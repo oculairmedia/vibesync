@@ -255,6 +255,11 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     return irohProvider;
   };
   const providerKind = resolveProviderKind();
+  // vibesync-2bgv: the 'iroh' PM wake sink borrows the plane's Iroh connection, so it needs that provider kind.
+  const wakeCfg = opts.scheduler?.config.enabled ? opts.scheduler.config.pmWake : undefined;
+  if (wakeCfg?.enabled && wakeCfg.sink === 'iroh' && !opts.scheduler?.pmWake?.sink && providerKind !== IROH_PROVIDER_KIND) {
+    throw new Error(`scheduler.pmWake.sink='iroh' requires VIBESYNC_ORCHESTRATION_PROVIDER=${IROH_PROVIDER_KIND} (got "${providerKind}")`);
+  }
   const provider = opts.provider ?? buildDefaultRuntimeProvider({
     allowUnavailable: opts.providerRouting !== undefined,
     getIrohProvider,
@@ -361,7 +366,16 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   let scheduler: SchedulerHandle | null = null;
   if (opts.scheduler?.config.enabled) {
     try {
-      scheduler = startSchedulerDaemon({ ...opts.scheduler, dispatcher, bus, steps });
+      scheduler = startSchedulerDaemon({
+        ...opts.scheduler,
+        // vibesync-2bgv: the wake sink shares the plane's ONE lazily-built Iroh connection.
+        ...(opts.scheduler.pmWake
+          ? { pmWake: { ...opts.scheduler.pmWake, getIrohConnection: opts.scheduler.pmWake.getIrohConnection ?? (() => getIrohProvider().connection) } }
+          : {}),
+        dispatcher,
+        bus,
+        steps,
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console

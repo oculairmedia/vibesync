@@ -253,6 +253,15 @@ export class IrohWrapperProvider implements RuntimeProvider {
     }
   }
 
+  /**
+   * The shared connection. Other clients of the same Iroh peer identity (the PM
+   * wake sink, vibesync-2bgv) borrow it so there is one dial and one auth.
+   * They must not close it: the owner does that through {@link close}.
+   */
+  get connection(): IrohConnection {
+    return this.conn;
+  }
+
   /** Close the shared connection (daemon shutdown). */
   async close(): Promise<void> {
     await this.conn.close();

@@ -116,6 +116,14 @@ export interface SchedulerConfigSection {
     backstopMs: number;
     /** JSON file persisting last-woken per project (operational state, not a bead). */
     statePath: string;
+    /**
+     * Where a wake goes (vibesync-2bgv): 'log' only records it (default);
+     * 'iroh' delivers it to the PM over the shared Iroh connection (requires
+     * VIBESYNC_ORCHESTRATION_PROVIDER=letta-code-iroh).
+     */
+    sink: 'log' | 'iroh';
+    /** Fixed conversation for 'iroh' wakes (VIBESYNC_PM_WAKE_CONVERSATION_ID); '' = the PM's most recent interactive one. */
+    conversationId: string;
   };
 }
 
