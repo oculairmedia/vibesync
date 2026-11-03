@@ -49,6 +49,34 @@ describe('turn-client against a wrapper that enforces the real preconditions', (
     expect(auth['peer_name']).toBe('vibesync-test');
   });
 
+  it('matches create validation for tag shape and lane ownership scope', async () => {
+    const fake = new FakeIrohWrapper({ scope: ['agent-parent', 'agent-other'] });
+    conn = mk(fake);
+    await conn.connect();
+    const rejected = async (agent: string, tags: unknown, error: string) => {
+      await expect(conn!.rpc('conversation.create', { agent_id: agent, tags })).rejects.toThrow(error);
+    };
+
+    await rejected(AGENT, 'lane:work', 'invalid_tags: expected an array of strings');
+    await rejected(AGENT, ['lane:work', 1], 'invalid_tags: expected an array of strings');
+    await rejected(AGENT, [null], 'invalid_tags: expected an array of strings');
+    await rejected(AGENT, [1], 'invalid_tags: expected an array of strings');
+    await conn.rpc('conversation.create', { agent_id: AGENT, tags: null });
+    await conn.rpc('conversation.create', { agent_id: AGENT, tags: ['lane:home', 'lane:home'] });
+    await rejected(AGENT, ['lane:home'], 'lane_already_assigned');
+    await conn.rpc('conversation.create', { agent_id: 'agent-other', tags: ['lane:home'] });
+    await conn.rpc('conversation.create', { agent_id: AGENT, tags: ['lane:work'] });
+    await conn.rpc('conversation.create', { agent_id: AGENT, tags: ['lane:work'] });
+    await conn.rpc('conversation.create', { agent_id: AGENT, tags: ['lane:inbox'] });
+    await rejected(AGENT, ['lane:inbox'], 'lane_already_assigned');
+
+    expect(fake.conversationTags.size).toBe(6);
+    expect(fake.violations).toEqual([
+      'conversation.create attempted duplicate home/inbox lane tag for one agent',
+      'conversation.create attempted duplicate home/inbox lane tag for one agent',
+    ]);
+  });
+
   it('prefers the assistant message stamped with the turn run_id', async () => {
     const fake = new FakeIrohWrapper();
     conn = mk(fake);

@@ -91,6 +91,7 @@ interface SessionState {
   readonly agentId: string;
   readonly stepTimeoutMs: number | null;
   readonly moleculeId: string | null;
+  readonly motivatingBeadId: string | null;
   readonly stepName: string | null;
   /** Title for the step's conversation in the app list (see stepConversationTitle). */
   readonly title: string | null;
@@ -163,6 +164,7 @@ export class IrohWrapperProvider implements RuntimeProvider {
       agentId,
       stepTimeoutMs: readNumberExtra(spec, 'turnTimeoutMs') ?? null,
       moleculeId: readStringExtra(spec, 'moleculeId') ?? null,
+      motivatingBeadId: readStringExtra(spec, 'motivatingBeadId') ?? null,
       stepName: readStringExtra(spec, 'stepName') ?? null,
       title: stepConversationTitle(
         readStringExtra(spec, 'formulaName') ?? null,
@@ -290,7 +292,9 @@ export class IrohWrapperProvider implements RuntimeProvider {
     // Always a fresh conversation on the ROLE agent: a retried attempt must not
     // inherit a half-finished turn, and concurrent steps of one role must not
     // share context.
-    state.conversationId ??= await createConversation(this.conn, state.agentId, state.title ?? undefined);
+    state.conversationId ??= await createConversation(this.conn, state.agentId, state.title ?? undefined, {
+      tags: workConversationTags(state.moleculeId, state.motivatingBeadId),
+    });
     conversationKnown(state.conversationId);
     let firstToken = false;
     const result = await runTurn(
@@ -396,4 +400,12 @@ function sleep(ms: number): Promise<void> {
 export function stepConversationTitle(formulaName: string | null, stepName: string | null, motivatingBeadId: string | null): string | null {
   const parts = [formulaName, stepName, motivatingBeadId].filter((p): p is string => typeof p === 'string' && p.length > 0);
   return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+function workConversationTags(moleculeId: string | null, motivatingBeadId: string | null): string[] {
+  return [
+    'lane:work',
+    ...(motivatingBeadId ? [`bead:${motivatingBeadId}`] : []),
+    ...(moleculeId ? [`run:${moleculeId}`] : []),
+  ];
 }

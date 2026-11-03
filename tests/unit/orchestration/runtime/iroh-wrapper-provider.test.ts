@@ -89,13 +89,38 @@ describe('IrohWrapperProvider', () => {
     await p.stop(handle);
   });
 
-  it('titles each step conversation "<formula> · <step> · <bead>" so the app list is readable', async () => {
+  it('keeps work conversation titles and generic metadata unchanged', async () => {
     const fake = new FakeIrohWrapper({ scope: SCOPE });
     const p = mk(fake);
     await runStep(p, baseSpec({ formulaName: 'code-review', motivatingBeadId: 'vibesync-byil' }), 'a');
-    // No bead (e.g. an API-dispatched run): formula and step only.
     await runStep(p, baseSpec({ formulaName: 'code-review', stepName: 'step-b' }), 'b');
+
     expect([...fake.conversationTitles.values()]).toEqual(['code-review · step-a · vibesync-byil', 'code-review · step-b']);
+    expect([...fake.conversationTags.entries()]).toEqual([
+      ['conv-1', ['lane:work', 'bead:vibesync-byil', 'run:mol-1']],
+      ['conv-2', ['lane:work', 'run:mol-1']],
+    ]);
+    expect(fake.received.filter((frame) => frame['type'] === 'runtime_start' || frame['type'] === 'input').map((frame) => frame['type']))
+      .toEqual(['runtime_start', 'input', 'runtime_start', 'input']);
+    const createIndexes = fake.received.map((frame) => frame['method']).reduce<number[]>((indexes, method, index) => method === 'conversation.create' ? [...indexes, index] : indexes, []);
+    for (const index of createIndexes) {
+      expect(fake.received[index + 1]?.['type']).toBe('runtime_start');
+      expect(fake.received[index + 2]?.['type']).toBe('input');
+    }
+  });
+
+  it('leaves generic conversation creation without metadata unchanged', async () => {
+    const fake = new FakeIrohWrapper({ scope: SCOPE });
+    const connection = new IrohConnection({ dial: fake.dial, peerName: 'generic', sleep: async () => undefined, backoff: { initialMs: 1, capMs: 2, maxAttempts: 3 } });
+    await connection.connect();
+    const { createConversation } = await import('../../../../src/orchestration/runtime/iroh/turn-client.js');
+    await createConversation(connection, ROLE_AGENT, 'wake title');
+    await connection.close();
+
+    const create = fake.received.find((frame) => frame['method'] === 'conversation.create');
+    expect(create?.['params']).toEqual({ agent_id: ROLE_AGENT, summary: 'wake title' });
+    expect(fake.conversationTags.get('conv-1')).toEqual([]);
+    expect(fake.conversationTitles.get('conv-1')).toBe('wake title');
   });
 
   it('creates one fresh conversation per session and uses a stable client_message_id from molecule+step+attempt', async () => {
