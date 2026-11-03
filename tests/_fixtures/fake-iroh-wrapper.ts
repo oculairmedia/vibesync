@@ -100,6 +100,8 @@ export class FakeIrohWrapper {
   readonly conversationAgent = new Map<string, string>();
   /** conversation id -> title (`summary`) passed to conversation.create. */
   readonly conversationTitles = new Map<string, string>();
+  /** conversation id -> tags passed to conversation.create. */
+  readonly conversationTags = new Map<string, string[]>();
   /** conversation id -> the record fields `conversation.list` serves (the real host lists these; see seedConversation). */
   private readonly conversationMeta = new Map<string, { created_at: string; last_message_at: string; archived: boolean; extra: F }>();
   /** permission mode `permission_mode.get` reports per `agent/conversation` (absent = runtime never started: `{}`). */
@@ -127,6 +129,8 @@ export class FakeIrohWrapper {
     this.messages.set(c.id, []);
     this.conversationAgent.set(c.id, agent);
     this.conversationMeta.set(c.id, { created_at: c.lastMessageAt, last_message_at: c.lastMessageAt, archived: c.archived ?? false, extra: c.extra ?? {} });
+    const tags = c.extra?.['tags'];
+    if (Array.isArray(tags) && tags.every((tag) => typeof tag === 'string')) this.conversationTags.set(c.id, [...tags]);
   }
 
   /** Every user message text persisted on `conv` (what the PM would see). */
@@ -281,14 +285,31 @@ export class FakeIrohWrapper {
       return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: false, error: `method not found: ${method}` });
     }
     if (method === 'conversation.create') {
-      const agent = String(params['agent_id']);
+      const agent = typeof params['agent_id'] === 'string' ? params['agent_id'] : null;
+      if (!agent) return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: false, error: 'agent_id required' });
       if (!this.scope.includes(agent)) return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: false, error: "forbidden: agent not in this device's scope" });
+      const rawTags = params['tags'];
+      if (rawTags !== undefined && rawTags !== null && (!Array.isArray(rawTags) || rawTags.some((tag) => typeof tag !== 'string'))) {
+        return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: false, error: 'invalid_tags: expected an array of strings' });
+      }
       this.convCounter += 1;
       const id = `conv-${this.convCounter}`;
+      const tags = rawTags == null ? [] : (rawTags as string[]);
+      const laneTags = [...new Set(tags)].filter((tag) => tag === 'lane:home' || tag === 'lane:inbox');
+      const duplicateLane = laneTags.some((tag) =>
+        [...this.conversationTags.entries()].some(([conversationId, existing]) =>
+          this.conversationAgent.get(conversationId) === agent && existing.includes(tag),
+        ),
+      );
+      if (duplicateLane) {
+        this.violations.push('conversation.create attempted duplicate home/inbox lane tag for one agent');
+        return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: false, error: 'lane_already_assigned' });
+      }
       this.messages.set(id, []);
       this.conversationAgent.set(id, agent);
       const at = this.nextDate();
-      this.conversationMeta.set(id, { created_at: at, last_message_at: at, archived: false, extra: {} });
+      this.conversationMeta.set(id, { created_at: at, last_message_at: at, archived: false, extra: { tags } });
+      this.conversationTags.set(id, [...tags]);
       // Real host stores `summary` as the conversation title shown in the app list.
       if (typeof params['summary'] === 'string') this.conversationTitles.set(id, params['summary']);
       return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: true, result: { id } });

@@ -56,6 +56,82 @@ function harness(fake: FakeIrohWrapper) {
 }
 
 describe('FormulaDispatcher + IrohWrapperProvider: direct role dispatch (vibesync-jni4)', () => {
+  it('creates each dispatched step with its formula title and existing generic create metadata', async () => {
+    const fake = new FakeIrohWrapper({ scope: [PARENT, ...Object.values(ROLE_AGENTS)] });
+    const { dispatcher } = harness(fake);
+    const result = await dispatcher.run({
+      formula: formula(['reviewer']),
+      pack: pack(['reviewer']),
+      input: 'review the issue',
+      projectIdentifier: 'vibesync',
+      motivatingBeadId: 'vibesync-task-42',
+    });
+
+    expect(result.outputs.reviewer).toBe('PONG');
+    const create = fake.received.find((frame) => frame['method'] === 'conversation.create');
+    expect(create?.['params']).toEqual({
+      agent_id: ROLE_AGENTS.reviewer,
+      summary: 'code-review · reviewer · vibesync-task-42',
+      tags: ['lane:work', 'bead:vibesync-task-42', expect.stringMatching(/^run:mol-/)],
+    });
+    expect(fake.conversationTags.get('conv-1')).toEqual(['lane:work', 'bead:vibesync-task-42', `run:${result.moleculeId}`]);
+    expect(fake.received.findIndex((frame) => frame['method'] === 'conversation.create'))
+      .toBeLessThan(fake.received.findIndex((frame) => frame['type'] === 'runtime_start'));
+    expect(fake.received.findIndex((frame) => frame['type'] === 'runtime_start'))
+      .toBeLessThan(fake.received.findIndex((frame) => frame['type'] === 'input'));
+    expect(fake.received.some((frame) => frame['type'] === 'admin_rpc' && frame['method'] === 'agent.message.send')).toBe(false);
+    expect(fake.violations).toEqual([]);
+  });
+
+  it('retries with a fresh conversation preserving existing title behavior', async () => {
+    const fake = new FakeIrohWrapper({ scope: [PARENT, ...Object.values(ROLE_AGENTS)] });
+    const attempts: string[] = [];
+    const origInput = (fake as unknown as { onInput: (link: unknown, frame: Record<string, unknown>) => void }).onInput.bind(fake);
+    (fake as unknown as { onInput: unknown }).onInput = (link: unknown, frame: Record<string, unknown>) => {
+      const cmid = (((frame['payload'] as { messages: Array<{ client_message_id: string }> }).messages)[0]!).client_message_id;
+      attempts.push(cmid);
+      fake.script = attempts.length === 1
+        ? { stopReason: 'llm_api_error', error: 'retry this step' }
+        : { stopReason: 'end_turn', finalText: 'retry succeeded' };
+      origInput(link, frame);
+    };
+    const { dispatcher, store } = harness(fake);
+    const retryFormula = formula(['reviewer']);
+    retryFormula.steps[0]!.retry = { maxAttempts: 2, onExhausted: 'fail', backoffMs: 0 };
+    const result = await dispatcher.run({
+      formula: retryFormula,
+      pack: pack(['reviewer']),
+      input: 'review the issue',
+      projectIdentifier: 'vibesync',
+      motivatingBeadId: 'vibesync-task-42',
+    });
+    expect(result.outputs.reviewer).toBe('retry succeeded');
+    const view = await new MoleculeWalker(store).load(result.moleculeId);
+    expect(view?.steps[0]?.metadata['gc.retry_attempt']).toBe(1);
+    expect(attempts).toHaveLength(2);
+
+    const creates = fake.received.filter((frame) => frame['method'] === 'conversation.create');
+    expect(creates).toHaveLength(2);
+    const tags = creates.map((frame) => (frame['params'] as { tags: string[] }).tags);
+    expect(tags[0]).toEqual(['lane:work', 'bead:vibesync-task-42', expect.stringMatching(/^run:mol-/)]);
+    expect(tags[1]).toEqual(tags[0]);
+    expect(fake.conversationTags.size).toBe(2);
+    expect(attempts[0]).toContain(':reviewer:a1');
+    expect(attempts[1]).toContain(':reviewer:a1');
+    expect(attempts[1]).not.toBe(attempts[0]);
+    expect(attempts[1]?.split(':')[1]).toBe(attempts[0]?.split(':')[1]);
+    expect(fake.violations).toEqual([]);
+  });
+
+  it('preserves the existing title when no motivating bead is supplied', async () => {
+    const fake = new FakeIrohWrapper({ scope: [PARENT, ...Object.values(ROLE_AGENTS)] });
+    const { dispatcher } = harness(fake);
+    const result = await dispatcher.run({ formula: formula(['reviewer']), pack: pack(['reviewer']), input: 'x' });
+    expect(result.outputs.reviewer).toBe('PONG');
+    expect([...fake.conversationTags.values()]).toEqual([['lane:work', `run:${result.moleculeId}`]]);
+    expect(fake.conversationTitles.get('conv-1')).toBe('code-review · reviewer');
+  });
+
   it('records each role agent\'s own report as the step output, threads it into the next step, and fills the trace fields', async () => {
     const fake = new FakeIrohWrapper({ scope: [PARENT, ...Object.values(ROLE_AGENTS)] });
     fake.listOrder = 'newest-first';
