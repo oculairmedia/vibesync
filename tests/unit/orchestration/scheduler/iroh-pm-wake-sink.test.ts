@@ -251,12 +251,15 @@ describe('IrohPmWakeSink (vibesync-2bgv)', () => {
       expect(fake.userTexts('conv-other-agent')).toEqual([]);
     });
 
-    it('the PM has no conversation at all: a fresh one is created ON THE PM and receives the wake', async () => {
+    it('the PM has no conversation: fails and does not create a conversation', async () => {
       const fake = new FakeIrohWrapper({ scope: [PM] });
-      const { sink } = mkSink(fake);
-      expect((await sink.wake(wakeInput())).ok).toBe(true);
-      expect([...fake.conversationAgent.entries()]).toEqual([['conv-1', PM]]);
-      expect(fake.userTexts('conv-1')).toHaveLength(1);
+      const { sink, logs } = mkSink(fake);
+      const res = await sink.wake(wakeInput());
+
+      expect(res).toEqual({ ok: false, error: `no interactive conversation for PM ${PM}` });
+      expect(fake.received.filter((f) => f['type'] === 'admin_rpc' && f['method'] === 'conversation.create')).toEqual([]);
+      expect(fake.conversationAgent.size).toBe(0);
+      expect(logs.filter(([level, , message]) => level === 'warn' && message === 'pm-wake: no interactive conversation for PM')).toHaveLength(1);
     });
 
     it('never loosens a permission mode a human chose: runtime_start carries the conversation\'s current mode; unknown -> unrestricted', async () => {

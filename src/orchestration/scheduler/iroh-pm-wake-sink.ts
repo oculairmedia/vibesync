@@ -15,7 +15,7 @@
  *      'autonomous' (letta-mobile's IrohAgentMessageRouter.pickMostRecentInteractive
  *      rule: heartbeat/goal/dispatch conversations are never a target). Recency =
  *      last_message_at ?? updated_at ?? created_at;
- *   3. else (the PM has none) a fresh conversation created on the PM.
+ *   3. else (the PM has none) the wake fails: there is no human-readable target.
  * If listing fails (method not found, forbidden, link down) the wake FAILS
  * (ok:false). It never falls back to a fresh conversation: that would report
  * success for a message no human will ever read.
@@ -44,7 +44,7 @@
 
 import { IrohConnectionLostError, IrohTimeoutError } from '../runtime/iroh/connection.js';
 import type { IrohConnection } from '../runtime/iroh/connection.js';
-import { createConversation, submitInput } from '../runtime/iroh/turn-client.js';
+import { submitInput } from '../runtime/iroh/turn-client.js';
 import { formatWakeMessage } from './pm-waker.js';
 import type { PmWakeInput, PmWakeSink } from './pm-waker.js';
 
@@ -112,7 +112,12 @@ export class IrohPmWakeSink implements PmWakeSink {
   private async resolveConversation(conn: IrohConnection, input: PmWakeInput): Promise<string> {
     const pinned = this.pins.get(input.wakeId);
     if (pinned) return pinned;
-    const chosen = this.opts.conversationId?.trim() || (await pickInteractiveConversation(conn, input.agentId)) || (await createConversation(conn, input.agentId));
+    const chosen = this.opts.conversationId?.trim() || (await pickInteractiveConversation(conn, input.agentId));
+    if (!chosen) {
+      const error = `no interactive conversation for PM ${input.agentId}`;
+      this.opts.logger?.warn?.({ agentId: input.agentId, reason: input.reason, wakeId: input.wakeId, error }, 'pm-wake: no interactive conversation for PM');
+      throw new Error(error);
+    }
     this.pin(input.wakeId, chosen);
     return chosen;
   }
