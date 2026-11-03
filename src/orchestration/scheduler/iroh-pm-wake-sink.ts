@@ -74,7 +74,9 @@ export class IrohPmWakeSink implements PmWakeSink {
   async wake(input: PmWakeInput): Promise<PmWakeOutcome> {
     try {
       const response = await this.deliver(input);
-      return { ...response, accepted: response.ok, applicationDelivered: false, msgId: input.wakeId };
+      // Legacy direct input measures acceptance, not A2A application delivery.
+      // Leave applicationDelivered unset to preserve its existing scheduling policy.
+      return { ...response, accepted: response.ok, msgId: input.wakeId };
     } catch (err) {
       const error = errMsg(err);
       this.opts.logger?.warn?.({ agentId: input.agentId, reason: input.reason, wakeId: input.wakeId, error }, 'pm-wake: iroh delivery failed');

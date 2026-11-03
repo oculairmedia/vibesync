@@ -139,18 +139,30 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
     const fake = new FakeIrohWrapper({ scope: [PM] });
     fake.seedConversation(PM, { id: 'conv-heartbeat', lastMessageAt: '2026-01-01T00:00:00.000Z', extra: { conversation_class: 'autonomous' } });
     fake.seedConversation(PM, { id: 'conv-live', lastMessageAt: '2025-12-31T23:00:00.000Z' });
-    const { handle, woken } = await boot(fake, { wakeSink: { wake: async (input) => ({ ok: false, accepted: true, applicationDelivered: false, msgId: input.wakeId }) } });
+    const { handle, woken } = await boot(fake);
 
     await vi.advanceTimersByTimeAsync(8 * HOUR + 40 * MIN);
 
     const p = woken.find((event) => (event.payload as Record<string, unknown>)['reason'] === 'backstop')!.payload as Record<string, unknown>;
-    expect(p).toMatchObject({ reason: 'backstop', agentId: PM, ok: false, accepted: true, applicationDelivered: false, project: PROJECT });
-    expect(fake.turnsExecuted).toBe(0);
-    expect(fake.userTexts('conv-live')).toEqual([]);
+    expect(p).toMatchObject({ reason: 'backstop', agentId: PM, ok: true, accepted: true, applicationDelivered: false, project: PROJECT });
+    expect(woken).toHaveLength(1);
+    expect(fake.turnsExecuted).toBe(1);
+    expect(fake.userTexts('conv-live')).toHaveLength(1);
     expect(fake.userTexts('conv-heartbeat')).toEqual([]);
     expect(fake.violations).toEqual([]);
     expect(p['wakeId']).toContain('backstop');
-    expect(fake.received.filter((frame) => frame['type'] === 'input' || frame['type'] === 'runtime_start')).toEqual([]);
+    expect(fake.received.filter((frame) => frame['type'] === 'input')).toHaveLength(1);
+    await handle.shutdown();
+  });
+
+  it('an injected wake sink takes precedence over inbox adapter configuration', async () => {
+    const fake = new FakeIrohWrapper({ scope: [PM] });
+    const { handle } = await boot(fake, {
+      pmWake: { sink: 'inbox' },
+      wakeSink: { wake: async () => ({ ok: true }) },
+    });
+    expect(handle.scheduler).not.toBeNull();
+    expect(fake.dials).toBe(0);
     await handle.shutdown();
   });
 
@@ -177,7 +189,7 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
     expect(fake.received.filter((frame) => frame['type'] === 'input' || frame['type'] === 'runtime_start')).toEqual([]);
     expect(woken.every((event) => {
       const value = event.payload as Record<string, unknown>;
-      return value['accepted'] === true && value['applicationDelivered'] === false && value['ok'] === false && value['reason'] === 'queued';
+      return value['accepted'] === true && value['applicationDelivered'] === false && value['ok'] === false && value['reason'] === 'backstop' && value['sinkReason'] === 'queued';
     })).toBe(true);
     await handle.shutdown();
   });

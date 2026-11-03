@@ -75,7 +75,8 @@ describe('IrohPmWakeSink (vibesync-2bgv)', () => {
 
     const res = await sink.wake(input);
 
-    expect(res).toMatchObject({ ok: true, accepted: true, applicationDelivered: false, msgId: input.wakeId });
+    expect(res).toMatchObject({ ok: true, accepted: true, msgId: input.wakeId });
+    expect(res.applicationDelivered).toBeUndefined();
     const inputs = fake.received.filter((f) => f['type'] === 'input');
     expect(inputs).toHaveLength(1);
     const frame = inputs[0] as { runtime: Record<string, string>; payload: { messages: Array<Record<string, string>> } };

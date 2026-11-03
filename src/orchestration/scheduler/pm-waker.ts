@@ -360,7 +360,7 @@ export class PmWaker {
       this.retryInput.set(reason, input);
       this.failedAt.set(reason, now);
       this.deps.logger?.warn?.(
-        { project, reason, wakeId, accepted: outcome.accepted ?? false, applicationDelivered: outcome.applicationDelivered ?? false, ...(outcome.reason ? { reason: outcome.reason } : {}), error },
+        { project, reason, wakeId, accepted: outcome.accepted ?? false, applicationDelivered: outcome.applicationDelivered ?? false, ...(outcome.reason ? { sinkReason: outcome.reason } : {}), error },
         'pm-wake: wake not confirmed delivered — lastWokenAt unchanged',
       );
     }
@@ -374,7 +374,7 @@ export class PmWaker {
       accepted: outcome.accepted ?? outcome.ok,
       applicationDelivered: outcome.applicationDelivered ?? false,
       ...(outcome.msgId ? { msgId: outcome.msgId } : {}),
-      ...(outcome.reason ? { reason: outcome.reason } : {}),
+      ...(outcome.reason ? { sinkReason: outcome.reason } : {}),
       ...(error ? { error } : {}),
     });
   }

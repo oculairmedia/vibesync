@@ -141,7 +141,7 @@ describe('PM wake (vibesync-2bgv)', () => {
     expect(calls.every((call) => JSON.stringify(call.correlation) === JSON.stringify(calls[0]!.correlation))).toBe(true);
     expect(woken.every((event) => {
       const eventPayload = payload(event);
-      return eventPayload['accepted'] === true && eventPayload['applicationDelivered'] === false && eventPayload['ok'] === false && eventPayload['reason'] === 'queued';
+      return eventPayload['accepted'] === true && eventPayload['applicationDelivered'] === false && eventPayload['ok'] === false && eventPayload['reason'] === 'backstop' && eventPayload['sinkReason'] === 'queued';
     })).toBe(true);
     expect(readState()[PROJECT]!.lastWokenAt).toBeNull();
     await handle.shutdown();
