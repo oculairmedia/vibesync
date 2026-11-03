@@ -46,7 +46,7 @@ import type { StepDispatcher } from './step-dispatcher.js';
 import { EscalationManager, type NotificationTransport } from './escalation.js';
 import { FilePmWakeStateStore, type PmWakeStateStore } from './pm-wake-state.js';
 import { IrohPmWakeSink } from './iroh-pm-wake-sink.js';
-import { LoggingPmWakeSink, PmWaker, type PmWakeSink } from './pm-waker.js';
+import { formatWakeMessage, LoggingPmWakeSink, PmWaker, type PmWakeSink } from './pm-waker.js';
 import type { IrohConnection } from '../runtime/iroh/connection.js';
 import type { GitHubPort } from './refinery.js';
 
@@ -79,9 +79,9 @@ export interface SchedulerBootConfig {
     readonly minIntervalMs: number;
     readonly backstopMs: number;
     readonly statePath: string;
-    /** 'log' (default) or 'iroh' (vibesync-2bgv). Absent = 'log'. */
-    readonly sink?: 'log' | 'iroh';
-    /** Fixed conversation for 'iroh' wakes; absent/'' = the PM's most recent interactive one. */
+    /** 'log' (default), explicit legacy 'iroh', or new 'inbox' producer. */
+    readonly sink?: 'log' | 'iroh' | 'inbox';
+    /** Explicit conversation for legacy direct-input wakes only. */
     readonly conversationId?: string;
   };
   /**
@@ -115,6 +115,7 @@ export interface BootSchedulerOptions {
   readonly pmWake?: {
     readonly lookupAgentId: (projectIdentifier: string) => string | null | undefined;
     readonly sink?: PmWakeSink;
+    readonly inboxAdapter?: InboxMessageAdapter;
     /**
      * The plane's shared Iroh connection (vibesync-2bgv). Required when
      * `config.pmWake.sink === 'iroh'` and no explicit `sink` is supplied; boot
@@ -155,11 +156,57 @@ export const BEADS_ISSUE_STATUS_CHANGED_EVENT = 'beads/issue.status_changed';
 /** Target statuses of `beads/issue.status_changed` that trigger a tick. */
 export const TICK_TRIGGER_BEAD_STATUSES: ReadonlySet<string> = new Set(['ready', 'in_progress', 'closed']);
 
-/**
- * Build and start the daemon. Throws on misconfiguration (unknown formula, no
- * pool members, auto-merge without required checks); the caller decides how to
- * surface that.
- */
+export interface InboxMessageAck {
+  readonly msgId: string;
+  readonly accepted: boolean;
+  readonly applicationDelivered: boolean;
+  readonly reason?: string;
+}
+
+export interface InboxMessageAdapter {
+  sendInboxMessage(input: {
+    readonly to: string;
+    readonly body: string;
+    readonly msgId: string;
+    readonly correlation?: Readonly<Record<string, string>>;
+  }): Promise<unknown>;
+}
+
+function createInboxWakeSink(adapter: InboxMessageAdapter): PmWakeSink {
+  return {
+    wake: async (input) => {
+      const rawAck = await adapter.sendInboxMessage({
+        to: input.agentId,
+        body: formatWakeMessage(input),
+        msgId: input.wakeId,
+        ...(input.correlation ? { correlation: input.correlation } : {}),
+      });
+      const ack = normalizeInboxWakeAck(rawAck, input.wakeId);
+      return {
+        ok: ack?.accepted === true && ack.applicationDelivered,
+        accepted: ack?.accepted ?? false,
+        applicationDelivered: ack?.applicationDelivered ?? false,
+        msgId: input.wakeId,
+        ...(!ack ? { reason: 'malformed inbox acknowledgement' } : ack.reason ? { reason: ack.reason } : {}),
+      };
+    },
+  };
+}
+
+export function normalizeInboxWakeAck(value: unknown, msgId: string): InboxMessageAck | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const ack = value as Record<string, unknown>;
+  if (ack['msgId'] !== msgId || typeof ack['accepted'] !== 'boolean') return null;
+  if (ack['applicationDelivered'] !== undefined && typeof ack['applicationDelivered'] !== 'boolean') return null;
+  if (ack['reason'] !== undefined && typeof ack['reason'] !== 'string') return null;
+  return {
+    msgId,
+    accepted: ack['accepted'],
+    applicationDelivered: ack['applicationDelivered'] === true,
+    ...(typeof ack['reason'] === 'string' ? { reason: ack['reason'] } : {}),
+  };
+}
+
 export function startSchedulerDaemon(
   opts: BootSchedulerOptions & {
     readonly dispatcher: FormulaDispatcher;
@@ -249,10 +296,17 @@ export function startSchedulerDaemon(
           ...(logger ? { logger } : {}),
         });
       }
+      if (!sink && pw.sink === 'inbox') {
+        if (!opts.pmWake.inboxAdapter) {
+          throw new Error("scheduler.pmWake.sink='inbox' is blocked until the approved MobileAgentMessageSender service adapter is supplied");
+        }
+        sink = createInboxWakeSink(opts.pmWake.inboxAdapter);
+      }
+      const wakerSink = sink ?? new LoggingPmWakeSink(logger);
       pmWaker = new PmWaker({
         projectIdentifier: config.projectIdentifier,
         lookupAgentId: opts.pmWake.lookupAgentId,
-        sink: sink ?? new LoggingPmWakeSink(logger),
+        sink: wakerSink,
         store: opts.pmWake.store ?? new FilePmWakeStateStore(pw.statePath, logger),
         backlog: () => daemon.backlogSnapshot(),
         emit: (kind, payload) => bus.emit({ layer: 'daemon', kind, payload }),

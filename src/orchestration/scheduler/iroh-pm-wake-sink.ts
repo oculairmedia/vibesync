@@ -45,13 +45,14 @@
 import { IrohConnectionLostError, IrohTimeoutError } from '../runtime/iroh/connection.js';
 import type { IrohConnection } from '../runtime/iroh/connection.js';
 import { createConversation, submitInput } from '../runtime/iroh/turn-client.js';
+import type { PmWakeOutcome } from './pm-waker.js';
 import { formatWakeMessage } from './pm-waker.js';
 import type { PmWakeInput, PmWakeSink } from './pm-waker.js';
 
 export interface IrohPmWakeSinkOptions {
   /** The plane's shared connection. May throw (e.g. no key configured): that becomes ok:false. */
   readonly getConnection: () => IrohConnection;
-  /** Fixed target conversation (VIBESYNC_PM_WAKE_CONVERSATION_ID). Overrides the most-recent pick. */
+  /** Explicit legacy direct-input target (VIBESYNC_PM_WAKE_CONVERSATION_ID). */
   readonly conversationId?: string;
   readonly logger?: {
     info?(o: unknown, m: string): void;
@@ -70,13 +71,16 @@ export class IrohPmWakeSink implements PmWakeSink {
 
   constructor(private readonly opts: IrohPmWakeSinkOptions) {}
 
-  async wake(input: PmWakeInput): Promise<{ ok: boolean; error?: string }> {
+  async wake(input: PmWakeInput): Promise<PmWakeOutcome> {
     try {
-      return await this.deliver(input);
+      const response = await this.deliver(input);
+      // Legacy direct input measures acceptance, not A2A application delivery.
+      // Leave applicationDelivered unset to preserve its existing scheduling policy.
+      return { ...response, accepted: response.ok, msgId: input.wakeId };
     } catch (err) {
       const error = errMsg(err);
       this.opts.logger?.warn?.({ agentId: input.agentId, reason: input.reason, wakeId: input.wakeId, error }, 'pm-wake: iroh delivery failed');
-      return { ok: false, error };
+      return { ok: false, accepted: false, applicationDelivered: false, msgId: input.wakeId, error };
     }
   }
 
@@ -99,7 +103,7 @@ export class IrohPmWakeSink implements PmWakeSink {
         }
         this.opts.logger?.info?.(
           { agentId: input.agentId, conversationId, reason: input.reason, wakeId: input.wakeId, disposition: res.disposition ?? 'unspecified' },
-          'pm-wake: delivered to PM',
+          'pm-wake: input accepted; application delivery unconfirmed',
         );
         return { ok: true };
       } catch (err) {

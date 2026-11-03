@@ -62,6 +62,7 @@ const wakeInput = (over: Partial<PmWakeInput> = {}): PmWakeInput => ({
   reason: 'backstop',
   detail: 'no wake for 480 min',
   wakeId: 'proj-x-backstop-1000',
+  correlation: undefined,
   ...over,
 });
 
@@ -74,7 +75,8 @@ describe('IrohPmWakeSink (vibesync-2bgv)', () => {
 
     const res = await sink.wake(input);
 
-    expect(res).toEqual({ ok: true });
+    expect(res).toMatchObject({ ok: true, accepted: true, msgId: input.wakeId });
+    expect(res.applicationDelivered).toBeUndefined();
     const inputs = fake.received.filter((f) => f['type'] === 'input');
     expect(inputs).toHaveLength(1);
     const frame = inputs[0] as { runtime: Record<string, string>; payload: { messages: Array<Record<string, string>> } };
@@ -102,7 +104,7 @@ describe('IrohPmWakeSink (vibesync-2bgv)', () => {
     expect(res.ok).toBe(true);
     expect(Date.now() - t0).toBeLessThan(2_000);
     expect(frames).not.toContain('turn_finished'); // the turn was still running when ok came back
-    expect(fake.userTexts('conv-human')).toHaveLength(1); // ...and the PM did get the message
+    expect(fake.userTexts('conv-human')).toHaveLength(1); // input accepted and persisted; inbox rendering is a separate integration gate
   });
 
   it('2. the same wakeId twice: the wrapper dedupes on client_message_id -> exactly one turn, one message, both ok:true', async () => {
@@ -182,7 +184,7 @@ describe('IrohPmWakeSink (vibesync-2bgv)', () => {
   it('3f. a getConnection that throws (e.g. no address/key configured) -> ok:false, never throws', async () => {
     const sink = new IrohPmWakeSink({ getConnection: () => { throw new Error('iroh secret key file not found: /x'); } });
     const res = await sink.wake(wakeInput());
-    expect(res).toEqual({ ok: false, error: expect.stringContaining('secret key file not found') });
+    expect(res).toMatchObject({ ok: false, accepted: false, applicationDelivered: false, msgId: wakeInput().wakeId, error: expect.stringContaining('secret key file not found') });
   });
 
   it('3g. the pairing token never appears in an error or a log line', async () => {

@@ -150,8 +150,8 @@ export function loadConfig(): AppConfig {
         minIntervalMs: parseCappedMs(process.env.VIBESYNC_PM_WAKE_MIN_INTERVAL_MS, 1_800_000),
         backstopMs: parseCappedMs(process.env.VIBESYNC_PM_WAKE_BACKSTOP_MS, 28_800_000),
         statePath: process.env.VIBESYNC_PM_WAKE_STATE_PATH || '/opt/stacks/vibesync/logs/pm-wake-state.json',
-        // vibesync-2bgv: whole-string enum ('log' | 'iroh'); anything else fails validation.
-        sink: (process.env.VIBESYNC_PM_WAKE_SINK || 'log') as 'log' | 'iroh',
+        // vibesync-2bgv: whole-string enum; anything else fails validation.
+        sink: (process.env.VIBESYNC_PM_WAKE_SINK || 'log') as 'log' | 'iroh' | 'inbox',
         conversationId: process.env.VIBESYNC_PM_WAKE_CONVERSATION_ID ?? '',
       },
     },

@@ -120,6 +120,33 @@ const POOL = [
 ];
 
 describe('PM wake (vibesync-2bgv)', () => {
+  it('accepted-only wake retries retain the logical id and leave completed-delivery time unchanged', async () => {
+    const calls: PmWakeInput[] = [];
+    const sink: PmWakeSink = {
+      wake: async (input) => {
+        calls.push(input);
+        return { ok: true, accepted: true, applicationDelivered: false, msgId: input.wakeId, reason: 'queued' };
+      },
+    };
+    const { handle, woken } = await boot({ sink, intervalMs: 60 * MIN });
+    await vi.advanceTimersByTimeAsync(8 * HOUR + 60 * MIN);
+    for (let attempt = 0; attempt < 7; attempt += 1) {
+      await vi.advanceTimersByTimeAsync(PM_WAKE_RETRY_BACKOFF_MS);
+    }
+
+    expect(calls.length).toBeGreaterThan(1);
+    expect(new Set(calls.map((call) => call.wakeId)).size).toBe(1);
+    expect(calls.every((call) => JSON.stringify(call) === JSON.stringify(calls[0]))).toBe(true);
+    expect(calls[0]!.correlation).toBeUndefined();
+    expect(calls.every((call) => JSON.stringify(call.correlation) === JSON.stringify(calls[0]!.correlation))).toBe(true);
+    expect(woken.every((event) => {
+      const eventPayload = payload(event);
+      return eventPayload['accepted'] === true && eventPayload['applicationDelivered'] === false && eventPayload['ok'] === false && eventPayload['reason'] === 'backstop' && eventPayload['sinkReason'] === 'queued';
+    })).toBe(true);
+    expect(readState()[PROJECT]!.lastWokenAt).toBeNull();
+    await handle.shutdown();
+  });
+
   const originalEnv = { ...process.env };
   let dir: string;
   let statePath: string;
@@ -168,7 +195,7 @@ describe('PM wake (vibesync-2bgv)', () => {
           paused: o.paused ?? false,
           pmWake: { enabled: true, minIntervalMs: 30 * MIN, backstopMs: 8 * HOUR, statePath, ...o.pmWake },
         }),
-        listPoolMembers: () => POOL,
+        listPoolMembers: () => o.pmWakeSeams === false ? [] : POOL,
         bd: (o.bd ?? fakeBd()).run,
         appRoot: process.cwd(),
         pmWake: { lookupAgentId: o.lookup ?? (() => PM), sink },
