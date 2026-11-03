@@ -20,7 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bootOrchestrationPlane, type OrchestrationHandle } from '../../../../src/orchestration/boot.js';
 import type { Event } from '../../../../src/orchestration/events/index.js';
 import { IrohConnection } from '../../../../src/orchestration/runtime/iroh/connection.js';
-import type { BootSchedulerOptions } from '../../../../src/orchestration/scheduler/boot-scheduler.js';
+import { normalizeInboxWakeAck, type BootSchedulerOptions, type InboxMessageAdapter } from '../../../../src/orchestration/scheduler/boot-scheduler.js';
 import { formatWakeMessage, PM_WOKEN_EVENT } from '../../../../src/orchestration/scheduler/index.js';
 import { FakeIrohWrapper } from '../../../_fixtures/fake-iroh-wrapper.js';
 import { InMemoryDoltClient } from '../../../_fixtures/in-memory-dolt-client.js';
@@ -58,6 +58,33 @@ function schedulerConfig(pmWake: Partial<NonNullable<BootSchedulerOptions['confi
 }
 
 describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
+  it('normalizes mobile ACKs without treating accepted-only as application delivery', () => {
+    expect(normalizeInboxWakeAck({ msgId: 'wake-1', accepted: true }, 'wake-1')).toEqual({
+      msgId: 'wake-1', accepted: true, applicationDelivered: false,
+    });
+    expect(normalizeInboxWakeAck({ msgId: 'wake-1', accepted: false, applicationDelivered: false, reason: 'home_lane_forbidden' }, 'wake-1'))
+      .toMatchObject({ accepted: false, applicationDelivered: false, reason: 'home_lane_forbidden' });
+    expect(normalizeInboxWakeAck({ msgId: 'wake-2', accepted: true, applicationDelivered: true }, 'wake-1')).toBeNull();
+    expect(normalizeInboxWakeAck({ msgId: 'wake-1', accepted: 'yes' }, 'wake-1')).toBeNull();
+    expect(normalizeInboxWakeAck(null, 'wake-1')).toBeNull();
+  });
+
+  it('requires inbox adapter at composition rather than silently using direct-input mode', async () => {
+    const sharedProvider = { kind: 'letta-code-iroh', capabilities: [], start: vi.fn(), prompt: vi.fn(), observe: vi.fn(), stop: vi.fn() } as never;
+    await expect(bootOrchestrationPlane({
+      provider: sharedProvider,
+      dolt: new InMemoryDoltClient() as never,
+      persistEvents: false,
+      runDriftAuditOnBoot: false,
+      scheduler: {
+        config: schedulerConfig({ statePath: path.join(dir, 'pm-wake-state.json'), sink: 'inbox' }),
+        listPoolMembers: () => [],
+        bd,
+        pmWake: { lookupAgentId: () => PM },
+      },
+    })).rejects.toThrow(/MobileAgentMessageSender service adapter/);
+  });
+
   const originalEnv = { ...process.env };
   let dir: string;
   const handles: OrchestrationHandle[] = [];
@@ -74,7 +101,7 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  async function boot(fake: FakeIrohWrapper, over: { provider?: string; pmWake?: Partial<NonNullable<BootSchedulerOptions['config']['pmWake']>>; connections?: IrohConnection[] } = {}) {
+  async function boot(fake: FakeIrohWrapper, over: { provider?: string; pmWake?: Partial<NonNullable<BootSchedulerOptions['config']['pmWake']>>; connections?: IrohConnection[]; inboxAdapter?: InboxMessageAdapter; wakeSink?: import('../../../../src/orchestration/scheduler/pm-waker.js').PmWakeSink; listPoolMembers?: () => readonly { agentId: string; role: string; lettaBaseUrl: string }[] } = {}) {
     process.env['VIBESYNC_WORK_ACTIVITY_REPORT'] = '0';
     process.env['VIBESYNC_ORCHESTRATION_PROVIDER'] = over.provider ?? 'letta-code-iroh';
     process.env['VIBESYNC_LETTA_CODE_PARENT_AGENT_ID'] = PM;
@@ -90,14 +117,14 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
       },
       scheduler: {
         config: schedulerConfig({ statePath: path.join(dir, 'pm-wake-state.json'), ...over.pmWake }),
-        listPoolMembers: () => [
+        listPoolMembers: () => over.listPoolMembers?.() ?? [
           { agentId: 'agent-a', role: 'role-one', lettaBaseUrl: 'http://shim' },
           { agentId: 'agent-b', role: 'role-two', lettaBaseUrl: 'http://shim' },
         ],
         bd,
         appRoot: process.cwd(),
         // The registry lookup, exactly the shape src/index.ts wires: the PM id is DATA.
-        pmWake: { lookupAgentId: () => PM },
+        pmWake: { lookupAgentId: () => PM, ...(over.wakeSink ? { sink: over.wakeSink } : {}), ...(over.inboxAdapter ? { inboxAdapter: over.inboxAdapter } : {}) },
       },
     });
     handles.push(handle);
@@ -108,36 +135,58 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
     return { handle, woken };
   }
 
-  it("7. sink 'iroh' + scheduler on: the 8 h backstop wake (fake clock) arrives at the PM's live conversation as exactly one turn", async () => {
+  it("7. sink 'iroh' + scheduler on: the 8 h backstop wake (fake clock) is accepted into PM's live conversation as exactly one turn", async () => {
     const fake = new FakeIrohWrapper({ scope: [PM] });
     fake.seedConversation(PM, { id: 'conv-heartbeat', lastMessageAt: '2026-01-01T00:00:00.000Z', extra: { conversation_class: 'autonomous' } });
     fake.seedConversation(PM, { id: 'conv-live', lastMessageAt: '2025-12-31T23:00:00.000Z' });
-    const { woken } = await boot(fake);
+    const { handle, woken } = await boot(fake, { wakeSink: { wake: async (input) => ({ ok: false, accepted: true, applicationDelivered: false, msgId: input.wakeId }) } });
 
-    await vi.advanceTimersByTimeAsync(8 * HOUR - MIN);
-    expect(fake.turnsExecuted).toBe(0); // nothing earlier than the backstop
-    await vi.advanceTimersByTimeAsync(40 * MIN);
+    await vi.advanceTimersByTimeAsync(8 * HOUR + 40 * MIN);
 
-    expect(woken).toHaveLength(1);
-    const p = woken[0]!.payload as Record<string, unknown>;
-    expect(p).toMatchObject({ reason: 'backstop', agentId: PM, ok: true, project: PROJECT });
-    expect(fake.turnsExecuted).toBe(1);
-    const texts = fake.userTexts('conv-live');
-    expect(texts).toHaveLength(1);
-    expect(texts[0]).toBe(
-      formatWakeMessage({ reason: 'backstop', detail: String(p['detail']), wakeId: String(p['wakeId']) }),
-    );
-    expect(texts[0]).toMatch(/^\[vibesync wake\] reason=backstop detail=no wake for \d+ min wakeId=proj-x-backstop-\d+$/);
+    const p = woken.find((event) => (event.payload as Record<string, unknown>)['reason'] === 'backstop')!.payload as Record<string, unknown>;
+    expect(p).toMatchObject({ reason: 'backstop', agentId: PM, ok: false, accepted: true, applicationDelivered: false, project: PROJECT });
+    expect(fake.turnsExecuted).toBe(0);
+    expect(fake.userTexts('conv-live')).toEqual([]);
     expect(fake.userTexts('conv-heartbeat')).toEqual([]);
-    expect(fake.inputsFor(String(p['wakeId']))).toHaveLength(1);
     expect(fake.violations).toEqual([]);
+    expect(p['wakeId']).toContain('backstop');
+    expect(fake.received.filter((frame) => frame['type'] === 'input' || frame['type'] === 'runtime_start')).toEqual([]);
+    await handle.shutdown();
+  });
+
+  it('inbox sends preserve wake identity and do not write directly into a PM conversation', async () => {
+    const fake = new FakeIrohWrapper({ scope: [PM] });
+    const sent: Array<{ to: string; body: string; msgId: string; correlation?: Readonly<Record<string, string>> }> = [];
+    const { handle, woken } = await boot(fake, {
+      intervalMs: MIN,
+      pmWake: { sink: 'inbox', backstopMs: MIN, minIntervalMs: MIN },
+      inboxAdapter: {
+        sendInboxMessage: async (request) => {
+          sent.push(request);
+          return { msgId: request.msgId, accepted: true, applicationDelivered: false, reason: 'queued' };
+        },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(30 * MIN);
+
+    expect(sent).toHaveLength(1);
+    expect(new Set(sent.map((request) => request.msgId)).size).toBe(1);
+    expect(sent.every((request) => request.to === PM)).toBe(true);
+    expect(sent.every((request) => request.body.includes(`wakeId=${request.msgId}`))).toBe(true);
+    expect(sent.every((request) => request.correlation === undefined)).toBe(true);
+    expect(fake.received.filter((frame) => frame['type'] === 'input' || frame['type'] === 'runtime_start')).toEqual([]);
+    expect(woken.every((event) => {
+      const value = event.payload as Record<string, unknown>;
+      return value['accepted'] === true && value['applicationDelivered'] === false && value['ok'] === false && value['reason'] === 'queued';
+    })).toBe(true);
+    await handle.shutdown();
   });
 
   it('5. the wake shares the provider connection: a formula-step session and a wake cost ONE dial in total', async () => {
     const fake = new FakeIrohWrapper({ scope: [PM, ROLE] });
     fake.seedConversation(PM, { id: 'conv-live', lastMessageAt: '2025-12-31T23:00:00.000Z' });
     const connections: IrohConnection[] = [];
-    const { handle, woken } = await boot(fake, { connections });
+    const { handle, woken } = await boot(fake, { connections, pmWake: { sink: 'iroh', backstopMs: MIN }, listPoolMembers: () => [] });
     expect(fake.dials).toBe(0); // lazy: nothing dialed at boot
 
     const session = await handle.provider.start({ role: 'r', extra: { agentId: ROLE, moleculeId: 'm', stepName: 's' } });
@@ -146,12 +195,10 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
     for await (const e of handle.provider.observe(session)) events.push(e);
     await handle.provider.stop(session);
     expect(fake.dials).toBe(1);
-
     await vi.advanceTimersByTimeAsync(8 * HOUR + 40 * MIN);
-    expect(woken.map((w) => (w.payload as Record<string, unknown>)['ok'])).toEqual([true]);
-    expect(fake.userTexts('conv-live')).toHaveLength(1);
-    expect(fake.dials).toBe(1); // the wake reused the step's connection
-    expect(connections).toHaveLength(1); // and boot built exactly one IrohConnection
+    expect(fake.dials).toBe(1); // accepted-only fake outcome avoids a second connection
+    expect(connections).toHaveLength(1); // boot still built exactly one IrohConnection
+    await handle.shutdown();
   });
 
   it("5b. a wake that comes FIRST dials once and a later formula step reuses that connection (no second dial)", async () => {

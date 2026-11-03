@@ -121,8 +121,8 @@ export interface SchedulerConfigSection {
      * 'iroh' delivers it to the PM over the shared Iroh connection (requires
      * VIBESYNC_ORCHESTRATION_PROVIDER=letta-code-iroh).
      */
-    sink: 'log' | 'iroh';
-    /** Fixed conversation for 'iroh' wakes (VIBESYNC_PM_WAKE_CONVERSATION_ID); '' = the PM's most recent interactive one. */
+    sink: 'log' | 'iroh' | 'inbox';
+    /** Explicit legacy target for direct-input mode only. */
     conversationId: string;
   };
 }

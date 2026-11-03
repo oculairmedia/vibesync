@@ -131,7 +131,7 @@ export {
   PM_WAKE_SKIPPED_EVENT,
   PM_WAKE_RETRY_BACKOFF_MS,
 } from './pm-waker.js';
-export type { WakeReason, PmWakeSink, PmWakeInput, PmWakerDeps, PmBacklogSnapshot } from './pm-waker.js';
+export type { WakeReason, PmWakeSink, PmWakeInput, PmWakeOutcome, PmWakerDeps, PmBacklogSnapshot } from './pm-waker.js';
 export { IrohPmWakeSink } from './iroh-pm-wake-sink.js';
 export type { IrohPmWakeSinkOptions } from './iroh-pm-wake-sink.js';
 export { FilePmWakeStateStore } from './pm-wake-state.js';

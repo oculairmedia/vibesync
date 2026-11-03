@@ -260,6 +260,9 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   if (wakeCfg?.enabled && wakeCfg.sink === 'iroh' && !opts.scheduler?.pmWake?.sink && providerKind !== IROH_PROVIDER_KIND) {
     throw new Error(`scheduler.pmWake.sink='iroh' requires VIBESYNC_ORCHESTRATION_PROVIDER=${IROH_PROVIDER_KIND} (got "${providerKind}")`);
   }
+  if (wakeCfg?.enabled && wakeCfg.sink === 'inbox' && !opts.scheduler?.pmWake?.inboxAdapter && opts.scheduler?.pmWake?.lookupAgentId) {
+    throw new Error("scheduler.pmWake.sink='inbox' requires an approved MobileAgentMessageSender service adapter");
+  }
   const provider = opts.provider ?? buildDefaultRuntimeProvider({
     allowUnavailable: opts.providerRouting !== undefined,
     getIrohProvider,

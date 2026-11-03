@@ -359,6 +359,9 @@ describe('config', () => {
         delete process.env.VIBESYNC_PM_WAKE_SINK;
         expect(loadConfig().scheduler.pmWake.sink).toBe('log');
 
+        process.env.VIBESYNC_PM_WAKE_SINK = 'inbox';
+        delete process.env.VIBESYNC_ORCHESTRATION_PROVIDER;
+        expect(loadConfig().scheduler.pmWake.sink).toBe('inbox');
         process.env.VIBESYNC_PM_WAKE_SINK = 'iroh';
         // provider kind unset (= letta-code-subagent default) and explicitly the wrong one: both refuse
         delete process.env.VIBESYNC_ORCHESTRATION_PROVIDER;
@@ -371,7 +374,7 @@ describe('config', () => {
         expect(loadConfig().scheduler.pmWake).toMatchObject({ sink: 'iroh', conversationId: 'conv-fixed' });
 
         // whole-string enum: no trimming, no case folding, no near misses
-        for (const bad of ['IROH', 'iroh ', ' log', 'matrix', 'log,iroh']) {
+        for (const bad of ['IROH', 'iroh ', 'INBOX', ' inbox', ' log', 'matrix', 'log,iroh']) {
           process.env.VIBESYNC_PM_WAKE_SINK = bad;
           expect(() => loadConfig(), bad).toThrow('Config validation failed');
         }

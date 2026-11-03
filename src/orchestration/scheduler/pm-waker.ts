@@ -54,12 +54,23 @@ export interface PmWakeInput {
   readonly projectIdentifier: string;
   readonly reason: WakeReason;
   readonly detail: string;
-  /** Stable per logical wake (reused on retry); becomes the client_message_id. */
+  /** Stable per logical wake (reused on retry); becomes the inbox message id. */
   readonly wakeId: string;
+  /** Optional producer correlation; absent for backstop wakes with no known work bead. */
+  readonly correlation?: Readonly<Record<string, string>>;
+}
+
+export interface PmWakeOutcome {
+  readonly ok: boolean;
+  readonly accepted?: boolean;
+  readonly applicationDelivered?: boolean;
+  readonly msgId?: string;
+  readonly reason?: string;
+  readonly error?: string;
 }
 
 export interface PmWakeSink {
-  wake(input: PmWakeInput): Promise<{ readonly ok: boolean; readonly error?: string }>;
+  wake(input: PmWakeInput): Promise<PmWakeOutcome>;
 }
 
 /** One-line wake message text, shared by every sink implementation. */
@@ -136,6 +147,7 @@ export class PmWaker {
   /** wakeId kept across a failed attempt so the retry dedupes. */
   private readonly retryWakeId = new Map<WakeReason, string>();
   private readonly failedAt = new Map<WakeReason, number>();
+  private readonly retryInput = new Map<WakeReason, PmWakeInput>();
   /** `${reason}:${why}` skip notices already emitted (cleared when that reason wakes). */
   private readonly skipNoticed = new Set<string>();
   private warnedNoAgent = false;
@@ -222,7 +234,8 @@ export class PmWaker {
         this.notifySkipped(c.reason, 'retry-backoff');
         continue;
       }
-      await this.send(agentId, c.reason, c.detail, now);
+      const correlation = this.correlationFor(c.reason);
+      await this.send(agentId, c.reason, c.detail, now, correlation);
       return; // one wake per tick
     }
   }
@@ -272,9 +285,11 @@ export class PmWaker {
 
     const anchor = Date.parse(this.state.lastWokenAt ?? this.state.firstSeenAt);
     const sinceMs = now - anchor;
+    const backstopDue = sinceMs >= this.deps.backstopMs;
+    const backstopFailedAt = this.failedAt.get('backstop');
     out.push({
       reason: 'backstop',
-      due: sinceMs >= this.deps.backstopMs,
+      due: backstopDue || (backstopFailedAt !== undefined && now - backstopFailedAt >= PM_WAKE_RETRY_BACKOFF_MS),
       detail: `no wake for ${Math.floor(sinceMs / 60_000)} min`,
     });
     return out;
@@ -289,18 +304,41 @@ export class PmWaker {
     }
   }
 
-  private async send(agentId: string, reason: WakeReason, detail: string, now: number): Promise<void> {
+  private correlationFor(reason: WakeReason): Readonly<Record<string, string>> | undefined {
+    // Only correlate a single known bead from structured stall input. Display
+    // text is not an identity source, and a batch has no single bead owner.
+    if (reason === 'stall' && this.pendingStalls.size === 1) {
+      const bead = this.pendingStalls.keys().next().value;
+      return bead ? { bead } : undefined;
+    }
+    return undefined;
+  }
+
+  private async send(
+    agentId: string,
+    reason: WakeReason,
+    detail: string,
+    now: number,
+    correlation?: Readonly<Record<string, string>>,
+  ): Promise<void> {
     const project = this.deps.projectIdentifier;
     const wakeId = this.retryWakeId.get(reason) ?? `${project}-${reason}-${now}`;
-    let ok = false;
-    let error: string | undefined;
+    // A logical message ID must retain its recipient and complete payload,
+    // even if newer events arrive or the registry changes before a retry.
+    const input = this.retryInput.get(reason) ?? {
+      agentId, projectIdentifier: project, reason, detail, wakeId,
+      ...(correlation ? { correlation: { ...correlation } } : {}),
+    };
+    let outcome: PmWakeOutcome = { ok: false, error: 'sink returned no outcome' };
     try {
-      const res = await this.deps.sink.wake({ agentId, projectIdentifier: project, reason, detail, wakeId });
-      ok = res.ok;
-      error = res.error;
+      outcome = await this.deps.sink.wake(input);
     } catch (err) {
-      error = errMsg(err);
+      outcome = { ok: false, error: errMsg(err) };
     }
+    const ok = outcome.applicationDelivered === undefined
+      ? outcome.ok && outcome.accepted !== false
+      : outcome.ok && outcome.accepted !== false && outcome.applicationDelivered;
+    const error = outcome.reason ?? outcome.error ?? (outcome.accepted ? 'accepted but application delivery is unconfirmed' : undefined);
     if (this.disposed) return;
 
     if (ok) {
@@ -312,14 +350,19 @@ export class PmWaker {
       };
       this.persist();
       this.retryWakeId.delete(reason);
+      this.retryInput.delete(reason);
       this.failedAt.delete(reason);
       for (const key of [...this.skipNoticed]) if (key.startsWith(`${reason}:`)) this.skipNoticed.delete(key);
       if (reason === 'stall') this.pendingStalls.clear();
       if (reason === 'event') this.pendingEvents.length = 0;
     } else {
       this.retryWakeId.set(reason, wakeId);
+      this.retryInput.set(reason, input);
       this.failedAt.set(reason, now);
-      this.deps.logger?.warn?.({ project, reason, wakeId, error }, 'pm-wake: wake failed — lastWokenAt unchanged');
+      this.deps.logger?.warn?.(
+        { project, reason, wakeId, accepted: outcome.accepted ?? false, applicationDelivered: outcome.applicationDelivered ?? false, ...(outcome.reason ? { reason: outcome.reason } : {}), error },
+        'pm-wake: wake not confirmed delivered — lastWokenAt unchanged',
+      );
     }
     this.emitSafely(PM_WOKEN_EVENT, {
       project,
@@ -328,6 +371,10 @@ export class PmWaker {
       detail,
       wakeId,
       ok,
+      accepted: outcome.accepted ?? outcome.ok,
+      applicationDelivered: outcome.applicationDelivered ?? false,
+      ...(outcome.msgId ? { msgId: outcome.msgId } : {}),
+      ...(outcome.reason ? { reason: outcome.reason } : {}),
       ...(error ? { error } : {}),
     });
   }
