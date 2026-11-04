@@ -110,6 +110,43 @@ describe('blocked step outcome (vibesync-zvcm)', () => {
     expect(h.provider.recorder.starts.map((s) => s.role)).toEqual(['mayor', 'coder', 'tester']);
   });
 
+  it('a RESUMED step that ends blocked fails the molecule instead of completing it', async () => {
+    const h = harness(() => reply(`could not continue\n${BLOCKED_MARKER} - lost the worktree`));
+    const view = await h.walker.dispatch({ prefix: 'mol', formulaName: 'one', title: '[formula:one]', steps: [{ name: 'mayor', role: 'mayor', promptTemplate: 'prompts/p.md' }] });
+    const stepId = newMoleculeStepId(view.rootId, 'mayor');
+    await h.walker.startStep(stepId);
+    await h.walker.recordStepTask(stepId, { taskId: 'task-1', providerKind: 'fake', sessionId: 'fake:mayor-prev' });
+
+    const thrown = await h.dispatcher.resume(view.rootId).catch((e: unknown) => e);
+
+    expect(thrown).toBeInstanceOf(FormulaDispatchError);
+    expect(await h.store.getBead(stepId)).toMatchObject({ status: 'closed', metadata: { 'gc.retry_outcome': 'not_retryable', exec: { error_trace: 'step blocked: lost the worktree' } } });
+    expect(h.events.some((e) => e.kind === 'dispatcher/formula.completed')).toBe(false);
+  });
+
+  it('a step whose blocker closed FAILED is never offered, even before the molecule is marked failed', async () => {
+    // Fresh dispatcher with no live failure state: only the bead graph and the
+    // dispatcher's readiness guard decide. The bead graph DOES release the
+    // coder once the mayor is closed, so the guard is what must hold it back.
+    const h = harness(() => reply('should never run'));
+    const view = await h.walker.dispatch({ prefix: 'mol', formulaName: 'onboard', title: '[formula:onboard]', steps: formula.steps });
+    await h.walker.failStep(newMoleculeStepId(view.rootId, 'mayor'), 'step blocked: dirty checkout', 'not_retryable');
+    expect((await h.store.findReadyStepsForMolecule(view.rootId)).map((s) => s.id)).toContain(newMoleculeStepId(view.rootId, 'coder'));
+    void h.dispatcher.adopt(view.rootId, { formula, pack: pack(), input: 'go' }).catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 50));
+    await h.dispatcher.steps.tick();
+    expect(h.provider.recorder.starts).toHaveLength(0);
+  });
+
+  it('a soft-failed blocker still releases its dependents (intended behaviour)', async () => {
+    // The harness's step loop offers ready steps on its own; observe what it starts.
+    const h = harness(() => reply('ran'));
+    const view = await h.walker.dispatch({ prefix: 'mol', formulaName: 'onboard', title: '[formula:onboard]', steps: formula.steps });
+    await h.walker.failStep(newMoleculeStepId(view.rootId, 'mayor'), 'optional step gave up', 'soft_failed');
+    await h.dispatcher.adopt(view.rootId, { formula, pack: pack(), input: 'go' }).catch(() => undefined);
+    expect(h.provider.recorder.starts.map((s) => s.role)).toEqual(['coder', 'tester']);
+  });
+
   it('every rendered step prompt carries the blocked-outcome instruction', async () => {
     const h = harness(() => reply('ok'));
     await h.dispatcher.run({ formula, pack: pack(), input: 'go' });
@@ -136,6 +173,8 @@ describe('parseBlockedOutcome', () => {
     'all done',
     `${BLOCKED_MARKER} - quoted early\nbut then I finished`,
     '',
+    `result:\n${BLOCKED_MARKER} = false`,
+    `${BLOCKED_MARKER}NESS is fine`,
   ])('not blocked: %j', (text) => {
     expect(parseBlockedOutcome(text)).toBeNull();
   });

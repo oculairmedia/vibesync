@@ -488,9 +488,14 @@ export class FormulaDispatcher implements ReadyStepRunner {
   private async hasBlockerPendingRetry(stepId: string): Promise<boolean> {
     for (const blockerId of await this.walker.blockersOf(stepId)) {
       const blocker = await this.walker.readStep(blockerId);
-      if (blocker && blocker.status === 'closed' && readFailureClass(blocker.metadata) !== null && blocker.metadata[RETRY_OUTCOME_KEY] === undefined) {
-        return true;
-      }
+      if (!blocker || blocker.status !== 'closed') continue;
+      const outcome = blocker.metadata[RETRY_OUTCOME_KEY];
+      // Closed with a failure_class the retry policy has not ruled on yet.
+      if (readFailureClass(blocker.metadata) !== null && outcome === undefined) return true;
+      // Closed FAILED (blocked, exhausted, not retryable): never releases its
+      // dependents, even in the window before the molecule is marked failed
+      // (vibesync-zvcm). A soft-failed step releases them on purpose.
+      if (outcome !== undefined && outcome !== 'soft_failed') return true;
     }
     return false;
   }
@@ -777,7 +782,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
       if (blocker !== null) {
         failure = {
           signal: { origin: 'stopped' },
-          error: new Error(`step blocked: ${blocker}`),
+          error: new StepBlockedError(blocker),
           failureClass: null,
         };
       } else if (declared === null) {
@@ -1083,6 +1088,10 @@ export class FormulaDispatcher implements ReadyStepRunner {
         if (event.kind === 'stopped') throw new Error('runtime stopped before turn completion');
         if (event.kind === 'turn-done') break;
       }
+      // vibesync-zvcm: a resumed step that reports itself blocked fails like a
+      // fresh one; the catch below closes it failed and aborts the molecule.
+      const blocker = parseBlockedOutcome(output);
+      if (blocker !== null) throw new StepBlockedError(blocker);
       args.outputs[stepName] = output;
       await this.walker.finishStep(args.step.id, { output, eventCount, resumed: true });
       this.emit('dispatcher/step.finished', args.moleculeId, args.step.id, {
@@ -1093,13 +1102,15 @@ export class FormulaDispatcher implements ReadyStepRunner {
         resumed: true,
       });
     } catch (error) {
-      await this.walker.failStep(args.step.id, stringifyError(error));
+      const retryOutcome = error instanceof StepBlockedError ? 'not_retryable' : undefined;
+      await this.walker.failStep(args.step.id, stringifyError(error), retryOutcome);
       this.emit('dispatcher/step.failed', args.moleculeId, args.step.id, {
         stepName,
         role,
         stepId: args.step.id,
         error: stringifyError(error),
         resumed: true,
+        ...(retryOutcome ? { retryOutcome } : {}),
       });
       throw new FormulaDispatchError(`FormulaDispatcher: resumed step "${stepName}" failed`, args.moleculeId, { cause: error });
     } finally {
@@ -1198,6 +1209,14 @@ function formatPriorOutputs(outputs: Readonly<Record<string, string>>): string {
 }
 
 /** A failed try with the structured signal the retry policy classifies on (never the message text). */
+/** A step's reply ended with the structured blocked line (vibesync-zvcm). */
+class StepBlockedError extends Error {
+  constructor(readonly reason: string) {
+    super(`step blocked: ${reason}`);
+    this.name = 'StepBlockedError';
+  }
+}
+
 class AttemptFailure extends Error {
   constructor(message: string, readonly signal: FailureSignal) {
     super(message);

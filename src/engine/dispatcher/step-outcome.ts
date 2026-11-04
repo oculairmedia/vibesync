@@ -25,12 +25,17 @@ export const STEP_OUTCOME_INSTRUCTIONS = [
 /**
  * The blocker reason when `text` ends with the marker line, else null. Only the
  * last non-empty line counts, so quoting the marker mid-reply never blocks.
- * Accepts `-`, `:` or an em dash after the marker; the reason may be empty.
+ * Requires the bare marker or a `-`, `:` or em/en dash after it; the reason
+ * may be empty.
  */
 export function parseBlockedOutcome(text: string): string | null {
   const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
   const last = lines[lines.length - 1];
   if (!last || !last.toUpperCase().startsWith(BLOCKED_MARKER)) return null;
-  const reason = last.slice(BLOCKED_MARKER.length).replace(/^[\s:\-\u2013\u2014]+/, '').trim();
+  const rest = last.slice(BLOCKED_MARKER.length);
+  // The bare marker, or the marker then a separator. "BLOCKED = false" or
+  // "BLOCKEDNESS" are not a blocked outcome.
+  if (rest.length > 0 && !/^\s*[:\-\u2013\u2014]/.test(rest)) return null;
+  const reason = rest.replace(/^[\s:\-\u2013\u2014]+/, '').trim();
   return reason.length > 0 ? reason : 'no reason given';
 }
