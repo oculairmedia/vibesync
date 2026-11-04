@@ -1,5 +1,6 @@
 import {
   createGhDeliveryVerifier,
+  ghRepositoryTarget,
   type DeliveryVerifier,
   FormulaDispatcher,
   installWritebackHook,
@@ -316,8 +317,12 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     ...(maxConcurrentMolecules === undefined ? {} : { maxConcurrentMolecules }),
     ...(providerResolver ? { providerResolver } : {}),
     ...(roleAgentContextResolver ? { roleAgentContextResolver } : {}),
-    deliveryVerifier: opts.deliveryVerifier
-      ?? createGhDeliveryVerifier(opts.scheduler?.gh ?? createCliRunner({ binary: 'gh' })),
+    deliveryVerifier: opts.deliveryVerifier ?? (() => {
+      // The scheduler's gh runs in the project checkout, so `gh repo view`
+      // names the repository a run's PR must live in.
+      const gh = opts.scheduler?.gh ?? createCliRunner({ binary: 'gh', cwd: opts.dolt.beadsRoot });
+      return createGhDeliveryVerifier(gh, ghRepositoryTarget(gh));
+    })(),
   });
 
   steps = new StepDispatcher({

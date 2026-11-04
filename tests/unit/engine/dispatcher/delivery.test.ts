@@ -11,7 +11,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { candidatePullRequests, createGhDeliveryVerifier, FormulaDispatchError, type GhRunner } from '../../../../src/engine/dispatcher/index.js';
+import { candidatePullRequests, createGhDeliveryVerifier, FormulaDispatchError, ghRepositoryTarget, type GhRunner } from '../../../../src/engine/dispatcher/index.js';
 import { EventBus, type Event } from '../../../../src/engine/events/index.js';
 import { parseFormulasFromToml, type Formula } from '../../../../src/engine/formula/index.js';
 import { MoleculeWalker } from '../../../../src/engine/molecule/index.js';
@@ -81,7 +81,7 @@ function harness(script: (spec: SessionSpec) => AsyncIterable<SessionEvent>, gh?
   bus.subscribe((e) => events.push(e));
   const dispatcher = newDriven(store, {
     idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: bus,
-    ...(gh ? { deliveryVerifier: createGhDeliveryVerifier(gh) } : {}),
+    ...(gh ? { deliveryVerifier: createGhDeliveryVerifier(gh, async () => ({ repository: 'oculairmedia/vibesync' })) } : {}),
   });
   return { store, events, dispatcher };
 }
@@ -90,7 +90,7 @@ describe('declared delivery gates completion (vibesync-9lzk.21)', () => {
   it('REGRESSION: all steps finish but no PR exists -> the molecule FAILS, never completes', async () => {
     // The trial: coder reported "Changed: ..." with nothing committed; tester said PASS.
     const h = harness((spec) => reply(spec.role === 'coder' ? '**Changed:** removed HealthPatrol' : '**Result:** PASS'), fakeGh({}));
-    const thrown = await h.dispatcher.run({ formula: delivering, pack: pack(), input: 'go' }).catch((e: unknown) => e);
+    const thrown = await h.dispatcher.run({ formula: delivering, pack: pack(), input: 'go', motivatingBeadId: 'work-1' }).catch((e: unknown) => e);
     expect(thrown).toBeInstanceOf(FormulaDispatchError);
     expect(String((thrown as Error).message)).toContain('no step output names a pull request URL');
     const root = await h.store.getBead((thrown as FormulaDispatchError).moleculeId);
@@ -100,13 +100,13 @@ describe('declared delivery gates completion (vibesync-9lzk.21)', () => {
 
   it('a claimed PR that does not exist on GitHub fails the run (claims are verified, not trusted)', async () => {
     const h = harness((spec) => reply(spec.role === 'coder' ? `Delivered: ${PR}` : 'PASS'), fakeGh({}));
-    const thrown = await h.dispatcher.run({ formula: delivering, pack: pack(), input: 'go' }).catch((e: unknown) => e);
+    const thrown = await h.dispatcher.run({ formula: delivering, pack: pack(), input: 'go', motivatingBeadId: 'work-1' }).catch((e: unknown) => e);
     expect(String((thrown as Error).message)).toContain('Could not resolve to a PullRequest');
   });
 
   it('a closed-unmerged PR does not count as delivery', async () => {
     const h = harness((spec) => reply(spec.role === 'coder' ? `PR ${PR}` : 'PASS'), fakeGh({ [PR]: 'CLOSED' }));
-    const thrown = await h.dispatcher.run({ formula: delivering, pack: pack(), input: 'go' }).catch((e: unknown) => e);
+    const thrown = await h.dispatcher.run({ formula: delivering, pack: pack(), input: 'go', motivatingBeadId: 'work-1' }).catch((e: unknown) => e);
     expect(String((thrown as Error).message)).toContain('is CLOSED');
   });
 
@@ -135,7 +135,7 @@ describe('declared delivery gates completion (vibesync-9lzk.21)', () => {
 
   it('REGRESSION (resume): a resumed molecule that declares delivery and has no PR fails, never completes', async () => {
     const h = harness(() => reply('**Changed:** stuff, nothing committed'), fakeGh({}));
-    const view = await new MoleculeWalker(h.store).dispatch({ prefix: 'mol', formulaName: 'ship', title: '[formula:ship]', delivers: 'pull_request', steps: [{ name: 'coder', role: 'coder', promptTemplate: 'prompts/p.md' }] });
+    const view = await new MoleculeWalker(h.store).dispatch({ prefix: 'mol', formulaName: 'ship', title: '[formula:ship]', motivatingBeadId: 'work-1', delivers: 'pull_request', steps: [{ name: 'coder', role: 'coder', promptTemplate: 'prompts/p.md' }] });
     const walker = new MoleculeWalker(h.store);
     const stepId = `${view.rootId}-coder`;
     await walker.startStep(stepId);
@@ -149,7 +149,7 @@ describe('declared delivery gates completion (vibesync-9lzk.21)', () => {
 
   it('dispatching a delivering formula records the delivery on the root, so resume can enforce it', async () => {
     const h = harness(() => reply('no PR here'), fakeGh({}));
-    const thrown = await h.dispatcher.run({ formula: delivering, pack: pack(), input: 'go' }).catch((e: unknown) => e);
+    const thrown = await h.dispatcher.run({ formula: delivering, pack: pack(), input: 'go', motivatingBeadId: 'work-1' }).catch((e: unknown) => e);
     expect(await h.store.getBead((thrown as FormulaDispatchError).moleculeId)).toMatchObject({ metadata: { exec: { delivers: 'pull_request' } } });
   });
 
@@ -164,9 +164,35 @@ describe('declared delivery gates completion (vibesync-9lzk.21)', () => {
     expect(gh.calls).toHaveLength(0);
   });
 
+  it('a PR in ANOTHER repository that names the same bead does not count', async () => {
+    const other = 'https://github.com/someone/elsewhere/pull/7';
+    const gh = fakeGh({ [other]: { state: 'OPEN', title: 'fix: work-1 lookalike' } });
+    const h = harness((spec) => reply(spec.role === 'coder' ? `PR ${other}` : 'PASS'), gh);
+    const thrown = await h.dispatcher.run({ formula: delivering, pack: pack(), input: 'go', motivatingBeadId: 'work-1' }).catch((e: unknown) => e);
+    expect(String((thrown as Error).message)).toContain('is not in the project repository oculairmedia/vibesync');
+    expect(gh.calls).toHaveLength(0); // rejected before asking gh about it
+  });
+
+  it('a run with NO work bead cannot be bound to any PR and fails, even with a recent open PR', async () => {
+    const h = harness((spec) => reply(spec.role === 'coder' ? `PR ${PR}` : 'PASS'), fakeGh({ [PR]: 'OPEN' }));
+    const thrown = await h.dispatcher.run({ formula: delivering, pack: pack(), input: 'go' }).catch((e: unknown) => e);
+    expect(String((thrown as Error).message)).toContain('needs a work bead to bind the pull request to');
+  });
+
+  it('an unresolvable project repository fails closed', async () => {
+    const store = new InMemoryDoltClient();
+    const provider = newFakeProvider({ kind: 'fake', script: () => reply(`PR ${PR}`) });
+    const dispatcher = newDriven(store, {
+      idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }),
+      deliveryVerifier: createGhDeliveryVerifier(fakeGh({ [PR]: 'OPEN' }), async () => { throw new Error('failed to run git: fatal: not a git repository'); }),
+    });
+    const thrown = await dispatcher.run({ formula: delivering, pack: pack(), input: 'go', motivatingBeadId: 'work-1' }).catch((e: unknown) => e);
+    expect(String((thrown as Error).message)).toContain('could not resolve the project repository');
+  });
+
   it('a declared delivery with no verifier configured fails closed', async () => {
     const h = harness(() => reply(`PR ${PR}`));
-    const thrown = await h.dispatcher.run({ formula: delivering, pack: pack(), input: 'go' }).catch((e: unknown) => e);
+    const thrown = await h.dispatcher.run({ formula: delivering, pack: pack(), input: 'go', motivatingBeadId: 'work-1' }).catch((e: unknown) => e);
     expect(String((thrown as Error).message)).toContain('no delivery verifier is configured');
   });
 
@@ -192,6 +218,16 @@ describe('formula TOML delivers', () => {
     const { loadFormulasFromFile } = await import('../../../../src/engine/formula/index.js');
     const f = loadFormulasFromFile(join(process.cwd(), 'packs/gastown/formulas/onboard-feature.toml'))[0];
     expect(f?.delivers).toBe('pull_request');
+  });
+});
+
+describe('ghRepositoryTarget', () => {
+  it('reads nameWithOwner from gh repo view (real output shape) and caches it', async () => {
+    const calls: string[][] = [];
+    const target = ghRepositoryTarget(async (args) => { calls.push([...args]); return '{"nameWithOwner":"oculairmedia/vibesync"}\n'; });
+    expect(await target()).toEqual({ repository: 'oculairmedia/vibesync' });
+    await target();
+    expect(calls).toEqual([['repo', 'view', '--json', 'nameWithOwner']]);
   });
 });
 

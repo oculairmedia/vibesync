@@ -21,6 +21,12 @@ export interface DeliveryClaim {
   readonly motivatingBeadId?: string;
 }
 
+/** Where a run's PR must live. Resolved once from the project's git checkout. */
+export interface DeliveryTarget {
+  /** `owner/name`, as `gh repo view --json nameWithOwner` prints it. */
+  readonly repository: string;
+}
+
 export type DeliveryVerdict =
   | { readonly ok: true; readonly artifact: string }
   | { readonly ok: false; readonly reason: string };
@@ -34,6 +40,12 @@ export interface DeliveryVerifier {
 export type GhRunner = (args: readonly string[]) => Promise<string>;
 
 const PR_URL = /https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)/gi;
+
+/** `owner/name` of a github.com PR URL. */
+function repositoryOf(url: string): string {
+  const m = /https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/pull\//i.exec(url);
+  return m ? `${m[1]}/${m[2]}`.toLowerCase() : '';
+}
 
 /** Every PR URL mentioned in any step output, most recent step last. */
 export function candidatePullRequests(outputs: Readonly<Record<string, string>>): string[] {
@@ -58,22 +70,37 @@ interface PrView {
 
 /**
  * Verifies `pull_request` delivery with `gh pr view`. A candidate counts only if
- * it is THIS run's PR (vibesync-9lzk.21 review): OPEN or MERGED, opened at or
- * after the run started (a PR quoted from the task predates the run), and, when
- * the run has a motivating bead, naming that bead in its title, branch or body
- * (an unrelated PR opened meanwhile does not). Anything else fails with the
- * reason per candidate.
+ * it is THIS run's PR (vibesync-9lzk.21 review): in the project's repository,
+ * OPEN or MERGED, opened at or after the run started (a PR quoted from the task
+ * predates the run), and naming the run's work bead in its title, branch or body
+ * (an unrelated PR opened meanwhile does not). A run with no work bead cannot be
+ * bound and fails. Anything else fails with the reason per candidate.
  */
-export function createGhDeliveryVerifier(gh: GhRunner): DeliveryVerifier {
+export function createGhDeliveryVerifier(gh: GhRunner, target: () => Promise<DeliveryTarget>): DeliveryVerifier {
   return {
     async verify(claim) {
       if (claim.kind !== 'pull_request') return { ok: false, reason: `unsupported delivery kind ${claim.kind}` };
+      // A run cannot be bound to a PR without knowing which work it is for and
+      // where its PRs live (vibesync-9lzk.21 review): fail closed on either.
+      if (!claim.motivatingBeadId) {
+        return { ok: false, reason: 'delivery needs a work bead to bind the pull request to, and this run has none' };
+      }
+      let repository: string;
+      try {
+        repository = (await target()).repository.toLowerCase();
+      } catch (err) {
+        return { ok: false, reason: `could not resolve the project repository (${ghReason(err)})` };
+      }
       const candidates = candidatePullRequests(claim.outputs);
       if (candidates.length === 0) {
         return { ok: false, reason: 'formula declares delivers = "pull_request" but no step output names a pull request URL' };
       }
       const problems: string[] = [];
       for (const url of candidates.reverse()) {
+        if (repositoryOf(url) !== repository) {
+          problems.push(`${url} is not in the project repository ${repository}`);
+          continue;
+        }
         let pr: PrView;
         try {
           pr = JSON.parse(await gh(['pr', 'view', url, '--json', PR_FIELDS])) as PrView;
@@ -107,10 +134,20 @@ function notThisRunsPr(pr: PrView, claim: DeliveryClaim): string | null {
   if (Number.isNaN(created)) return 'has no creation time';
   // One minute of slack for clock skew between this host and GitHub.
   if (created < claim.startedAt.getTime() - 60_000) return `was opened ${pr.createdAt}, before this run started (${claim.startedAt.toISOString()})`;
-  const bead = claim.motivatingBeadId;
-  if (bead) {
-    const named = [pr.title, pr.headRefName, pr.body].some((t) => typeof t === 'string' && t.includes(bead));
-    if (!named) return `does not name the work bead ${bead} in its title, branch or body`;
-  }
+  const bead = claim.motivatingBeadId!;
+  const named = [pr.title, pr.headRefName, pr.body].some((t) => typeof t === 'string' && t.includes(bead));
+  if (!named) return `does not name the work bead ${bead} in its title, branch or body`;
   return null;
+}
+
+/** The project repository from `gh repo view` in the project checkout, cached after the first success. */
+export function ghRepositoryTarget(gh: GhRunner): () => Promise<DeliveryTarget> {
+  let cached: DeliveryTarget | null = null;
+  return async () => {
+    if (cached) return cached;
+    const view = JSON.parse(await gh(['repo', 'view', '--json', 'nameWithOwner'])) as { nameWithOwner?: string };
+    if (!view.nameWithOwner) throw new Error('gh repo view returned no nameWithOwner');
+    cached = { repository: view.nameWithOwner };
+    return cached;
+  };
 }
