@@ -48,3 +48,35 @@ it('recovers every persisted message even when two share the same wake reason', 
   expect(sent).toEqual(['first', 'second']);
   waker.dispose();
 });
+
+it('retries a failed pending read and resumes without reconstructing the waker', async () => {
+  const a = record('recover-me');
+  const list = vi.fn().mockRejectedValueOnce(new Error('temporary')).mockResolvedValue([a]);
+  const claim = vi.fn(async () => ({ authorized: false, record: a }));
+  const enqueue = vi.fn(async () => record('wrong-replacement'));
+  const waker = harness({ listPending: list, claim, enqueue, sendClaimed: async () => ({ authorized: false, record: null }) });
+  await waker.idle();
+  waker.onTick({ result: { scheduler: { dispatched: [] } } });
+  await waker.idle();
+  expect(list).toHaveBeenCalledTimes(2);
+  expect(claim).toHaveBeenCalledWith(a.id);
+  expect(enqueue).not.toHaveBeenCalled();
+  waker.dispose();
+});
+
+it.each(['closed', 'absent'])('removes a recovered %s record so it cannot block subsequent wakes', async state => {
+  const a = record('retired');
+  const enqueue = vi.fn(async () => record('new-wake'));
+  const waker = harness({
+    listPending: async () => [a], enqueue,
+    claim: async id => ({ authorized: false, record: id === a.id && state === 'closed' ? { ...a, status: 'closed' } : null }),
+    sendClaimed: async () => { throw new Error('must not send retired record'); },
+  });
+  await waker.idle();
+  for (let i = 0; i < 2; i++) {
+    waker.onTick({ result: { scheduler: { dispatched: [] } } });
+    await waker.idle();
+  }
+  expect(enqueue).toHaveBeenCalledTimes(1);
+  waker.dispose();
+});

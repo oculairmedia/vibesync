@@ -163,6 +163,15 @@ export class BdPendingWakeStore implements PendingWakeStore {
   async sendClaimed(record: PendingWakeRecord, sink: PmWakeSink, at = this.now()): Promise<PendingWakeSendResult> {
     const owned = await this.get(record.id);
     if (!owned || owned.status !== 'in_progress' || owned.assignee !== record.assignee || owned.claimToken !== record.claimToken) return { authorized: false, record: owned };
+    if (owned.receipt?.accepted && owned.receipt.applicationDelivered && owned.receipt.msgId === owned.payload.msgId) {
+      // The delivery receipt survived but closing the bead did not. Complete
+      // bookkeeping under the current claim; never replay the external effect.
+      await this.bd(['update', record.id, '--status', 'closed', '--if-assignee', record.assignee ?? '', '--if-status', 'in_progress']);
+      return {
+        authorized: true, record: await this.get(record.id), receipt: owned.receipt,
+        outcome: { ok: true, accepted: true, applicationDelivered: true, msgId: owned.receipt.msgId, ...(owned.receipt.reason ? { reason: owned.receipt.reason } : {}) },
+      };
+    }
     const heartbeat = startLeaseHeartbeat(this.bd, record.id, record.assignee ?? '', this.logger);
     try {
       const refreshed = await this.renewClaim(owned);

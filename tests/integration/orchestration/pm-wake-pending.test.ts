@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { spawn } from 'node:child_process';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { formatWakeMessage } from '../../../src/orchestration/scheduler/pm-waker.js';
 import { BdPendingWakeStore } from '../../../src/orchestration/scheduler/bd-pending-wake-store.js';
@@ -49,10 +49,10 @@ describeWithBd('durable PM inbox wakes (real isolated bd + CLI subprocess)', () 
   let repo: Awaited<ReturnType<typeof provisionIsolatedWakeRepo>>;
   let root: string;
 
-  afterAll(async () => {
+  afterEach(async () => {
     process.env = { ...originalEnv };
-    await repo?.teardown();
-    if (root) rmSync(root, { recursive: true, force: true });
+    try { await repo?.teardown(); }
+    finally { if (root) rmSync(root, { recursive: true, force: true }); }
   });
 
   const sinkFor = (sender: ReturnType<typeof fixture>): PmWakeSink => ({
@@ -181,6 +181,26 @@ describeWithBd('durable PM inbox wakes (real isolated bd + CLI subprocess)', () 
     expect(newer.id).not.toBe(pending.id);
     expect((await store.get(pending.id))?.payload).toEqual(pending.payload);
   }, 400_000);
+
+  it('a persisted delivered receipt prevents another send when closing the bead fails', async () => {
+    const { sender, store } = await setup();
+    const pending = await store.enqueue(input('wake-already-delivered'));
+    const claim = await store.claim(pending.id);
+    expect(claim.authorized).toBe(true);
+    const failingClose = new BdPendingWakeStore(async args => {
+      if (args[0] === 'update' && args.includes('--status') && args[args.indexOf('--status') + 1] === 'closed') {
+        throw new Error('close failed after receipt persisted');
+      }
+      return repo.runner(args);
+    });
+    await expect(failingClose.sendClaimed(claim.record!, sinkFor(sender))).rejects.toThrow('close failed');
+    expect((await store.get(pending.id))?.receipt?.applicationDelivered).toBe(true);
+    expect(sender.records()).toHaveLength(1);
+    const recovered = await store.sendClaimed(claim.record!, sinkFor(sender));
+    expect(recovered.outcome).toMatchObject({ ok: true, applicationDelivered: true, msgId: 'wake-already-delivered' });
+    expect(sender.records()).toHaveLength(1);
+    expect((await store.get(pending.id))?.status).toBe('closed');
+  });
 
   it('retains explicit denial and timeout ambiguity without generating a fresh logical ID', async () => {
     const { sender, store } = await setup('unaddressable');

@@ -163,16 +163,7 @@ export class PmWaker {
   constructor(private readonly deps: PmWakerDeps) {
     this.now = deps.now ?? (() => Date.now());
     if (deps.pendingWakeStore) {
-      this.recovery = deps.pendingWakeStore.listPending().then((records) => {
-        for (const record of records) {
-          if (record.payload.projectIdentifier === deps.projectIdentifier) {
-            this.durablePending.set(record.id, record);
-          }
-        }
-      }).catch((error: unknown) => {
-        this.recoveryFailed = true;
-        deps.logger?.warn?.({ project: deps.projectIdentifier, error: errMsg(error) }, 'pm-wake: pending wake recovery failed');
-      });
+      this.recovery = this.recoverPending();
     }
     const loaded = deps.store.load(deps.projectIdentifier);
     if (loaded) {
@@ -220,9 +211,23 @@ export class PmWaker {
     this.disposed = true;
   }
 
+  private async recoverPending(): Promise<void> {
+    try {
+      const records = await this.deps.pendingWakeStore!.listPending();
+      for (const record of records) {
+        if (record.payload.projectIdentifier === this.deps.projectIdentifier) this.durablePending.set(record.id, record);
+      }
+      this.recoveryFailed = false;
+    } catch (error) {
+      this.recoveryFailed = true;
+      this.deps.logger?.warn?.({ project: this.deps.projectIdentifier, error: errMsg(error) }, 'pm-wake: pending wake recovery failed');
+    }
+  }
+
   private async evaluate(obs: PmWakeTickObservation): Promise<void> {
     const project = this.deps.projectIdentifier;
     await this.recovery;
+    if (this.recoveryFailed) await this.recoverPending();
     // A failed read cannot establish that no message is pending. Stay closed
     // rather than minting a replacement identity after an ambiguous send.
     if (this.recoveryFailed) return;
@@ -342,6 +347,10 @@ export class PmWaker {
 
   private async retryDurablePending(record: PendingWakeRecord, now: number): Promise<void> {
     const claim = await this.deps.pendingWakeStore?.claim(record.id);
+    if (claim && (!claim.record || claim.record.status === 'closed')) {
+      this.durablePending.delete(record.id);
+      return;
+    }
     if (!claim?.authorized || !claim.record || !this.deps.pendingWakeStore) return;
     const sent = await this.deps.pendingWakeStore.sendClaimed(claim.record, this.deps.sink, now);
     if (!sent.authorized || !sent.outcome) return;
@@ -371,6 +380,10 @@ export class PmWaker {
         const record = await pendingStore.enqueue(input, now);
         this.durablePending.set(record.id, record);
         const result = await pendingStore.claim(record.id);
+        if (!result.record || result.record.status === 'closed') {
+          this.durablePending.delete(record.id);
+          return;
+        }
         if (!result.authorized || !result.record) return;
         const sent = await pendingStore.sendClaimed(result.record, this.deps.sink, now);
         if (!sent.authorized || !sent.outcome) return;
