@@ -69,6 +69,21 @@ describe('registry database', () => {
     expect(db.getRoleAgent('vibesync', 'coder')).toMatchObject({ agentId: 'agent-coder' });
   });
 
+  it('startup drops role bindings of archived or missing projects, keeps active ones', () => {
+    db = createSyncDatabase(dbPath);
+    db.upsertProject({ identifier: 'live', name: 'Live' });
+    db.upsertProject({ identifier: 'old', name: 'Old' });
+    db.upsertRoleAgent('live', 'coder', 'agent-live', 'http://shim');
+    db.upsertRoleAgent('old', 'coder', 'agent-old', 'http://shim');
+    db.upsertRoleAgent('ghost', 'coder', 'agent-ghost', 'http://shim');
+    db.db!.prepare("UPDATE projects SET status = 'archived' WHERE identifier = 'old'").run();
+    db.close();
+    db = createSyncDatabase(dbPath);
+    expect(db.listRoleAgents('live')).toHaveLength(1);
+    expect(db.listRoleAgents('old')).toEqual([]);
+    expect(db.listRoleAgents('ghost')).toEqual([]);
+  });
+
   it('is idempotent across restarts', () => {
     db = createSyncDatabase(dbPath);
     db.upsertProject({ identifier: 'p', name: 'P', filesystem_path: '/x' });

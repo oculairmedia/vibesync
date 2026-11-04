@@ -141,7 +141,8 @@ export class ProjectRegistry {
     if (!fs.existsSync(absPath)) throw new Error(`Directory does not exist: ${absPath}`);
 
     const hasGit = fs.existsSync(path.join(absPath, '.git'));
-    this._registerDir(absPath, { hasGit });
+    // An explicit registration is a deliberate (re)activation.
+    this._registerDir(absPath, { hasGit, reactivate: true });
 
     const folderName = path.basename(absPath);
     return this.getProjectByPath(absPath) || this.getProject(folderName);
@@ -211,7 +212,12 @@ export class ProjectRegistry {
     }
   }
 
-  private _registerDir(dirPath: string, { hasGit }: { hasGit: boolean }): void {
+  /**
+   * Upsert a project from its directory. A boot scan must keep an operator's
+   * status: re-registering every repo as `active` would silently resurrect
+   * archived (deprecated) projects on each restart.
+   */
+  private _registerDir(dirPath: string, { hasGit, reactivate = false }: { hasGit: boolean; reactivate?: boolean }): void {
     const folderName = path.basename(dirPath);
     const now = Date.now();
 
@@ -226,9 +232,13 @@ export class ProjectRegistry {
     this.db.upsertProject({
       identifier, name: existing?.name || folderName,
       filesystem_path: dirPath, git_url: gitUrl,
-      status: 'active', last_checked_at: now,
+      status: reactivate || !existing ? 'active' : existing.status, last_checked_at: now,
     });
     this.db.setProjectScan(identifier, techStack, now);
+
+    // Never provision (bd init, add a remote) a project an operator archived;
+    // only an explicit registration reactivates it.
+    if (existing && !reactivate && existing.status !== 'active') return;
 
     try {
       const rig = ensureRig(dirPath);

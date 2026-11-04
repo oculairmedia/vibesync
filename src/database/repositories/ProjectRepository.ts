@@ -69,17 +69,26 @@ export class ProjectRepository {
   updateProject(identifier: string, updates: ProjectUpdate): ProjectRow | null {
     const existing = this.getProject(identifier);
     if (!existing) return null;
-    this.db
-      .prepare('UPDATE projects SET name = ?, filesystem_path = ?, git_url = ?, status = ?, last_checked_at = ?, updated_at = ? WHERE identifier = ?')
-      .run(
-        updates.name ?? existing.name,
-        updates.filesystem_path ?? existing.filesystem_path,
-        updates.git_url ?? existing.git_url,
-        updates.status ?? existing.status,
-        updates.last_checked_at ?? existing.last_checked_at,
-        Date.now(),
-        identifier,
-      );
+    const nextStatus = updates.status ?? existing.status;
+    // One transaction: archiving retires the project's role agents with it,
+    // and a failed status write must not leave an active project unbound.
+    const apply = this.db.transaction(() => {
+      if (nextStatus !== 'active') {
+        this.db.prepare('DELETE FROM project_role_agents WHERE project_identifier = ?').run(identifier);
+      }
+      this.db
+        .prepare('UPDATE projects SET name = ?, filesystem_path = ?, git_url = ?, status = ?, last_checked_at = ?, updated_at = ? WHERE identifier = ?')
+        .run(
+          updates.name ?? existing.name,
+          updates.filesystem_path ?? existing.filesystem_path,
+          updates.git_url ?? existing.git_url,
+          nextStatus,
+          updates.last_checked_at ?? existing.last_checked_at,
+          Date.now(),
+          identifier,
+        );
+    }) as () => void;
+    apply();
     return this.getProject(identifier);
   }
 

@@ -30,6 +30,7 @@
  * into the dispatcher.
  */
 
+import { INTERRUPTED_EVENT } from '../molecule/recovery.js';
 import type { Event, EventBus } from '../events/index.js';
 import type { MoleculeWalker } from '../molecule/index.js';
 import type { BeadRow } from '../store/index.js';
@@ -41,8 +42,17 @@ export interface WritebackStore {
    *  (permanent no-op) from a transient store failure (must retry). */
   getBead(id: string): Promise<BeadRow | null>;
   appendNoteToBead(beadId: string, note: string): Promise<void>;
-  recordMoleculeWriteback(rootId: string, status: 'completed' | 'failed'): Promise<string | undefined>;
+  recordMoleculeWriteback(rootId: string, status: WritebackStatus): Promise<string | undefined>;
 }
+
+/** Writeback outcomes; `interrupted` = a restart orphaned the run and the work is re-run. */
+export type WritebackStatus = 'completed' | 'failed' | 'interrupted';
+
+const HANDLED_EVENTS: ReadonlyMap<string, WritebackStatus> = new Map([
+  ['dispatcher/formula.completed', 'completed'],
+  ['dispatcher/formula.failed', 'failed'],
+  [INTERRUPTED_EVENT, 'interrupted'],
+]);
 
 /**
  * Structured logger surface for the writeback hook.
@@ -111,9 +121,7 @@ export function installWritebackHook(deps: WritebackHookDeps): () => void {
   // event can retry.
   const inFlight = new Set<string>();
   const unsubscribe = deps.bus.subscribe((event) => {
-    if (event.kind !== 'dispatcher/formula.completed' && event.kind !== 'dispatcher/formula.failed') {
-      return;
-    }
+    if (!HANDLED_EVENTS.has(event.kind)) return;
     const key = `${event.molecule_id ?? ''}:${event.kind}`;
     if (inFlight.has(key)) return;
     inFlight.add(key);
@@ -145,7 +153,7 @@ export function installWritebackHook(deps: WritebackHookDeps): () => void {
   // Subscription-confirmed trace (vibesync-er21 hook-wiring): prove at boot
   // that the hook is attached to the EventBus. Its absence in the daemon log
   // is the fastest signal that the writeback loop-back was never wired.
-  logInfo(deps.logger, { subscriberCount: deps.bus.subscriberCount() }, 'writeback hook subscribed to EventBus (dispatcher/formula.completed|failed)');
+  logInfo(deps.logger, { subscriberCount: deps.bus.subscriberCount() }, 'writeback hook subscribed to EventBus (dispatcher/formula.completed|failed|interrupted)');
 
   return unsubscribe;
 }
@@ -188,13 +196,15 @@ async function handleEvent(event: Event, deps: WritebackHookDeps, now: () => Dat
   // writeback status, this event is a replay — short-circuit. Reading via
   // the molecule root's own metadata avoids stamping before the note lands.
   const alreadyDone = typeof exec['writeback_status'] === 'string' ? (exec['writeback_status'] as string) : undefined;
-  const status = event.kind === 'dispatcher/formula.completed' ? 'completed' : 'failed';
+  const status = HANDLED_EVENTS.get(event.kind)!;
   if (alreadyDone === status) return 'skipped-already-written';
 
   const formulaName = typeof exec['formula'] === 'string' ? (exec['formula'] as string) : 'unknown';
   const note = status === 'completed'
     ? buildCompletedNote({ moleculeId, formulaName, steps: view.steps, when: now() })
-    : buildFailedNote({ moleculeId, formulaName, steps: view.steps, event, when: now() });
+    : status === 'interrupted'
+      ? buildInterruptedNote({ moleculeId, formulaName, steps: view.steps, when: now() })
+      : buildFailedNote({ moleculeId, formulaName, steps: view.steps, event, when: now() });
 
   // CONTRACT (vibesync-er21): the writeback stamp must be written ONLY
   // after the note successfully lands on the motivating bead. The previous
@@ -219,6 +229,23 @@ async function handleEvent(event: Event, deps: WritebackHookDeps, now: () => Dat
   await deps.store.appendNoteToBead(motivatingBeadId, note);
   await deps.store.recordMoleculeWriteback(moleculeId, status);
   return 'posted';
+}
+
+function buildInterruptedNote(args: {
+  readonly moleculeId: string;
+  readonly formulaName: string;
+  readonly steps: readonly BeadRow[];
+  readonly when: Date;
+}): string {
+  const lines = [
+    `[vibesync] formula ${args.formulaName} INTERRUPTED at ${args.when.toISOString()}`,
+    `moleculeId: ${args.moleculeId}`,
+    'vibesync restarted while this run was in progress; the molecule is closed and the work is re-run.',
+  ];
+  for (const step of orderedSteps(args.steps).filter((s) => s.status === 'closed' && !readExec(s).error_trace)) {
+    lines.push(`- ${stepRole(step)} (finished before restart): ${excerptStepOutput(step)}`);
+  }
+  return lines.join('\n');
 }
 
 function buildCompletedNote(args: {

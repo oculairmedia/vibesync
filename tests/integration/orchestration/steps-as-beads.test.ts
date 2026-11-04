@@ -188,3 +188,35 @@ describe.skipIf(!RUN_ISOLATED_BEADS)('steps are beads (real bd, isolated repo)',
     }
   }, 60_000);
 });
+
+describe.skipIf(!RUN_ISOLATED_BEADS)('restart recovery on real bd (vibesync-9lzk.9)', () => {
+  it('boot closes an orphaned running molecule and its unfinished steps through bd; bd shows them closed interrupted', async () => {
+    const h = await provisionIsolatedBeads('fresh');
+    try {
+      const walker = new MoleculeWalker(h.store);
+      const view = await walker.dispatch({ prefix: 'schema65', formulaName: 'r', title: '[formula:r]', steps: [
+        { name: 'a', role: 'w', promptTemplate: 'p' },
+        { name: 'b', role: 'w', promptTemplate: 'p', dependsOn: ['a'] },
+      ] });
+      await h.store.markStepRunning(newMoleculeStepId(view.rootId, 'a'));
+      process.env['VIBESYNC_WORK_ACTIVITY_REPORT'] = '0';
+      const provider = newFakeProvider({ kind: 'fake' });
+      const handle = await bootOrchestrationPlane({
+        dolt: h.client, bd: async (args) => h.bd(...args), provider, persistEvents: false, runDriftAuditOnBoot: false,
+        bdVersion: async () => h.bd('--version'),
+      });
+      try {
+        const show = (id: string) => JSON.parse(h.bd('show', id, '--json'))[0];
+        expect(show(view.rootId)).toMatchObject({ status: 'closed', metadata: { exec: { outcome: 'interrupted' } } });
+        for (const s of ['a', 'b']) {
+          expect(show(newMoleculeStepId(view.rootId, s))).toMatchObject({ status: 'closed', metadata: { 'gc.retry_outcome': 'interrupted' } });
+        }
+        expect(provider.recorder.starts).toHaveLength(0);
+      } finally {
+        await handle.shutdown();
+      }
+    } finally {
+      await h.close();
+    }
+  }, 180_000);
+});

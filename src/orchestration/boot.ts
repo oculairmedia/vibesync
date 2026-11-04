@@ -7,7 +7,7 @@ import {
 } from './dispatcher/index.js';
 import { EventBus, WorkActivityReporter } from './events/index.js';
 import { HealthPatrol } from './health/index.js';
-import { MoleculeWalker } from './molecule/index.js';
+import { INTERRUPTED_EVENT, MoleculeWalker, recoverInterruptedMolecules } from './molecule/index.js';
 import {
   IROH_PROVIDER_KIND,
   IrohWrapperProvider,
@@ -351,6 +351,20 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   });
   // eslint-disable-next-line no-console
   console.log('[orchestration:writeback] writeback hook installed');
+
+  // vibesync-9lzk.9: run context lives in memory, so a restart orphans every
+  // molecule that was cooking or running. Retire them as `interrupted` before
+  // the scheduler or step loop can start anything (so every open root here is
+  // orphaned by construction) and after the writeback hook subscribes (so the
+  // motivating beads are told). Their scheduler contexts are still open, so
+  // the work itself is dispatched again. Decision: close and re-run, do not
+  // resume (Emmanuel, 2026-11-04).
+  const recovered = await recoverInterruptedMolecules(beads, (moleculeId, payload) =>
+    bus.emit({ layer: 'dispatcher', kind: INTERRUPTED_EVENT, molecule_id: moleculeId, payload }));
+  if (recovered.interrupted.length > 0 || recovered.failed.length > 0) {
+    // eslint-disable-next-line no-console
+    console.warn('[orchestration:recovery] interrupted molecules retired', { interrupted: recovered.interrupted, failed: recovered.failed });
+  }
 
   // vibesync-ryhc: work-activity reporter for mobile active-subagent bar.
   // Enabled only when shimBaseUrl is configured AND VIBESYNC_WORK_ACTIVITY_REPORT

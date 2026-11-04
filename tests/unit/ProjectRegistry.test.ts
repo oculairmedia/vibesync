@@ -464,6 +464,28 @@ describe('ProjectRegistry', () => {
     });
   });
 
+  describe('archived projects stay archived (vibesync-9lzk.16)', () => {
+    it('a boot rescan does not resurrect an archived project; an explicit registration does', () => {
+      const dirPath = createDir('deprecated-proj', { git: true });
+      const registry = new ProjectRegistry({ db, baseDir: testStacksDir });
+      registry.scanProjects();
+      registry.archiveProject('deprecated-proj');
+      registry.scanProjects();
+      expect(registry.getProject('deprecated-proj').status).toBe('archived');
+      registry.registerProject(dirPath);
+      expect(registry.getProject('deprecated-proj').status).toBe('active');
+    });
+
+    it('archiving drops the project\'s role-agent bindings', () => {
+      createDir('bound-proj', { git: true });
+      const registry = new ProjectRegistry({ db, baseDir: testStacksDir });
+      registry.scanProjects();
+      db.upsertRoleAgent('bound-proj', 'coder', 'agent-x', 'http://shim');
+      registry.archiveProject('bound-proj');
+      expect(db.listRoleAgents('bound-proj')).toEqual([]);
+    });
+  });
+
   describe('archiveProject and deleteProject', () => {
     it('should archive an existing project', () => {
       const dirPath = createDir('archivable-proj', { git: true });

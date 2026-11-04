@@ -29,14 +29,14 @@ describe('bd-preflight Dolt port ownership checks', () => {
         stdout: 'LISTEN 0 4096 127.0.0.1:3308 0.0.0.0:* users:(("dolt",pid=1230851,fd=3))',
         stderr: '',
       }),
-      readlinkSync: () => '/opt/stacks/letta-code-parallel/home/.beads/shared-server/dolt',
+      readlinkSync: () => '/opt/stacks/other-project/home/.beads/shared-server/dolt',
     });
 
     expect(result.name).toBe('dolt-server-port-owner');
     expect(result.level).toBe('error');
     expect(result.detail).toContain('port 3308 is owned by pid 1230851');
-    expect(result.detail).toContain('project /opt/stacks/letta-code-parallel/home');
-    expect(result.detail).toContain('/opt/stacks/letta-code-parallel/home/.beads/shared-server/dolt');
+    expect(result.detail).toContain('project /opt/stacks/other-project/home');
+    expect(result.detail).toContain('/opt/stacks/other-project/home/.beads/shared-server/dolt');
     expect(result.detail).toContain('expected project /opt/stacks/letta-mobile');
     expect(result.detail).toContain('/opt/stacks/letta-mobile/.beads/dolt');
     expect(result.detail).toContain('bd may appear empty or repeatedly auto-import JSONL');

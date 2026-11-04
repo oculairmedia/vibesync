@@ -71,14 +71,14 @@ function makeStore(): SlingContextStore & {
   };
 }
 
-function harness(opts: { beads: string[]; poolSize: number }) {
+function harness(opts: { beads: string[]; poolSize: number; store?: ReturnType<typeof makeStore> }) {
   const runs: Deferred[] = [];
   const merged: number[] = [];
   const probeCalls: string[] = [];
   /** Per-bead probe verdict override (default 'alive'). */
   const verdicts = new Map<string, RunLiveness>();
   const logs: Array<{ level: 'info' | 'warn'; o: unknown; m: string }> = [];
-  const store = makeStore();
+  const store = opts.store ?? makeStore();
   const ready = new Set(opts.beads);
   const concurrentByBead = new Map<string, number>();
   let maxConcurrentByBead = 0;
@@ -385,5 +385,29 @@ describe('SchedulerDaemon — witness vs in-flight runs (vibesync-nic6)', () => 
     const t = await tickReturns(h.daemon);
     expect(t.recovered).toEqual([alloc!.slotId]);
     expect(working(h)).toEqual([]);
+  });
+});
+
+describe('SchedulerDaemon — restart re-runs interrupted work (vibesync-9lzk.9)', () => {
+  it('a run killed by a restart is dispatched again by the next process; a finished one is not', async () => {
+    // The sling-context store outlives the process, as bd does in production.
+    const store = makeStore();
+    const before = harness({ beads: ['w1', 'w2'], poolSize: 2, store });
+    await tickReturns(before.daemon);
+    expect(before.runs.map((r) => r.beadId).sort()).toEqual(['w1', 'w2']);
+    before.runsFor('w2')[0]!.resolve('done');            // w2 finishes before the restart
+    // Wait for w2's settlement to close its context; drainRuns() would also
+    // wait on w1, which by design never settles (the restart kills it).
+    for (let i = 0; i < 100 && store.rows.some((r) => r.open && tryParseParams(r.description)?.work_bead_id === 'w2'); i++) await sleep(5);
+    expect(store.rows.find((r) => tryParseParams(r.description)?.work_bead_id === 'w2')).toMatchObject({ open: false, reason: 'dispatched' });
+    expect(store.rows.find((r) => tryParseParams(r.description)?.work_bead_id === 'w1')).toMatchObject({ open: true });
+    // Restart: w1's run dies with the process. Its run never settles, so its
+    // context is still open; nothing in the new process knows about it.
+    await before.daemon.stop();
+
+    const after = harness({ beads: ['w1', 'w2'], poolSize: 2, store });
+    await tickReturns(after.daemon);
+    expect(after.runs.map((r) => r.beadId)).toEqual(['w1']);
+    await after.daemon.stop();
   });
 });
