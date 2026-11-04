@@ -29,6 +29,12 @@ export interface PeriodicSweepDeps {
   /** Fetch the current registered-projects list. Re-called every tick so
    *  newly-registered projects are included without restarting the loop. */
   readonly listProjects: () => readonly SweeperProject[];
+  /**
+   * Projects eligible for repair. Every listed project's port is still
+   * compared (an archived project's pinned port can collide with an active
+   * one), but only these are rewritten. Default: all listed projects.
+   */
+  readonly repairable?: () => ReadonlySet<string>;
   readonly logger: PeriodicSweepLogger;
   /** Interval in ms. Default 120s. */
   readonly intervalMs?: number;
@@ -53,7 +59,8 @@ export function startPeriodicPortSweep(deps: PeriodicSweepDeps): PeriodicSweepHa
 
   async function runSweep(): Promise<SweepReport> {
     const registry = deps.listProjects();
-    const report = await sweepAll(registry, undefined, { apply: true });
+    const only = deps.repairable?.();
+    const report = await sweepAll(registry, undefined, { apply: true, ...(only ? { only } : {}) });
     if (report.conflicts.length > 0) {
       deps.logger.warn?.(
         {

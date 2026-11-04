@@ -334,6 +334,22 @@ export async function repairProject(
  * after each fix so two concurrently-broken projects don't collide on the
  * same replacement port.
  */
+/**
+ * Which projects a port sweep compares versus repairs. Every registered
+ * project's port is compared, because an archived project's pinned port can
+ * still collide with an active one; only active projects are repaired, since
+ * an archived project's Dolt server is not ours to change.
+ */
+export function portSweepScope(db: {
+  getAllProjects(): ReadonlyArray<{ identifier: string; filesystem_path: string | null; status: string }>;
+}): { registry: SweeperProject[]; only: ReadonlySet<string> } {
+  const rows = db.getAllProjects();
+  return {
+    registry: rows.map((r) => ({ identifier: r.identifier, filesystem_path: r.filesystem_path })),
+    only: new Set(rows.filter((r) => r.status === 'active' && r.filesystem_path).map((r) => r.identifier)),
+  };
+}
+
 export async function sweepAll(
   registry: readonly SweeperProject[],
   deps: PortSweeperDeps = defaultDeps,

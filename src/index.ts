@@ -6,7 +6,7 @@
 import 'dotenv/config';
 
 import { createApiServer } from './ApiServer';
-import { sweepAll as sweepBeadsPorts, type SweeperProject } from './beads/PortSweeper.js';
+import { portSweepScope, sweepAll as sweepBeadsPorts } from './beads/PortSweeper.js';
 import { startPeriodicPortSweep } from './beads/startPeriodicPortSweep.js';
 import { getConfigSummary, loadConfig } from './config';
 import { createSyncDatabase, type SyncDatabase } from './database';
@@ -37,11 +37,6 @@ function openRegistry(): SyncDatabase {
   }
 }
 
-/** Active projects only: an archived (deprecated) project's Dolt server is not ours to repair. */
-function sweepProjects(db: SyncDatabase): SweeperProject[] {
-  return db.getProjectsWithFilesystemPath().map((row) => ({ identifier: row.identifier, filesystem_path: row.filesystem_path }));
-}
-
 /**
  * vibesync-52g: repair Beads/Dolt port collisions before anything connects to a
  * project's local Dolt server; otherwise a project can silently read another's
@@ -49,7 +44,8 @@ function sweepProjects(db: SyncDatabase): SweeperProject[] {
  */
 async function repairBeadsPorts(db: SyncDatabase): Promise<void> {
   try {
-    const report = await sweepBeadsPorts(sweepProjects(db), undefined, { apply: true });
+    const { registry, only } = portSweepScope(db);
+    const report = await sweepBeadsPorts(registry, undefined, { apply: true, only });
     logger.info(
       { scanned: report.scanned, conflicts: report.conflicts.length, repaired: report.repairs.filter((r) => r.ok).length },
       'Beads/Dolt port-collision sweep complete',
@@ -65,7 +61,7 @@ async function repairBeadsPorts(db: SyncDatabase): Promise<void> {
     logger.info('Periodic Beads/Dolt port sweep disabled via VIBESYNC_PORT_SWEEP_INTERVAL_MS=0');
     return;
   }
-  startPeriodicPortSweep({ listProjects: () => sweepProjects(db), logger, ...(intervalMs > 0 ? { intervalMs } : {}) });
+  startPeriodicPortSweep({ listProjects: () => portSweepScope(db).registry, repairable: () => portSweepScope(db).only, logger, ...(intervalMs > 0 ? { intervalMs } : {}) });
 }
 
 function createProvisioner(db: SyncDatabase): DoltHubProvisionerApi | null {

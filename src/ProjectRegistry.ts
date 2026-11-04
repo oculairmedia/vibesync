@@ -236,6 +236,10 @@ export class ProjectRegistry {
     });
     this.db.setProjectScan(identifier, techStack, now);
 
+    // Never provision (bd init, add a remote) a project an operator archived;
+    // only an explicit registration reactivates it.
+    if (existing && !reactivate && existing.status !== 'active') return;
+
     try {
       const rig = ensureRig(dirPath);
       if (rig.action !== 'none' && rig.action !== 'skipped') {
