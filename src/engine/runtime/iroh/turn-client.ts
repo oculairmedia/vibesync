@@ -288,7 +288,7 @@ async function attempt(
   try {
     await conn.connect();
     const submitted = await submitInput(conn, { agentId: req.agentId, conversationId, text: req.text, clientMessageId: req.clientMessageId }, o.mode);
-    if (!submitted.accepted) {
+    if ('error' in submitted) {
       return {
         kind: 'terminal',
         frame: { type: 'turn_finished', stop_reason: 'error', error: submitted.error, __input_rejected: true },

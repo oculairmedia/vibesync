@@ -403,6 +403,8 @@ describe('RoleAgentBootstrapper (vibesync-1ix: SDK-based provisioning)', () => {
       const sdk: FakeSdk = {
         calls: [],
         knownAgents: new Set<string>(),
+        models: new Map<string, string>(),
+        modelUpdates: [],
         existenceProbes: 0,
         async createAgent(options) {
           this.calls.push(options);
@@ -530,7 +532,6 @@ describe('RoleAgentBootstrapper (vibesync-1ix: SDK-based provisioning)', () => {
       expect(
         () =>
           new RoleAgentBootstrapper({
-            // @ts-expect-error — deliberately broken
             repo: undefined,
           }),
       ).toThrow(/deps.repo is required/);

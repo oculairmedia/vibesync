@@ -96,8 +96,11 @@ describe('FormulaDispatcher + IrohWrapperProvider: direct role dispatch (vibesyn
       origInput(link, frame);
     };
     const { dispatcher, store } = harness(fake);
-    const retryFormula = formula(['reviewer']);
-    retryFormula.steps[0]!.retry = { maxAttempts: 2, onExhausted: 'fail', backoffMs: 0 };
+    const baseFormula = formula(['reviewer']);
+    const retryFormula: Formula = {
+      ...baseFormula,
+      steps: [{ ...baseFormula.steps[0]!, retry: { maxAttempts: 2, onExhausted: 'fail', backoffMs: 0 } }],
+    };
     const result = await dispatcher.run({
       formula: retryFormula,
       pack: pack(['reviewer']),

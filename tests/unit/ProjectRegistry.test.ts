@@ -50,20 +50,34 @@ describe('ProjectRegistry', () => {
 
   describe('constructor', () => {
     it('should throw when db is not provided', () => {
-      expect(() => new ProjectRegistry({})).toThrow('requires a db instance');
+      expect(() => new ProjectRegistry(null)).toThrow('requires a db instance');
     });
 
     it('should use provided baseDir', () => {
-      const registry = new ProjectRegistry({ db, baseDir: '/custom/dir' });
-      expect(registry.baseDir).toBe('/custom/dir');
+      const customDir = fs.mkdtempSync(path.join(testStacksDir, 'custom-'));
+      fs.mkdirSync(path.join(customDir, 'custom-project', '.git'), { recursive: true });
+      const registry = new ProjectRegistry({ db, baseDir: customDir });
+      const result = registry.scanProjects();
+
+      expect(result).toEqual({ discovered: 1, updated: 1, errors: [] });
+      expect(db.getProject('custom-project')).toBeTruthy();
     });
 
     it('should default to STACKS_DIR env or /opt/stacks', () => {
       const original = process.env.STACKS_DIR;
-      process.env.STACKS_DIR = '/test/stacks';
-      const registry = new ProjectRegistry({ db });
-      expect(registry.baseDir).toBe('/test/stacks');
-      process.env.STACKS_DIR = original;
+      const envStacksDir = fs.mkdtempSync(path.join(testStacksDir, 'env-'));
+      fs.mkdirSync(path.join(envStacksDir, 'env-project', '.git'), { recursive: true });
+      try {
+        process.env.STACKS_DIR = envStacksDir;
+        const registry = new ProjectRegistry({ db });
+        const result = registry.scanProjects();
+
+        expect(result).toEqual({ discovered: 1, updated: 1, errors: [] });
+        expect(db.getProject('env-project')).toBeTruthy();
+      } finally {
+        if (original === undefined) delete process.env.STACKS_DIR;
+        else process.env.STACKS_DIR = original;
+      }
     });
   });
 
