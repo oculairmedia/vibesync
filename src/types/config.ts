@@ -118,12 +118,17 @@ export interface SchedulerConfigSection {
     statePath: string;
     /**
      * Where a wake goes (vibesync-2bgv): 'log' only records it (default);
-     * 'iroh' delivers it to the PM over the shared Iroh connection (requires
-     * VIBESYNC_ORCHESTRATION_PROVIDER=letta-code-iroh).
+     * 'inbox' uses the configured distribution sender and receiver-owned routing.
      */
-    sink: 'log' | 'iroh' | 'inbox';
-    /** Explicit legacy target for direct-input mode only. */
-    conversationId: string;
+    sink: 'log' | 'inbox';
+    /** Explicit distribution sender configuration; never inferred from PATH. */
+    cli?: {
+      executable: string;
+      senderAgentId: string;
+      identityDir: string;
+      addressStore: string;
+      contractVerified: boolean;
+    };
   };
 }
 

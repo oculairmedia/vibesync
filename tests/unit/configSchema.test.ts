@@ -21,7 +21,7 @@ function schedulerDefaults(overrides = {}) {
     autoMerge: false,
     requiredChecks: [] as string[],
     allowedRepos: [] as string[],
-    pmWake: { enabled: false, minIntervalMs: 1_800_000, backstopMs: 28_800_000, statePath: '/tmp/pm-wake-state.json', sink: 'log', conversationId: '' },
+    pmWake: { enabled: false, minIntervalMs: 1_800_000, backstopMs: 28_800_000, statePath: '/tmp/pm-wake-state.json', sink: 'log' },
     ...overrides,
   };
 }
@@ -267,7 +267,7 @@ describe('configSchema', () => {
         configSchema.safeParse(
           validConfig({
             scheduler: schedulerDefaults({
-              pmWake: { enabled: true, minIntervalMs: 1_800_000, backstopMs: 28_800_000, statePath: '/x.json', sink: 'log', conversationId: '', ...over },
+              pmWake: { enabled: true, minIntervalMs: 1_800_000, backstopMs: 28_800_000, statePath: '/x.json', sink: 'log', ...over },
             }),
           }),
         );
@@ -276,7 +276,7 @@ describe('configSchema', () => {
       expect(pm({ backstopMs: 1.5 }).success).toBe(false);
       expect(pm({ backstopMs: Number.NaN }).success).toBe(false);
       expect(pm({ statePath: '' }).success).toBe(false);
-      expect(pm({ sink: 'iroh' }).success).toBe(true);
+      expect(pm({ sink: 'iroh' }).success).toBe(false);
       expect(pm({ sink: 'matrix' }).success).toBe(false);
     });
 

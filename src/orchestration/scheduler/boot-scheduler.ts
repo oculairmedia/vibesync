@@ -46,9 +46,8 @@ import type { StepDispatcher } from './step-dispatcher.js';
 import { EscalationManager, type NotificationTransport } from './escalation.js';
 import { FilePmWakeStateStore, type PmWakeStateStore } from './pm-wake-state.js';
 import { BdPendingWakeStore } from './bd-pending-wake-store.js';
-import { IrohPmWakeSink } from './iroh-pm-wake-sink.js';
+import type { InboxCliOptions } from './inbox-cli-adapter.js';
 import { formatWakeMessage, LoggingPmWakeSink, PmWaker, type PmWakeSink } from './pm-waker.js';
-import type { IrohConnection } from '../runtime/iroh/connection.js';
 import type { GitHubPort } from './refinery.js';
 
 /** The `scheduler` config section (structurally identical to AppConfig['scheduler']). */
@@ -80,10 +79,9 @@ export interface SchedulerBootConfig {
     readonly minIntervalMs: number;
     readonly backstopMs: number;
     readonly statePath: string;
-    /** 'log' (default), explicit legacy 'iroh', or new 'inbox' producer. */
-    readonly sink?: 'log' | 'iroh' | 'inbox';
-    /** Explicit conversation for legacy direct-input wakes only. */
-    readonly conversationId?: string;
+    /** 'log' (default) or receiver-routed 'inbox'. */
+    readonly sink?: 'log' | 'inbox';
+    readonly cli?: InboxCliOptions | undefined;
   };
   /**
    * Wall-clock deadline (ms) for a started run (vibesync-izn3); 0 = none.
@@ -117,13 +115,6 @@ export interface BootSchedulerOptions {
     readonly lookupAgentId: (projectIdentifier: string) => string | null | undefined;
     readonly sink?: PmWakeSink;
     readonly inboxAdapter?: InboxMessageAdapter;
-    /**
-     * The plane's shared Iroh connection (vibesync-2bgv). Required when
-     * `config.pmWake.sink === 'iroh'` and no explicit `sink` is supplied; boot
-     * injects it from the memoized Iroh provider so a wake never dials a second
-     * connection.
-     */
-    readonly getIrohConnection?: () => IrohConnection;
     readonly store?: PmWakeStateStore;
     readonly now?: () => number;
   };
@@ -287,16 +278,6 @@ export function startSchedulerDaemon(
     } else {
       const pw = config.pmWake;
       let sink = opts.pmWake.sink;
-      if (!sink && pw.sink === 'iroh') {
-        if (!opts.pmWake.getIrohConnection) {
-          throw new Error("scheduler.pmWake.sink='iroh' but no Iroh connection getter was supplied (provider kind must be letta-code-iroh)");
-        }
-        sink = new IrohPmWakeSink({
-          getConnection: opts.pmWake.getIrohConnection,
-          ...(pw.conversationId ? { conversationId: pw.conversationId } : {}),
-          ...(logger ? { logger } : {}),
-        });
-      }
       if (!sink && pw.sink === 'inbox') {
         if (!opts.pmWake.inboxAdapter) {
           throw new Error("scheduler.pmWake.sink='inbox' is blocked until the approved MobileAgentMessageSender service adapter is supplied");

@@ -1,5 +1,6 @@
 import { REPO_SLUG_PATTERN } from './orchestration/scheduler/repo-allowlist.js';
 import { z } from 'zod';
+import { isAbsolute } from 'node:path';
 
 const syncSchema = z.object({
   interval: z.number().int().min(0, 'SYNC_INTERVAL must be >= 0'),
@@ -148,9 +149,14 @@ const schedulerSchema = z
       backstopMs: z.number().int().min(1000, 'VIBESYNC_PM_WAKE_BACKSTOP_MS must be >= 1000'),
       statePath: z.string().min(1, 'VIBESYNC_PM_WAKE_STATE_PATH must not be empty'),
       /** Inbox requires an explicitly installed mobile service adapter. */
-      sink: z.enum(['log', 'iroh', 'inbox'], { message: 'VIBESYNC_PM_WAKE_SINK must be "log", "iroh", or "inbox"' }).default('log'),
-      /** Explicit legacy target for direct-input mode only. */
-      conversationId: z.string().default(''),
+      sink: z.enum(['log', 'inbox'], { message: 'VIBESYNC_PM_WAKE_SINK must be "log" or "inbox"; direct-input "iroh" wakes were removed' }).default('log'),
+      cli: z.object({
+        executable: z.string().refine(isAbsolute, 'Inbox executable path must be absolute'),
+        senderAgentId: z.string().trim().min(1),
+        identityDir: z.string().refine(isAbsolute, 'Inbox identity directory must be absolute'),
+        addressStore: z.string().refine(isAbsolute, 'Inbox address store must be absolute'),
+        contractVerified: z.boolean(),
+      }).strict().optional(),
     }),
   })
   .refine((data) => !data.enabled || data.projectIdentifier.trim().length > 0, {

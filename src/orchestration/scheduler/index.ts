@@ -132,8 +132,6 @@ export {
   PM_WAKE_RETRY_BACKOFF_MS,
 } from './pm-waker.js';
 export type { WakeReason, PmWakeSink, PmWakeInput, PmWakeOutcome, PmWakerDeps, PmBacklogSnapshot } from './pm-waker.js';
-export { IrohPmWakeSink } from './iroh-pm-wake-sink.js';
-export type { IrohPmWakeSinkOptions } from './iroh-pm-wake-sink.js';
 export { FilePmWakeStateStore } from './pm-wake-state.js';
 export { BdPendingWakeStore, PENDING_WAKE_LABEL } from './bd-pending-wake-store.js';
 export type { PendingWakePayload, PendingWakeReceipt, PendingWakeRecord, PendingWakeClaim, PendingWakeSendResult, PendingWakeStore } from './bd-pending-wake-store.js';
