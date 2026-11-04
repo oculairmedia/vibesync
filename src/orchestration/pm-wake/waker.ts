@@ -39,45 +39,14 @@
  * registry lookup, clock and state store are injected.
  */
 
-import type { PmWakeStateStore, PmWakeProjectState } from './pm-wake-state.js';
-import type { PendingWakeRecord, PendingWakeStore } from './bd-pending-wake-store.js';
+import type { PmWakeStateStore, PmWakeProjectState } from './state.js';
+import type { PendingWakeRecord, PendingWakeStore } from './pending-store.js';
 
-export type WakeReason = 'event' | 'ready' | 'stall' | 'backstop';
-
-export const PM_WOKEN_EVENT = 'daemon/pm.woken';
-export const PM_WAKE_SKIPPED_EVENT = 'daemon/pm.wake_skipped';
-
-/** Wait after a failed wake before retrying it (ms). */
-export const PM_WAKE_RETRY_BACKOFF_MS = 300_000;
-
-export interface PmWakeInput {
-  readonly agentId: string;
-  readonly projectIdentifier: string;
-  readonly reason: WakeReason;
-  readonly detail: string;
-  /** Stable per logical wake (reused on retry); becomes the inbox message id. */
-  readonly wakeId: string;
-  /** Optional producer correlation; absent for backstop wakes with no known work bead. */
-  readonly correlation?: Readonly<Record<string, string>>;
-}
-
-export interface PmWakeOutcome {
-  readonly ok: boolean;
-  readonly accepted?: boolean;
-  readonly applicationDelivered?: boolean;
-  readonly msgId?: string;
-  readonly reason?: string;
-  readonly error?: string;
-}
-
-export interface PmWakeSink {
-  wake(input: PmWakeInput): Promise<PmWakeOutcome>;
-}
-
-/** One-line wake message text, shared by every sink implementation. */
-export function formatWakeMessage(input: Pick<PmWakeInput, 'reason' | 'detail' | 'wakeId'>): string {
-  return `[vibesync wake] reason=${input.reason} detail=${input.detail.replace(/\s+/g, ' ').trim()} wakeId=${input.wakeId}`;
-}
+export {
+  formatWakeMessage, PM_WAKE_RETRY_BACKOFF_MS, PM_WAKE_SKIPPED_EVENT, PM_WOKEN_EVENT,
+  type PmWakeInput, type PmWakeOutcome, type PmWakeSink, type WakeReason,
+} from './contract.js';
+import { formatWakeMessage, PM_WAKE_RETRY_BACKOFF_MS, PM_WAKE_SKIPPED_EVENT, PM_WOKEN_EVENT, type PmWakeInput, type PmWakeOutcome, type PmWakeSink, type WakeReason } from './contract.js';
 
 /** Default sink: records the wake in the log and reports success. Delivers nothing. */
 export class LoggingPmWakeSink implements PmWakeSink {

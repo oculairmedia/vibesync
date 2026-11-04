@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  BdCommentEscalationStore,
   BdFormulaResolver,
   BdLivenessProbe,
   BdReadyBeadSource,
   BdSlingContextStore,
-  GhCliGitHubPort,
   parseJsonOutput,
 } from '../../../../src/orchestration/scheduler/bd-adapters.js';
+import { BdCommentEscalationStore } from '../../../../src/orchestration/escalation/bd-store.js';
+import { GhCliGitHubPort } from '../../../../src/orchestration/refinery/github.js';
 import { serializeParams, SLING_CONTEXT_LABEL, SLING_CONTEXT_VERSION } from '../../../../src/orchestration/scheduler/sling-context.js';
 
 function runner(responses: (args: readonly string[]) => string) {

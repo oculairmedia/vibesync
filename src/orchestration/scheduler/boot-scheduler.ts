@@ -31,24 +31,23 @@ import type { FormulaDispatcher } from '../dispatcher/index.js';
 import { loadPack, type Pack } from '../packs/index.js';
 import type { PoolMemberIdentity } from './agent-pool.js';
 import {
-  BdCommentEscalationStore,
   BdFormulaResolver,
   BdLivenessProbe,
   BdReadyBeadSource,
   BdSlingContextStore,
-  GhCliGitHubPort,
-  createLogNotificationTransport,
-  disabledGitHubPort,
   type CommandRunner,
 } from './bd-adapters.js';
+import { BdCommentEscalationStore, createLogNotificationTransport } from '../escalation/bd-store.js';
+import { GhCliGitHubPort, disabledGitHubPort } from '../refinery/github.js';
+import { createInboxWakeSink, type InboxMessageAdapter } from '../pm-wake/inbox-sink.js';
 import { SchedulerDaemon, type DaemonLogger, type DaemonTickReport } from './daemon.js';
 import type { StepDispatcher } from './step-dispatcher.js';
-import { EscalationManager, type NotificationTransport } from './escalation.js';
-import { FilePmWakeStateStore, type PmWakeStateStore } from './pm-wake-state.js';
-import { BdPendingWakeStore } from './bd-pending-wake-store.js';
-import type { InboxCliOptions } from './inbox-cli-adapter.js';
-import { formatWakeMessage, LoggingPmWakeSink, PmWaker, type PmWakeSink } from './pm-waker.js';
-import type { GitHubPort } from './refinery.js';
+import { EscalationManager, type NotificationTransport } from '../escalation/escalation.js';
+import { FilePmWakeStateStore, type PmWakeStateStore } from '../pm-wake/state.js';
+import { BdPendingWakeStore } from '../pm-wake/pending-store.js';
+import type { InboxCliOptions } from '../pm-wake/inbox-cli-adapter.js';
+import { LoggingPmWakeSink, PmWaker, type PmWakeSink } from '../pm-wake/waker.js';
+import type { GitHubPort } from '../refinery/refinery.js';
 
 /** The `scheduler` config section (structurally identical to AppConfig['scheduler']). */
 export interface SchedulerBootConfig {
@@ -137,67 +136,15 @@ export const SCHEDULER_STARTED_EVENT = 'daemon/scheduler.started';
 export const SCHEDULER_STOPPED_EVENT = 'daemon/scheduler.stopped';
 export const SCHEDULER_START_FAILED_EVENT = 'daemon/scheduler.start_failed';
 
-/**
- * Bead status transition, payload `{ issueId, from, to }` (vibesync-p489).
- * The scheduler SUBSCRIBES to this; nothing in the repo emits it yet — the
- * producer (bd -> bus) is a separate bead. A `to` of ready|in_progress|closed
- * requests an immediate (debounced) tick; any other status is ignored.
- */
-export const BEADS_ISSUE_STATUS_CHANGED_EVENT = 'beads/issue.status_changed';
+export { BEADS_ISSUE_STATUS_CHANGED_EVENT } from '../events/beads.js';
+import { BEADS_ISSUE_STATUS_CHANGED_EVENT } from '../events/beads.js';
+
 
 /** Target statuses of `beads/issue.status_changed` that trigger a tick. */
 export const TICK_TRIGGER_BEAD_STATUSES: ReadonlySet<string> = new Set(['ready', 'in_progress', 'closed']);
 
-export interface InboxMessageAck {
-  readonly msgId: string;
-  readonly accepted: boolean;
-  readonly applicationDelivered: boolean;
-  readonly reason?: string;
-}
-
-export interface InboxMessageAdapter {
-  sendInboxMessage(input: {
-    readonly to: string;
-    readonly body: string;
-    readonly msgId: string;
-    readonly correlation?: Readonly<Record<string, string>>;
-  }): Promise<unknown>;
-}
-
-function createInboxWakeSink(adapter: InboxMessageAdapter): PmWakeSink {
-  return {
-    wake: async (input) => {
-      const rawAck = await adapter.sendInboxMessage({
-        to: input.agentId,
-        body: formatWakeMessage(input),
-        msgId: input.wakeId,
-        ...(input.correlation ? { correlation: input.correlation } : {}),
-      });
-      const ack = normalizeInboxWakeAck(rawAck, input.wakeId);
-      return {
-        ok: ack?.accepted === true && ack.applicationDelivered,
-        accepted: ack?.accepted ?? false,
-        applicationDelivered: ack?.applicationDelivered ?? false,
-        msgId: input.wakeId,
-        ...(!ack ? { reason: 'malformed inbox acknowledgement' } : ack.reason ? { reason: ack.reason } : {}),
-      };
-    },
-  };
-}
-
-export function normalizeInboxWakeAck(value: unknown, msgId: string): InboxMessageAck | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const ack = value as Record<string, unknown>;
-  if (ack['msgId'] !== msgId || typeof ack['accepted'] !== 'boolean') return null;
-  if (ack['applicationDelivered'] !== undefined && typeof ack['applicationDelivered'] !== 'boolean') return null;
-  if (ack['reason'] !== undefined && typeof ack['reason'] !== 'string') return null;
-  return {
-    msgId,
-    accepted: ack['accepted'],
-    applicationDelivered: ack['applicationDelivered'] === true,
-    ...(typeof ack['reason'] === 'string' ? { reason: ack['reason'] } : {}),
-  };
-}
+export type { InboxMessageAck, InboxMessageAdapter } from '../pm-wake/inbox-sink.js';
+export { normalizeInboxWakeAck } from '../pm-wake/inbox-sink.js';
 
 export function startSchedulerDaemon(
   opts: BootSchedulerOptions & {

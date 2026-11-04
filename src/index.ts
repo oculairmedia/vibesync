@@ -15,7 +15,7 @@ import { logger } from './logger';
 import { bootOrchestrationPlane, releaseDoltAfterFailedBoot, type OrchestrationHandle } from './orchestration/boot.js';
 import { BdVersionTooOldError, probeBdVersion } from './orchestration/bd-version.js';
 import { createCliRunner } from './orchestration/scheduler/bd-adapters.js';
-import { registryPmAgentLookup } from './orchestration/scheduler/pm-waker.js';
+import { registryPmAgentLookup } from './orchestration/pm-wake/waker.js';
 import { DoltClient, defaultDoltBootDeps } from './orchestration/store/index.js';
 import { ProjectRegistry } from './ProjectRegistry';
 import { resolveFromAppRoot } from './runtimePaths';

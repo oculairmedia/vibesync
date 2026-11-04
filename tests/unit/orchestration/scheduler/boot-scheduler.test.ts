@@ -290,7 +290,7 @@ describe('bootOrchestrationPlane — SchedulerDaemon wiring (vibesync-z2ws)', ()
   });
 
   it('auto-merge is OFF by default: merging is impossible even if a PR were queued', async () => {
-    const { disabledGitHubPort } = await import('../../../../src/orchestration/scheduler/bd-adapters.js');
+    const { disabledGitHubPort } = await import('../../../../src/orchestration/refinery/github.js');
     await expect(disabledGitHubPort.merge('o/r', 1)).rejects.toThrow('auto-merge is disabled');
     await expect(disabledGitHubPort.fetchFacts('o/r', 1, [])).rejects.toThrow('auto-merge is disabled');
 

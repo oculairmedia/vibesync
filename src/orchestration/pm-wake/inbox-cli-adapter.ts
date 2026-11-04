@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { isAbsolute } from 'node:path';
 
-import type { InboxMessageAdapter } from './boot-scheduler.js';
+import type { InboxMessageAdapter } from './inbox-sink.js';
 
 export interface InboxCliOptions {
   /** Exact matched distribution executable, not the turn-scoped meridian shim. */

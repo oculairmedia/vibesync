@@ -21,7 +21,7 @@ import {
 } from '../../../../src/orchestration/scheduler/sling-context.js';
 import type { RunLiveness } from '../../../../src/orchestration/scheduler/witness.js';
 import type { AgentPool } from '../../../../src/orchestration/scheduler/agent-pool.js';
-import type { PrFacts } from '../../../../src/orchestration/scheduler/refinery.js';
+import type { PrFacts } from '../../../../src/orchestration/refinery/refinery.js';
 
 interface Deferred {
   readonly beadId: string;

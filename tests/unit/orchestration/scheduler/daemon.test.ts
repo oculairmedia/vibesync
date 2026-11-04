@@ -6,7 +6,7 @@ import {
 } from '../../../../src/orchestration/scheduler/daemon.js';
 import type { FormulaDispatcher } from '../../../../src/orchestration/dispatcher/dispatcher.js';
 import type { SlingContextStore } from '../../../../src/orchestration/scheduler/sling-context.js';
-import type { PrFacts } from '../../../../src/orchestration/scheduler/refinery.js';
+import type { PrFacts } from '../../../../src/orchestration/refinery/refinery.js';
 
 /** Minimal in-memory sling-context store (open/closed by id). */
 function makeContextStore(): SlingContextStore & { openCount(): number } {

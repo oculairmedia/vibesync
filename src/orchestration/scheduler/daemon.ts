@@ -27,7 +27,7 @@ import { SchedulerLoop, type SchedulerConfig, type TickResult } from './schedule
 import { SlingContextManager, type SlingContextStore } from './sling-context.js';
 import { PropulsionExecutor, type DispatchRunner, type DispatchRunResult } from './propulsion-executor.js';
 import type { DispatchCandidate } from './plan-dispatch.js';
-import { Refinery, type GitHubPort, type RefineryEscalationSink, type MergeRequest } from './refinery.js';
+import { Refinery, type GitHubPort, type RefineryEscalationSink, type MergeRequest } from '../refinery/refinery.js';
 import { isRepoAllowed } from '../repo-allowlist.js';
 import { Witness, type RunLivenessProbe, type WitnessEscalation } from './witness.js';
 

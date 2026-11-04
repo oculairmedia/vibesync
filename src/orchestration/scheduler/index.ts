@@ -77,7 +77,7 @@ export {
   severityPriority,
   markerLine,
   DEFAULT_ESCALATION_CONFIG,
-} from './escalation.js';
+} from '../escalation/escalation.js';
 export type {
   EscalationSeverity,
   EscalationState,
@@ -87,12 +87,12 @@ export type {
   EscalationConfig,
   EscalationManagerDeps,
   StaleSweepResult,
-} from './escalation.js';
+} from '../escalation/escalation.js';
 
 export {
   Refinery,
   evaluateGates,
-} from './refinery.js';
+} from '../refinery/refinery.js';
 export type {
   MergeRequest,
   MergeRequestState,
@@ -103,7 +103,7 @@ export type {
   GitHubPort,
   RefineryEscalationSink,
   RefineryDeps,
-} from './refinery.js';
+} from '../refinery/refinery.js';
 
 export {
   Witness,
@@ -130,12 +130,12 @@ export {
   PM_WOKEN_EVENT,
   PM_WAKE_SKIPPED_EVENT,
   PM_WAKE_RETRY_BACKOFF_MS,
-} from './pm-waker.js';
-export type { WakeReason, PmWakeSink, PmWakeInput, PmWakeOutcome, PmWakerDeps, PmBacklogSnapshot } from './pm-waker.js';
-export { FilePmWakeStateStore } from './pm-wake-state.js';
-export { BdPendingWakeStore, PENDING_WAKE_LABEL } from './bd-pending-wake-store.js';
-export type { PendingWakePayload, PendingWakeReceipt, PendingWakeRecord, PendingWakeClaim, PendingWakeSendResult, PendingWakeStore } from './bd-pending-wake-store.js';
-export type { PmWakeStateStore, PmWakeProjectState } from './pm-wake-state.js';
+} from '../pm-wake/waker.js';
+export type { WakeReason, PmWakeSink, PmWakeInput, PmWakeOutcome, PmWakerDeps, PmBacklogSnapshot } from '../pm-wake/waker.js';
+export { FilePmWakeStateStore } from '../pm-wake/state.js';
+export { BdPendingWakeStore, PENDING_WAKE_LABEL } from '../pm-wake/pending-store.js';
+export type { PendingWakePayload, PendingWakeReceipt, PendingWakeRecord, PendingWakeClaim, PendingWakeSendResult, PendingWakeStore } from '../pm-wake/pending-store.js';
+export type { PmWakeStateStore, PmWakeProjectState } from '../pm-wake/state.js';
 
 export { SchedulerDaemon, DEFAULT_EVENT_DEBOUNCE_MS, DEFAULT_RUN_DEADLINE_MS } from './daemon.js';
 export type {
