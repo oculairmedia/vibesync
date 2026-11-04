@@ -150,7 +150,8 @@ export class PmWaker {
   private readonly retryWakeId = new Map<WakeReason, string>();
   private readonly failedAt = new Map<WakeReason, number>();
   private readonly retryInput = new Map<WakeReason, PmWakeInput>();
-  private readonly durablePending = new Map<WakeReason, PendingWakeRecord>();
+  private readonly durablePending = new Map<string, PendingWakeRecord>();
+  private recoveryFailed = false;
   /** `${reason}:${why}` skip notices already emitted (cleared when that reason wakes). */
   private readonly skipNoticed = new Set<string>();
   private warnedNoAgent = false;
@@ -165,10 +166,11 @@ export class PmWaker {
       this.recovery = deps.pendingWakeStore.listPending().then((records) => {
         for (const record of records) {
           if (record.payload.projectIdentifier === deps.projectIdentifier) {
-            this.durablePending.set(record.payload.reason, record);
+            this.durablePending.set(record.id, record);
           }
         }
       }).catch((error: unknown) => {
+        this.recoveryFailed = true;
         deps.logger?.warn?.({ project: deps.projectIdentifier, error: errMsg(error) }, 'pm-wake: pending wake recovery failed');
       });
     }
@@ -221,6 +223,9 @@ export class PmWaker {
   private async evaluate(obs: PmWakeTickObservation): Promise<void> {
     const project = this.deps.projectIdentifier;
     await this.recovery;
+    // A failed read cannot establish that no message is pending. Stay closed
+    // rather than minting a replacement identity after an ambiguous send.
+    if (this.recoveryFailed) return;
     const recovered = [...this.durablePending.values()].find((record) => record.payload.projectIdentifier === this.deps.projectIdentifier);
     if (recovered) {
       await this.retryDurablePending(recovered, this.now());
@@ -342,7 +347,7 @@ export class PmWaker {
     if (!sent.authorized || !sent.outcome) return;
     const input = inputFromRecord(record);
     this.applyOutcome(input, sent.outcome, now);
-    if (sent.receipt?.accepted && sent.receipt.applicationDelivered) this.durablePending.delete(record.payload.reason);
+    if (sent.receipt?.accepted && sent.receipt.applicationDelivered) this.durablePending.delete(record.id);
   }
 
   private async send(
@@ -364,7 +369,7 @@ export class PmWaker {
     if (pendingStore) {
       try {
         const record = await pendingStore.enqueue(input, now);
-        this.durablePending.set(reason, record);
+        this.durablePending.set(record.id, record);
         const result = await pendingStore.claim(record.id);
         if (!result.authorized || !result.record) return;
         const sent = await pendingStore.sendClaimed(result.record, this.deps.sink, now);
@@ -373,7 +378,7 @@ export class PmWaker {
         this.retryInput.delete(reason);
         this.failedAt.delete(reason);
         this.applyOutcome(inputFromRecord(record), sent.outcome, now);
-        if (sent.receipt?.accepted && sent.receipt.applicationDelivered) this.durablePending.delete(reason);
+        if (sent.receipt?.accepted && sent.receipt.applicationDelivered) this.durablePending.delete(record.id);
       } catch (error) {
         this.failedAt.set(reason, now);
         this.deps.logger?.warn?.({ project, reason, wakeId, error: errMsg(error) }, 'pm-wake: durable send failed closed');
