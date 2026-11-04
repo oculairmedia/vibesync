@@ -586,11 +586,10 @@ export class FormulaDispatcher implements ReadyStepRunner {
     if (!this.deliveryVerifier) return `formula "${run.input.formula.name}" declares delivers = "${kind}" but no delivery verifier is configured`;
     try {
       const verdict = await this.deliveryVerifier.verify({ kind, outputs: run.outputs, moleculeId: run.moleculeId });
-      if (verdict.ok) {
-        this.emit('dispatcher/formula.delivered', run.moleculeId, undefined, { moleculeId: run.moleculeId, kind, artifact: verdict.artifact });
-        return null;
-      }
-      return `declared delivery not met: ${verdict.reason}`;
+      // `in` narrowing works under the test tree's non-strict config too.
+      if ('reason' in verdict) return `declared delivery not met: ${verdict.reason}`;
+      this.emit('dispatcher/formula.delivered', run.moleculeId, undefined, { moleculeId: run.moleculeId, kind, artifact: verdict.artifact });
+      return null;
     } catch (err) {
       return `declared delivery could not be verified: ${stringifyError(err)}`;
     }
