@@ -7,6 +7,7 @@ import type { BeadRow } from '../store/index.js';
 import type { Pack, RoleConfig } from '../packs/index.js';
 import type { RuntimeProvider, SessionEvent, SessionHandle } from '../runtime/index.js';
 import type { ReadyStep, ReadyStepRunner, StepRunOutcome } from '../molecule/index.js';
+import { parseBlockedOutcome, STEP_OUTCOME_INSTRUCTIONS } from './step-outcome.js';
 import { renderTemplate } from './render.js';
 import {
   classifyFailure,
@@ -730,7 +731,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
         step_id: args.step.id,
         attempt: state.attempt,
       },
-    });
+    }) + STEP_OUTCOME_INSTRUCTIONS;
 
     let failure: { readonly signal: FailureSignal; readonly error: unknown; readonly failureClass: string | null } | null = null;
     // Only the AGENT TURN is retryable. Anything after it succeeded (reading the
@@ -770,7 +771,16 @@ export class FormulaDispatcher implements ReadyStepRunner {
       // Store errors from here on propagate (fail the molecule), never retry.
       const bead = await this.walker.readStep(args.step.id);
       const declared = bead ? readFailureClass(bead.metadata) : null;
-      if (declared === null) {
+      // vibesync-zvcm: a step that reports itself blocked must stop the formula.
+      // Terminal: retrying cannot clear a blocker the agent named.
+      const blocker = parseBlockedOutcome(output.text);
+      if (blocker !== null) {
+        failure = {
+          signal: { origin: 'stopped' },
+          error: new Error(`step blocked: ${blocker}`),
+          failureClass: null,
+        };
+      } else if (declared === null) {
         args.outputs[stepName] = output.text;
         await this.walker.finishStep(args.step.id, { output: output.text, eventCount: output.eventCount, attempts: state.attempt });
         this.emit('dispatcher/step.finished', args.moleculeId, args.step.id, {
@@ -781,12 +791,13 @@ export class FormulaDispatcher implements ReadyStepRunner {
           attempts: state.attempt,
         });
         return;
+      } else {
+        failure = {
+          signal: { origin: 'event', code: 'failure_class', producedOutput: true },
+          error: new Error(`step declared failure_class=${declared}`),
+          failureClass: declared,
+        };
       }
-      failure = {
-        signal: { origin: 'event', code: 'failure_class', producedOutput: true },
-        error: new Error(`step declared failure_class=${declared}`),
-        failureClass: declared,
-      };
     }
     if (failure === null) {
       // Unreachable: the turn either threw (failure set in catch) or completed
