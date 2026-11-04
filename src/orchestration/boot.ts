@@ -21,6 +21,7 @@ import type { AgentIdResolver, PersonaLoader, RuntimeProvider } from './runtime/
 import { startSchedulerDaemon, SCHEDULER_START_FAILED_EVENT } from './scheduler/boot-scheduler.js';
 import { StepDispatcher, StoreReadyStepSource } from './scheduler/step-dispatcher.js';
 import { assertBdVersion } from './bd-version.js';
+import { createInboxCliAdapter } from './scheduler/inbox-cli-adapter.js';
 import type { BootSchedulerOptions, SchedulerHandle } from './scheduler/boot-scheduler.js';
 import type { DoltClient } from './store/index.js';
 import { startWaitWatcher } from './waits/boot-waits.js';
@@ -255,12 +256,12 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     return irohProvider;
   };
   const providerKind = resolveProviderKind();
-  // vibesync-2bgv: the 'iroh' PM wake sink borrows the plane's Iroh connection, so it needs that provider kind.
   const wakeCfg = opts.scheduler?.config.enabled ? opts.scheduler.config.pmWake : undefined;
-  if (wakeCfg?.enabled && wakeCfg.sink === 'iroh' && !opts.scheduler?.pmWake?.sink && providerKind !== IROH_PROVIDER_KIND) {
-    throw new Error(`scheduler.pmWake.sink='iroh' requires VIBESYNC_ORCHESTRATION_PROVIDER=${IROH_PROVIDER_KIND} (got "${providerKind}")`);
+  let inboxAdapter = opts.scheduler?.pmWake?.inboxAdapter;
+  if (wakeCfg?.enabled && wakeCfg.sink === 'inbox' && !opts.scheduler?.pmWake?.sink && !inboxAdapter && wakeCfg.cli) {
+    inboxAdapter = createInboxCliAdapter(wakeCfg.cli);
   }
-  if (wakeCfg?.enabled && wakeCfg.sink === 'inbox' && opts.scheduler?.pmWake && !opts.scheduler.pmWake.sink && !opts.scheduler.pmWake.inboxAdapter) {
+  if (wakeCfg?.enabled && wakeCfg.sink === 'inbox' && opts.scheduler?.pmWake && !opts.scheduler.pmWake.sink && !inboxAdapter) {
     throw new Error("scheduler.pmWake.sink='inbox' requires an approved MobileAgentMessageSender service adapter");
   }
   const provider = opts.provider ?? buildDefaultRuntimeProvider({
@@ -371,9 +372,8 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     try {
       scheduler = startSchedulerDaemon({
         ...opts.scheduler,
-        // vibesync-2bgv: the wake sink shares the plane's ONE lazily-built Iroh connection.
         ...(opts.scheduler.pmWake
-          ? { pmWake: { ...opts.scheduler.pmWake, getIrohConnection: opts.scheduler.pmWake.getIrohConnection ?? (() => getIrohProvider().connection) } }
+          ? { pmWake: { ...opts.scheduler.pmWake, ...(inboxAdapter ? { inboxAdapter } : {}) } }
           : {}),
         dispatcher,
         bus,

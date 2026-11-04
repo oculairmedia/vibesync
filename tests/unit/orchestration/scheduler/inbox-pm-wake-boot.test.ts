@@ -1,13 +1,13 @@
 /**
- * vibesync-2bgv — the Iroh PM wake sink through the REAL boot path.
+ * Inbox PM wake composition through the real boot path.
  *
- * bootOrchestrationPlane -> startSchedulerDaemon -> PmWaker -> IrohPmWakeSink ->
- * the plane's ONE shared IrohConnection -> FakeIrohWrapper. Nothing calls the sink
- * directly: a wake exists only because a (fake-clock) daemon tick decided it.
+ * bootOrchestrationPlane -> startSchedulerDaemon -> PmWaker -> inbox adapter.
+ * A wake exists only because a (fake-clock) daemon tick decided it. Formula
+ * runtime input remains separate from mailbox routing.
  *
  * False passes guarded against:
- *   - a sink that dials its own connection (asserted: one dial in total, shared with a formula step);
- *   - ok:true while the PM never got the message (asserted on the FAKE's persisted PM conversation);
+ *   - a wake bypassing inbox routing by writing into a PM conversation;
+ *   - treating accepted-only as confirmed application delivery;
  *   - the config flag silently ignored (asserted: 'log' reaches no wrapper at all).
  */
 
@@ -87,7 +87,7 @@ function schedulerConfig(pmWake: Partial<NonNullable<BootSchedulerOptions['confi
     autoMerge: false,
     requiredChecks: [],
     allowedRepos: [],
-    pmWake: { enabled: true, minIntervalMs: 30 * MIN, backstopMs: 8 * HOUR, statePath: '', sink: 'iroh', conversationId: '', ...pmWake },
+    pmWake: { enabled: true, minIntervalMs: 30 * MIN, backstopMs: 8 * HOUR, statePath: '', sink: 'log', ...pmWake },
   };
 }
 
@@ -135,7 +135,7 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  async function boot(fake: FakeIrohWrapper, over: { bd?: typeof bd; provider?: string; pmWake?: Partial<NonNullable<BootSchedulerOptions['config']['pmWake']>>; connections?: IrohConnection[]; inboxAdapter?: InboxMessageAdapter; wakeSink?: import('../../../../src/orchestration/scheduler/pm-waker.js').PmWakeSink; listPoolMembers?: () => readonly { agentId: string; role: string; lettaBaseUrl: string }[] } = {}) {
+  async function boot(fake: FakeIrohWrapper, over: { intervalMs?: number; bd?: typeof bd; provider?: string; pmWake?: Partial<NonNullable<BootSchedulerOptions['config']['pmWake']>>; connections?: IrohConnection[]; inboxAdapter?: InboxMessageAdapter; wakeSink?: import('../../../../src/orchestration/scheduler/pm-waker.js').PmWakeSink; listPoolMembers?: () => readonly { agentId: string; role: string; lettaBaseUrl: string }[] } = {}) {
     process.env['VIBESYNC_WORK_ACTIVITY_REPORT'] = '0';
     process.env['VIBESYNC_ORCHESTRATION_PROVIDER'] = over.provider ?? 'letta-code-iroh';
     process.env['VIBESYNC_LETTA_CODE_PARENT_AGENT_ID'] = PM;
@@ -150,7 +150,7 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
         return c;
       },
       scheduler: {
-        config: schedulerConfig({ statePath: path.join(dir, 'pm-wake-state.json'), ...over.pmWake }),
+        config: { ...schedulerConfig({ statePath: path.join(dir, 'pm-wake-state.json'), ...over.pmWake }), ...(over.intervalMs ? { intervalMs: over.intervalMs } : {}) },
         listPoolMembers: () => over.listPoolMembers?.() ?? [
           { agentId: 'agent-a', role: 'role-one', lettaBaseUrl: 'http://shim' },
           { agentId: 'agent-b', role: 'role-two', lettaBaseUrl: 'http://shim' },
@@ -169,23 +169,31 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
     return { handle, woken };
   }
 
-  it("7. sink 'iroh' + scheduler on: the 8 h backstop wake (fake clock) is accepted into PM's live conversation as exactly one turn", async () => {
+  it('the backstop goes through the inbox adapter without direct input into any conversation', async () => {
     const fake = new FakeIrohWrapper({ scope: [PM] });
     fake.seedConversation(PM, { id: 'conv-heartbeat', lastMessageAt: '2026-01-01T00:00:00.000Z', extra: { conversation_class: 'autonomous' } });
     fake.seedConversation(PM, { id: 'conv-live', lastMessageAt: '2025-12-31T23:00:00.000Z' });
-    const { handle, woken } = await boot(fake);
+    const sent: unknown[] = [];
+    const { handle, woken } = await boot(fake, {
+      pmWake: { sink: 'inbox' }, bd: pendingWakeBd().run,
+      inboxAdapter: { sendInboxMessage: async request => {
+        sent.push(request);
+        return { msgId: request.msgId, accepted: true, applicationDelivered: true };
+      } },
+    });
 
     await vi.advanceTimersByTimeAsync(8 * HOUR + 40 * MIN);
 
     const p = woken.find((event) => (event.payload as Record<string, unknown>)['reason'] === 'backstop')!.payload as Record<string, unknown>;
-    expect(p).toMatchObject({ reason: 'backstop', agentId: PM, ok: true, accepted: true, applicationDelivered: false, project: PROJECT });
+    expect(p).toMatchObject({ reason: 'backstop', agentId: PM, ok: true, accepted: true, applicationDelivered: true, project: PROJECT });
     expect(woken).toHaveLength(1);
-    expect(fake.turnsExecuted).toBe(1);
-    expect(fake.userTexts('conv-live')).toHaveLength(1);
+    expect(sent).toHaveLength(1);
+    expect(fake.turnsExecuted).toBe(0);
+    expect(fake.userTexts('conv-live')).toEqual([]);
     expect(fake.userTexts('conv-heartbeat')).toEqual([]);
     expect(fake.violations).toEqual([]);
     expect(p['wakeId']).toContain('backstop');
-    expect(fake.received.filter((frame) => frame['type'] === 'input')).toHaveLength(1);
+    expect(fake.received).toEqual([]);
     await handle.shutdown();
   });
 
@@ -197,6 +205,77 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
     });
     expect(handle.scheduler).not.toBeNull();
     expect(fake.dials).toBe(0);
+    await handle.shutdown();
+  });
+
+  it('configured distribution sender refuses unverified activation before dialing', async () => {
+    const fake = new FakeIrohWrapper({ scope: [PM] });
+    await expect(boot(fake, {
+      pmWake: { sink: 'inbox', cli: {
+        executable: '/not-a-release/bin/meridian-iroh-wrapper', senderAgentId: 'service-agent',
+        identityDir: '/service-identities', addressStore: '/host-addresses', contractVerified: false,
+      } },
+    })).rejects.toThrow('Inbox sender contract has not been verified');
+    expect(fake.dials).toBe(0);
+  });
+
+  it('disabled inbox sender does not inspect or execute its unverified configuration', async () => {
+    const fake = new FakeIrohWrapper({ scope: [PM] });
+    const { handle } = await boot(fake, {
+      pmWake: { enabled: false, sink: 'inbox', cli: {
+        executable: '/not-a-release/bin/meridian-iroh-wrapper', senderAgentId: 'service-agent',
+        identityDir: '/service-identities', addressStore: '/host-addresses', contractVerified: false,
+      } },
+    });
+    expect(handle.scheduler!.pmWaker).toBeNull();
+    expect(fake.dials).toBe(0);
+    await handle.shutdown();
+  });
+
+  it('an injected sink still takes precedence over unverified CLI configuration', async () => {
+    const fake = new FakeIrohWrapper({ scope: [PM] });
+    const { handle } = await boot(fake, {
+      pmWake: { sink: 'inbox', cli: {
+        executable: '/not-a-release/bin/meridian-iroh-wrapper', senderAgentId: 'service-agent',
+        identityDir: '/service-identities', addressStore: '/host-addresses', contractVerified: false,
+      } },
+      wakeSink: { wake: async () => ({ ok: true }) },
+    });
+    expect(fake.dials).toBe(0);
+    await handle.shutdown();
+  });
+
+  it('boots a configured distribution adapter and sends literal stdin to receiver-owned inbox routing', async () => {
+    vi.useRealTimers();
+    const executable = path.join(dir, 'test-sender');
+    const capture = path.join(dir, 'sent.json');
+    fs.writeFileSync(executable, `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+let body = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => body += chunk);
+process.stdin.on('end', () => {
+  fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify({args,body}));
+  process.stdout.write(JSON.stringify({msgId:args[args.indexOf('--msg-id')+1],accepted:true,applicationDelivered:true}));
+});
+`, { mode: 0o700 });
+    const pending = pendingWakeBd();
+    const fake = new FakeIrohWrapper({ scope: [PM] });
+    const { handle, woken } = await boot(fake, {
+      intervalMs: 1000, bd: pending.run,
+      pmWake: { sink: 'inbox', backstopMs: 1000, cli: {
+        executable, senderAgentId: 'service-agent', identityDir: dir,
+        addressStore: path.join(dir, 'hosts'), contractVerified: true,
+      } },
+    });
+    await vi.waitFor(() => expect(woken).toHaveLength(1), { timeout: 8000 });
+    const sent = JSON.parse(fs.readFileSync(capture, 'utf8')) as { args: string[]; body: string };
+    const wakeId = (woken[0]!.payload as Record<string, unknown>)['wakeId'];
+    expect(sent.args).toEqual(['agent-message', 'send', '--from', 'service-agent', '--to', PM, '--msg-id', wakeId, '--body-file', '-', '--identity-dir', dir, '--address-store', path.join(dir, 'hosts')]);
+    expect(sent.body).toContain(`wakeId=${wakeId}`);
+    expect(pending.records.size).toBe(1);
+    expect(fake.received).toEqual([]);
     await handle.shutdown();
   });
 
@@ -233,11 +312,11 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
     await handle.shutdown();
   });
 
-  it('5. the wake shares the provider connection: a formula-step session and a wake cost ONE dial in total', async () => {
+  it('formula task Iroh execution remains available with log-only wakes', async () => {
     const fake = new FakeIrohWrapper({ scope: [PM, ROLE] });
     fake.seedConversation(PM, { id: 'conv-live', lastMessageAt: '2025-12-31T23:00:00.000Z' });
     const connections: IrohConnection[] = [];
-    const { handle, woken } = await boot(fake, { connections, pmWake: { sink: 'iroh', backstopMs: MIN }, listPoolMembers: () => [] });
+    const { handle } = await boot(fake, { connections, pmWake: { sink: 'log', backstopMs: MIN }, listPoolMembers: () => [] });
     expect(fake.dials).toBe(0); // lazy: nothing dialed at boot
 
     const session = await handle.provider.start({ role: 'r', extra: { agentId: ROLE, moleculeId: 'm', stepName: 's' } });
@@ -252,13 +331,13 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
     await handle.shutdown();
   });
 
-  it("5b. a wake that comes FIRST dials once and a later formula step reuses that connection (no second dial)", async () => {
+  it('a logged wake opens no runtime connection; a later formula step dials normally', async () => {
     const fake = new FakeIrohWrapper({ scope: [PM, ROLE] });
     fake.seedConversation(PM, { id: 'conv-live', lastMessageAt: '2025-12-31T23:00:00.000Z' });
     const connections: IrohConnection[] = [];
     const { handle } = await boot(fake, { connections });
     await vi.advanceTimersByTimeAsync(8 * HOUR + 40 * MIN);
-    expect(fake.dials).toBe(1);
+    expect(fake.dials).toBe(0);
 
     const session = await handle.provider.start({ role: 'r', extra: { agentId: ROLE, moleculeId: 'm', stepName: 's' } });
     await handle.provider.prompt(session, [{ type: 'text', text: 'do the step' }]);
@@ -270,7 +349,9 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
 
   it("a failed wake (PM outside the grant) is ok:false on the bus, lastWokenAt unchanged, and the retry reuses the wakeId", async () => {
     const fake = new FakeIrohWrapper({ scope: ['agent-someone-else'] });
-    const { woken } = await boot(fake);
+    const { woken } = await boot(fake, { pmWake: { sink: 'inbox' }, bd: pendingWakeBd().run,
+      inboxAdapter: { sendInboxMessage: async request => ({ msgId: request.msgId, accepted: false, applicationDelivered: false, reason: 'forbidden' }) },
+    });
     await vi.advanceTimersByTimeAsync(9 * HOUR);
     expect(woken.length).toBeGreaterThanOrEqual(1);
     for (const w of woken) expect((w.payload as Record<string, unknown>)['ok']).toBe(false);
@@ -290,12 +371,12 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
     expect(fake.received).toEqual([]);
   });
 
-  it("sink 'iroh' without the Iroh provider kind refuses to boot (no silent fall back to logging)", async () => {
+  it('inbox without an adapter refuses to boot instead of falling back to direct input', async () => {
     const fake = new FakeIrohWrapper({ scope: [PM] });
-    await expect(boot(fake, { provider: 'letta-code-subagent' })).rejects.toThrow(/sink='iroh' requires VIBESYNC_ORCHESTRATION_PROVIDER=letta-code-iroh/);
+    await expect(boot(fake, { pmWake: { sink: 'inbox' } })).rejects.toThrow(/requires an approved/);
   });
 
-  it("sink 'iroh' with the waker disabled is inert: no throw, nothing dialed", async () => {
+  it('disabled inbox wakes never dial the formula transport', async () => {
     const fake = new FakeIrohWrapper({ scope: [PM] });
     await boot(fake, { provider: 'letta-code-subagent', pmWake: { enabled: false } });
     await vi.advanceTimersByTimeAsync(9 * HOUR);

@@ -350,11 +350,10 @@ describe('config', () => {
         backstopMs: 28_800_000,
         statePath: '/opt/stacks/vibesync/logs/pm-wake-state.json',
         sink: 'log',
-        conversationId: '',
       });
     });
 
-    it("pmWake.sink: default 'log'; 'iroh' needs VIBESYNC_ORCHESTRATION_PROVIDER=letta-code-iroh, else load fails with a clear message (vibesync-2bgv)", () => {
+    it('PM wakes support log/inbox only and reject retired direct-target settings', () => {
       try {
         delete process.env.VIBESYNC_PM_WAKE_SINK;
         expect(loadConfig().scheduler.pmWake.sink).toBe('log');
@@ -363,15 +362,13 @@ describe('config', () => {
         delete process.env.VIBESYNC_ORCHESTRATION_PROVIDER;
         expect(loadConfig().scheduler.pmWake.sink).toBe('inbox');
         process.env.VIBESYNC_PM_WAKE_SINK = 'iroh';
-        // provider kind unset (= letta-code-subagent default) and explicitly the wrong one: both refuse
-        delete process.env.VIBESYNC_ORCHESTRATION_PROVIDER;
-        expect(() => loadConfig()).toThrow(/VIBESYNC_PM_WAKE_SINK=iroh requires VIBESYNC_ORCHESTRATION_PROVIDER=letta-code-iroh/);
-        process.env.VIBESYNC_ORCHESTRATION_PROVIDER = 'letta-code-subagent';
-        expect(() => loadConfig()).toThrow(/requires VIBESYNC_ORCHESTRATION_PROVIDER=letta-code-iroh/);
-
+        expect(() => loadConfig()).toThrow('Config validation failed');
         process.env.VIBESYNC_ORCHESTRATION_PROVIDER = 'letta-code-iroh';
+        expect(() => loadConfig()).toThrow('Config validation failed');
+        process.env.VIBESYNC_PM_WAKE_SINK = 'inbox';
         process.env.VIBESYNC_PM_WAKE_CONVERSATION_ID = 'conv-fixed';
-        expect(loadConfig().scheduler.pmWake).toMatchObject({ sink: 'iroh', conversationId: 'conv-fixed' });
+        expect(() => loadConfig()).toThrow('VIBESYNC_PM_WAKE_CONVERSATION_ID was removed');
+        delete process.env.VIBESYNC_PM_WAKE_CONVERSATION_ID;
 
         // whole-string enum: no trimming, no case folding, no near misses
         for (const bad of ['IROH', 'iroh ', 'INBOX', ' inbox', ' log', 'matrix', 'log,iroh']) {
@@ -382,6 +379,36 @@ describe('config', () => {
         delete process.env.VIBESYNC_PM_WAKE_SINK;
         delete process.env.VIBESYNC_PM_WAKE_CONVERSATION_ID;
         delete process.env.VIBESYNC_ORCHESTRATION_PROVIDER;
+      }
+    });
+
+    it('maps explicit inbox CLI settings and rejects incomplete paths without assuming approval', () => {
+      const keys = {
+        VIBESYNC_PM_WAKE_SINK: 'inbox',
+        VIBESYNC_PM_WAKE_CLI_EXECUTABLE: '/release/bin/meridian-iroh-wrapper',
+        VIBESYNC_PM_WAKE_CLI_SENDER: '  service-agent  ',
+        VIBESYNC_PM_WAKE_CLI_IDENTITIES: '/service/identities',
+        VIBESYNC_PM_WAKE_CLI_ADDRESS_STORE: '/service/hosts',
+      };
+      Object.assign(process.env, keys);
+      try {
+        expect(loadConfig().scheduler.pmWake.cli).toEqual({
+          executable: keys.VIBESYNC_PM_WAKE_CLI_EXECUTABLE, senderAgentId: 'service-agent',
+          identityDir: '/service/identities', addressStore: '/service/hosts', contractVerified: false,
+        });
+        process.env.VIBESYNC_PM_WAKE_CLI_CONTRACT_VERIFIED = 'true';
+        expect(loadConfig().scheduler.pmWake.cli?.contractVerified).toBe(true);
+        process.env.VIBESYNC_PM_WAKE_CLI_SENDER = '   ';
+        expect(() => loadConfig()).toThrow('Config validation failed');
+        process.env.VIBESYNC_PM_WAKE_CLI_SENDER = keys.VIBESYNC_PM_WAKE_CLI_SENDER;
+        process.env.VIBESYNC_PM_WAKE_CLI_EXECUTABLE = 'meridian';
+        expect(() => loadConfig()).toThrow('Config validation failed');
+        process.env.VIBESYNC_PM_WAKE_CLI_EXECUTABLE = keys.VIBESYNC_PM_WAKE_CLI_EXECUTABLE;
+        delete process.env.VIBESYNC_PM_WAKE_CLI_SENDER;
+        expect(() => loadConfig()).toThrow('Config validation failed');
+      } finally {
+        for (const key of Object.keys(keys)) delete process.env[key];
+        delete process.env.VIBESYNC_PM_WAKE_CLI_CONTRACT_VERIFIED;
       }
     });
 
@@ -397,7 +424,6 @@ describe('config', () => {
           backstopMs: 2_147_483_647,
           statePath: '/tmp/x/state.json',
           sink: 'log',
-          conversationId: '',
         });
         for (const bad of ['8h', '1e3', '-1', '5.5', ' 5', 'abc']) {
           process.env.VIBESYNC_PM_WAKE_BACKSTOP_MS = bad;

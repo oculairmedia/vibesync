@@ -1,8 +1,6 @@
 import 'dotenv/config';
 import { configSchema, type AppConfig } from './configSchema';
 
-/** Mirrors IROH_PROVIDER_KIND (src/orchestration/runtime/iroh-wrapper-provider.ts); config must not import the orchestration plane. */
-const IROH_PROVIDER_KIND = 'letta-code-iroh';
 
 function parseBookMappings(raw: string | undefined): { projectIdentifier: string; bookSlug: string }[] {
   if (!raw) return [];
@@ -151,8 +149,16 @@ export function loadConfig(): AppConfig {
         backstopMs: parseCappedMs(process.env.VIBESYNC_PM_WAKE_BACKSTOP_MS, 28_800_000),
         statePath: process.env.VIBESYNC_PM_WAKE_STATE_PATH || '/opt/stacks/vibesync/logs/pm-wake-state.json',
         // vibesync-2bgv: whole-string enum; anything else fails validation.
-        sink: (process.env.VIBESYNC_PM_WAKE_SINK || 'log') as 'log' | 'iroh' | 'inbox',
-        conversationId: process.env.VIBESYNC_PM_WAKE_CONVERSATION_ID ?? '',
+        sink: (process.env.VIBESYNC_PM_WAKE_SINK || 'log') as 'log' | 'inbox',
+        ...(process.env.VIBESYNC_PM_WAKE_CLI_EXECUTABLE !== undefined ? {
+          cli: {
+            executable: process.env.VIBESYNC_PM_WAKE_CLI_EXECUTABLE,
+            senderAgentId: (process.env.VIBESYNC_PM_WAKE_CLI_SENDER ?? '').trim(),
+            identityDir: process.env.VIBESYNC_PM_WAKE_CLI_IDENTITIES ?? '',
+            addressStore: process.env.VIBESYNC_PM_WAKE_CLI_ADDRESS_STORE ?? '',
+            contractVerified: process.env.VIBESYNC_PM_WAKE_CLI_CONTRACT_VERIFIED === 'true',
+          },
+        } : {}),
       },
     },
     waits: {
@@ -170,23 +176,11 @@ export function loadConfig(): AppConfig {
   }
 
   validateConfig(config);
-  assertPmWakeSinkProvider(config.scheduler.pmWake.sink, process.env.VIBESYNC_ORCHESTRATION_PROVIDER);
+  if (process.env.VIBESYNC_PM_WAKE_CONVERSATION_ID !== undefined) {
+    throw new Error('Config validation failed: VIBESYNC_PM_WAKE_CONVERSATION_ID was removed; inbox routing is owned by the receiver');
+  }
 
   return config;
-}
-
-/**
- * vibesync-2bgv: the 'iroh' wake sink reuses the orchestration plane's Iroh
- * connection, which only exists when that provider kind is selected. Checked
- * whether or not the waker is enabled, so a half-configured host fails at load,
- * not at the first wake hours later.
- */
-export function assertPmWakeSinkProvider(sink: string, providerKind: string | undefined): void {
-  if (sink === 'iroh' && providerKind !== IROH_PROVIDER_KIND) {
-    throw new Error(
-      `Config validation failed: VIBESYNC_PM_WAKE_SINK=iroh requires VIBESYNC_ORCHESTRATION_PROVIDER=${IROH_PROVIDER_KIND} (got ${providerKind ? `"${providerKind}"` : 'unset'}): the wake reuses that provider's Iroh connection`,
-    );
-  }
 }
 
 export function validateConfig(config: AppConfig): void {
