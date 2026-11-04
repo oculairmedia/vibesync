@@ -90,6 +90,7 @@ function schedulerConfig(over: Partial<BootSchedulerOptions['config']> = {}): Bo
     packDir: 'packs/gastown',
     autoMerge: false,
     requiredChecks: [],
+    allowedRepos: [],
     ...over,
   };
 }

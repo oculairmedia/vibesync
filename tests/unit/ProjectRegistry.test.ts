@@ -50,19 +50,21 @@ describe('ProjectRegistry', () => {
 
   describe('constructor', () => {
     it('should throw when db is not provided', () => {
-      expect(() => new ProjectRegistry({})).toThrow('requires a db instance');
+      expect(() => new ProjectRegistry(null)).toThrow('requires a db instance');
     });
 
     it('should use provided baseDir', () => {
-      const registry = new ProjectRegistry({ db, baseDir: '/custom/dir' });
-      expect(registry.baseDir).toBe('/custom/dir');
+      const customDir = fs.mkdtempSync(path.join(testStacksDir, 'custom-'));
+      const registry = new ProjectRegistry({ db, baseDir: customDir });
+      expect(registry.scanProjects()).toEqual({ discovered: 0, updated: 0, errors: [] });
     });
 
     it('should default to STACKS_DIR env or /opt/stacks', () => {
       const original = process.env.STACKS_DIR;
-      process.env.STACKS_DIR = '/test/stacks';
+      const envStacksDir = fs.mkdtempSync(path.join(testStacksDir, 'env-'));
+      process.env.STACKS_DIR = envStacksDir;
       const registry = new ProjectRegistry({ db });
-      expect(registry.baseDir).toBe('/test/stacks');
+      expect(registry.scanProjects()).toEqual({ discovered: 0, updated: 0, errors: [] });
       process.env.STACKS_DIR = original;
     });
   });

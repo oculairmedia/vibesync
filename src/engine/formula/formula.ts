@@ -126,7 +126,8 @@ function parseFormulaBody(name: string, body: Record<string, unknown>): Formula 
   }
   const seenNames = new Set<string>();
   const steps: StepSpec[] = [];
-  for (const [idx, stepRaw] of (stepsRaw ?? []).entries()) {
+  const stepEntries: unknown[] = Array.isArray(stepsRaw) ? stepsRaw : [];
+  for (const [idx, stepRaw] of stepEntries.entries()) {
     if (!isRecord(stepRaw)) {
       throw new Error(`formula "${name}": steps[${idx}] must be a table`);
     }
@@ -186,7 +187,7 @@ function parseStep(
   const spec: StepSpec = {
     name,
     role,
-    ...(promptTemplate !== undefined ? { promptTemplate } : {}),
+    ...(typeof promptTemplate === 'string' ? { promptTemplate } : {}),
     ...(dependsOn !== undefined ? { dependsOn } : {}),
     waitFor: 'completion',
     retries,

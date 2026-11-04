@@ -25,7 +25,7 @@ describe('port sweep scope', () => {
   });
 
   it('an active project sharing a pinned port with an archived one is detected and repaired, the archived one untouched', async () => {
-    const runBd = vi.fn(async () => '');
+    const runBd = vi.fn(async (_command: string, _args: readonly string[], _options: { cwd: string; timeout: number; env: NodeJS.ProcessEnv }) => ({ stdout: '', stderr: '' }));
     const deps: PortSweeperDeps = {
       readPort: () => 32000, // both pin the same port, neither is listening yet
       listeningPorts: () => new Set(),
@@ -36,7 +36,7 @@ describe('port sweep scope', () => {
     const report = await sweepAll(scope.registry, deps, { apply: true, only: scope.only, portStart: 33000, portEnd: 33010 });
     expect(report.conflicts.map((c) => c.project.identifier)).toEqual(['live']);
     expect(report.repairs.map((r) => r.project.identifier)).toEqual(['live']);
-    expect(runBd.mock.calls.every(([, opts]) => !String((opts as { cwd?: string })?.cwd ?? '').includes('/p/old'))).toBe(true);
+    expect(runBd.mock.calls.every(([, , opts]) => !opts.cwd.includes('/p/old'))).toBe(true);
   });
 });
 
