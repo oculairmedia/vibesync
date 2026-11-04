@@ -23,7 +23,7 @@ import { IrohConnection } from '../../../../src/orchestration/runtime/iroh/conne
 import { normalizeInboxWakeAck, type BootSchedulerOptions, type InboxMessageAdapter } from '../../../../src/orchestration/scheduler/boot-scheduler.js';
 import { formatWakeMessage, PM_WOKEN_EVENT } from '../../../../src/orchestration/scheduler/index.js';
 import { FakeIrohWrapper } from '../../../_fixtures/fake-iroh-wrapper.js';
-import { InMemoryDoltClient } from '../../../_fixtures/in-memory-dolt-client.js';
+import { InMemoryDoltClient, inMemoryBeads } from '../../../_fixtures/in-memory-dolt-client.js';
 
 const MIN = 60_000;
 const HOUR = 3_600_000;
@@ -107,7 +107,7 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
     const sharedProvider = { kind: 'letta-code-iroh', capabilities: [], start: vi.fn(), prompt: vi.fn(), observe: vi.fn(), stop: vi.fn() } as never;
     await expect(bootOrchestrationPlane({
       provider: sharedProvider,
-      dolt: new InMemoryDoltClient() as never,
+      ...inMemoryBeads(),
       persistEvents: false,
       runDriftAuditOnBoot: false,
       scheduler: {
@@ -141,7 +141,7 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
     process.env['VIBESYNC_LETTA_CODE_PARENT_AGENT_ID'] = PM;
     process.env['VIBESYNC_LETTA_CODE_SHIM_URL'] = 'http://shim:8291';
     const handle = await bootOrchestrationPlane({
-      dolt: new InMemoryDoltClient() as never,
+      ...inMemoryBeads(),
       persistEvents: false,
       runDriftAuditOnBoot: false,
       irohConnectionFactory: () => {

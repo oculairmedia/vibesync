@@ -42,7 +42,7 @@ describe.skipIf(!RUN_ISOLATED_BEADS)('steps are beads (real bd, isolated repo)',
 
   beforeAll(async () => {
     h = await provisionIsolatedBeads('fresh');
-    walker = new MoleculeWalker(h.client);
+    walker = new MoleculeWalker(h.store);
   }, 120_000);
   afterAll(async () => { await h?.close(); }, 120_000);
 
@@ -88,13 +88,13 @@ describe.skipIf(!RUN_ISOLATED_BEADS)('steps are beads (real bd, isolated repo)',
     const agree = async (label: string) => expect({ label, sql: await sql() }).toEqual({ label, sql: bdReadyOpenSteps(h.bd, view.rootId) });
 
     await agree('fresh');
-    await h.client.markStepRunning(id('A'));
+    await h.store.markStepRunning(id('A'));
     // bd --mol lists a running step as "ready"; the SQL deliberately does not (never re-dispatch a running step).
     // Compared on OPEN steps only (bdReadyOpenSteps) - that is the shared predicate.
     await agree('A running');
     await walker.finishStep(id('A'), {});
     await agree('A done');
-    await h.client.markStepRunning(id('B'));
+    await h.store.markStepRunning(id('B'));
     await agree('B running');
     await walker.failStep(id('B'), 'boom'); // a failed step is closed: it unblocks like a finished one
     await agree('B failed');
@@ -107,19 +107,6 @@ describe.skipIf(!RUN_ISOLATED_BEADS)('steps are beads (real bd, isolated repo)',
 
   describe('3. dispatch candidates come from the molecule-scoped query, never plain `bd ready`', () => {
     /** The WRONG implementation Meridian warned about: plain `bd ready` filtered to molecule steps. */
-    function plainBdReadySource(): ReadyStepSource {
-      return {
-        async readySteps(): Promise<readonly ReadyStep[]> {
-          const rows = JSON.parse(h.bd('ready', '--json', '--limit', '0')) as BdJson[];
-          const steps = rows.filter((r) => r['issue_type'] === 'molecule_step');
-          return steps.map((r) => ({
-            moleculeId: r['metadata'].exec.molecule as string,
-            step: { id: r['id'], title: r['title'], description: '', status: r['status'], priority: 2, issue_type: 'molecule_step', created_at: new Date(), updated_at: new Date(), closed_at: null, metadata: r['metadata'] },
-          }));
-        },
-      };
-    }
-
     async function twoOpenMolecules() {
       const m1 = await cook([step('a'), step('b', 'a')], 'm1');
       const m2 = await cook([step('x'), step('y', 'x')], 'm2'); // "a SECOND open molecule with a blocked step"
@@ -136,14 +123,28 @@ describe.skipIf(!RUN_ISOLATED_BEADS)('steps are beads (real bd, isolated repo)',
 
     it('the production source lists only the unblocked steps of both molecules', async () => {
       const { m1, m2, live } = await twoOpenMolecules();
-      await assertOnlyUnblockedCandidates(new StoreReadyStepSource(h.client, () => live), m1.rootId, m2.rootId);
+      await assertOnlyUnblockedCandidates(new StoreReadyStepSource(h.store, () => live), m1.rootId, m2.rootId);
     });
 
-    it('FAIL-PROOF: the same assertion rejects a source built on plain `bd ready` (it returns the blocked steps)', async () => {
+    it('FAIL-PROOF: the same assertion rejects plain `bd ready`, which also surfaces molecule roots', async () => {
       const { m1, m2 } = await twoOpenMolecules();
-      const leaked = (await plainBdReadySource().readySteps()).map((r) => r.step.id);
-      expect(leaked).toContain(newMoleculeStepId(m2.rootId, 'y')); // the trap is real on bd 1.3.2
-      await expect(assertOnlyUnblockedCandidates(plainBdReadySource(), m1.rootId, m2.rootId)).rejects.toThrow();
+      // vibesync-9lzk.9: with edges written by bd itself, plain `bd ready` now
+      // honours `blocks` (it used to leak blocked steps when raw SQL wrote the
+      // edges). It is still not a step source: it also returns the roots as
+      // ready work, which the dispatcher must never run.
+      const rows = JSON.parse(h.bd('ready', '--json', '--limit', '0')) as BdJson[];
+      const ids = rows.map((r) => r['id'] as string);
+      expect(ids).toEqual(expect.arrayContaining([m1.rootId, m2.rootId]));
+      expect(ids).not.toContain(newMoleculeStepId(m2.rootId, 'y'));
+      const rootsAsSteps: ReadyStepSource = {
+        async readySteps() {
+          return rows.filter((r) => String(r['id']).startsWith('schema65-mol-')).map((r) => ({
+            moleculeId: String(r['id']),
+            step: { id: r['id'], title: r['title'], description: '', status: r['status'], priority: 2, issue_type: r['issue_type'], created_at: new Date(), updated_at: new Date(), closed_at: null, metadata: r['metadata'] ?? {} },
+          }));
+        },
+      };
+      await expect(assertOnlyUnblockedCandidates(rootsAsSteps, m1.rootId, m2.rootId)).rejects.toThrow();
     });
 
     it('a closed molecule is not a candidate even if its id is still tracked', async () => {
@@ -151,7 +152,7 @@ describe.skipIf(!RUN_ISOLATED_BEADS)('steps are beads (real bd, isolated repo)',
       await walker.finishStep(newMoleculeStepId(m1.rootId, 'a'), {});
       await walker.finishStep(newMoleculeStepId(m1.rootId, 'b'), {});
       await walker.markMoleculeRootStatus(m1.rootId, 'closed', 'completed');
-      const got = (await new StoreReadyStepSource(h.client, () => live).readySteps()).map((r) => r.step.id);
+      const got = (await new StoreReadyStepSource(h.store, () => live).readySteps()).map((r) => r.step.id);
       expect(got).toEqual([newMoleculeStepId(m2.rootId, 'x')]);
     });
   });
@@ -163,7 +164,7 @@ describe.skipIf(!RUN_ISOLATED_BEADS)('steps are beads (real bd, isolated repo)',
     writeFileSync(join(packRoot, 'prompts', 'p.md'), 'Do ${input}');
     const provider = newFakeProvider({ kind: 'fake' });
     const handle = await bootOrchestrationPlane({
-      dolt: h.client, provider, persistEvents: false, runDriftAuditOnBoot: false, stepTickIntervalMs: 20,
+      dolt: h.client, bd: async (args) => h.bd(...args), provider, persistEvents: false, runDriftAuditOnBoot: false, stepTickIntervalMs: 20,
       bdVersion: async () => h.bd('--version'),
     });
     try {

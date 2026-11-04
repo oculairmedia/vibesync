@@ -35,6 +35,11 @@ export class InMemoryDoltClient {
   /** Test observability: total appendNoteToBead attempts (including failed). */
   appendAttempts = 0;
 
+  /** Mirrors DoltClient.readIssuePrefix; the historic default keeps existing fixture ids stable. */
+  async readIssuePrefix(): Promise<string> {
+    return 'mol';
+  }
+
   async getBead(id: string): Promise<BeadRow | null> {
     return this.beads.get(id) ?? null;
   }
@@ -261,4 +266,12 @@ function newBead(args: {
 function mergeExec(metadata: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
   const exec = metadata.exec && typeof metadata.exec === 'object' ? metadata.exec : {};
   return { ...metadata, exec: { ...exec, ...patch } };
+}
+
+/**
+ * Boot options for an in-memory store: the same object serves reads (`dolt`)
+ * and the Beads gateway (`beadsStore`), so no bd binary is invoked.
+ */
+export function inMemoryBeads(client: InMemoryDoltClient = new InMemoryDoltClient()): { dolt: never; beadsStore: never } {
+  return { dolt: client as never, beadsStore: client as never };
 }

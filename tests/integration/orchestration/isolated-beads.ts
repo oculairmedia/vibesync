@@ -6,6 +6,7 @@ import { createServer } from 'node:net';
 
 import { MIN_BD_VERSION, bdVersionSatisfies } from '../../../src/orchestration/bd-version.js';
 import { DoltClient } from '../../../src/orchestration/store/dolt-client.js';
+import { BeadsStore } from '../../../src/orchestration/beads/store.js';
 
 // Opt-in only: never discover a store from cwd or accept a caller-owned database.
 export const RUN_ISOLATED_BEADS = process.env['VIBESYNC_TEST_BD'] !== undefined;
@@ -73,10 +74,15 @@ export async function provisionIsolatedBeads(shape: SchemaShape = 'fresh') {
         "MODIFY COLUMN is_blocked tinyint(1) NOT NULL DEFAULT '0' AFTER started_at",
       ]) bd('sql', `ALTER TABLE issues ${ddl}`);
     }
+    // Production projects register the molecule bead types; bd rejects create otherwise.
+    bd('config', 'set', 'types.custom', 'molecule_root,molecule_step,mail');
     client = new DoltClient({ beadsRoot: root, host: '127.0.0.1', port, database });
     await client.verifyFingerprint();
+    // Same bd binary, sandboxed env and project as the CLI calls above: every
+    // molecule write through the gateway lands in this disposable database.
+    const store = new BeadsStore(client, async (args) => bd(...args));
     return {
-      client, root, port, database, bd,
+      client, store, root, port, database, bd,
       async close() {
         try { await client!.close(); } finally { bd('dolt', 'stop'); }
         // Keep the disposable directory for diagnostics; never edit .beads files.

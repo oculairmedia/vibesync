@@ -35,7 +35,7 @@ import {
   type PmWakeSink,
   type WakeReason,
 } from '../../../../src/orchestration/scheduler/index.js';
-import { InMemoryDoltClient } from '../../../_fixtures/in-memory-dolt-client.js';
+import { InMemoryDoltClient, inMemoryBeads } from '../../../_fixtures/in-memory-dolt-client.js';
 
 const HOUR = 3_600_000;
 const MIN = 60_000;
@@ -185,7 +185,7 @@ describe('PM wake (vibesync-2bgv)', () => {
     process.env['VIBESYNC_LETTA_CODE_PARENT_AGENT_ID'] = 'agent-parent';
     const sink = o.sink ?? fakeSink().sink;
     const handle = await bootOrchestrationPlane({
-      dolt: new InMemoryDoltClient() as never,
+      ...inMemoryBeads(),
       persistEvents: false,
       runDriftAuditOnBoot: false,
       scheduler: {

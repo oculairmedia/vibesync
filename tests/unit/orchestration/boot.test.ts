@@ -3,7 +3,7 @@ import { HealthPatrol } from '../../../src/orchestration/health/patrol.js';
 import { WrongDoltDatabaseError } from '../../../src/orchestration/store/dolt-client.js';
 
 import { bootOrchestrationPlane, releaseDoltAfterFailedBoot } from '../../../src/orchestration/boot.js';
-import { InMemoryDoltClient } from '../../_fixtures/in-memory-dolt-client.js';
+import { InMemoryDoltClient, inMemoryBeads } from '../../_fixtures/in-memory-dolt-client.js';
 import { FakeIrohWrapper } from '../../_fixtures/fake-iroh-wrapper.js';
 import { IrohConnection } from '../../../src/orchestration/runtime/iroh/connection.js';
 import { WorkActivityReporter } from '../../../src/orchestration/events/index.js';
@@ -290,7 +290,7 @@ async function bootForTest(
   });
   try {
     return await bootOrchestrationPlane({
-      dolt: new InMemoryDoltClient() as never,
+      ...inMemoryBeads(),
       persistEvents: false,
       runDriftAuditOnBoot: false,
       ...opts,

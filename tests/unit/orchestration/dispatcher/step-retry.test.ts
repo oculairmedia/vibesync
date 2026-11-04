@@ -64,7 +64,7 @@ function harness(turnsByRole: Record<string, readonly Turn[]>) {
   const eventBus = new EventBus({ noPersist: true });
   const events: Event[] = [];
   eventBus.subscribe((e) => events.push(e));
-  const dispatcher = newDriven(store, { provider, walker: new MoleculeWalker(store), eventBus });
+  const dispatcher = newDriven(store, { idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus });
   return { dispatcher, store, provider, events, seen, starts: (role: string) => startsByRole.get(role) ?? 0 };
 }
 
@@ -211,7 +211,7 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
         yield { kind: 'turn-done', ts };
       })(),
     });
-    const driven = newDriven(store, { provider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }) });
+    const driven = newDriven(store, { idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }) });
     steps = driven.steps;
     const result = await driven.run({ formula: formula(worker({ maxAttempts: 2, onExhausted: 'fail', backoffMs: 0 }), after), pack: pack(), input: 'go' });
     expect(afterStartedDuringTurn).toBe(0); // the closed-but-unruled blocker held its dependent back

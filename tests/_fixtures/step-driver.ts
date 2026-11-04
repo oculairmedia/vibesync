@@ -9,7 +9,7 @@ import { StepDispatcher, StoreReadyStepSource, type ReadyStepStore } from '../..
  */
 export function newDriven(store: ReadyStepStore, opts: FormulaDispatcherOptions): FormulaDispatcher & { readonly steps: StepDispatcher } {
   let steps: StepDispatcher | undefined;
-  const dispatcher = new FormulaDispatcher({ ...opts, onMoleculeCooked: () => steps?.kick() });
+  const dispatcher = new FormulaDispatcher({ idPrefix: 'mol', ...opts, onMoleculeCooked: () => steps?.kick() });
   steps = new StepDispatcher({
     source: new StoreReadyStepSource(store, () => dispatcher.liveMoleculeIds()),
     runner: dispatcher,
