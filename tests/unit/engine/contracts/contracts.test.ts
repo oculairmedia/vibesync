@@ -88,7 +88,7 @@ describe('valid corpus (vibesync-jxri.3)', () => {
   });
 
   it('accepts an OrchestrationEvent with an OPEN kind vocabulary', () => {
-    for (const kind of ['dispatcher/formula.completed', 'runtime/session.error', 'health-patrol/session.stalled', 'dispatcher/some.future.kind']) {
+    for (const kind of ['dispatcher/formula.completed', 'runtime/session.error', 'scheduler/session.stalled', 'dispatcher/some.future.kind']) {
       const r = OrchestrationEventContract.safeParse({
         schema_version: 1, id: 'ev-1', ts: '2026-07-17T20:00:00Z', layer: 'dispatcher', kind,
       });

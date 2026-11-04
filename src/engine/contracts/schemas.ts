@@ -124,7 +124,7 @@ export const SessionEventContract = z.discriminatedUnion('kind', [
 
 /**
  * The EventBus event envelope. `kind` is an OPEN vocabulary (dispatcher/*,
- * runtime/session.*, health-patrol/*, …) — a string with a documented
+ * runtime/session/*, …) — a string with a documented
  * dot-scoped convention, NOT a closed enum, so a new event kind never breaks an
  * old consumer (evolution policy #2). `layer` is a small closed set of emitters.
  */
@@ -132,7 +132,7 @@ export const OrchestrationEventContract = z.looseObject({
   schema_version: SchemaVersion,
   id: OpaqueId,
   ts: Timestamp,
-  layer: z.enum(['runtime', 'daemon', 'formula', 'dispatcher', 'molecule', 'health-patrol', 'pm-agent']),
+  layer: z.enum(['runtime', 'daemon', 'formula', 'dispatcher', 'molecule', 'pm-agent']),
   /** Open vocabulary: `<layer>/<dotted.kind>`. */
   kind: z.string().min(1),
   task_id: OpaqueId.optional(),

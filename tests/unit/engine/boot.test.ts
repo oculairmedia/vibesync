@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest';
-import { HealthPatrol } from '../../../src/engine/health/patrol.js';
 import { WrongDoltDatabaseError } from '../../../src/engine/store/dolt-client.js';
 
 import { bootOrchestrationPlane, releaseDoltAfterFailedBoot } from '../../../src/engine/boot.js';
@@ -14,16 +13,10 @@ describe('bootOrchestrationPlane', () => {
       expectedRepoId: 'expected', actualRepoId: 'wrong', database: 'db', port: 33123,
     });
     const verifySchema = vi.fn();
-    const start = vi.spyOn(HealthPatrol.prototype, 'start');
-    try {
-      await expect(bootOrchestrationPlane({
-        dolt: { verifyFingerprint: vi.fn().mockRejectedValue(failure), verifySchema } as never,
-      })).rejects.toBe(failure);
-      expect(verifySchema).not.toHaveBeenCalled();
-      expect(start).not.toHaveBeenCalled();
-    } finally {
-      start.mockRestore();
-    }
+    await expect(bootOrchestrationPlane({
+      dolt: { verifyFingerprint: vi.fn().mockRejectedValue(failure), verifySchema } as never,
+    })).rejects.toBe(failure);
+    expect(verifySchema).not.toHaveBeenCalled();
   });
 
   // vibesync-fxu4 / CodeRabbit #44: main's retry loop owns the Dolt pool once
@@ -71,7 +64,6 @@ describe('bootOrchestrationPlane', () => {
     // One subscriber wired by default: the writeback hook (vibesync-0xo).
     // Detaches on shutdown — see the assertion after shutdown below.
     expect(handle.bus.subscriberCount()).toBe(1);
-    expect(handle.patrol.daemonSnapshot()).toEqual([]);
     expect(handle.walker).toBeDefined();
 
     await handle.shutdown();
@@ -84,14 +76,6 @@ describe('bootOrchestrationPlane', () => {
     await handle.shutdown();
     await handle.shutdown();
     expect(handle.bus.subscriberCount()).toBe(0);
-  });
-
-  it('construct and shutdown leaves no tracked daemon behind', async () => {
-    const handle = await bootForTest();
-
-    await handle.shutdown();
-
-    expect(handle.patrol.daemonSnapshot()).toEqual([]);
   });
 
   it('rejects the removed letta-teams provider kind', async () => {

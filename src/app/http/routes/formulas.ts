@@ -458,7 +458,7 @@ function normalizeMoleculeHealth(root: BeadRow, steps: readonly BeadRow[], event
     }
     return null;
   };
-  const failed = latest('dispatcher/formula.failed') ?? events.find((event) => event.kind === 'health-patrol/session.unhealthy');
+  const failed = latest('dispatcher/formula.failed');
   if (failed) {
     evidence.push(failed.id);
     return {
@@ -475,16 +475,6 @@ function normalizeMoleculeHealth(root: BeadRow, steps: readonly BeadRow[], event
       state: 'waiting_for_approval',
       message: 'Runtime stopped for tool approval.',
       recommendedAction: 'Approve or reject the pending runtime action, then resume the molecule.',
-      evidenceEventIds: evidence,
-    };
-  }
-  const stalled = latest('health-patrol/session.stalled');
-  if (stalled) {
-    evidence.push(stalled.id);
-    return {
-      state: 'stalled',
-      message: 'A runtime session appears stalled.',
-      recommendedAction: 'Inspect the active step and resume or cancel the molecule.',
       evidenceEventIds: evidence,
     };
   }
@@ -520,7 +510,6 @@ function normalizeMoleculeHealth(root: BeadRow, steps: readonly BeadRow[], event
 function normalizeStepHealth(step: BeadRow, events: readonly Event[]): string {
   if (readExec(step).error_trace) return 'failed';
   if (events.some((event) => event.kind === 'runtime/session.turn_done' && event.payload?.stopReason === 'requires_approval')) return 'waiting_for_approval';
-  if (events.some((event) => event.kind === 'health-patrol/session.stalled')) return 'stalled';
   if (step.status === 'closed') return 'completed';
   if (step.status === 'in_progress') return 'running';
   return 'idle';

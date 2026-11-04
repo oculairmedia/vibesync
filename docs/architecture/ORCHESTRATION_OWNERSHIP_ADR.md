@@ -259,7 +259,8 @@ persistence substrate is **mixed**:
 - The bus is append-only from the perspective of observers (causal
   observation log per `jxri.7`). `noPersist` is a debug toggle, not a
   deployment posture.
-- Bus events feed `HealthPatrol`, `WorkActivityReporter`, and the
+- Bus events feed the scheduler's causal witness for liveness,
+  `WorkActivityReporter`, and the
   molecule writeback hook. No path bypasses the bus to talk to
   dispatch state directly.
 
@@ -510,7 +511,8 @@ reference and is retired.
   - The **runtime-core module** (the App Server process, the Letta
     runtime, capability-token issuance, Iroh transport).
   - The **orchestration module** (the VibeSync controller, formula
-    dispatcher, EventBus, HealthPatrol, molecule walker, role pack
+    dispatcher, EventBus, scheduler's causal liveness witness, molecule
+    walker, role pack
     loader, Beads client, REST/OpenAPI client, App Server v2
     semantic adapter).
 - The two modules share one binary and one process boundary.
@@ -784,8 +786,7 @@ the cited-bead references or the cross-repo note to be present.
   per-project provider resolver; the boot-level wiring.
 - `src/orchestration/events/bus.ts` — `EventBus` (canonical
   observation substrate).
-- `src/orchestration/health/patrol.ts` — `HealthPatrol` (deacon
-  pattern, not a role).
+- Scheduler liveness is determined by its causal witness.
 - `src/letta/RoleAgentBootstrapper.ts` — provisioning via SDK
   (vibesync-1ix; current code uses deprecated `letta-code-sdk`).
 - `src/database.ts` — legacy SQLite registry (`projects`, `issues`,
