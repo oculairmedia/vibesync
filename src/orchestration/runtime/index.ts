@@ -15,8 +15,6 @@ export type {
   SessionSpec,
 } from './provider.js';
 
-export { LettaPMAgentProvider } from './letta-pm-agent-provider.js';
-export type { LettaPMAgentServices } from './letta-pm-agent-provider.js';
 
 export {
   LettaCodeSubagentProvider,
@@ -37,7 +35,4 @@ export type { IrohWrapperProviderOptions } from './iroh-wrapper-provider.js';
 export { IrohConnection } from './iroh/connection.js';
 export type { IrohConnectionOptions, IrohDialer, IrohLink } from './iroh/connection.js';
 
-export { A2UIProvider } from './a2ui-provider.js';
-export type { A2uiCapability } from './a2ui-provider.js';
 
-export { ACPProvider } from './acp-provider.js';

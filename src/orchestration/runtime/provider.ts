@@ -15,8 +15,6 @@
  * Future implementations will plug in alongside without changing this
  * interface:
  *
- *   - ACPProvider — JSON-RPC over stdio (vibesync-oq4)
- *   - A2UIProvider — server side for letta-mobile / web UI rendering (vibesync-0tw)
  *   - FakeProvider — in-memory, for tests
  *
  * Layering invariant #5 (zero hardcoded roles) discipline: this interface

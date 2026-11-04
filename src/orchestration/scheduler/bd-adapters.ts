@@ -16,7 +16,7 @@
  * escalations are bd comments on the work bead.
  */
 
-import { isRepoAllowed } from './repo-allowlist.js';
+import { isRepoAllowed } from '../repo-allowlist.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 

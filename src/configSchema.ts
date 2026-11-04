@@ -1,4 +1,4 @@
-import { REPO_SLUG_PATTERN } from './orchestration/scheduler/repo-allowlist.js';
+import { REPO_SLUG_PATTERN } from './orchestration/repo-allowlist.js';
 import { z } from 'zod';
 import { isAbsolute } from 'node:path';
 
