@@ -55,17 +55,29 @@ describe('ProjectRegistry', () => {
 
     it('should use provided baseDir', () => {
       const customDir = fs.mkdtempSync(path.join(testStacksDir, 'custom-'));
+      fs.mkdirSync(path.join(customDir, 'custom-project', '.git'), { recursive: true });
       const registry = new ProjectRegistry({ db, baseDir: customDir });
-      expect(registry.scanProjects()).toEqual({ discovered: 0, updated: 0, errors: [] });
+      const result = registry.scanProjects();
+
+      expect(result).toEqual({ discovered: 1, updated: 1, errors: [] });
+      expect(db.getProject('custom-project')).toBeTruthy();
     });
 
     it('should default to STACKS_DIR env or /opt/stacks', () => {
       const original = process.env.STACKS_DIR;
       const envStacksDir = fs.mkdtempSync(path.join(testStacksDir, 'env-'));
-      process.env.STACKS_DIR = envStacksDir;
-      const registry = new ProjectRegistry({ db });
-      expect(registry.scanProjects()).toEqual({ discovered: 0, updated: 0, errors: [] });
-      process.env.STACKS_DIR = original;
+      fs.mkdirSync(path.join(envStacksDir, 'env-project', '.git'), { recursive: true });
+      try {
+        process.env.STACKS_DIR = envStacksDir;
+        const registry = new ProjectRegistry({ db });
+        const result = registry.scanProjects();
+
+        expect(result).toEqual({ discovered: 1, updated: 1, errors: [] });
+        expect(db.getProject('env-project')).toBeTruthy();
+      } finally {
+        if (original === undefined) delete process.env.STACKS_DIR;
+        else process.env.STACKS_DIR = original;
+      }
     });
   });
 
