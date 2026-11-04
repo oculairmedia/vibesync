@@ -196,6 +196,8 @@ export class SchedulerDaemon {
   private readonly witness: Witness;
   /** work_bead_id → slot_id, so self-completion frees the right slot. */
   private readonly slotForBead = new Map<string, string>();
+  /** Runs started outside the scheduler loop (HTTP) that hold a pool slot until they settle. */
+  private readonly externalRuns = new Set<string>();
   private timer: ReturnType<typeof setInterval> | null = null;
   /** The currently running tick (any reason), so stop() can await it and no two ticks overlap. */
   private inFlight: Promise<void> | null = null;
@@ -289,10 +291,38 @@ export class SchedulerDaemon {
       reaper: { onComplete: (slotId) => this.pool.onComplete(slotId) },
       // A run still in flight owns its slot (it frees it on settle); the witness
       // must not reap it just because the agent already closed its bead (nic6).
-      isRunInFlight: (workBeadId) => this.scheduler.inFlightWorkBeadIds().includes(workBeadId),
+      isRunInFlight: (workBeadId) => this.externalRuns.has(workBeadId) || this.scheduler.inFlightWorkBeadIds().includes(workBeadId),
       escalation: { onRepeatedRecovery: (i) => deps.escalation.onRepeatedRecovery(i) },
       ...(deps.logger ? { logger: deps.logger } : {}),
     });
+  }
+
+  /**
+   * Start a formula run that did not come from the scheduler loop (HTTP),
+   * under the same pool cap (vibesync-9lzk.17). Returns null when every slot
+   * is taken, so the caller can refuse instead of exceeding `poolSize`; the
+   * slot is released when the run settles, success or failure. While it runs,
+   * the witness treats the slot as owned and never reaps it.
+   */
+  startExternalRun<T>(runKey: string, start: () => Promise<T>): Promise<T> | null {
+    const key = `external:${runKey}`;
+    const alloc = this.pool.allocate({ workBeadId: key });
+    if (!alloc) return null;
+    this.externalRuns.add(key);
+    const release = (): void => {
+      this.externalRuns.delete(key);
+      this.pool.onComplete(alloc.slotId);
+      this.requestTick('run-finished');
+    };
+    let run: Promise<T>;
+    try {
+      run = start();
+    } catch (err) {
+      release();
+      return Promise.reject(err);
+    }
+    run.then(release, release);
+    return run;
   }
 
   /**
