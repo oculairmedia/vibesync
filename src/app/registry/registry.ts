@@ -39,7 +39,7 @@ function openDatabase(dbPath: string): BetterSqlite3.Database {
   return db;
 }
 
-export class SyncDatabase {
+export class Registry {
   readonly dbPath: string;
   db: BetterSqlite3.Database | null = null;
   projects: ProjectRepository | null = null;
@@ -93,8 +93,8 @@ export class SyncDatabase {
   deleteRoleAgent(projectIdentifier: string, roleName: string): boolean { return this.projects!.roleAgents.deleteRoleAgent(projectIdentifier, roleName); }
 }
 
-export function createSyncDatabase(dbPath: string): SyncDatabase {
-  const db = new SyncDatabase(dbPath);
+export function createRegistry(dbPath: string): Registry {
+  const db = new Registry(dbPath);
   db.initialize();
   return db;
 }

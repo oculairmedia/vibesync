@@ -64,7 +64,7 @@ export class LoggingPmWakeSink implements PmWakeSink {
 /**
  * Registry lookup for the PM target: `projects.letta_agent_id`. Structural so the
  * scheduler layer needs no database import; src/index.ts wires the real
- * SyncDatabase (`getProject`) here, and the tests use the same function against a
+ * Registry (`getProject`) here, and the tests use the same function against a
  * real database file. Resolved on every tick, so a corrected row needs no restart.
  */
 export function registryPmAgentLookup(registry: {

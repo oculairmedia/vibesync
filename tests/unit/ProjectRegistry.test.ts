@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { ProjectRegistry } from '../../src/app/registry/project-registry.js';
-import { SyncDatabase } from '../../src/app/registry/registry.js';
+import { Registry } from '../../src/app/registry/registry.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -11,7 +11,7 @@ describe('ProjectRegistry', () => {
 
   beforeEach(() => {
     testDbPath = path.join(process.env.DB_PATH.replace('.db', `-registry-${Date.now()}.db`));
-    db = new SyncDatabase(testDbPath);
+    db = new Registry(testDbPath);
     const initialize = Reflect.get(db, 'initialize');
     if (typeof initialize === 'function') {
       initialize.call(db);

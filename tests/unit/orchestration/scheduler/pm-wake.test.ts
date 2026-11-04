@@ -431,9 +431,9 @@ describe('PM wake (vibesync-2bgv)', () => {
     expect(s.calls[0]!.agentId).toBe('agent-from-lookup');
   });
 
-  it('6b. production resolution path: the lookup wired to a REAL SyncDatabase (projects.letta_agent_id)', async () => {
-    const { createSyncDatabase } = await import('../../../../src/app/registry/registry.js');
-    const db = createSyncDatabase(path.join(dir, 'sync-state.db'));
+  it('6b. production resolution path: the lookup wired to a REAL Registry (projects.letta_agent_id)', async () => {
+    const { createRegistry } = await import('../../../../src/app/registry/registry.js');
+    const db = createRegistry(path.join(dir, 'sync-state.db'));
     try {
       const s = fakeSink();
       db.upsertProject({ identifier: PROJECT, name: 'Proj X' });

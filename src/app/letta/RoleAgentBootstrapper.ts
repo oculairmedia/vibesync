@@ -48,7 +48,7 @@ import {
 import type { ProjectRoleAgentRecord } from '../registry/repositories/ProjectRoleAgentRepository.js';
 
 /**
- * Subset of `SyncDatabase` the bootstrapper needs. Lets tests pass a
+ * Subset of `Registry` the bootstrapper needs. Lets tests pass a
  * minimal stub without spinning up SQLite.
  */
 export interface RoleAgentRepository {

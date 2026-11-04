@@ -6,7 +6,7 @@ import { registerHealthRoutes } from './routes/health.js';
 import { registerOpenApiRoutes } from './routes/openapi.js';
 import { registerProjectRoutes } from './routes/projects.js';
 import { sseManager } from './SSEManager.js';
-import type { SyncDatabase } from '../registry/registry.js';
+import type { Registry } from '../registry/registry.js';
 import type { App, DoltHubProvisionerApi, HandleContext, OrchestrationApi, ProjectRegistryApi, RouteContext } from '../types/api.js';
 
 function parseJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
@@ -36,7 +36,7 @@ function sendError(res: http.ServerResponse, statusCode: number, message: string
 }
 
 export interface ApiServerDeps {
-  db: SyncDatabase;
+  db: Registry;
   projectRegistry: ProjectRegistryApi | null;
   doltHubProvisioner: DoltHubProvisionerApi | null;
   orchestration: OrchestrationApi | null;

@@ -11,7 +11,7 @@ import type { PoolMemberIdentity } from '../src/engine/scheduler/agent-pool.js';
 import type { GitHubPort, PrFacts } from '../src/engine/refinery/refinery.js';
 import type { RunLivenessProbe } from '../src/engine/scheduler/witness.js';
 import { loadPack } from '../src/engine/packs/index.js';
-import { createSyncDatabase } from '../src/app/registry/registry.js';
+import { createRegistry } from '../src/app/registry/registry.js';
 import { resolveFromAppRoot } from '../src/app/runtimePaths.js';
 import { RoleAgentBootstrapper } from '../src/app/letta/RoleAgentBootstrapper.js';
 
@@ -30,7 +30,7 @@ const log = {
 };
 
 const dbPath = process.env['VIBESYNC_DB_PATH'] ?? resolveFromAppRoot('logs', 'sync-state.db');
-const db = createSyncDatabase(dbPath);
+const db = createRegistry(dbPath);
 const dolt = await DoltClient.connect({}, { ...defaultDoltBootDeps, log(level, obj, msg) { log[level](obj, msg); } });
 const roleAgentBootstrapper = new RoleAgentBootstrapper({
   repo: { getRoleAgent: db.getRoleAgent.bind(db), upsertRoleAgent: db.upsertRoleAgent.bind(db) },

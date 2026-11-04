@@ -5,7 +5,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createSyncDatabase, type SyncDatabase } from '../../src/app/registry/registry.js';
+import { createRegistry, type Registry } from '../../src/app/registry/registry.js';
 
 const LEGACY_PROJECTS_SQL = `CREATE TABLE projects (
   identifier TEXT PRIMARY KEY, name TEXT NOT NULL, huly_id TEXT, vibe_id INTEGER,
@@ -29,7 +29,7 @@ CREATE TABLE project_role_agents (
 describe('registry database', () => {
   let dir: string;
   let dbPath: string;
-  let db: SyncDatabase | null = null;
+  let db: Registry | null = null;
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibesync-registry-'));
@@ -50,7 +50,7 @@ describe('registry database', () => {
     legacy.prepare("INSERT INTO project_role_agents VALUES ('vibesync', 'coder', 'agent-coder', 'http://shim', 1, 2)").run();
     legacy.close();
 
-    db = createSyncDatabase(dbPath);
+    db = createRegistry(dbPath);
 
     const raw = new Database(dbPath, { readonly: true });
     const tables = (raw.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((t) => t.name).sort();
@@ -70,7 +70,7 @@ describe('registry database', () => {
   });
 
   it('startup drops role bindings of archived or missing projects, keeps active ones', () => {
-    db = createSyncDatabase(dbPath);
+    db = createRegistry(dbPath);
     db.upsertProject({ identifier: 'live', name: 'Live' });
     db.upsertProject({ identifier: 'old', name: 'Old' });
     db.upsertRoleAgent('live', 'coder', 'agent-live', 'http://shim');
@@ -78,22 +78,22 @@ describe('registry database', () => {
     db.upsertRoleAgent('ghost', 'coder', 'agent-ghost', 'http://shim');
     db.db!.prepare("UPDATE projects SET status = 'archived' WHERE identifier = 'old'").run();
     db.close();
-    db = createSyncDatabase(dbPath);
+    db = createRegistry(dbPath);
     expect(db.listRoleAgents('live')).toHaveLength(1);
     expect(db.listRoleAgents('old')).toEqual([]);
     expect(db.listRoleAgents('ghost')).toEqual([]);
   });
 
   it('is idempotent across restarts', () => {
-    db = createSyncDatabase(dbPath);
+    db = createRegistry(dbPath);
     db.upsertProject({ identifier: 'p', name: 'P', filesystem_path: '/x' });
     db.close();
-    db = createSyncDatabase(dbPath);
+    db = createRegistry(dbPath);
     expect(db.getProject('p')).toMatchObject({ name: 'P', filesystem_path: '/x', status: 'active' });
   });
 
   it('upserts, updates, resolves by folder name, archives and deletes (removing role bindings)', () => {
-    db = createSyncDatabase(dbPath);
+    db = createRegistry(dbPath);
     db.upsertProject({ identifier: 'alpha', name: 'Alpha', filesystem_path: '/opt/stacks/alpha', git_url: 'https://x/a.git' });
     db.upsertProject({ identifier: 'alpha', name: 'Alpha2' });
     expect(db.getProject('alpha')).toMatchObject({ name: 'Alpha2', filesystem_path: '/opt/stacks/alpha', git_url: 'https://x/a.git' });
@@ -113,7 +113,7 @@ describe('registry database', () => {
   });
 
   it('records Beads remote provisioning success and failure', () => {
-    db = createSyncDatabase(dbPath);
+    db = createRegistry(dbPath);
     db.upsertProject({ identifier: 'b', name: 'B' });
     db.setBeadsRemoteResult('b', { ok: false, error: 'boom' }, 10);
     expect(db.getProject('b')).toMatchObject({ beads_remote_status: 'error', beads_remote_last_error: 'boom' });

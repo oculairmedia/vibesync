@@ -9,7 +9,7 @@ import { createApiServer } from './http/server';
 import { portSweepScope, sweepAll as sweepBeadsPorts } from './registry/port-sweep/PortSweeper.js';
 import { startPeriodicPortSweep } from './registry/port-sweep/startPeriodicPortSweep.js';
 import { getConfigSummary, loadConfig } from './config';
-import { createSyncDatabase, type SyncDatabase } from './registry/registry';
+import { createRegistry, type Registry } from './registry/registry';
 import { createDoltHubProvisioningService } from './registry/dolthub-provisioning.js';
 import { logger } from './logger';
 import { bootOrchestrationPlane, releaseDoltAfterFailedBoot, type OrchestrationHandle } from '../engine/boot.js';
@@ -26,9 +26,9 @@ const DB_PATH = process.env.VIBESYNC_DB_PATH || resolveFromAppRoot('logs', 'sync
 const SHUTDOWN_GRACE_MS = Number.parseInt(process.env['VIBESYNC_SHUTDOWN_GRACE_MS'] ?? '20000', 10);
 const MAX_BOOT_ATTEMPTS = Number.parseInt(process.env['ORCHESTRATION_BOOT_ATTEMPTS'] ?? '5', 10);
 
-function openRegistry(): SyncDatabase {
+function openRegistry(): Registry {
   try {
-    const db = createSyncDatabase(DB_PATH);
+    const db = createRegistry(DB_PATH);
     logger.info({ dbPath: DB_PATH }, 'Registry database initialized');
     return db;
   } catch (error) {
@@ -42,7 +42,7 @@ function openRegistry(): SyncDatabase {
  * project's local Dolt server; otherwise a project can silently read another's
  * database after a host reboot. vibesync-1ue keeps sweeping afterwards.
  */
-async function repairBeadsPorts(db: SyncDatabase): Promise<void> {
+async function repairBeadsPorts(db: Registry): Promise<void> {
   try {
     const { registry, only } = portSweepScope(db);
     const report = await sweepBeadsPorts(registry, undefined, { apply: true, only });
@@ -64,7 +64,7 @@ async function repairBeadsPorts(db: SyncDatabase): Promise<void> {
   startPeriodicPortSweep({ listProjects: () => portSweepScope(db).registry, repairable: () => portSweepScope(db).only, logger, ...(intervalMs > 0 ? { intervalMs } : {}) });
 }
 
-function createProvisioner(db: SyncDatabase): DoltHubProvisionerApi | null {
+function createProvisioner(db: Registry): DoltHubProvisionerApi | null {
   if (!config.doltHub.enabled && !config.doltHub.dryRun) return null;
   try {
     const { apiToken, ...doltHub } = config.doltHub;
@@ -76,7 +76,7 @@ function createProvisioner(db: SyncDatabase): DoltHubProvisionerApi | null {
 }
 
 /** bd runner bound to the scheduled project's own Beads directory, resolved per call. */
-function projectCli(db: SyncDatabase, binary: 'bd' | 'gh', actor: string) {
+function projectCli(db: Registry, binary: 'bd' | 'gh', actor: string) {
   return async (args: readonly string[]): Promise<string> => {
     const project = db.getProject(config.scheduler.projectIdentifier);
     const fsPath = project?.filesystem_path;
@@ -95,7 +95,7 @@ function projectCli(db: SyncDatabase, binary: 'bd' | 'gh', actor: string) {
  * vibesync-nl0l: a restart can race the Dolt fleet coming back up, so connect
  * resiliently and retry the whole plane boot with backoff.
  */
-async function bootEngine(db: SyncDatabase): Promise<OrchestrationHandle | null> {
+async function bootEngine(db: Registry): Promise<OrchestrationHandle | null> {
   if (process.env.ENABLE_ORCHESTRATION !== 'true') {
     logger.info('Orchestration plane disabled (ENABLE_ORCHESTRATION is not true)');
     return null;

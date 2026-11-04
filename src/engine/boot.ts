@@ -73,7 +73,7 @@ export interface BootOrchestrationPlaneOptions {
    * future provider) for projects that opt in.
    *
    * `routingStore` is an injectable adapter so boot doesn't reach
-   * into SyncDatabase directly — keeps the orchestration plane free
+   * into Registry directly — keeps the orchestration plane free
    * of a SQLite import. The production caller wires up
    * { getProjectProviderRouting: db.getProjectProviderRouting.bind(db) }.
    *
@@ -192,7 +192,7 @@ export interface BootOrchestrationProviderRoutingOptions {
   readonly roleAgentLookup?: RoleAgentLookup;
 }
 
-/** Minimal read view of project_role_agents (structural subset of SyncDatabase.getRoleAgent). */
+/** Minimal read view of project_role_agents (structural subset of Registry.getRoleAgent). */
 export interface RoleAgentLookup {
   getRoleAgent(projectIdentifier: string, roleName: string): { readonly agentId: string } | null;
 }

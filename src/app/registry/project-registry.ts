@@ -3,7 +3,7 @@ import path from 'node:path';
 import { logger as rootLogger } from '../logger';
 import { stripUrlCredentials } from '../utils';
 import { ensureRig, type EnsureRigResult } from './rig/provisioner.js';
-import type { SyncDatabase } from './registry';
+import type { Registry } from './registry';
 import type { ProjectRow } from '../types/db.js';
 
 export interface RigEvent {
@@ -31,7 +31,7 @@ interface ProjectUpdates {
   status?: string;
 }
 
-type ProjectDB = Pick<SyncDatabase,
+type ProjectDB = Pick<Registry,
   'getAllProjects' | 'getProject' | 'resolveProjectIdentifier' | 'updateProject' | 'archiveProject'
   | 'unarchiveProject' | 'deleteProject' | 'upsertProject' | 'setProjectScan' | 'setBeadsRemoteResult'>;
 
