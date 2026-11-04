@@ -46,7 +46,7 @@ export function registerOpenApiRoutes(app: App, deps: OpenApiRouteDeps): void {
     handle: async ({ res }) => {
       try {
         // Try to load the generated OpenAPI spec from dist/
-        const specPath = path.join(__dirname, '../../..', 'dist', 'openapi.json');
+        const specPath = path.join(__dirname, '../../../..', 'dist', 'openapi.json');
         if (fs.existsSync(specPath)) {
           const spec = JSON.parse(fs.readFileSync(specPath, 'utf-8'));
           sendJson(res, 200, spec);
