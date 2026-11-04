@@ -45,6 +45,7 @@ import { SchedulerDaemon, type DaemonLogger, type DaemonTickReport } from './dae
 import type { StepDispatcher } from './step-dispatcher.js';
 import { EscalationManager, type NotificationTransport } from './escalation.js';
 import { FilePmWakeStateStore, type PmWakeStateStore } from './pm-wake-state.js';
+import { BdPendingWakeStore } from './bd-pending-wake-store.js';
 import { IrohPmWakeSink } from './iroh-pm-wake-sink.js';
 import { formatWakeMessage, LoggingPmWakeSink, PmWaker, type PmWakeSink } from './pm-waker.js';
 import type { IrohConnection } from '../runtime/iroh/connection.js';
@@ -308,6 +309,7 @@ export function startSchedulerDaemon(
         lookupAgentId: opts.pmWake.lookupAgentId,
         sink: wakerSink,
         store: opts.pmWake.store ?? new FilePmWakeStateStore(pw.statePath, logger),
+        ...(pw.sink === 'inbox' && opts.pmWake.inboxAdapter ? { pendingWakeStore: new BdPendingWakeStore(opts.bd, { ...(logger ? { logger } : {}) }) } : {}),
         backlog: () => daemon.backlogSnapshot(),
         emit: (kind, payload) => bus.emit({ layer: 'daemon', kind, payload }),
         minIntervalMs: pw.minIntervalMs,
