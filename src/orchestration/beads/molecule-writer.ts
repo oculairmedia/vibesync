@@ -15,6 +15,7 @@
  * step is an LLM turn of minutes, so this is well under 1% of a run.
  */
 import { INFRA_RETRIES_KEY, LAST_FAILURE_CLASS_KEY, RETRY_ATTEMPT_KEY, RETRY_OUTCOME_KEY, FAILURE_CLASS_KEY } from '../retry/policy.js';
+import type { MoleculeOutcome } from '../molecule/molecule.js';
 import type { BeadRow } from '../store/index.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -160,7 +161,7 @@ export class BdMoleculeWriter {
    * legitimately leaves steps that never ran, and bd otherwise refuses to close
    * a parent with open children.
    */
-  async markMoleculeRootStatus(rootId: string, status: 'closed', outcome: 'completed' | 'failed' | 'cancelled'): Promise<void> {
+  async markMoleculeRootStatus(rootId: string, status: 'closed', outcome: MoleculeOutcome): Promise<void> {
     const bead = await this.require(rootId);
     await withMetadataFile({ exec: { ...execOf(bead), outcome } }, (ref) =>
       this.bd(['update', rootId, '--status', status, '--force', '--metadata', ref, '--actor', ACTOR]));
@@ -177,7 +178,7 @@ export class BdMoleculeWriter {
   }
 
   /** Stamp writeback status on a root; returns the previous stamp for replay dedupe. */
-  async recordMoleculeWriteback(rootId: string, status: 'completed' | 'failed'): Promise<string | undefined> {
+  async recordMoleculeWriteback(rootId: string, status: 'completed' | 'failed' | 'interrupted'): Promise<string | undefined> {
     const bead = await this.reader.getBead(rootId);
     if (!bead) throw new Error(`recordMoleculeWriteback: molecule ${rootId} not found`);
     const exec = execOf(bead);

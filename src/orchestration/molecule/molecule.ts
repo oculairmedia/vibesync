@@ -24,6 +24,9 @@
 import type { BeadRow, DependencyRow } from '../store/index.js';
 import type { RetryPolicy } from '../retry/policy.js';
 
+/** How a molecule root was closed; `interrupted` = a restart orphaned it (vibesync-9lzk.9). */
+export type MoleculeOutcome = 'completed' | 'failed' | 'cancelled' | 'interrupted';
+
 /**
  * Step spec — what to do at each node of a formula. Provided by the
  * formula parser (vibesync-k6h); consumed by the daemon walker.
@@ -140,7 +143,7 @@ export interface MoleculeStore {
   markStepDone(stepId: string, output: unknown): Promise<void>;
   markStepFailed(stepId: string, errorTrace: string, retryOutcome?: string): Promise<void>;
   // lcp-s0wi: mark a molecule root bead as terminal with an outcome.
-  markMoleculeRootStatus(rootId: string, status: 'closed', outcome: 'completed' | 'failed' | 'cancelled'): Promise<void>;
+  markMoleculeRootStatus(rootId: string, status: 'closed', outcome: MoleculeOutcome): Promise<void>;
 }
 
 /**
@@ -376,7 +379,7 @@ export class MoleculeWalker {
   async markMoleculeRootStatus(
     rootId: string,
     status: 'closed',
-    outcome: 'completed' | 'failed' | 'cancelled',
+    outcome: MoleculeOutcome,
   ): Promise<void> {
     await this.store.markMoleculeRootStatus(rootId, status, outcome);
   }

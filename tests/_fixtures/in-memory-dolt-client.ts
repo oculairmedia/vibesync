@@ -1,3 +1,4 @@
+import type { MoleculeOutcome } from '../../src/orchestration/molecule/molecule.js';
 import type { BeadRow, DependencyRow } from '../../src/orchestration/store/index.js';
 
 export interface BeadNote {
@@ -201,7 +202,7 @@ export class InMemoryDoltClient {
     this.notes.push({ beadId, note });
   }
 
-  async recordMoleculeWriteback(rootId: string, status: 'completed' | 'failed'): Promise<string | undefined> {
+  async recordMoleculeWriteback(rootId: string, status: 'completed' | 'failed' | 'interrupted'): Promise<string | undefined> {
     const row = this.requireBead(rootId);
     const exec = (row.metadata.exec && typeof row.metadata.exec === 'object'
       ? (row.metadata.exec as Record<string, unknown>)
@@ -216,7 +217,7 @@ export class InMemoryDoltClient {
   async markMoleculeRootStatus(
     rootId: string,
     status: 'closed',
-    outcome: 'completed' | 'failed' | 'cancelled',
+    outcome: MoleculeOutcome,
   ): Promise<void> {
     const row = this.requireBead(rootId);
     this.updateBead(rootId, {
