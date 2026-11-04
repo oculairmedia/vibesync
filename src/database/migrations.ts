@@ -80,4 +80,10 @@ export function runMigrations(db: BetterSqlite3.Database): void {
     CREATE INDEX IF NOT EXISTS idx_project_role_agents_project ON project_role_agents(project_identifier);
     CREATE INDEX IF NOT EXISTS idx_project_role_agents_agent ON project_role_agents(agent_id);
   `);
+  // An archived project is never dispatched to, so its role-agent bindings
+  // are dead; drop them (and any whose project row is gone).
+  db.exec(`
+    DELETE FROM project_role_agents
+    WHERE project_identifier NOT IN (SELECT identifier FROM projects WHERE status = 'active')
+  `);
 }

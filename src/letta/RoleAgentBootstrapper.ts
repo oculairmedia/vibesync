@@ -85,8 +85,8 @@ export interface RoleAgentBootstrapInput {
    * contract assertion against process.env.LETTA_LOCAL_BACKEND_DIR
    * — the SDK subprocess reads that env var to find the store. If
    * the two disagree, the SDK would write to the wrong place; we
-   * refuse rather than silently corrupt routing. In production:
-   * `/opt/stacks/letta-code-parallel/migrator/out`.
+   * refuse rather than silently corrupt routing. In production this
+   * is the project's `storage_dir` (default `/root/.letta/lc-local-backend`).
    */
   readonly storageDir: string;
 }

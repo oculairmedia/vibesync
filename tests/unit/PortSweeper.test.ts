@@ -59,10 +59,10 @@ describe('detectConflict', () => {
     // process cwd is not /srv/a/.beads/dolt → wrong-owner.
     const result = detectConflict(projectA, [projectA], makeDeps({
       readPort: () => 3308,
-      portOwnerCwd: () => '/opt/stacks/letta-code-parallel/home/.beads/shared-server/dolt',
+      portOwnerCwd: () => '/opt/stacks/other-project/home/.beads/shared-server/dolt',
     }));
     expect(result?.kind).toBe('wrong-owner');
-    expect(result?.detail).toContain('/opt/stacks/letta-code-parallel');
+    expect(result?.detail).toContain('/opt/stacks/other-project');
   });
 
   it('prefers duplicate-configured-port over wrong-owner when both fire', () => {

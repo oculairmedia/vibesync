@@ -37,8 +37,9 @@ function openRegistry(): SyncDatabase {
   }
 }
 
+/** Active projects only: an archived (deprecated) project's Dolt server is not ours to repair. */
 function sweepProjects(db: SyncDatabase): SweeperProject[] {
-  return db.getAllProjects().map((row) => ({ identifier: row.identifier, filesystem_path: row.filesystem_path }));
+  return db.getProjectsWithFilesystemPath().map((row) => ({ identifier: row.identifier, filesystem_path: row.filesystem_path }));
 }
 
 /**
