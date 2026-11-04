@@ -153,7 +153,7 @@ export function loadConfig(): AppConfig {
         ...(process.env.VIBESYNC_PM_WAKE_CLI_EXECUTABLE !== undefined ? {
           cli: {
             executable: process.env.VIBESYNC_PM_WAKE_CLI_EXECUTABLE,
-            senderAgentId: process.env.VIBESYNC_PM_WAKE_CLI_SENDER ?? '',
+            senderAgentId: (process.env.VIBESYNC_PM_WAKE_CLI_SENDER ?? '').trim(),
             identityDir: process.env.VIBESYNC_PM_WAKE_CLI_IDENTITIES ?? '',
             addressStore: process.env.VIBESYNC_PM_WAKE_CLI_ADDRESS_STORE ?? '',
             contractVerified: process.env.VIBESYNC_PM_WAKE_CLI_CONTRACT_VERIFIED === 'true',

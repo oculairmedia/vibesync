@@ -386,7 +386,7 @@ describe('config', () => {
       const keys = {
         VIBESYNC_PM_WAKE_SINK: 'inbox',
         VIBESYNC_PM_WAKE_CLI_EXECUTABLE: '/release/bin/meridian-iroh-wrapper',
-        VIBESYNC_PM_WAKE_CLI_SENDER: 'service-agent',
+        VIBESYNC_PM_WAKE_CLI_SENDER: '  service-agent  ',
         VIBESYNC_PM_WAKE_CLI_IDENTITIES: '/service/identities',
         VIBESYNC_PM_WAKE_CLI_ADDRESS_STORE: '/service/hosts',
       };
@@ -398,6 +398,9 @@ describe('config', () => {
         });
         process.env.VIBESYNC_PM_WAKE_CLI_CONTRACT_VERIFIED = 'true';
         expect(loadConfig().scheduler.pmWake.cli?.contractVerified).toBe(true);
+        process.env.VIBESYNC_PM_WAKE_CLI_SENDER = '   ';
+        expect(() => loadConfig()).toThrow('Config validation failed');
+        process.env.VIBESYNC_PM_WAKE_CLI_SENDER = keys.VIBESYNC_PM_WAKE_CLI_SENDER;
         process.env.VIBESYNC_PM_WAKE_CLI_EXECUTABLE = 'meridian';
         expect(() => loadConfig()).toThrow('Config validation failed');
         process.env.VIBESYNC_PM_WAKE_CLI_EXECUTABLE = keys.VIBESYNC_PM_WAKE_CLI_EXECUTABLE;
