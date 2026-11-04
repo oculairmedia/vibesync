@@ -1,7 +1,8 @@
 # Multi-Agent Orchestration in VibeSync
 
 VibeSync owns the orchestration plane for Gastown-style role workflows:
-formulas, molecules, runtime providers, event bus, health patrol, role
+formulas, molecules, runtime providers, event bus, the scheduler's causal
+witness for liveness, role
 packs, and layering invariants live in this repository.
 
 The active runtime path for spawned Gastown role sessions is the letta-code
@@ -17,7 +18,7 @@ fall back to the boot-level local backend where safe.
 ┌───────────────────────────────────────────────────────────────────┐
 │ VibeSync — orchestration host                                     │
 │   formulas · molecules · runtime providers · event bus            │
-│   health patrol · role packs · layering invariants                │
+│   causal liveness witness · role packs · layering invariants       │
 │                                                                   │
 │   …………… RuntimeProvider interface ……………                          │
 │   ┌───────────────────────────┬─────────────────┬───────────┐     │

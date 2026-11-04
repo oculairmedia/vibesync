@@ -444,26 +444,6 @@
       "notes": "runtime/session.error code=sse_read_error is the vibesync-2hgr timeout symptom."
     },
     {
-      "surface_id": "health-patrol/session.stalled",
-      "kind": "event",
-      "owner": "src/orchestration/health",
-      "consumers": "daemon, alerting",
-      "tests": "-",
-      "classification": "normative",
-      "kotlin_fate": "port",
-      "notes": ""
-    },
-    {
-      "surface_id": "health-patrol/session.unhealthy",
-      "kind": "event",
-      "owner": "src/orchestration/health",
-      "consumers": "daemon, alerting",
-      "tests": "-",
-      "classification": "normative",
-      "kotlin_fate": "port",
-      "notes": ""
-    },
-    {
       "surface_id": "runtime/teammate.drift_audit.skipped",
       "kind": "event",
       "owner": "src/orchestration/boot.ts",
@@ -1122,16 +1102,6 @@
       "classification": "normative",
       "kotlin_fate": "port",
       "notes": "In-process live tier only; no cross-process replay. jxri.7 hardens into canonical append-only causal log."
-    },
-    {
-      "surface_id": "HealthPatrol (stalled/unhealthy detection)",
-      "kind": "behavior",
-      "owner": "src/orchestration/health",
-      "consumers": "daemon",
-      "tests": "-",
-      "classification": "normative",
-      "kotlin_fate": "port",
-      "notes": ""
     },
     {
       "surface_id": "idempotency: issue_mutation_idempotency UNIQUE(key,issue,action)",

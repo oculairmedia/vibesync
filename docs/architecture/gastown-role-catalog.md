@@ -40,17 +40,17 @@ that compose the other roles.
 
 ### Deacon
 
-**Purpose:** Watchdog / supervisor / health-patrol. Catches stalls,
+**Purpose:** Watchdog / supervisor / causal liveness witness. Catches stalls,
 restarts misbehaving sessions, manages the order queue.
 
 **Translation per Gas City:** "Deacon watchdog logic" → controller +
 supervisor, NOT a role-agent. In VibeSync this maps to
-`HealthPatrol` (vibesync-458), not a teammate.
+the scheduler's causal witness, not a teammate.
 
 **Recommendation:** Do NOT ship a "Deacon" role-pack teammate. The
 infrastructure handles this. If a user wants a Deacon-themed
 dashboard surface, build it as a thin TUI/CLI projection of the
-HealthPatrol events — not a role.
+causal witness events — not a role.
 
 ### Polecat
 
@@ -77,7 +77,7 @@ patterns. Lifecycle management for crew + polecats.
 **Translation per Gas City:** Witness lifecycle logic → waits +
 formulas + session scale config + controller wake/sleep.
 
-**Maps to VibeSync:** Mostly the EventBus + HealthPatrol +
+**Maps to VibeSync:** Mostly the EventBus + scheduler's causal witness +
 vibesync-uxx walker. A "Witness" role-pack teammate might be
 useful as a query/dashboard surface that reads the event bus and
 narrates city state, but the SUBSTANCE is in the infrastructure.
@@ -148,7 +148,7 @@ Concrete recommendation for vibesync-ulp:
 | `prompts/refinery-system.md` | prompt | Refinery system prompt template |
 
 **Do NOT ship:**
-- `roles/deacon.toml` — HealthPatrol covers this
+- `roles/deacon.toml` — the scheduler's causal witness covers this
 - `roles/polecat.toml` — pattern not a role
 - `roles/witness.toml` — optional, defer to need
 - `roles/dog.toml` — most dog work is exec orders, not LLM

@@ -6,7 +6,6 @@ import {
   type RoleAgentBootstrapperLike,
 } from './dispatcher/index.js';
 import { EventBus, WorkActivityReporter } from './events/index.js';
-import { HealthPatrol } from './health/index.js';
 import { INTERRUPTED_EVENT, MoleculeWalker, recoverInterruptedMolecules } from './molecule/index.js';
 import {
   IROH_PROVIDER_KIND,
@@ -33,7 +32,6 @@ export interface OrchestrationHandle {
   readonly dispatcher: FormulaDispatcher;
   readonly provider: RuntimeProvider;
   readonly bus: EventBus;
-  readonly patrol: HealthPatrol;
   readonly walker: MoleculeWalker;
   /** Ready-step loop (vibesync-efee). Ticked by the scheduler when it is on, by its own timer when off. */
   readonly steps: StepDispatcher;
@@ -254,8 +252,8 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
 
   // bd enforces the project's issue prefix on create; the SQL writes used to
   // bypass that and mint `mol-mol-*` ids under a `vibesync` prefix. Read it
-  // with the other preflight checks so a bad config fails before any timer,
-  // patrol or provider starts.
+  // with the other preflight checks so a bad config fails before any timer
+  // or provider starts.
   const moleculeIdPrefix = opts.moleculeIdPrefix ?? await opts.dolt.readIssuePrefix();
 
   const bus = new EventBus({ noPersist: opts.persistEvents === false });
@@ -280,9 +278,6 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     allowUnavailable: opts.providerRouting !== undefined,
     getIrohProvider,
   });
-  const patrol = new HealthPatrol(bus);
-  patrol.start();
-
   if (opts.runDriftAuditOnBoot !== false) {
     bus.emit({
       layer: 'runtime',
@@ -431,7 +426,6 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     dispatcher,
     provider,
     bus,
-    patrol,
     walker,
     steps,
     scheduler,
@@ -458,7 +452,6 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
       }
       await steps.stop();
       unsubscribeWriteback();
-      patrol.stop();
       workActivityReporter?.stop();
       if (irohProvider) {
         try {
