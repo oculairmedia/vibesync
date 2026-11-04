@@ -2,6 +2,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { logger as defaultLogger } from './logger';
+import type { BeadsRemoteSnapshot } from './database/repositories/ProjectRepository';
 import {
   defaultDeps as defaultPortSweeperDeps,
   detectConflict as detectPortConflict,
@@ -71,11 +72,11 @@ interface RegistryProject {
 }
 
 interface DbProject {
-  projects?: {
-    getAllProjects?: () => RegistryProject[];
-    setProjectBeadsRemote?: (identifier: string, data: Record<string, unknown>) => void;
-    setProjectBeadsRemoteError?: (identifier: string, error: string) => void;
-  };
+  projects: {
+    getAllProjects: () => RegistryProject[];
+    setProjectBeadsRemote: (identifier: string, data: BeadsRemoteSnapshot) => void;
+    setProjectBeadsRemoteError: (identifier: string, error: string) => void;
+  } | null;
 }
 
 type CommandRunner = (
@@ -275,7 +276,7 @@ export class DoltHubProvisioningService {
       const status = this.dryRun ? 'dry_run' : 'provisioned';
       const lastPushAt = remoteResult.pushed ? Date.now() : null;
 
-      this.db?.projects?.setProjectBeadsRemote?.(project.identifier, {
+      this.db?.projects?.setProjectBeadsRemote(project.identifier, {
         owner: plan.owner,
         repo: plan.repo,
         url: plan.remoteUrl,
@@ -309,7 +310,7 @@ export class DoltHubProvisioningService {
       };
     } catch (error) {
       const safeError = sanitizeErrorMessage(error);
-      this.db?.projects?.setProjectBeadsRemoteError?.(project.identifier, safeError);
+      this.db?.projects?.setProjectBeadsRemoteError(project.identifier, safeError);
       this.onPushEvent?.({ type: 'rig:push_status', projectId: project.identifier, status: 'error', error: safeError });
       (this.logger as { error?: (ctx: Record<string, unknown>, msg: string) => void })?.error?.(
         { err: error, project_identifier: project.identifier },
@@ -460,7 +461,7 @@ export class DoltHubProvisioningService {
       );
       return;
     }
-    const registry: readonly SweeperProject[] = (this.db?.projects?.getAllProjects?.() ?? []).map(
+    const registry: readonly SweeperProject[] = (this.db?.projects?.getAllProjects() ?? []).map(
       (entry) => ({ identifier: entry.identifier, filesystem_path: entry.filesystem_path ?? null }),
     );
     const sweeperProject: SweeperProject = {

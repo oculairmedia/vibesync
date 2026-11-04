@@ -177,21 +177,6 @@ describe('ProjectRegistry', () => {
       expect(project.name).toBe('Existing Project');
     });
 
-    it('should preserve existing issue counts on rescan', () => {
-      const dirPath = createDir('counted-proj', { git: true });
-      db.upsertProject({
-        identifier: 'COUNTED',
-        name: 'Counted Project',
-        filesystem_path: dirPath,
-        issue_count: 1119,
-      });
-
-      const registry = new ProjectRegistry({ db, baseDir: testStacksDir });
-      registry.scanProjects();
-
-      const project = db.getProject('COUNTED');
-      expect(project.issue_count).toBe(1119);
-    });
   });
 
   describe('tech stack detection', () => {
@@ -528,7 +513,7 @@ describe('ProjectRegistry', () => {
     });
   });
 
-  describe('last_scan_at and mcp_enabled', () => {
+  describe('last_scan_at', () => {
     it('should set last_scan_at on scan', () => {
       createDir('scan-time', { git: true });
 
@@ -542,14 +527,5 @@ describe('ProjectRegistry', () => {
       expect(project.last_scan_at).toBeLessThanOrEqual(after);
     });
 
-    it('should default mcp_enabled to 1', () => {
-      createDir('mcp-default', { git: true });
-
-      const registry = new ProjectRegistry({ db, baseDir: testStacksDir });
-      registry.scanProjects();
-
-      const project = db.getProject('mcp-default');
-      expect(project.mcp_enabled).toBe(1);
-    });
   });
 });

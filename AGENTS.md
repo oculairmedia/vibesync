@@ -1,73 +1,22 @@
-<!-- VIBESYNC:project-info:START -->
+# Vibesync agent instructions
 
-# Agent Instructions
+Vibesync is the Beads-backed molecule orchestration engine: formulas cook into
+molecule beads, the scheduler dispatches ready steps to role agents over the
+Iroh wrapper, and outcomes are written back to Beads. A small SQLite registry
+holds project paths, provider routing and role-agent bindings. All canonical
+work state lives in Beads/Dolt.
 
-## Project Identity
+## Documentation
 
-- **Project Code**: `vibesync`
-- **Project Name**: vibesync
-- **Letta Agent ID**: ``
+Project documentation (PRDs, design notes, architecture reviews, decisions)
+lives in Beads: write it into the relevant bead's description, design or notes
+fields. Do not create markdown docs in the repository except the architecture
+references under `docs/` that code and tests cite.
 
-## Workflow Instructions
+## Reporting
 
-1. **Before starting work**: Use the local Beads tracker (`bd ready`, `bd show <id>`, `bd update <id> --claim`) to find and claim related work.
-2. **Issue references**: Use Beads issue IDs exactly as reported by `bd` (for example, `vibesync-abc` or the repository's configured prefix).
-3. **On task completion**: Report to this project's Letta agent via `matrix-identity-bridge` using `talk_to_agent`.
-4. **Memory**: Store important discoveries with the configured project memory tool.
-
-<!-- VIBESYNC:project-info:END -->
-
-<!-- VIBESYNC:reporting-hierarchy:START -->
-
-## PM Agent Communication
-
-**Project PM Agent:** `` ()
-
-### Reporting Hierarchy
-
-```
-Emmanuel (Stakeholder)
-    ↓
-Meridian (Director of Engineering)
-    ↓
-PM Agent (Technical Product Owner - mega-experienced)
-    ↓ communicates with
-You (Developer Agent - experienced)
-```
-
-### MANDATORY: Report to PM Agent
-
-**BEFORE reporting outcomes to the user**, send a report to the PM agent via Matrix:
-
-```json
-{
-  "operation": "talk_to_agent",
-  "agent": "",
-  "message": "<your report>",
-  "caller_directory": "/opt/stacks/vibesync"
-}
-```
-
-### When to Contact PM Agent
-
-| Situation             | Action                                                              |
-| --------------------- | ------------------------------------------------------------------- |
-| Task completed        | Report outcome to PM before responding to user                      |
-| Blocking question     | Forward to PM - they know user's wishes and will escalate if needed |
-| Architecture decision | Consult PM for guidance                                             |
-| Unclear requirements  | PM can clarify or contact user                                      |
-
-### Report Format
-
-```
-**Status**: [Completed/Blocked/In Progress]
-**Task**: [Brief description]
-**Outcome**: [What was done/What's blocking]
-**Files Changed**: [List if applicable]
-**Next Steps**: [If any]
-```
-
-<!-- VIBESYNC:reporting-hierarchy:END -->
+Report progress on the bead you are working (`bd comments add <id> ...`) and in
+the PR. Escalate blockers to the project PM agent.
 
 <!-- VIBESYNC:beads-instructions:START -->
 
@@ -120,68 +69,6 @@ Exit codes: `0` = all clean, `1` = warnings (proceed with care), `2` = errors (f
 - If no git remote is configured, leave the Beads database and JSONL export in a clean local state and note that work is local-only.
 
 <!-- VIBESYNC:beads-instructions:END -->
-
-<!-- VIBESYNC:bookstack-docs:START -->
-
-## BookStack Documentation
-
-- **Source of truth**: [BookStack](https://knowledge.oculair.ca)
-- **Local sync**: `docs/bookstack/` (read-only mirror, syncs hourly)
-- **To read docs**: Check `docs/bookstack/{book-slug}/` in your project directory
-- **To create/edit docs**: Use `bookstack-mcp` tools to write directly to BookStack
-- **Never edit** files in `docs/bookstack/` locally — they will be overwritten on next sync
-- **PRDs and design docs** must be stored in BookStack, not local markdown files
-
-<!-- VIBESYNC:bookstack-docs:END -->
-
-<!-- VIBESYNC:session-completion:START -->
-
-## Landing the Plane (Session Completion)
-
-**When ending a work session**, you MUST complete ALL steps below. Work is not complete until code changes, Beads state, and handoff notes are in a clean state.
-
-**MANDATORY WORKFLOW:**
-
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **Persist changes** - If a git remote is configured, push code and Beads state:
-   ```bash
-   git pull --rebase
-   bd dolt push
-   git push
-   git status  # MUST show "up to date with origin"
-   ```
-   If no remote is configured, verify `git status` and Beads state locally and mention that the session is local-only.
-5. **Clean up** - Clear stashes and prune stale branches when applicable
-6. **Verify** - All intended changes are committed or explicitly handed off
-7. **Hand off** - Provide context for next session
-
-**CRITICAL RULES:**
-
-- Do not leave issue updates half-applied; Beads is the source of truth for task state.
-- Use the `bd` CLI only; do not inspect or mutate the Beads/Dolt backing database directly.
-- Do not use external issue tools for issue tracking.
-- If push is available and fails, resolve and retry until it succeeds.
-
-<!-- VIBESYNC:session-completion:END -->
-
-<!-- VIBESYNC:codebase-context:START -->
-
-## Codebase Context
-
-**Project**: vibesync (`vibesync`)
-**Path**: `/opt/stacks/vibesync`
-
-This project's PM agent has a `codebase_ast` memory block with live structural data including:
-
-- File counts and function counts per directory
-- Key modules and their roles
-- Quality signals (doc gaps, untested modules, complexity hotspots)
-- Recent file changes
-
-Ask the PM agent for architectural guidance before making significant changes.
-<!-- VIBESYNC:codebase-context:END -->
 
 <!-- VIBESYNC:custom-rules:START -->
 

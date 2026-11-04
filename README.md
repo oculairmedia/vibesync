@@ -1,231 +1,83 @@
-# Vibesync Service
+# Vibesync
 
-Beads-backed project tracker and Letta PM-agent coordination service for Oculair project workspaces.
+The molecule orchestration engine for Beads-backed projects.
 
-## Current Scope
+Formulas (in `packs/gastown/`) cook into a molecule: a root bead plus one bead
+per step, joined by dependency edges. A scheduler picks up ready work, runs each
+step on that project's role agent over the Iroh wrapper, and writes the outcome
+back to the bead that motivated the run. Retries, durable waits, run deadlines
+and liveness checks all keep their state in Beads.
 
-- Project registry API for discovering and managing workspace projects.
-- Beads-backed issue, ready-work, mutation, and remote-provisioning APIs.
-- Android-friendly project and issue endpoints for lightweight mobile clients.
-- Letta PM-agent metadata, reporting, and orchestration integrations.
-- Formula orchestration controls for Beads-backed project work.
-- Dockerized runtime with health checks and optional Temporal workers.
+**Beads/Dolt is the source of truth.** Vibesync's own SQLite database is a small
+registry of projects (path, PM agent, provider routing, pack and storage
+directories, Beads remote status) and role-agent bindings. It mirrors no issue
+or molecule state.
 
-## Quick Start
+The engine runs in TypeScript on Bun today. The intended end state is a module
+inside the embedded Meridian runtime.
 
-Host runtime with Bun:
+## Run
+
+Prerequisites: Bun, Git, Beads **1.3.2 or newer**, Dolt. Agent execution also
+needs a running Iroh wrapper, a paired peer identity and role-agent bindings.
 
 ```bash
-cd /opt/stacks/vibesync
-bun install --frozen-lockfile
-bun run type-check:all
+bun install --frozen-lockfile --ignore-scripts
+npm rebuild better-sqlite3
+bun run type-check
+bun test            # or: bun run test
 bun run start
 ```
 
-Build a host-runnable binary:
-
-```bash
-bun run build:binary
-./dist/vibesync
-```
-
-The binary bundles the Bun service entrypoint. Runtime integrations that shell
-out to host tools, Python helpers, Beads, Dolt, Git, or mounted workspace paths
-still need those tools/files available on the host.
-
-Docker remains available for the current deployment topology:
-
-```bash
-cd /opt/stacks/vibesync
-cp .env.example .env
-docker-compose up -d
-docker-compose logs -f
-```
-
-For production restarts that need the DoltHub provisioning token, use the
-Vaultwarden-backed compose wrapper instead of storing the token in `.env`:
-
-```bash
-./scripts/vibesync-compose-vaultwarden.sh pull vibesync
-./scripts/vibesync-compose-vaultwarden.sh up -d vibesync
-```
-
-The wrapper reads the `DoltHub API Token` item from Vaultwarden at runtime and
-exports `DOLTHUB_API_TOKEN` only for that `docker compose` invocation.
-
 ## Configuration
 
-See `.env.example` for supported settings. Core settings include:
+Configuration is loaded by `src/config.ts` and validated by `src/configSchema.ts`.
 
 ```bash
-VIBE_MCP_URL=http://192.168.50.90:9717/mcp
-LETTA_BASE_URL=http://localhost:8283
 ENABLE_ORCHESTRATION=true
-VIBESYNC_ORCHESTRATION_TOKEN=
+VIBESYNC_ORCHESTRATION_PROVIDER=letta-code-iroh
+VIBESYNC_SCHEDULER_ENABLED=true
+VIBESYNC_SCHEDULER_PROJECT=vibesync
+VIBESYNC_SCHEDULER_READY_LABEL=scheduler:eligible
+VIBESYNC_SCHEDULER_AUTO_MERGE=false
+# PM wakes (off by default; 'inbox' needs the explicit sender settings below)
+VIBESYNC_PM_WAKE_ENABLED=true
+VIBESYNC_PM_WAKE_SINK=inbox
+VIBESYNC_PM_WAKE_CLI_EXECUTABLE=/path/to/release/bin/meridian-iroh-wrapper
+VIBESYNC_PM_WAKE_CLI_SENDER=<service agent id>
+VIBESYNC_PM_WAKE_CLI_IDENTITIES=/path/to/identities
+VIBESYNC_PM_WAKE_CLI_ADDRESS_STORE=/path/to/host-addresses
+VIBESYNC_PM_WAKE_CLI_CONTRACT_VERIFIED=false
 ```
 
-## Project Registry API
+The Iroh connection is configured with the `VIBESYNC_IROH_*` settings in
+`src/orchestration/runtime/iroh/native-dialer.ts`.
 
-### List projects
+## How work runs
 
-`GET /api/projects`
+1. Create a bounded bead with acceptance criteria.
+2. Label it `scheduler:eligible` when it is ready: `bd update <id> --add-label scheduler:eligible`.
+3. The scheduler cooks the configured formula and dispatches ready steps to role
+   agents; outputs feed dependent steps.
+4. The outcome is written back to the bead. Review the resulting PR; auto-merge
+   stays off unless explicitly configured.
 
-Returns lightweight project summaries suitable for mobile first paint, including repo metadata, PM-agent metadata, tracker capabilities, activity timestamps, and version/etag fields.
+Molecule step readiness is molecule-scoped (`bd ready --mol <id>`).
 
-### Project detail
+## HTTP API
 
-`GET /api/projects/:id`
+- `GET /health`
+- `GET /formulas`, `POST /formulas/:name/run`
+- `GET /molecules`, `GET /molecules/:id`, `GET /molecules/:id/trace`,
+  `GET /molecules/:id/events` (SSE), `POST /molecules/:id/resume`, `DELETE /molecules/:id`
+- Project registry (used by letta-mobile through the Iroh wrapper):
+  `GET /api/projects`, `GET /api/projects/:id`, `GET /api/projects/:id/beads-remote`,
+  `POST /api/projects/:id/beads-remote/provision`, `POST /api/registry/projects`,
+  `GET|PATCH|DELETE /api/registry/projects/:id`
+- `GET /openapi.json`, `GET /docs`
 
-Returns a compact project detail summary. Large collections are exposed through separate paginated subresources.
-If tracker/work-item hydration fails, the project detail still returns `200` with the normal project fields and marks only `project.tracker.data_freshness.status` as `"error"`. Error messages in freshness metadata are sanitized for UI display and never expose raw stack traces or low-level exception text.
+## Deploy
 
-### Project subresources
-
-- `GET /api/projects/:id/agents`
-- `GET /api/projects/:id/conversations`
-- `GET /api/projects/:id/work-items`
-- `GET /api/projects/:id/activity`
-- `GET /api/projects/:id/issues`
-- `GET /api/projects/:id/ready-work`
-
-Subresources use cursor-style pagination envelopes with `page.next_cursor`, `page.has_more`, and `page.total_known`.
-If a subresource cannot be hydrated, the endpoint returns the project-scoped envelope normally with an empty collection for that subresource and `data_freshness.status = "error"`; the `data_freshness.error` value is a sanitized, user-safe summary.
-
-Project `etag` values change only when project summary/detail fields change. Tracker freshness and subresource availability do not change the project `etag`; each subresource response exposes its own `etag` and `data_freshness.last_sync_at` for cache invalidation and stale/error UI states.
-
-### Android issue/work contract
-
-`GET /api/projects/:id/ready-work` is the Android equivalent of `bd ready`: it returns open, actionable, unblocked work without requiring the client to reconstruct readiness from raw issue lists.
-
-`GET /api/projects/:id/issues` returns compact, paginated issue summaries. It supports Android-friendly filters including `status`, `priority`, `assignee`, `type`, `ready=true|false`, text query via `q`, and incremental refresh via `updatedSince` / `updated_since`. Sorting currently supports `priority`, `updated`, and `created`.
-
-`GET /api/issues/:id` returns full issue detail by stable opaque issue ID, including description, acceptance criteria, labels, normalized status, blocker references, child references, timestamps, and validation warnings.
-
-Mutation endpoints are first-class and conflict-aware. Send either an `If-Match` header or `if_match` body field with the issue `etag`; stale mutations return `409` with a structured `conflict` object. Send `Idempotency-Key` or `idempotency_key` for offline-safe retries.
-
-- `POST /api/issues/:id/claim`
-- `POST /api/issues/:id/unclaim`
-- `PATCH /api/issues/:id/status`
-- `POST /api/issues/:id/notes`
-- `POST /api/issues/:id/close`
-- `POST /api/issues/:id/reopen`
-
-Example mutation request:
-
-```http
-POST /api/issues/letta-mobile-qmbg/claim
-If-Match: letta-mobile-qmbg:1778416496000
-Idempotency-Key: android-queue-42
-Content-Type: application/json
-
-{
-  "assignee": "emmanuel"
-}
-```
-
-Conflict response:
-
-```json
-{
-  "error": "Issue conflict",
-  "statusCode": 409,
-  "conflict": {
-    "reason": "etag_mismatch",
-    "expected": "letta-mobile-qmbg:stale",
-    "current": "letta-mobile-qmbg:1778416496000",
-    "issueId": "letta-mobile-qmbg"
-  }
-}
-```
-
-Issue payloads are deterministic and schema-versioned:
-
-```json
-{
-  "id": "letta-mobile-qmbg",
-  "projectId": "letta-mobile",
-  "provider": "beads",
-  "title": "Define Android Beads data contract for project workspaces",
-  "type": "task",
-  "priority": "high",
-  "status": "open",
-  "statusLabel": "todo",
-  "ready": true,
-  "assignee": null,
-  "blockedBy": [],
-  "blocks": [],
-  "isBlocked": false,
-  "updatedAt": "2026-05-10T12:34:56.000Z",
-  "summary": "Short list-safe summary",
-  "acceptanceCriteria": ["Criterion one"],
-  "labels": ["android", "project-workspace"],
-  "validationWarnings": [],
-  "etag": "letta-mobile-qmbg:1778416496000"
-}
-```
-
-Normalized machine-readable statuses are `open`, `in_progress`, `blocked`, `deferred`, and `closed`; the original tracker status remains available as `statusLabel` for display/debugging.
-
-### Register a project
-
-`POST /api/registry/projects`
-
-```json
-{
-  "filesystem_path": "/opt/stacks/letta-mobile",
-  "name": "Letta Mobile",
-  "git_url": "https://github.com/oculairmedia/letta-mobile.git"
-}
-```
-
-- `filesystem_path` is required and must be an absolute path.
-- `name` and `git_url` are optional.
-- The path must exist and be a git repository.
-
-### Update a project
-
-`PATCH /api/registry/projects/:id`
-
-```json
-{
-  "filesystem_path": "/opt/stacks/letta-mobile",
-  "git_url": "https://github.com/oculairmedia/letta-mobile.git"
-}
-```
-
-### Beads/DoltHub remote provisioning
-
-`POST /api/projects/:id/beads-remote/provision`
-
-Creates or reuses a project-scoped DoltHub database, configures the project's Beads remote, and pushes the local Beads database by default. Database names are normalized from the project folder name, for example `/opt/stacks/letta-mobile` becomes the DoltHub remote `https://doltremoteapi.dolthub.com/oulair/letta_mobile`.
-
-```json
-{
-  "push": true
-}
-```
-
-Provisioning is idempotent: an already-existing DoltHub database is treated as success, and an existing local or mismatched Beads remote is replaced with the configured DoltHub remote. Use `GET /api/projects/:id/beads-remote` to inspect stored provisioning metadata.
-
-The DoltHub API token is only used for private database creation. Routine `bd dolt push`/`pull` operations use the server's `dolt login` credentials from `~/.dolt/creds`, so keep those credentials provisioned separately.
-
-CLI helpers:
-
-```bash
-npm run vibesync -- project-beads-remote HVSYN
-npm run vibesync -- project-provision-beads-remote HVSYN
-npm run vibesync -- project-provision-beads-remote HVSYN --no-push
-```
-
-## Beads Workflow
-
-Use Beads for issue tracking in this repository. Vibesync reads and mutates project work through Beads:
-
-```bash
-bd ready
-bd show <id>
-bd update <id> --claim
-bd close <id>
-```
-
-Do not route project issue operations through external issue tools.
+`vibesync.service` runs from a staged release worktree. Stage a release, then
+`scripts/deploy/swap.sh <release-dir>`; the script prints the rollback command.
+Unit and drop-in live in `deploy/systemd/`.

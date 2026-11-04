@@ -72,13 +72,10 @@ function makeHarness(opts: {
     debug: vi.fn(),
   };
   const db = {
-    getProject: (id: string) => opts.projects.find((p) => p.identifier === id) ?? null,
+    getProject: (id: string) => opts.projects.find((p) => p.identifier === id),
     getAllProjects: () => opts.projects,
-    getProjectSummary: () => opts.projects,
-    getProjectIssues: () => [],
-    getIssue: () => null,
+    getProjectsWithFilesystemPath: () => opts.projects,
     resolveProjectIdentifier: (id: string) => id,
-    db: { prepare: () => ({ run: () => undefined }) },
   } as unknown as RouteDb;
   const projectRegistry = {
     getProjects: () => opts.registryProjects ?? opts.projects,
@@ -87,19 +84,15 @@ function makeHarness(opts: {
     registerProject: vi.fn(),
     updateProject: vi.fn(),
     deleteProject: vi.fn(),
-    scanProjects: vi.fn(),
-  } as unknown as ProjectRegistryApi & { scanProjects?: () => unknown };
+  } as unknown as ProjectRegistryApi;
   registerProjectRoutes(app, {
     db,
-    config: {},
     parseJsonBody: vi.fn(async () => ({})),
     sendJson,
     sendError,
     logger,
     projectRegistry,
     doltHubProvisioner: null,
-    beadsIssueService: null,
-    beadsAdapter: null,
   });
   return {
     routes,
@@ -163,7 +156,7 @@ describe('vibesync-6kg: credential redaction on project responses', () => {
     assertNoCredentialsInBody(body);
   });
 
-  it('GET /api/registry/projects strips inline PAT from git_url', async () => {
+  it('GET /api/registry/projects/:id strips inline PAT from git_url', async () => {
     const harness = makeHarness({
       projects: [],
       registryProjects: [
@@ -180,16 +173,14 @@ describe('vibesync-6kg: credential redaction on project responses', () => {
         },
       ],
     });
-    const route = harness.find('GET', '/api/registry/projects');
-    await route.handle(makeCtx('/api/registry/projects'));
+    const route = harness.find('GET', '/api/registry/projects/vibesync');
+    await route.handle(makeCtx('/api/registry/projects/vibesync'));
 
     expect(harness.sendJson).toHaveBeenCalled();
     const [, status, body] = harness.sendJson.mock.calls[0]!;
     expect(status).toBe(200);
     assertNoCredentialsInBody(body);
-
-    const project = (body as { projects: Array<{ git_url: string }> }).projects[0]!;
-    expect(project.git_url).toBe('https://github.com/oculairmedia/vibesync.git');
+    expect((body as { git_url: string }).git_url).toBe('https://github.com/oculairmedia/vibesync.git');
   });
 
   it('strips credentials from beads_remote.url too', async () => {
@@ -211,8 +202,8 @@ describe('vibesync-6kg: credential redaction on project responses', () => {
         },
       ],
     });
-    const route = harness.find('GET', '/api/registry/projects');
-    await route.handle(makeCtx('/api/registry/projects'));
+    const route = harness.find('GET', '/api/registry/projects/vibesync');
+    await route.handle(makeCtx('/api/registry/projects/vibesync'));
 
     const [, , body] = harness.sendJson.mock.calls[0]!;
     assertNoCredentialsInBody(body);
@@ -252,8 +243,8 @@ describe('vibesync-6kg: credential redaction on project responses', () => {
         },
       ],
     });
-    const route = harness.find('GET', '/api/registry/projects');
-    await route.handle(makeCtx('/api/registry/projects'));
+    const route = harness.find('GET', '/api/registry/projects/evil');
+    await route.handle(makeCtx('/api/registry/projects/evil'));
 
     const [, , body] = harness.sendJson.mock.calls[0]!;
     assertNoCredentialsInBody(body);
