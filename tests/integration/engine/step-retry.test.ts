@@ -1,7 +1,7 @@
 /**
  * vibesync-ynmp - per-step retry policy, durable on the bead. REAL bd (>= 1.3.2)
  * against a disposable isolated repo:
- *   VIBESYNC_TEST_BD=/usr/local/bin/bd bunx vitest run tests/integration/orchestration/step-retry.test.ts
+ *   VIBESYNC_TEST_BD=/usr/local/bin/bd bunx vitest run tests/integration/engine/step-retry.test.ts
  * The restart test is the false-pass guard: a retry counter held in memory
  * cannot survive a fresh dispatcher + store on the same repo.
  */

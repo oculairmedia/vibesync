@@ -3,7 +3,7 @@
  * (not an in-process loop) decides what is runnable.
  *
  * REAL bd (>= 1.3.2) against a disposable, isolated repo. Opt in with
- *   VIBESYNC_TEST_BD=/usr/local/bin/bd bunx vitest run tests/integration/orchestration/steps-as-beads.test.ts
+ *   VIBESYNC_TEST_BD=/usr/local/bin/bd bunx vitest run tests/integration/engine/steps-as-beads.test.ts
  * Nothing here touches the production Dolt/bd data.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';

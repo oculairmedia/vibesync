@@ -2,7 +2,7 @@
  * vibesync-9g24 — durable wait-on-beads against a REAL, isolated bd repo.
  *
  * Opt-in (like the other isolated-bd suites):
- *   VIBESYNC_TEST_BD_WAITS=/absolute/path/to/bd(>=1.3.2) npx vitest run tests/integration/orchestration/waits.test.ts
+ *   VIBESYNC_TEST_BD_WAITS=/absolute/path/to/bd(>=1.3.2) npx vitest run tests/integration/engine/waits.test.ts
  *
  * No fake store anywhere in this file: every state transition goes through the
  * real BdWaitStore -> bd CLI -> a disposable Dolt database. The false pass this

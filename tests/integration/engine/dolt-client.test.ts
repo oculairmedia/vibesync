@@ -5,7 +5,7 @@ import { provisionIsolatedBeads, RUN_ISOLATED_BEADS, SCHEMA65_FINGERPRINT, FRESH
 
 /** Exact-shape compatibility: only newly CLI-provisioned temporary databases
  * are exercised, with the production schema gate required before operations.
- * Run with VIBESYNC_TEST_BD=/absolute/path/to/pinned/bd npx vitest run tests/integration/orchestration/dolt-client.test.ts
+ * Run with VIBESYNC_TEST_BD=/absolute/path/to/pinned/bd npx vitest run tests/integration/engine/dolt-client.test.ts
  */
 describe.skipIf(!RUN_ISOLATED_BEADS).each(['fresh', 'live'] as const)('Beads gateway: bd writes, SQL reads (disposable schema65 %s)', (shape) => {
   let store: Awaited<ReturnType<typeof provisionIsolatedBeads>> | undefined;

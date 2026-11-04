@@ -3,7 +3,7 @@
  *
  * These tests go through `bootOrchestrationPlane` (the function src/index.ts
  * calls) and never construct SchedulerDaemon themselves. That is the point:
- * tests/unit/orchestration/scheduler/daemon.test.ts builds the daemon by hand,
+ * tests/unit/engine/scheduler/daemon.test.ts builds the daemon by hand,
  * so it passes even when nothing in production instantiates it (the false pass
  * this bead exists to close). Here, deleting the wiring in boot.ts fails them.
  */

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { EXPECTED_BD_SCHEMA_FINGERPRINT } from '../../src/engine/store/schema-fingerprint.js';
-import { provisionIsolatedBeads, RUN_ISOLATED_BEADS } from './orchestration/isolated-beads.js';
+import { provisionIsolatedBeads, RUN_ISOLATED_BEADS } from './engine/isolated-beads.js';
 
 // VIBESYNC_TEST_BD=/absolute/path/to/pinned/bd npx vitest run tests/integration/dolt-schema-fingerprint.test.ts
 // No opt-in means no CLI calls, server startup, or connection to cwd's .beads.
