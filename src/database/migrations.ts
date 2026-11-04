@@ -43,7 +43,9 @@ function columnNames(db: BetterSqlite3.Database, table: string): string[] {
 }
 
 function tableExists(db: BetterSqlite3.Database, table: string): boolean {
-  return db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table) !== undefined;
+  // No row is `undefined` under better-sqlite3 (Node) but `null` under
+  // bun:sqlite (production), so test for a row, not for `undefined`.
+  return db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table) != null;
 }
 
 export function runMigrations(db: BetterSqlite3.Database): void {
