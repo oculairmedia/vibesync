@@ -27,6 +27,6 @@
       "@/*": ["./*"]
     }
   },
-  "include": ["src/**/*.ts", "scripts/**/*.ts", "types/**/*.d.ts"],
+  "include": ["src/**/*.ts", "scripts/**/*.ts"],
   "exclude": ["node_modules", "dist", "coverage", ".test-data", "logs", ".letta"]
 }

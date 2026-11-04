@@ -3,6 +3,8 @@ import path from 'node:path';
 import { logger as rootLogger } from './logger';
 import { stripUrlCredentials } from './utils';
 import { ensureRig, type EnsureRigResult } from './rig/provisioner.js';
+import type { SyncDatabase } from './database';
+import type { ProjectRow } from './types/db.js';
 
 export interface RigEvent {
   type: 'rig:provisioned' | 'rig:error';
@@ -17,32 +19,9 @@ interface TechDetector {
   stack: string;
 }
 
-interface ProjectRow {
-  identifier: string;
-  name: string;
-  filesystem_path: string;
-  git_url: string | null;
-  status: string;
-  tech_stack: string | null;
-  issue_count: number;
-  mcp_enabled: number;
-  [key: string]: unknown;
-}
-
 interface RegistryFilters {
   status?: string;
   tech_stack?: string;
-  mcp_enabled?: boolean;
-}
-
-interface ProjectUpsert {
-  identifier: string;
-  name: string;
-  filesystem_path: string;
-  git_url: string | null;
-  issue_count: number;
-  status: string;
-  last_checked_at: number;
 }
 
 interface ProjectUpdates {
@@ -52,17 +31,9 @@ interface ProjectUpdates {
   status?: string;
 }
 
-interface ProjectDB {
-  db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } };
-  getAllProjects: () => ProjectRow[];
-  getProject: (identifier: string) => ProjectRow | null;
-  resolveProjectIdentifier: (identifier: string) => string | null;
-  updateProject: (identifier: string, updates: Partial<ProjectRow>) => ProjectRow | null;
-  archiveProject: (identifier: string) => boolean;
-  unarchiveProject: (identifier: string) => boolean;
-  deleteProject: (identifier: string) => boolean;
-  upsertProject: (project: ProjectUpsert) => void;
-}
+type ProjectDB = Pick<SyncDatabase,
+  'getAllProjects' | 'getProject' | 'resolveProjectIdentifier' | 'updateProject' | 'archiveProject'
+  | 'unarchiveProject' | 'deleteProject' | 'upsertProject' | 'setProjectScan' | 'setBeadsRemoteResult'>;
 
 interface RegistryOptions {
   db: ProjectDB;
@@ -152,10 +123,6 @@ export class ProjectRegistry {
 
     if (filters.status) rows = rows.filter(r => r.status === filters.status);
     if (filters.tech_stack) rows = rows.filter(r => r.tech_stack === filters.tech_stack);
-    if (filters.mcp_enabled !== undefined) {
-      const flag = filters.mcp_enabled ? 1 : 0;
-      rows = rows.filter(r => r.mcp_enabled === flag);
-    }
     return rows;
   }
 
@@ -164,7 +131,7 @@ export class ProjectRegistry {
     if (project) return project;
 
     const resolved = this.db.resolveProjectIdentifier(identifier);
-    if (resolved) return this.db.getProject(resolved);
+    if (resolved) return this.db.getProject(resolved) ?? null;
 
     return null;
   }
@@ -194,22 +161,19 @@ export class ProjectRegistry {
     if (updates.git_url !== undefined) nextUpdates.git_url = updates.git_url;
     if (updates.status !== undefined) nextUpdates.status = updates.status;
 
-    const updated = this.db.updateProject(existing.identifier, nextUpdates as Partial<ProjectRow>);
+    const updated = this.db.updateProject(existing.identifier, nextUpdates);
     if (updated?.filesystem_path) {
-      const techStack = this._detectTechStack(updated.filesystem_path);
-      this.db.db
-        .prepare(`UPDATE projects SET tech_stack = ?, updated_at = ? WHERE identifier = ?`)
-        .run(techStack, Date.now(), updated.identifier);
+      this.db.setProjectScan(updated.identifier, this._detectTechStack(updated.filesystem_path), Date.now());
     }
 
     return this.getProject(existing.identifier);
   }
 
-  archiveProject(identifier: string): boolean {
+  archiveProject(identifier: string): ProjectRow | null {
     return this.db.archiveProject(identifier);
   }
 
-  unarchiveProject(identifier: string): boolean {
+  unarchiveProject(identifier: string): ProjectRow | null {
     return this.db.unarchiveProject(identifier);
   }
 
@@ -262,36 +226,26 @@ export class ProjectRegistry {
     this.db.upsertProject({
       identifier, name: existing?.name || folderName,
       filesystem_path: dirPath, git_url: gitUrl,
-      issue_count: existing?.issue_count || 0,
       status: 'active', last_checked_at: now,
     });
-
-    this.db.db
-      .prepare(`UPDATE projects SET tech_stack = ?, last_scan_at = ?, mcp_enabled = COALESCE(mcp_enabled, 1) WHERE identifier = ?`)
-      .run(techStack, now, identifier);
+    this.db.setProjectScan(identifier, techStack, now);
 
     try {
       const rig = ensureRig(dirPath);
       if (rig.action !== 'none' && rig.action !== 'skipped') {
         this.log.info({ dirPath, action: rig.action, message: rig.message }, 'Rig auto-provisioned');
         if (rig.ok && rig.remoteUrl) {
-          this.db.db
-            .prepare(`UPDATE projects SET beads_remote_status = ?, beads_remote_url = ?, beads_remote_provisioned_at = ? WHERE identifier = ?`)
-            .run('provisioned', rig.remoteUrl, now, identifier);
+          this.db.setBeadsRemoteResult(identifier, { ok: true, remoteUrl: rig.remoteUrl }, now);
           this.onRigEvent?.({ type: 'rig:provisioned', projectId: identifier, action: rig.action, remoteUrl: rig.remoteUrl });
         } else if (!rig.ok) {
-          this.db.db
-            .prepare(`UPDATE projects SET beads_remote_status = ?, beads_remote_last_error = ? WHERE identifier = ?`)
-            .run('error', rig.message, identifier);
+          this.db.setBeadsRemoteResult(identifier, { ok: false, error: rig.message }, now);
           this.onRigEvent?.({ type: 'rig:error', projectId: identifier, action: rig.action, error: rig.message });
         }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.log.warn({ err, dirPath }, 'Rig auto-provisioning failed');
-      this.db.db
-        .prepare(`UPDATE projects SET beads_remote_status = ?, beads_remote_last_error = ? WHERE identifier = ?`)
-        .run('error', msg, identifier);
+      this.db.setBeadsRemoteResult(identifier, { ok: false, error: msg }, now);
       this.onRigEvent?.({ type: 'rig:error', projectId: identifier, action: 'init', error: msg });
     }
   }
