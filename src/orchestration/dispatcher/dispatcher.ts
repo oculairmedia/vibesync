@@ -6,7 +6,7 @@ import type { MoleculeWalker } from '../molecule/index.js';
 import type { BeadRow } from '../store/index.js';
 import type { Pack, RoleConfig } from '../packs/index.js';
 import type { RuntimeProvider, SessionEvent, SessionHandle } from '../runtime/index.js';
-import type { ReadyStep, ReadyStepRunner, StepRunOutcome } from '../scheduler/step-dispatcher.js';
+import type { ReadyStep, ReadyStepRunner, StepRunOutcome } from '../molecule/index.js';
 import { renderTemplate } from './render.js';
 import {
   classifyFailure,

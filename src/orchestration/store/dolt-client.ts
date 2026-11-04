@@ -57,7 +57,7 @@ import {
   computeRepoId,
   defaultRepoFingerprintDeps,
   type RepoFingerprintDeps,
-} from '../../beads/repoFingerprint.js';
+} from './repo-fingerprint.js';
 import {
   BD_FINGERPRINT_BD_VERSION,
   BD_FINGERPRINT_TABLES,
