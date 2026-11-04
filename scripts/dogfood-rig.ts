@@ -3,17 +3,17 @@ import 'dotenv/config';
 
 import { execFileSync } from 'node:child_process';
 
-import { bootOrchestrationPlane } from '../src/orchestration/boot.js';
-import { DoltClient, defaultDoltBootDeps } from '../src/orchestration/store/index.js';
-import { SchedulerDaemon, type ReadyBeadSource, type FormulaResolver } from '../src/orchestration/scheduler/daemon.js';
-import type { SlingContextStore } from '../src/orchestration/scheduler/sling-context.js';
-import type { PoolMemberIdentity } from '../src/orchestration/scheduler/agent-pool.js';
-import type { GitHubPort, PrFacts } from '../src/orchestration/refinery/refinery.js';
-import type { RunLivenessProbe } from '../src/orchestration/scheduler/witness.js';
-import { loadPack } from '../src/orchestration/packs/index.js';
-import { createSyncDatabase } from '../src/database.js';
-import { resolveFromAppRoot } from '../src/runtimePaths.js';
-import { RoleAgentBootstrapper } from '../src/letta/RoleAgentBootstrapper.js';
+import { bootOrchestrationPlane } from '../src/engine/boot.js';
+import { DoltClient, defaultDoltBootDeps } from '../src/engine/store/index.js';
+import { SchedulerDaemon, type ReadyBeadSource, type FormulaResolver } from '../src/engine/scheduler/daemon.js';
+import type { SlingContextStore } from '../src/engine/scheduler/sling-context.js';
+import type { PoolMemberIdentity } from '../src/engine/scheduler/agent-pool.js';
+import type { GitHubPort, PrFacts } from '../src/engine/refinery/refinery.js';
+import type { RunLivenessProbe } from '../src/engine/scheduler/witness.js';
+import { loadPack } from '../src/engine/packs/index.js';
+import { createRegistry } from '../src/app/registry/registry.js';
+import { resolveFromAppRoot } from '../src/app/runtimePaths.js';
+import { RoleAgentBootstrapper } from '../src/app/letta/RoleAgentBootstrapper.js';
 
 const beadId = mustEnv('VIBESYNC_DOGFOOD_BEAD_ID');
 const agentId = process.env['VIBESYNC_DOGFOOD_AGENT_ID'] ?? 'agent-a9db7a7a';
@@ -30,7 +30,7 @@ const log = {
 };
 
 const dbPath = process.env['VIBESYNC_DB_PATH'] ?? resolveFromAppRoot('logs', 'sync-state.db');
-const db = createSyncDatabase(dbPath);
+const db = createRegistry(dbPath);
 const dolt = await DoltClient.connect({}, { ...defaultDoltBootDeps, log(level, obj, msg) { log[level](obj, msg); } });
 const roleAgentBootstrapper = new RoleAgentBootstrapper({
   repo: { getRoleAgent: db.getRoleAgent.bind(db), upsertRoleAgent: db.upsertRoleAgent.bind(db) },

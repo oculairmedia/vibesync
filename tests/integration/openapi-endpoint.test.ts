@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from 'http';
 import type { Server } from 'http';
 import type { AddressInfo } from 'net';
-import { createScalarDocsHtml } from '../../src/api/routes/openapi.js';
+import { createScalarDocsHtml } from '../../src/app/http/routes/openapi.js';
 
 interface OpenApiTestSpec {
   openapi: string;

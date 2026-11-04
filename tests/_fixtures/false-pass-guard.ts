@@ -15,7 +15,7 @@
  *      answers in ~1 ms).
  *   2. PLACEHOLDER TEXT. The output must not be a "still waiting" stub.
  *
- * Used by the LIVE test; unit-tested in tests/unit/orchestration/runtime/false-pass-guard.test.ts.
+ * Used by the LIVE test; unit-tested in tests/unit/engine/runtime/false-pass-guard.test.ts.
  */
 export const MIN_MODEL_RESPONSE_MS = 1_500;
 

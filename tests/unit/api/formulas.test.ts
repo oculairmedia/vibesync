@@ -1,12 +1,12 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { registerFormulaRoutes } from '../../../src/api/routes/formulas.js';
-import { FormulaCancellationConflictError } from '../../../src/orchestration/dispatcher/index.js';
-import { EventBus } from '../../../src/orchestration/events/index.js';
-import { MoleculeWalker } from '../../../src/orchestration/molecule/index.js';
-import type { Formula } from '../../../src/orchestration/formula/index.js';
-import type { App, HandleContext, OrchestrationApi, RouteContext } from '../../../src/types/api.js';
+import { registerFormulaRoutes } from '../../../src/app/http/routes/formulas.js';
+import { FormulaCancellationConflictError } from '../../../src/engine/dispatcher/index.js';
+import { EventBus } from '../../../src/engine/events/index.js';
+import { MoleculeWalker } from '../../../src/engine/molecule/index.js';
+import type { Formula } from '../../../src/engine/formula/index.js';
+import type { App, HandleContext, OrchestrationApi, RouteContext } from '../../../src/app/types/api.js';
 import { InMemoryDoltClient } from '../../_fixtures/in-memory-dolt-client.js';
 
 describe('formula routes', () => {

@@ -26,7 +26,7 @@ import { existsSync, readFileSync, readlinkSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { MIN_BD_VERSION, bdVersionSatisfies, parseBdVersion } from '../../src/orchestration/bd-version.js';
+import { MIN_BD_VERSION, bdVersionSatisfies, parseBdVersion } from '../../src/engine/bd-version.js';
 
 export interface CheckResult {
   readonly name: string;

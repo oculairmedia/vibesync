@@ -6,7 +6,7 @@
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { toJsonSchemaBundle } from '../src/orchestration/contracts/index.js';
+import { toJsonSchemaBundle } from '../src/engine/contracts/index.js';
 
 // import.meta.dir is a Bun extension (this script runs under Bun); fall back to cwd.
 const scriptDir = (import.meta as { dir?: string }).dir ?? join(process.cwd(), 'scripts');

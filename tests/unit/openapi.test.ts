@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'fs';
 import path from 'path';
-import { createScalarDocsHtml } from '../../src/api/routes/openapi.js';
+import { createScalarDocsHtml } from '../../src/app/http/routes/openapi.js';
 
 interface OpenApiParameter {
   name: string;

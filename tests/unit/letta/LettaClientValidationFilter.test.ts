@@ -4,7 +4,7 @@ import {
   installLettaClientValidationFilter,
   uninstallLettaClientValidationFilter,
   type WarnTarget,
-} from '../../../src/letta/LettaClientValidationFilter.js';
+} from '../../../src/app/letta/LettaClientValidationFilter.js';
 
 interface RecordingConsole extends WarnTarget {
   readonly calls: unknown[][];

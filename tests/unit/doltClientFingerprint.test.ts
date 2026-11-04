@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import {
   WrongDoltDatabaseError,
   assertFingerprintMatch,
-} from '../../src/orchestration/store/dolt-client.js';
+} from '../../src/engine/store/dolt-client.js';
 
 describe('assertFingerprintMatch', () => {
   it('returns silently when the values match', () => {

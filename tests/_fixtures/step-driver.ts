@@ -1,5 +1,5 @@
-import { FormulaDispatcher, type FormulaDispatcherOptions } from '../../src/orchestration/dispatcher/index.js';
-import { StepDispatcher, StoreReadyStepSource, type ReadyStepStore } from '../../src/orchestration/scheduler/step-dispatcher.js';
+import { FormulaDispatcher, type FormulaDispatcherOptions } from '../../src/engine/dispatcher/index.js';
+import { StepDispatcher, StoreReadyStepSource, type ReadyStepStore } from '../../src/engine/scheduler/step-dispatcher.js';
 
 /**
  * A FormulaDispatcher wired exactly like orchestration boot wires it

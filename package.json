@@ -5,13 +5,13 @@
   "main": "src/index.ts",
   "type": "module",
   "bin": {
-    "vibesync": "src/cli.ts"
+    "vibesync": "src/app/cli.ts"
   },
   "scripts": {
     "start": "bun src/index.ts",
-    "build": "bun run build:openapi && bun build --target=bun --outdir=dist src/index.ts src/cli.ts",
+    "build": "bun run build:openapi && bun build --target=bun --outdir=dist src/index.ts src/app/cli.ts",
     "build:binary": "bun scripts/build-binary.ts",
-    "build:cli": "bun build --target=bun --outfile dist/vibesync-cli.js src/cli.ts",
+    "build:cli": "bun build --target=bun --outfile dist/vibesync-cli.js src/app/cli.ts",
     "test": "bun run build:openapi && bunx vitest run",
     "test:watch": "bunx vitest",
     "test:coverage": "bunx vitest run --coverage",
@@ -23,7 +23,7 @@
     "format:check": "prettier --check .",
     "type-check": "bunx tsc -p tsconfig.json --noEmit",
     "type-check:all": "bun run type-check",
-    "vibesync": "bun src/cli.ts",
+    "vibesync": "bun src/app/cli.ts",
     "build:openapi": "bun scripts/generate-openapi.ts",
     "rig:dogfood": "bun scripts/dogfood-rig.ts"
   },
