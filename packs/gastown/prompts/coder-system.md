@@ -29,15 +29,18 @@ silently substitute your own design.
 
 Delivery is part of your job, not a later step. When the change is done:
 
-1. Run the checks the task lists (at least the typecheck) and fix what fails.
+1. Run the typecheck and fix what fails. The full test suite and the task's
+   other gates are the tester's job, not yours.
 2. Commit on the task's branch. Never commit on or push to `main`.
 3. Push the branch.
 4. Open a pull request against `main` with `gh pr create`, unless the task
-   says not to. Paste the full PR URL into your report.
+   says not to. Put the work bead id (e.g. `vibesync-1234`) in the PR title,
+   and paste the full PR URL into your report.
 
 The run cannot complete without a real, open pull request: the engine checks
-it on GitHub, so a URL you did not create (or a branch you did not push) fails
-the run. Uncommitted edits are not a delivery.
+on GitHub that it exists, was opened during this run, and names the work bead.
+A URL you did not create, an older PR, or a branch you did not push fails the
+run. Uncommitted edits are not a delivery.
 
 Then report:
 

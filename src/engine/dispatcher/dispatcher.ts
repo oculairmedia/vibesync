@@ -372,6 +372,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
       formulaName: input.formula.name,
       title: `[formula:${input.formula.name}] ${input.formula.description || input.input.slice(0, 80)}`,
       ...(input.motivatingBeadId ? { motivatingBeadId: input.motivatingBeadId } : {}),
+      ...(input.formula.delivers ? { delivers: input.formula.delivers } : {}),
       steps: input.formula.steps,
     });
     return this.registerAndAwait({ input, view, provider, roleAgentContext, startedAt, outputs: {}, announce: true });
@@ -585,7 +586,10 @@ export class FormulaDispatcher implements ReadyStepRunner {
     if (kind === undefined) return null;
     if (!this.deliveryVerifier) return `formula "${run.input.formula.name}" declares delivers = "${kind}" but no delivery verifier is configured`;
     try {
-      const verdict = await this.deliveryVerifier.verify({ kind, outputs: run.outputs, moleculeId: run.moleculeId });
+      const verdict = await this.deliveryVerifier.verify({
+        kind, outputs: run.outputs, moleculeId: run.moleculeId, startedAt: new Date(run.startedAt),
+        ...(run.input.motivatingBeadId ? { motivatingBeadId: run.input.motivatingBeadId } : {}),
+      });
       // `in` narrowing works under the test tree's non-strict config too.
       if ('reason' in verdict) return `declared delivery not met: ${verdict.reason}`;
       this.emit('dispatcher/formula.delivered', run.moleculeId, undefined, { moleculeId: run.moleculeId, kind, artifact: verdict.artifact });
@@ -593,6 +597,47 @@ export class FormulaDispatcher implements ReadyStepRunner {
     } catch (err) {
       return `declared delivery could not be verified: ${stringifyError(err)}`;
     }
+  }
+
+  /**
+   * resume() has no formula in scope, so it reads the delivery the root
+   * recorded at dispatch (vibesync-9lzk.21 review). Throws, after failing the
+   * root and emitting formula.failed, when that delivery is not met.
+   */
+  private async requireResumedDelivery(
+    root: BeadRow,
+    moleculeId: string,
+    outputs: Record<string, string>,
+    startedAt: number,
+    motivatingBeadId: string | null | undefined,
+  ): Promise<void> {
+    const exec = root.metadata['exec'];
+    const kind = typeof exec === 'object' && exec !== null ? (exec as Record<string, unknown>)['delivers'] : undefined;
+    if (kind === undefined) return;
+    // The run this resumes began when the root was created, not at this resume.
+    const runStarted = root.created_at instanceof Date ? root.created_at.getTime() : startedAt;
+    let reason: string | null = null;
+    if (kind !== 'pull_request') reason = `molecule records an unknown delivery kind ${JSON.stringify(kind)}`;
+    else if (!this.deliveryVerifier) reason = 'molecule declares delivers = "pull_request" but no delivery verifier is configured';
+    else {
+      try {
+        const verdict = await this.deliveryVerifier.verify({
+          kind, outputs, moleculeId, startedAt: new Date(runStarted),
+          ...(motivatingBeadId ? { motivatingBeadId } : {}),
+        });
+        if ('reason' in verdict) reason = `declared delivery not met: ${verdict.reason}`;
+        else this.emit('dispatcher/formula.delivered', moleculeId, undefined, { moleculeId, kind, artifact: verdict.artifact, resumed: true });
+      } catch (err) {
+        reason = `declared delivery could not be verified: ${stringifyError(err)}`;
+      }
+    }
+    if (reason === null) return;
+    await this.walker.markMoleculeRootStatus(moleculeId, 'closed', 'failed');
+    this.emit('dispatcher/formula.failed', moleculeId, undefined, {
+      moleculeId, error: reason, resumed: true,
+      ...(motivatingBeadId ? { motivating_bead: motivatingBeadId } : {}),
+    });
+    throw new FormulaDispatchError(`FormulaDispatcher: ${reason}`, moleculeId);
   }
 
   private acquireMoleculeSlot(input: DispatchInput): Promise<void> {
@@ -645,6 +690,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     const running = await this.walker.findRunning(moleculeId);
     if (running.length === 0) {
       if (await this.walker.isComplete(moleculeId)) {
+        await this.requireResumedDelivery(view.root, moleculeId, outputs, startedAt, motivatingBeadId);
         this.emit('dispatcher/formula.completed', moleculeId, undefined, {
           moleculeId,
           durationMs: Date.now() - startedAt,
@@ -671,6 +717,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     }
 
     if (await this.walker.isComplete(moleculeId)) {
+      await this.requireResumedDelivery(view.root, moleculeId, outputs, startedAt, motivatingBeadId);
       this.emit('dispatcher/formula.completed', moleculeId, undefined, {
         moleculeId,
         durationMs: Date.now() - startedAt,
