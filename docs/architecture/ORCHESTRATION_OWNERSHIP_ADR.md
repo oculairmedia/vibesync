@@ -259,9 +259,9 @@ persistence substrate is **mixed**:
 - The bus is append-only from the perspective of observers (causal
   observation log per `jxri.7`). `noPersist` is a debug toggle, not a
   deployment posture.
-- Bus events feed the scheduler's causal witness for liveness,
-  `WorkActivityReporter`, and the
-  molecule writeback hook. No path bypasses the bus to talk to
+- Bus events feed `WorkActivityReporter` and the molecule writeback
+  hook. (Liveness is the scheduler's causal witness, which reads pool
+  slots and bead state, not the bus.) No path bypasses the bus to talk to
   dispatch state directly.
 
 **Incidental:** Today `WorkActivityReporter` (vibesync-ryhc) has a
