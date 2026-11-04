@@ -1,0 +1,280 @@
+import { resolveRetryPolicy } from '../../../../src/engine/retry/index.js';
+import { describe, expect, it } from 'vitest';
+import { join } from 'node:path';
+
+import {
+  loadFormulasFromFile,
+  parseFormulasFromToml,
+} from '../../../../src/engine/formula/index.js';
+
+describe('parseFormulasFromToml', () => {
+  it('parses a minimal single-step formula', () => {
+    const toml = `
+[formula.greet]
+description = "Say hi"
+
+[[formula.greet.steps]]
+role = "greeter"
+`;
+    const formulas = parseFormulasFromToml(toml);
+    expect(formulas).toHaveLength(1);
+    expect(formulas[0]!.name).toBe('greet');
+    expect(formulas[0]!.steps).toHaveLength(1);
+    expect(formulas[0]!.steps[0]!.role).toBe('greeter');
+    expect(formulas[0]!.steps[0]!.name).toBe('greeter');
+    expect(formulas[0]!.steps[0]!.waitFor).toBe('completion');
+    expect(formulas[0]!.steps[0]!.retries).toBe(0);
+    expect(formulas[0]!.steps[0]!.retryBackoffMs).toBe(1000);
+  });
+
+  it('parses the reference code-review formula', () => {
+    const formulas = loadFormulasFromFile(
+      join(process.cwd(), 'packs', 'gastown', 'formulas', 'code-review.toml'),
+    );
+    expect(formulas).toHaveLength(1);
+    const f = formulas[0]!;
+    expect(f.name).toBe('code-review');
+    expect(f.steps.map((s) => s.role)).toEqual(['reviewer', 'coder', 'tester']);
+    expect(f.steps[1]!.dependsOn).toEqual(['reviewer']);
+    expect(f.steps[2]!.dependsOn).toEqual(['coder']);
+    expect(f.steps[0]!.promptTemplate).toBe('prompts/reviewer-system.md');
+    // vibesync-cy4 catalog hint — PM agents read this to pick a formula
+    expect(f.whenToUse).toMatch(/when a bead represents a concrete code change/);
+  });
+
+  it('parses when_to_use catalog hint', () => {
+    const toml = `
+[formula.greet]
+description = "Say hi"
+when_to_use = "when the user wants a greeting"
+
+[[formula.greet.steps]]
+role = "greeter"
+`;
+    const formulas = parseFormulasFromToml(toml);
+    expect(formulas[0]!.whenToUse).toBe('when the user wants a greeting');
+  });
+
+  it('whenToUse defaults to empty string when omitted', () => {
+    const toml = `
+[formula.greet]
+description = "Say hi"
+
+[[formula.greet.steps]]
+role = "greeter"
+`;
+    const formulas = parseFormulasFromToml(toml);
+    expect(formulas[0]!.whenToUse).toBe('');
+  });
+
+  it('returns empty array when no [formula] table is present', () => {
+    expect(parseFormulasFromToml('description = "no formula here"')).toEqual([]);
+  });
+
+  it('accepts depends_on as a single string OR an array', () => {
+    const toml = `
+[formula.fan-in]
+description = "Tester depends on both"
+
+[[formula.fan-in.steps]]
+role = "a"
+
+[[formula.fan-in.steps]]
+role = "b"
+
+[[formula.fan-in.steps]]
+role = "tester"
+depends_on = ["a", "b"]
+`;
+    const formulas = parseFormulasFromToml(toml);
+    expect(formulas[0]!.steps[2]!.dependsOn).toEqual(['a', 'b']);
+  });
+
+  it('rejects a step with no role', () => {
+    const toml = `
+[formula.broken]
+
+[[formula.broken.steps]]
+prompt_template = "x"
+`;
+    expect(() => parseFormulasFromToml(toml)).toThrow(/missing role/);
+  });
+
+  it('accepts `needs` as an alias of depends_on and merges both, de-duplicated (vibesync-efee)', () => {
+    const toml = `
+[formula.f]
+[[formula.f.steps]]
+role = "a"
+[[formula.f.steps]]
+role = "b"
+[[formula.f.steps]]
+role = "c"
+needs = "a"
+[[formula.f.steps]]
+role = "d"
+needs = ["b", "c"]
+[[formula.f.steps]]
+role = "e"
+depends_on = ["a", "b"]
+needs = ["b", "c"]
+`;
+    const steps = parseFormulasFromToml(toml)[0]!.steps;
+    expect(steps.find((s) => s.name === 'c')!.dependsOn).toEqual(['a']);
+    expect(steps.find((s) => s.name === 'd')!.dependsOn).toEqual(['b', 'c']);
+    expect(steps.find((s) => s.name === 'e')!.dependsOn).toEqual(['a', 'b', 'c']);
+    expect(steps.find((s) => s.name === 'a')!.dependsOn).toBeUndefined();
+  });
+
+  it('validates `needs` like depends_on: declared earlier, string or array of strings', () => {
+    expect(() => parseFormulasFromToml(`
+[formula.f]
+[[formula.f.steps]]
+role = "a"
+needs = "later"
+[[formula.f.steps]]
+role = "later"
+`)).toThrow(/needs|depends_on "later" which is not declared earlier/);
+    expect(() => parseFormulasFromToml(`
+[formula.f]
+[[formula.f.steps]]
+role = "a"
+needs = 3
+`)).toThrow(/needs must be a string or array of strings/);
+    expect(() => parseFormulasFromToml(`
+[formula.f]
+[[formula.f.steps]]
+role = "a"
+[[formula.f.steps]]
+role = "b"
+depends_on = "a"
+needs = ["zzz"]
+`)).toThrow(/"zzz" which is not declared earlier/);
+  });
+
+  it('rejects a forward-reference depends_on', () => {
+    const toml = `
+[formula.broken]
+
+[[formula.broken.steps]]
+role = "a"
+depends_on = "b"
+
+[[formula.broken.steps]]
+role = "b"
+`;
+    expect(() => parseFormulasFromToml(toml)).toThrow(/not declared earlier/);
+  });
+
+  it('rejects duplicate step names without an explicit name override', () => {
+    const toml = `
+[formula.dup]
+
+[[formula.dup.steps]]
+role = "worker"
+
+[[formula.dup.steps]]
+role = "worker"
+`;
+    expect(() => parseFormulasFromToml(toml)).toThrow(/appears more than once/);
+  });
+
+  it('allows duplicate roles when name is explicit', () => {
+    const toml = `
+[formula.parallel]
+
+[[formula.parallel.steps]]
+role = "worker"
+name = "worker-a"
+
+[[formula.parallel.steps]]
+role = "worker"
+name = "worker-b"
+`;
+    const formulas = parseFormulasFromToml(toml);
+    expect(formulas[0]!.steps.map((s) => s.name)).toEqual(['worker-a', 'worker-b']);
+  });
+
+  it('rejects wait_for values other than completion', () => {
+    const toml = `
+[formula.x]
+[[formula.x.steps]]
+role = "r"
+wait_for = "first_token"
+`;
+    expect(() => parseFormulasFromToml(toml)).toThrow(/wait_for must be "completion"/);
+  });
+
+  it('parses per-step retry policy fields', () => {
+    const toml = `
+[formula.retrying]
+[[formula.retrying.steps]]
+role = "worker"
+retries = 2
+retry_backoff_ms = 25
+`;
+    const formulas = parseFormulasFromToml(toml);
+    expect(formulas[0]!.steps[0]).toMatchObject({
+      retries: 2,
+      retryBackoffMs: 25,
+    });
+  });
+
+  it('rejects invalid retry policy fields', () => {
+    expect(() => parseFormulasFromToml(`
+[formula.bad]
+[[formula.bad.steps]]
+role = "worker"
+retries = -1
+`)).toThrow(/retries must be a non-negative integer/);
+
+    expect(() => parseFormulasFromToml(`
+[formula.bad]
+[[formula.bad.steps]]
+role = "worker"
+retry_backoff_ms = 1.5
+`)).toThrow(/retry_backoff_ms must be a non-negative integer/);
+  });
+
+  describe('[steps.retry] (vibesync-ynmp)', () => {
+    const one = (body: string) => parseFormulasFromToml(`
+[formula.f]
+[[formula.f.steps]]
+role = "worker"
+${body}
+`)[0]!.steps[0]!;
+
+    it('parses max_attempts, on_exhausted and backoff_ms', () => {
+      expect(one(`[formula.f.steps.retry]
+max_attempts = 3
+on_exhausted = "soft_fail"
+backoff_ms = 25`).retry).toEqual({ maxAttempts: 3, onExhausted: 'soft_fail', backoffMs: 25 });
+    });
+
+    it('defaults on_exhausted to "fail" and backoff_ms to 1000; no table = no retry policy', () => {
+      expect(one(`[formula.f.steps.retry]
+max_attempts = 2`).retry).toEqual({ maxAttempts: 2, onExhausted: 'fail', backoffMs: 1000 });
+      expect(one('').retry).toBeUndefined();
+    });
+
+    it('rejects a missing/invalid max_attempts, an unknown on_exhausted and unknown keys (a typo must not mean "no retry")', () => {
+      expect(() => one(`[formula.f.steps.retry]
+on_exhausted = "fail"`)).toThrow(/max_attempts is required and must be an integer >= 1/);
+      expect(() => one(`[formula.f.steps.retry]
+max_attempts = 0`)).toThrow(/max_attempts/);
+      expect(() => one(`[formula.f.steps.retry]
+max_attempts = 2
+on_exhausted = "ignore"`)).toThrow(/on_exhausted must be "fail" or "soft_fail"/);
+      expect(() => one(`[formula.f.steps.retry]
+max_attempts = 2
+max_attempt = 3`)).toThrow(/unknown key "max_attempt"/);
+    });
+
+    it('DECISION: the deprecated `retries` alias still parses (max_attempts = retries + 1, on_exhausted = fail) but cannot be mixed with [steps.retry]', () => {
+      expect(resolveRetryPolicy(one('retries = 2\nretry_backoff_ms = 5'))).toEqual({ maxAttempts: 3, onExhausted: 'fail', backoffMs: 5, declared: true });
+      expect(resolveRetryPolicy(one(''))).toMatchObject({ maxAttempts: 1, declared: false });
+      expect(() => one(`retries = 1
+[formula.f.steps.retry]
+max_attempts = 2`)).toThrow(/cannot be combined with the deprecated retries.*max_attempts = N \+ 1/);
+    });
+  });
+});

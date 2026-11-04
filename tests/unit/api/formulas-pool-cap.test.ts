@@ -5,11 +5,11 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
-import { registerFormulaRoutes } from '../../../src/api/routes/formulas.js';
-import { EventBus } from '../../../src/orchestration/events/index.js';
-import { SchedulerDaemon, type SchedulerDaemonDeps } from '../../../src/orchestration/scheduler/daemon.js';
-import type { SlingContextStore } from '../../../src/orchestration/scheduler/sling-context.js';
-import type { App, HandleContext, OrchestrationApi, RouteContext } from '../../../src/types/api.js';
+import { registerFormulaRoutes } from '../../../src/app/http/routes/formulas.js';
+import { EventBus } from '../../../src/engine/events/index.js';
+import { SchedulerDaemon, type SchedulerDaemonDeps } from '../../../src/engine/scheduler/daemon.js';
+import type { SlingContextStore } from '../../../src/engine/scheduler/sling-context.js';
+import type { App, HandleContext, OrchestrationApi, RouteContext } from '../../../src/app/types/api.js';
 
 type Route = { match: (c: RouteContext) => boolean; handle: (c: HandleContext) => Promise<void> };
 

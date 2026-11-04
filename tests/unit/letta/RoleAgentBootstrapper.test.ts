@@ -16,8 +16,8 @@ import {
   createHttpShimAdapter,
   type RoleAgentRepository,
   type RoleAgentSdkAdapter,
-} from '../../../src/letta/RoleAgentBootstrapper.js';
-import type { ProjectRoleAgentRecord } from '../../../src/database/repositories/ProjectRoleAgentRepository.js';
+} from '../../../src/app/letta/RoleAgentBootstrapper.js';
+import type { ProjectRoleAgentRecord } from '../../../src/app/registry/repositories/ProjectRoleAgentRepository.js';
 import type { CreateAgentOptions } from '@letta-ai/letta-code-sdk';
 
 // ──────────────────────────────────────────────────────────────────────

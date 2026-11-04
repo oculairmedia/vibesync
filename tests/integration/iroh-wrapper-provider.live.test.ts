@@ -6,8 +6,8 @@
  */
 import { afterAll, describe, expect, it } from 'vitest';
 
-import { createNativeIrohConnection, resolveNativeIrohConfig } from '../../src/orchestration/runtime/iroh/native-dialer.js';
-import { runTurn } from '../../src/orchestration/runtime/iroh/turn-client.js';
+import { createNativeIrohConnection, resolveNativeIrohConfig } from '../../src/engine/runtime/iroh/native-dialer.js';
+import { runTurn } from '../../src/engine/runtime/iroh/turn-client.js';
 
 const LIVE = process.env['VIBESYNC_IROH_LIVE'] === '1';
 const PARENT = process.env['VIBESYNC_LETTA_CODE_PARENT_AGENT_ID'] ?? 'agent-a9db7a7a-0ca7-4a3a-b124-11e8ab7fd7e1';

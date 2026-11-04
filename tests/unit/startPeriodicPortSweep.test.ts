@@ -1,5 +1,5 @@
 /**
- * Tests for src/beads/startPeriodicPortSweep.ts (vibesync-1ue).
+ * Tests for src/app/registry/port-sweep/startPeriodicPortSweep.ts (vibesync-1ue).
  *
  * Drives the periodic sweep with a fake timer and a stubbed project list
  * so the interval, conflict-detection, and logging all behave correctly
@@ -10,7 +10,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   startPeriodicPortSweep,
   type PeriodicSweepLogger,
-} from '../../src/beads/startPeriodicPortSweep.js';
+} from '../../src/app/registry/port-sweep/startPeriodicPortSweep.js';
 
 describe('startPeriodicPortSweep', () => {
   it('returns a handle with stop() that clears the interval', () => {

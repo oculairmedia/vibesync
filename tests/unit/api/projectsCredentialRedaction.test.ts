@@ -17,7 +17,7 @@
  *   - `https?://[^@]+@`  (any URL with inline userinfo)
  */
 import { describe, it, expect, vi } from 'vitest';
-import { registerProjectRoutes } from '../../../src/api/routes/projects.js';
+import { registerProjectRoutes } from '../../../src/app/http/routes/projects.js';
 import type {
   App,
   HandleContext,
@@ -25,7 +25,7 @@ import type {
   ProjectRegistryApi,
   RouteContext,
   RouteDb,
-} from '../../../src/types/api.js';
+} from '../../../src/app/types/api.js';
 
 // Regexes that must NEVER match any string in a serialized response body.
 const CREDENTIAL_PATTERNS: Array<{ name: string; pattern: RegExp }> = [

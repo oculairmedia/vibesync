@@ -6,7 +6,7 @@
  */
 
 import { OpenApiGeneratorV31 } from '@asteasolutions/zod-to-openapi';
-import { registry } from '../src/openapi/registry.js';
+import { registry } from '../src/app/http/openapi/registry.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -14,7 +14,7 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Import routes to register them with the registry
-import '../src/openapi/routes.js';
+import '../src/app/http/openapi/routes.js';
 
 const generator = new OpenApiGeneratorV31(registry.definitions);
 

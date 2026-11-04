@@ -10,21 +10,21 @@ import type { AddressInfo } from 'node:net';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createApiServer } from '../../src/ApiServer.js';
-import { createSyncDatabase, type SyncDatabase } from '../../src/database.js';
-import { ProjectRegistry } from '../../src/ProjectRegistry.js';
-import type { DoltHubProvisionerApi } from '../../src/types/api.js';
+import { createApiServer } from '../../src/app/http/server.js';
+import { createRegistry, type Registry } from '../../src/app/registry/registry.js';
+import { ProjectRegistry } from '../../src/app/registry/project-registry.js';
+import type { DoltHubProvisionerApi } from '../../src/app/types/api.js';
 
 describe('project registry routes', () => {
   let dir: string;
-  let db: SyncDatabase;
+  let db: Registry;
   let server: http.Server;
   let base: string;
   let provisioner: DoltHubProvisionerApi;
 
   beforeEach(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibesync-routes-'));
-    db = createSyncDatabase(path.join(dir, 'registry.db'));
+    db = createRegistry(path.join(dir, 'registry.db'));
     provisioner = { dryRun: true, provisionProject: vi.fn(async () => ({ status: 'dry_run', dry_run: true })) };
     server = createApiServer({ db, projectRegistry: new ProjectRegistry({ db, baseDir: dir }), doltHubProvisioner: provisioner, orchestration: null, port: 0 });
     await new Promise<void>((resolve) => server.once('listening', () => resolve()));

@@ -7,10 +7,10 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { portSweepScope, sweepAll, type PortSweeperDeps } from '../../src/beads/PortSweeper.js';
-import { createSyncDatabase, type SyncDatabase } from '../../src/database.js';
-import * as provisioner from '../../src/rig/provisioner.js';
-import { ProjectRegistry } from '../../src/ProjectRegistry.js';
+import { portSweepScope, sweepAll, type PortSweeperDeps } from '../../src/app/registry/port-sweep/PortSweeper.js';
+import { createRegistry, type Registry } from '../../src/app/registry/registry.js';
+import * as provisioner from '../../src/app/registry/rig/provisioner.js';
+import { ProjectRegistry } from '../../src/app/registry/project-registry.js';
 
 describe('port sweep scope', () => {
   const rows = [
@@ -42,10 +42,10 @@ describe('port sweep scope', () => {
 
 describe('archiving and provisioning', () => {
   let dir: string;
-  let db: SyncDatabase;
+  let db: Registry;
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibesync-r72-'));
-    db = createSyncDatabase(path.join(dir, 'registry.db'));
+    db = createRegistry(path.join(dir, 'registry.db'));
   });
   afterEach(() => {
     vi.restoreAllMocks();

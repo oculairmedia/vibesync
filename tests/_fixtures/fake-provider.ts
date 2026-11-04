@@ -5,7 +5,7 @@ import type {
   SessionEvent,
   SessionHandle,
   SessionSpec,
-} from '../../src/orchestration/runtime/index.js';
+} from '../../src/engine/runtime/index.js';
 
 export type FakeProviderScript = (spec: SessionSpec) => AsyncIterable<SessionEvent>;
 
