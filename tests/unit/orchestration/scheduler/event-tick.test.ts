@@ -17,7 +17,7 @@ import {
   BEADS_ISSUE_STATUS_CHANGED_EVENT,
   type BootSchedulerOptions,
 } from '../../../../src/orchestration/scheduler/boot-scheduler.js';
-import { InMemoryDoltClient } from '../../../_fixtures/in-memory-dolt-client.js';
+import { InMemoryDoltClient, inMemoryBeads } from '../../../_fixtures/in-memory-dolt-client.js';
 
 const TICK = 'daemon/scheduler.tick';
 const STATUS_CHANGED = 'beads/issue.status_changed';
@@ -105,7 +105,7 @@ async function boot(opts: Partial<BootSchedulerOptions> & { bd: BootSchedulerOpt
   process.env['VIBESYNC_LETTA_CODE_SHIM_URL'] = 'http://shim:8291';
   process.env['VIBESYNC_LETTA_CODE_PARENT_AGENT_ID'] = 'agent-parent';
   return bootOrchestrationPlane({
-    dolt: new InMemoryDoltClient() as never,
+    ...inMemoryBeads(),
     persistEvents: false,
     runDriftAuditOnBoot: false,
     scheduler: {

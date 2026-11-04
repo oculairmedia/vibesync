@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { bootOrchestrationPlane, type OrchestrationHandle } from '../../../../src/orchestration/boot.js';
 import type { BootWaitsOptions } from '../../../../src/orchestration/waits/index.js';
-import { InMemoryDoltClient } from '../../../_fixtures/in-memory-dolt-client.js';
+import { InMemoryDoltClient, inMemoryBeads } from '../../../_fixtures/in-memory-dolt-client.js';
 
 function fakeBd() {
   const calls: string[][] = [];
@@ -20,7 +20,7 @@ async function boot(waits: BootWaitsOptions | undefined): Promise<OrchestrationH
   process.env['VIBESYNC_LETTA_CODE_SHIM_URL'] = 'http://shim:8291';
   process.env['VIBESYNC_LETTA_CODE_PARENT_AGENT_ID'] = 'agent-parent';
   return bootOrchestrationPlane({
-    dolt: new InMemoryDoltClient() as never,
+    ...inMemoryBeads(),
     persistEvents: false,
     runDriftAuditOnBoot: false,
     ...(waits ? { waits } : {}),

@@ -4,7 +4,6 @@ import {
   type ProviderResolver,
   type RoleAgentBootstrapContextResolver,
   type RoleAgentBootstrapperLike,
-  type WritebackStore,
 } from './dispatcher/index.js';
 import { EventBus, WorkActivityReporter } from './events/index.js';
 import { HealthPatrol } from './health/index.js';
@@ -21,6 +20,9 @@ import type { AgentIdResolver, PersonaLoader, RuntimeProvider } from './runtime/
 import { startSchedulerDaemon, SCHEDULER_START_FAILED_EVENT } from './scheduler/boot-scheduler.js';
 import { StepDispatcher, StoreReadyStepSource } from './scheduler/step-dispatcher.js';
 import { assertBdVersion } from './bd-version.js';
+import { BeadsStore, createCliRunner, type CommandRunner } from './beads/index.js';
+import type { MoleculeStore } from './molecule/molecule.js';
+import type { WritebackStore } from './dispatcher/writeback-hook.js';
 import { createInboxCliAdapter } from './scheduler/inbox-cli-adapter.js';
 import type { BootSchedulerOptions, SchedulerHandle } from './scheduler/boot-scheduler.js';
 import type { DoltClient } from './store/index.js';
@@ -52,6 +54,13 @@ export interface OrchestrationHandle {
 
 export interface BootOrchestrationPlaneOptions {
   readonly dolt: DoltClient;
+  /** bd CLI bound to the same project as `dolt`; all molecule writes go through it. Defaults to `bd` in `dolt.beadsRoot`. */
+  readonly bd?: CommandRunner;
+  /**
+   * Replace the Beads gateway wholesale (unit tests with an in-memory store).
+   * Production leaves this unset: reads come from `dolt`, writes from `bd`.
+   */
+  readonly beadsStore?: MoleculeStore & WritebackStore;
   readonly persistEvents?: boolean;
   readonly runDriftAuditOnBoot?: boolean;
   readonly maxConcurrentMolecules?: number;
@@ -279,7 +288,10 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     });
   }
 
-  const walker = new MoleculeWalker(opts.dolt);
+  // vibesync-9lzk.9: reads from Dolt SQL, every write through the bd CLI.
+  const beads = opts.beadsStore
+    ?? new BeadsStore(opts.dolt, opts.bd ?? createCliRunner({ binary: 'bd', cwd: opts.dolt.beadsRoot, env: { BEADS_DIR: `${opts.dolt.beadsRoot}/.beads` } }));
+  const walker = new MoleculeWalker(beads);
   const maxConcurrentMolecules = opts.maxConcurrentMolecules ?? readMaxConcurrentMoleculesFromEnv();
   const providerResolver = opts.providerRouting
     ? buildProviderResolver({ ...opts.providerRouting, irohProvider: opts.providerRouting.irohProvider ?? getIrohProvider })
@@ -301,44 +313,35 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   });
 
   steps = new StepDispatcher({
-    source: new StoreReadyStepSource(opts.dolt, () => dispatcher.liveMoleculeIds()),
+    source: new StoreReadyStepSource(beads, () => dispatcher.liveMoleculeIds()),
     runner: dispatcher,
     logger: { warn: (o, m) => console.error(`[orchestration:steps] ${m}`, o) }, // eslint-disable-line no-console
   });
 
   // Molecule → motivating-bead writeback hook (vibesync-0xo). Idempotent
   // via a writeback stamp on the molecule_root metadata.
-  let unsubscribeWriteback: (() => void) | null = null;
-  if (hasWritebackStore(opts.dolt)) {
-    unsubscribeWriteback = installWritebackHook({
-      bus,
-      walker,
-      store: opts.dolt,
-      // vibesync-er21: writeback failures must be loud, never silent — a
-      // dropped writeback is a broken loop-back to human-tracked work.
-      // The `info` channel (vibesync-er21 hook-wiring) carries the
-      // subscription-confirmed line and every per-invocation trace, so the
-      // daemon log proves the hook is wired AND shows each time it fires.
-      logger: {
-        warn(obj: unknown, msg: string): void {
-          // eslint-disable-next-line no-console
-          console.error(`[orchestration:writeback] ${msg}`, obj);
-        },
-        info(obj: unknown, msg: string): void {
-          // eslint-disable-next-line no-console
-          console.log(`[orchestration:writeback] ${msg}`, obj);
-        },
+  const unsubscribeWriteback = installWritebackHook({
+    bus,
+    walker,
+    store: beads,
+    // vibesync-er21: writeback failures must be loud, never silent — a
+    // dropped writeback is a broken loop-back to human-tracked work.
+    // The `info` channel (vibesync-er21 hook-wiring) carries the
+    // subscription-confirmed line and every per-invocation trace, so the
+    // daemon log proves the hook is wired AND shows each time it fires.
+    logger: {
+      warn(obj: unknown, msg: string): void {
+        // eslint-disable-next-line no-console
+        console.error(`[orchestration:writeback] ${msg}`, obj);
       },
-    });
-    // eslint-disable-next-line no-console
-    console.log('[orchestration:writeback] writeback hook installed (store implements appendNoteToBead + recordMoleculeWriteback)');
-  } else {
-    // Loud, actionable boot line: without this, a store that doesn't expose
-    // the writeback methods silently disables the entire loop-back and no
-    // completed molecule ever writes back — with zero signal in the log.
-    // eslint-disable-next-line no-console
-    console.warn('[orchestration:writeback] writeback hook NOT installed — dolt store does not implement appendNoteToBead + recordMoleculeWriteback; molecule outcomes will NOT be written back to motivating beads');
-  }
+      info(obj: unknown, msg: string): void {
+        // eslint-disable-next-line no-console
+        console.log(`[orchestration:writeback] ${msg}`, obj);
+      },
+    },
+  });
+  // eslint-disable-next-line no-console
+  console.log('[orchestration:writeback] writeback hook installed');
 
   // vibesync-ryhc: work-activity reporter for mobile active-subagent bar.
   // Enabled only when shimBaseUrl is configured AND VIBESYNC_WORK_ACTIVITY_REPORT
@@ -436,7 +439,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
         }
       }
       await steps.stop();
-      unsubscribeWriteback?.();
+      unsubscribeWriteback();
       patrol.stop();
       workActivityReporter?.stop();
       if (irohProvider) {
@@ -528,10 +531,6 @@ function buildUnavailableDefaultProvider(message: string, kind = 'letta-code-sub
   };
 }
 
-function hasWritebackStore(dolt: unknown): dolt is WritebackStore {
-  const candidate = dolt as { appendNoteToBead?: unknown; recordMoleculeWriteback?: unknown };
-  return typeof candidate.appendNoteToBead === 'function' && typeof candidate.recordMoleculeWriteback === 'function';
-}
 
 /**
  * Construct the dispatcher's per-project ProviderResolver. Reads the

@@ -262,3 +262,11 @@ function mergeExec(metadata: Record<string, unknown>, patch: Record<string, unkn
   const exec = metadata.exec && typeof metadata.exec === 'object' ? metadata.exec : {};
   return { ...metadata, exec: { ...exec, ...patch } };
 }
+
+/**
+ * Boot options for an in-memory store: the same object serves reads (`dolt`)
+ * and the Beads gateway (`beadsStore`), so no bd binary is invoked.
+ */
+export function inMemoryBeads(client: InMemoryDoltClient = new InMemoryDoltClient()): { dolt: never; beadsStore: never } {
+  return { dolt: client as never, beadsStore: client as never };
+}

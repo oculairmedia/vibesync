@@ -97,6 +97,7 @@ async function boot(extra: Partial<Parameters<typeof bootOrchestrationPlane>[0]>
   const provider = newFakeProvider({ kind: 'fake', script });
   const handle = await bootOrchestrationPlane({
     dolt: store as never,
+    beadsStore: store as never,
     provider,
     persistEvents: false,
     runDriftAuditOnBoot: false,

@@ -10,7 +10,7 @@ import {
 } from '../../../src/orchestration/bd-version.js';
 import { bootOrchestrationPlane } from '../../../src/orchestration/boot.js';
 import { checkBdVersion } from '../../../scripts/preflight/bd-preflight.js';
-import { InMemoryDoltClient } from '../../_fixtures/in-memory-dolt-client.js';
+import { InMemoryDoltClient, inMemoryBeads } from '../../_fixtures/in-memory-dolt-client.js';
 import { newFakeProvider } from '../../_fixtures/fake-provider.js';
 
 describe('bd minimum version pin (vibesync-efee)', () => {
@@ -67,7 +67,7 @@ describe('bd minimum version pin (vibesync-efee)', () => {
   it('orchestration boot fails loudly, before any side effect, when bd is too old', async () => {
     await expect(
       bootOrchestrationPlane({
-        dolt: new InMemoryDoltClient() as never,
+        ...inMemoryBeads(),
         provider: newFakeProvider(),
         persistEvents: false,
         runDriftAuditOnBoot: false,
@@ -78,7 +78,7 @@ describe('bd minimum version pin (vibesync-efee)', () => {
 
   it('orchestration boot accepts bd at the minimum', async () => {
     const handle = await bootOrchestrationPlane({
-      dolt: new InMemoryDoltClient() as never,
+      ...inMemoryBeads(),
       provider: newFakeProvider(),
       persistEvents: false,
       runDriftAuditOnBoot: false,

@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bootOrchestrationPlane, type OrchestrationHandle } from '../../../../src/orchestration/boot.js';
 import type { Event } from '../../../../src/orchestration/events/index.js';
 import type { BootSchedulerOptions } from '../../../../src/orchestration/scheduler/boot-scheduler.js';
-import { InMemoryDoltClient } from '../../../_fixtures/in-memory-dolt-client.js';
+import { InMemoryDoltClient, inMemoryBeads } from '../../../_fixtures/in-memory-dolt-client.js';
 
 const TICK = 'daemon/scheduler.tick';
 
@@ -92,7 +92,7 @@ async function boot(scheduler: BootSchedulerOptions | undefined): Promise<Orches
   process.env['VIBESYNC_LETTA_CODE_SHIM_URL'] = 'http://shim:8291';
   process.env['VIBESYNC_LETTA_CODE_PARENT_AGENT_ID'] = 'agent-parent';
   return bootOrchestrationPlane({
-    dolt: new InMemoryDoltClient() as never,
+    ...inMemoryBeads(),
     persistEvents: false,
     runDriftAuditOnBoot: false,
     ...(scheduler ? { scheduler } : {}),

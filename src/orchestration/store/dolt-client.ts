@@ -1,11 +1,11 @@
 /**
- * Daemon ↔ Dolt direct SQL client for hot-path molecule operations.
+ * Read-only SQL access to a project's Beads database (the Dolt server bd
+ * init manages). Writes never come through here: they go through the bd CLI
+ * via orchestration/beads (vibesync-9lzk.9), so bd's validation and
+ * invariants always apply.
  *
- * The orchestration daemon must not shell out to the `bd` CLI for hot-
- * path operations — 100ms+ per call × hundreds of operations per turn =
- * unacceptable latency. This module gives the daemon a typed SQL
- * connection to the local Dolt server that bd init manages, with
- * narrow query wrappers for the operations molecules need.
+ * Reads stay on SQL because the ready-step query is a join bd's CLI cannot
+ * express, and a read cannot violate bd's rules.
  *
  * Connection discovery:
  *   - port: read from .beads/dolt-server.port (managed by bd init)
@@ -15,24 +15,12 @@
  *     local connections; bd's credential key file is for remote sync,
  *     not the local server
  *
- * Layering invariants:
- *   - Schema migrations still go through bd. This module does INSERTs
- *     and SELECTs against bd's existing tables; it does not ALTER.
- *   - Same database as the bd CLI uses. No parallel store.
- *   - Type discriminator (vibesync-93h): molecule beads are written
- *     with issue_type ∈ {'molecule_root', 'molecule_step', 'mail'}.
- *
  * Version-pin discipline (vibesync-bll):
  *   `verifySchema()` hashes `SHOW CREATE TABLE` for every bd table we
- *   INSERT into or SELECT from and compares it to the vendored constant
- *   in schema-fingerprint.ts. When bd is upgraded the hash will drift —
- *   that is intentional. The fix is to re-run the dispatcher's hot-path
- *   INSERTs against the new bd, fix any breakage, and bump both
+ *   SELECT from and compares it to the vendored constant in
+ *   schema-fingerprint.ts. When bd is upgraded the hash will drift; re-run
+ *   the read queries against the new bd, then bump both
  *   `EXPECTED_BD_SCHEMA_FINGERPRINT` and `BD_FINGERPRINT_BD_VERSION`.
- *   Never paste the actual fingerprint in without re-testing — that
- *   defeats the silent-breakage guard the constant exists to provide.
- *
- * See vibesync-w5z.
  */
 
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
@@ -40,18 +28,6 @@ import { execFile, execFileSync } from 'node:child_process';
 import { basename, dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import mysql from 'mysql2/promise';
-import { v5 as uuidv5 } from 'uuid';
-import {
-  FAILURE_CLASS_KEY,
-  INFRA_RETRIES_KEY,
-  LAST_FAILURE_CLASS_KEY,
-  RETRY_ATTEMPT_KEY,
-  RETRY_OUTCOME_KEY,
-} from '../retry/policy.js';
-
-// bd 1.2.2 (7fcf4e1634bf), internal/storage/depid: type is not edge identity.
-const dependencyId = (issueId: string, target: string): string =>
-  uuidv5(`${issueId}\x1f${target}`, 'bdd74eb9-a20a-554a-985b-54b8f3e64d8b');
 import type { Pool } from 'mysql2/promise';
 import {
   computeRepoId,
@@ -423,6 +399,8 @@ export interface BeadRow {
   readonly updated_at: Date;
   readonly closed_at: Date | null;
   readonly metadata: Record<string, unknown>;
+  /** Free-text notes column; absent when the source row does not carry it. */
+  readonly notes?: string;
 }
 
 /**
@@ -472,6 +450,8 @@ export class DoltClient {
   private readonly pool: Pool;
   readonly database: string;
   readonly port: number;
+  /** Canonical repository root that owns this database's `.beads/`. bd writes must target the same root. */
+  readonly beadsRoot: string;
   private readonly expectedRepoId: string | null;
   private fingerprintVerified = false;
   private schemaVerified = false;
@@ -509,6 +489,7 @@ export class DoltClient {
     const port = readPort(cfg);
     this.database = database;
     this.port = port;
+    this.beadsRoot = resolvedBeadsRoot(cfg);
     this.expectedRepoId =
       cfg.expectedRepoId ??
       computeRepoId(resolvedBeadsRoot(cfg), cfg.repoFingerprintDeps ?? defaultRepoFingerprintDeps);
@@ -611,89 +592,7 @@ export class DoltClient {
     this.schemaVerified = true;
   }
 
-  /**
-   * Insert a `molecule_root` bead. Returns the id assigned by the caller
-   * (we don't use bd's hash-id generator here because the daemon needs
-   * to know the id BEFORE the row is written so it can record events
-   * about it).
-   *
-   * The caller is responsible for generating a unique id; convention is
-   * `<prefix>-mol-<ulid>` to keep them visually distinct from human
-   * beads.
-   */
-  async insertMoleculeRoot(args: {
-    readonly id: string;
-    readonly formulaName: string;
-    readonly title: string;
-    readonly motivatingBeadId?: string;
-    readonly metadata?: Record<string, unknown>;
-  }): Promise<void> {
-    const meta = {
-      ...(args.metadata ?? {}),
-      exec: {
-        formula: args.formulaName,
-        ...(args.motivatingBeadId ? { motivating_bead: args.motivatingBeadId } : {}),
-      },
-    };
-    await this.pool.execute(
-      `INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, metadata, created_by, owner)
-       VALUES (?, ?, '', '', '', '', 'open', 2, 'molecule_root', CAST(? AS JSON), 'orchestration-daemon', 'orchestration-daemon')`,
-      [args.id, args.title, JSON.stringify(meta)],
-    );
-  }
-
-  /**
-   * Insert a `molecule_step` bead with a parent-child link to its
-   * molecule root and optional `blocks` edges to sibling steps it
-   * depends on.
-   */
-  async insertMoleculeStep(args: {
-    readonly id: string;
-    readonly parentRootId: string;
-    readonly stepName: string;
-    readonly title: string;
-    readonly dependsOnStepIds?: readonly string[];
-    readonly inputPayload?: unknown;
-  }): Promise<void> {
-    const meta = {
-      exec: {
-        step: args.stepName,
-        molecule: args.parentRootId,
-        input_payload: args.inputPayload,
-      },
-    };
-    const conn = await this.pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      await conn.execute(
-        `INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, metadata, created_by, owner)
-         VALUES (?, ?, '', '', '', '', 'open', 2, 'molecule_step', CAST(? AS JSON), 'orchestration-daemon', 'orchestration-daemon')`,
-        [args.id, args.title, JSON.stringify(meta)],
-      );
-      // Write typed targets and upstream deterministic IDs, never generated columns.
-      await conn.execute(
-        `INSERT INTO dependencies (id, issue_id, depends_on_issue_id, type, created_by)
-         VALUES (?, ?, ?, 'parent-child', 'orchestration-daemon')`,
-        [dependencyId(args.id, args.parentRootId), args.id, args.parentRootId],
-      );
-      // blocks edges to predecessor steps
-      for (const dep of args.dependsOnStepIds ?? []) {
-        await conn.execute(
-          `INSERT INTO dependencies (id, issue_id, depends_on_issue_id, type, created_by)
-           VALUES (?, ?, ?, 'blocks', 'orchestration-daemon')`,
-          [dependencyId(args.id, dep), args.id, dep],
-        );
-      }
-      await conn.commit();
-    } catch (err) {
-      await conn.rollback();
-      throw err;
-    } finally {
-      conn.release();
-    }
-  }
-
-  /**
+    /**
    * Find steps in a molecule whose `blocks` predecessors are all closed
    * and that are themselves still open — i.e. ready to dispatch.
    *
@@ -771,288 +670,7 @@ export class DoltClient {
     return rows.map(toBeadRow);
   }
 
-  /** Mark a step as running (status='in_progress'). */
-  async markStepRunning(stepId: string): Promise<void> {
-    await this.pool.execute(`UPDATE issues SET status = 'in_progress' WHERE id = ?`, [stepId]);
-  }
-
-  /**
-   * Persist provider-opaque runtime task metadata for restart re-attachment.
-   * vibesync-mcz Phase D: also persists conversation_id when supplied so a
-   * future resume can re-attach to the same persistent-subagent conversation.
-   */
-  async recordStepTask(
-    stepId: string,
-    task: {
-      readonly taskId?: string;
-      readonly providerKind: string;
-      readonly sessionId: string;
-      readonly conversationId?: string;
-    },
-  ): Promise<void> {
-    const conn = await this.pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      const [rows] = await conn.execute<mysql.RowDataPacket[]>(
-        `SELECT metadata FROM issues WHERE id = ?`,
-        [stepId],
-      );
-      const existing = rows[0]?.['metadata'];
-      const meta = typeof existing === 'string' ? JSON.parse(existing) : (existing ?? {});
-      meta.exec = {
-        ...(meta.exec ?? {}),
-        ...(task.taskId ? { task_id: task.taskId } : {}),
-        provider_kind: task.providerKind,
-        session_id: task.sessionId,
-        ...(task.conversationId ? { conversation_id: task.conversationId } : {}),
-      };
-      await conn.execute(`UPDATE issues SET metadata = CAST(? AS JSON) WHERE id = ?`, [
-        JSON.stringify(meta),
-        stepId,
-      ]);
-      await conn.commit();
-    } catch (err) {
-      await conn.rollback();
-      throw err;
-    } finally {
-      conn.release();
-    }
-  }
-
-  /**
-   * Persist the attempt the step is on. The durable counter is the flat bead
-   * metadata key `gc.retry_attempt` (vibesync-ynmp; what `bd update
-   * --set-metadata gc.retry_attempt=N` writes); `exec.attempts` mirrors it for
-   * the older readers (MoleculeStepExec.attempts).
-   */
-  async recordStepAttempt(stepId: string, attempt: number): Promise<void> {
-    await this.mutateStep(stepId, {}, (meta) => {
-      meta.exec = { ...(meta.exec ?? {}), attempts: attempt };
-      meta[RETRY_ATTEMPT_KEY] = attempt;
-    });
-  }
-
-  /**
-   * Put a failed step back in the ready set for its next try (vibesync-ynmp):
-   * status 'open', closed_at/close_reason cleared (an agent may have closed it
-   * with a failure_class), the counters written to the bead, and the declared
-   * `failure_class` moved to `gc.last_failure_class` so it cannot poison the
-   * next try. This one write is what survives a restart.
-   */
-  async reopenStepForRetry(
-    stepId: string,
-    args: {
-      readonly attempt: number;
-      readonly infraRetries: number;
-      readonly failureClass: string | null;
-      readonly errorTrace: string;
-    },
-  ): Promise<void> {
-    await this.mutateStep(stepId, { reopen: true }, (meta) => {
-      meta.exec = { ...(meta.exec ?? {}), attempts: args.attempt, error_trace: args.errorTrace };
-      meta[RETRY_ATTEMPT_KEY] = args.attempt;
-      meta[INFRA_RETRIES_KEY] = args.infraRetries;
-      delete meta[FAILURE_CLASS_KEY];
-      if (args.failureClass) meta[LAST_FAILURE_CLASS_KEY] = args.failureClass;
-    });
-  }
-
-  /** Read-modify-write one step's metadata (and optionally its status columns) in a transaction. */
-  private async mutateStep(
-    stepId: string,
-    opts: { readonly reopen?: boolean },
-    mutate: (meta: Record<string, any>) => void,
-  ): Promise<void> {
-    const conn = await this.pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      const [rows] = await conn.execute<mysql.RowDataPacket[]>(
-        `SELECT metadata FROM issues WHERE id = ?`,
-        [stepId],
-      );
-      const existing = rows[0]?.['metadata'];
-      const meta = typeof existing === 'string' ? JSON.parse(existing) : (existing ?? {});
-      mutate(meta);
-      const reopen = opts.reopen ? `, status = 'open', closed_at = NULL, close_reason = NULL` : '';
-      await conn.execute(`UPDATE issues SET metadata = CAST(? AS JSON)${reopen} WHERE id = ?`, [
-        JSON.stringify(meta),
-        stepId,
-      ]);
-      await conn.commit();
-    } catch (err) {
-      await conn.rollback();
-      throw err;
-    } finally {
-      conn.release();
-    }
-  }
-
-  /** Mark a step as done with an optional output payload merged into metadata. */
-  async markStepDone(stepId: string, output: unknown): Promise<void> {
-    const conn = await this.pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      const [rows] = await conn.execute<mysql.RowDataPacket[]>(
-        `SELECT metadata FROM issues WHERE id = ?`,
-        [stepId],
-      );
-      const existing = rows[0]?.['metadata'];
-      const meta = typeof existing === 'string' ? JSON.parse(existing) : (existing ?? {});
-      meta.exec = { ...(meta.exec ?? {}), output_payload: output };
-      await conn.execute(
-        `UPDATE issues SET status = 'closed', closed_at = NOW(), metadata = CAST(? AS JSON) WHERE id = ?`,
-        [JSON.stringify(meta), stepId],
-      );
-      await conn.commit();
-    } catch (err) {
-      await conn.rollback();
-      throw err;
-    } finally {
-      conn.release();
-    }
-  }
-
-  /**
-   * Mark a step as failed with an error trace recorded in metadata.
-   * `retryOutcome` (vibesync-ynmp) is stamped as `gc.retry_outcome` when the
-   * failure is the end of a retry policy (soft_failed | exhausted | ...).
-   */
-  async markStepFailed(stepId: string, errorTrace: string, retryOutcome?: string): Promise<void> {
-    const conn = await this.pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      const [rows] = await conn.execute<mysql.RowDataPacket[]>(
-        `SELECT metadata FROM issues WHERE id = ?`,
-        [stepId],
-      );
-      const existing = rows[0]?.['metadata'];
-      const meta = typeof existing === 'string' ? JSON.parse(existing) : (existing ?? {});
-      meta.exec = { ...(meta.exec ?? {}), error_trace: errorTrace };
-      if (retryOutcome) meta[RETRY_OUTCOME_KEY] = retryOutcome;
-      await conn.execute(
-        `UPDATE issues SET status = 'closed', closed_at = NOW(), close_reason = ?, metadata = CAST(? AS JSON) WHERE id = ?`,
-        [`step failed: ${errorTrace.slice(0, 200)}`, JSON.stringify(meta), stepId],
-      );
-      await conn.commit();
-    } catch (err) {
-      await conn.rollback();
-      throw err;
-    } finally {
-      conn.release();
-    }
-  }
-
-  /**
-   * Append a structured note to a bead's `notes` column. Used by the
-   * dispatcher's writeback hook (vibesync-0xo) to tell a PM agent that
-   * the work it dispatched is done. Existing notes are preserved; the
-   * new block is appended after a blank-line separator when notes are
-   * non-empty.
-   *
-   * Throws when the bead does not exist — callers should check
-   * existence first when the bead may have been GC'd.
-   */
-  async appendNoteToBead(beadId: string, note: string): Promise<void> {
-    const conn = await this.pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      const [rows] = await conn.execute<mysql.RowDataPacket[]>(
-        `SELECT notes FROM issues WHERE id = ?`,
-        [beadId],
-      );
-      if (rows.length === 0) {
-        throw new Error(`appendNoteToBead: bead ${beadId} not found`);
-      }
-      const existing = typeof rows[0]?.['notes'] === 'string' ? (rows[0]['notes'] as string) : '';
-      const next = existing.length > 0 ? `${existing.trimEnd()}\n\n${note}` : note;
-      await conn.execute(`UPDATE issues SET notes = ? WHERE id = ?`, [next, beadId]);
-      await conn.commit();
-    } catch (err) {
-      await conn.rollback();
-      throw err;
-    } finally {
-      conn.release();
-    }
-  }
-
-  /**
-   * Stamp `metadata.exec.writeback_status` on a molecule_root bead so a
-   * replayed dispatcher event does not double-append the writeback note.
-   * Returns the previous stamp value (undefined when first seen) so the
-   * caller can decide whether to short-circuit.
-   */
-  async recordMoleculeWriteback(
-    rootId: string,
-    status: 'completed' | 'failed',
-  ): Promise<string | undefined> {
-    const conn = await this.pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      const [rows] = await conn.execute<mysql.RowDataPacket[]>(
-        `SELECT metadata FROM issues WHERE id = ?`,
-        [rootId],
-      );
-      if (rows.length === 0) {
-        throw new Error(`recordMoleculeWriteback: molecule ${rootId} not found`);
-      }
-      const existing = rows[0]?.['metadata'];
-      const meta = typeof existing === 'string' ? JSON.parse(existing) : (existing ?? {});
-      const exec = typeof meta.exec === 'object' && meta.exec !== null ? meta.exec : {};
-      const previous =
-        typeof exec.writeback_status === 'string' ? (exec.writeback_status as string) : undefined;
-      meta.exec = { ...exec, writeback_status: status };
-      await conn.execute(`UPDATE issues SET metadata = CAST(? AS JSON) WHERE id = ?`, [
-        JSON.stringify(meta),
-        rootId,
-      ]);
-      await conn.commit();
-      return previous;
-    } catch (err) {
-      await conn.rollback();
-      throw err;
-    } finally {
-      conn.release();
-    }
-  }
-
-  /**
-   * Mark a molecule root bead as terminal (lcp-s0wi). Sets status to 'closed'
-   * and records the outcome (completed|failed|cancelled) in metadata.exec.outcome.
-   * Used by the dispatcher to close finished molecule roots so GET /molecules
-   * can filter them out from the active list.
-   */
-  async markMoleculeRootStatus(
-    rootId: string,
-    status: 'closed',
-    outcome: 'completed' | 'failed' | 'cancelled',
-  ): Promise<void> {
-    const conn = await this.pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      const [rows] = await conn.execute<mysql.RowDataPacket[]>(
-        `SELECT metadata FROM issues WHERE id = ?`,
-        [rootId],
-      );
-      if (rows.length === 0) {
-        throw new Error(`markMoleculeRootStatus: molecule ${rootId} not found`);
-      }
-      const existing = rows[0]?.['metadata'];
-      const meta = typeof existing === 'string' ? JSON.parse(existing) : (existing ?? {});
-      meta.exec = { ...(meta.exec ?? {}), outcome };
-      await conn.execute(
-        `UPDATE issues SET status = ?, closed_at = NOW(), metadata = CAST(? AS JSON) WHERE id = ?`,
-        [status, JSON.stringify(meta), rootId],
-      );
-      await conn.commit();
-    } catch (err) {
-      await conn.rollback();
-      throw err;
-    } finally {
-      conn.release();
-    }
-  }
-
-  /** Read a single bead by id. */
+    /** Read a single bead by id. */
   async getBead(id: string): Promise<BeadRow | null> {
     const [rows] = await this.pool.execute<mysql.RowDataPacket[]>(
       `SELECT * FROM issues WHERE id = ?`,
@@ -1091,5 +709,6 @@ function toBeadRow(r: mysql.RowDataPacket): BeadRow {
     updated_at: new Date(r['updated_at']),
     closed_at: r['closed_at'] ? new Date(r['closed_at']) : null,
     metadata: meta,
+    notes: typeof r['notes'] === 'string' ? r['notes'] : '',
   };
 }
