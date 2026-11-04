@@ -35,6 +35,11 @@ export class InMemoryDoltClient {
   /** Test observability: total appendNoteToBead attempts (including failed). */
   appendAttempts = 0;
 
+  /** Mirrors DoltClient.readIssuePrefix; the historic default keeps existing fixture ids stable. */
+  async readIssuePrefix(): Promise<string> {
+    return 'mol';
+  }
+
   async getBead(id: string): Promise<BeadRow | null> {
     return this.beads.get(id) ?? null;
   }

@@ -16,7 +16,6 @@ describe.skipIf(!RUN_ISOLATED_BEADS).each(['fresh', 'live'] as const)('Beads gat
     const { client, bd } = store!;
     // vibesync-9lzk.9: writes go through the bd-backed gateway; reads stay on SQL.
     const writes = store!.store;
-    bd('config', 'set', 'types.custom', 'molecule_root,molecule_step,mail');
     const schemas = ['issues', 'dependencies', 'metadata'].map(table => ({
       table, createTableSql: JSON.parse(bd('--readonly', 'sql', `SHOW CREATE TABLE ${table}`, '--json'))[0]['Create Table'],
     }));

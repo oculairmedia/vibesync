@@ -61,6 +61,8 @@ export interface BootOrchestrationPlaneOptions {
    * Production leaves this unset: reads come from `dolt`, writes from `bd`.
    */
   readonly beadsStore?: MoleculeStore & WritebackStore;
+  /** Molecule id prefix. Defaults to the project's bd `issue_prefix`, which bd enforces on create. */
+  readonly moleculeIdPrefix?: string;
   readonly persistEvents?: boolean;
   readonly runDriftAuditOnBoot?: boolean;
   readonly maxConcurrentMolecules?: number;
@@ -302,9 +304,13 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   // vibesync-efee: steps are beads; the bead graph decides what is ready and
   // the StepDispatcher offers it to the dispatcher. A cooked molecule wakes it.
   let steps: StepDispatcher | null = null;
+  // bd enforces the project's issue prefix on create; the SQL writes used to
+  // bypass that and mint `mol-mol-*` ids under a `vibesync` prefix.
+  const moleculeIdPrefix = opts.moleculeIdPrefix ?? await opts.dolt.readIssuePrefix();
   const dispatcher = new FormulaDispatcher({
     provider,
     walker,
+    idPrefix: moleculeIdPrefix,
     eventBus: bus,
     onMoleculeCooked: () => steps?.kick(),
     ...(maxConcurrentMolecules === undefined ? {} : { maxConcurrentMolecules }),

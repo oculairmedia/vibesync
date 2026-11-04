@@ -47,7 +47,7 @@ function harness(fake: FakeIrohWrapper) {
   const store = new InMemoryDoltClient();
   // Since vibesync-efee (#58) the dispatcher only cooks and waits; a step
   // dispatcher drives ready steps from the bead graph, wired as boot wires it.
-  const dispatcher = newDriven(store, {
+  const dispatcher = newDriven(store, { idPrefix: 'mol',
     provider: wrapWithParentAgentId(provider, PARENT),
     walker: new MoleculeWalker(store),
     eventBus: new EventBus({ noPersist: true }),

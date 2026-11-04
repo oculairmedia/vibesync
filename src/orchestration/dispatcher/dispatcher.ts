@@ -154,7 +154,11 @@ export interface FormulaDispatcherOptions {
   readonly provider: RuntimeProvider;
   readonly walker: MoleculeWalker;
   readonly eventBus: EventBus;
-  readonly idPrefix?: string;
+  /**
+   * The project's bd `issue_prefix`; molecule ids are minted under it. bd
+   * rejects creating a bead with any other prefix, so this is required.
+   */
+  readonly idPrefix: string;
   readonly maxParallelSteps?: number;
   readonly maxConcurrentMolecules?: number;
   /**
@@ -266,7 +270,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     this.defaultProvider = opts.provider;
     this.walker = opts.walker;
     this.eventBus = opts.eventBus;
-    this.idPrefix = opts.idPrefix ?? 'mol';
+    this.idPrefix = opts.idPrefix;
     this.maxParallelSteps = normalizeMaxParallelSteps(opts.maxParallelSteps);
     this.maxConcurrentMolecules = normalizeMaxConcurrentMolecules(opts.maxConcurrentMolecules);
     this.providerResolver = opts.providerResolver ?? null;

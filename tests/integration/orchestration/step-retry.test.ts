@@ -18,6 +18,7 @@ import { MoleculeWalker, newMoleculeStepId, type StepSpec } from '../../../src/o
 import type { Pack } from '../../../src/orchestration/packs/index.js';
 import type { SessionEvent, SessionSpec } from '../../../src/orchestration/runtime/index.js';
 import { StepDispatcher, StoreReadyStepSource } from '../../../src/orchestration/scheduler/step-dispatcher.js';
+import { BeadsStore } from '../../../src/orchestration/beads/store.js';
 import { DoltClient } from '../../../src/orchestration/store/dolt-client.js';
 import { newFakeProvider } from '../../_fixtures/fake-provider.js';
 import { newDriven } from '../../_fixtures/step-driver.js';
@@ -77,7 +78,7 @@ describe.skipIf(!RUN_ISOLATED_BEADS)('step retry policy on real bd (isolated rep
 
   it('1. fails twice (agent failure_class via real bd) then passes: bd shows gc.retry_attempt=3, step closed, next step ran', async () => {
     const { provider, seen } = scripted({ worker: ['agent-fail', 'agent-fail', 'ok'] });
-    const dispatcher = newDriven(h.client, { provider, walker: new MoleculeWalker(h.client), eventBus: new EventBus({ noPersist: true }) });
+    const dispatcher = newDriven(h.store, { idPrefix: 'schema65', provider, walker: new MoleculeWalker(h.store), eventBus: new EventBus({ noPersist: true }) });
     const result = await dispatcher.run({ formula: formula(worker(retry(3)), after), pack: pack(), input: 'go' });
     const step = show(stepId(result.moleculeId));
     expect(step['status']).toBe('closed');
@@ -91,7 +92,7 @@ describe.skipIf(!RUN_ISOLATED_BEADS)('step retry policy on real bd (isolated rep
 
   it('2. an infra failure then a pass leaves gc.retry_attempt at 1', async () => {
     const { provider } = scripted({ worker: ['infra', 'ok'] });
-    const dispatcher = newDriven(h.client, { provider, walker: new MoleculeWalker(h.client), eventBus: new EventBus({ noPersist: true }) });
+    const dispatcher = newDriven(h.store, { idPrefix: 'schema65', provider, walker: new MoleculeWalker(h.store), eventBus: new EventBus({ noPersist: true }) });
     const result = await dispatcher.run({ formula: formula(worker(retry(3))), pack: pack(), input: 'go' });
     const meta = show(stepId(result.moleculeId))['metadata'];
     expect(meta['gc.retry_attempt']).toBe(1);
@@ -100,7 +101,7 @@ describe.skipIf(!RUN_ISOLATED_BEADS)('step retry policy on real bd (isolated rep
 
   it('3. soft_fail on exhaustion closes the step failed (bd close_reason, gc.retry_outcome) and the molecule completes through the dependent', async () => {
     const { provider } = scripted({ worker: ['agent-fail'] });
-    const dispatcher = newDriven(h.client, { provider, walker: new MoleculeWalker(h.client), eventBus: new EventBus({ noPersist: true }) });
+    const dispatcher = newDriven(h.store, { idPrefix: 'schema65', provider, walker: new MoleculeWalker(h.store), eventBus: new EventBus({ noPersist: true }) });
     const result = await dispatcher.run({ formula: formula(worker(retry(2, 'soft_fail')), after), pack: pack(), input: 'go' });
     const step = show(stepId(result.moleculeId));
     expect(step['status']).toBe('closed');
@@ -113,7 +114,7 @@ describe.skipIf(!RUN_ISOLATED_BEADS)('step retry policy on real bd (isolated rep
 
   it('4. fail on exhaustion aborts the molecule: root closed failed, dependent still open', async () => {
     const { provider } = scripted({ worker: ['agent-fail'] });
-    const dispatcher = newDriven(h.client, { provider, walker: new MoleculeWalker(h.client), eventBus: new EventBus({ noPersist: true }) });
+    const dispatcher = newDriven(h.store, { idPrefix: 'schema65', provider, walker: new MoleculeWalker(h.store), eventBus: new EventBus({ noPersist: true }) });
     const thrown = await dispatcher.run({ formula: formula(worker(retry(2, 'fail')), after), pack: pack(), input: 'go' }).catch((e: unknown) => e);
     expect(thrown).toBeInstanceOf(FormulaDispatchError);
     const rootId = (thrown as FormulaDispatchError).moleculeId;
@@ -124,12 +125,12 @@ describe.skipIf(!RUN_ISOLATED_BEADS)('step retry policy on real bd (isolated rep
   }, 60_000);
 
   it('6. the bead is the source of truth: an operator `bd update --set-metadata gc.retry_attempt=3` (bd stores it as the value it is given) is what the dispatcher continues from', async () => {
-    const walker = new MoleculeWalker(h.client);
+    const walker = new MoleculeWalker(h.store);
     const view = await walker.dispatch({ prefix: 'schema65', formulaName: 'op', title: '[formula:op]', steps: [worker(retry(3))] });
     h.bd('update', stepId(view.rootId), '--set-metadata', 'gc.retry_attempt=3');
     const { provider, seen } = scripted({ worker: ['agent-fail', 'ok'] });
-    const dispatcher = new FormulaDispatcher({ provider, walker, eventBus: new EventBus({ noPersist: true }) });
-    const steps = new StepDispatcher({ source: new StoreReadyStepSource(h.client, () => dispatcher.liveMoleculeIds()), runner: dispatcher });
+    const dispatcher = new FormulaDispatcher({ idPrefix: 'schema65', provider, walker, eventBus: new EventBus({ noPersist: true }) });
+    const steps = new StepDispatcher({ source: new StoreReadyStepSource(h.store, () => dispatcher.liveMoleculeIds()), runner: dispatcher });
     steps.setWake(() => undefined);
     const done = dispatcher.adopt(view.rootId, { formula: formula(worker(retry(3))), pack: pack(), input: 'go' }).catch((e: unknown) => e);
     await new Promise((r) => setTimeout(r, 100));
@@ -146,11 +147,15 @@ describe.skipIf(!RUN_ISOLATED_BEADS)('step retry policy on real bd (isolated rep
     // Process A: runs attempt 1 (agent-declared failure), reopens the bead, then "dies" (never ticked again).
     {
       const a = scripted({ worker: ['agent-fail'] });
-      const dispatcherA = new FormulaDispatcher({ provider: a.provider, walker: new MoleculeWalker(h.client), eventBus: new EventBus({ noPersist: true }), onMoleculeCooked: (id) => { rootId = id; } });
-      const stepsA = new StepDispatcher({ source: new StoreReadyStepSource(h.client, () => dispatcherA.liveMoleculeIds()), runner: dispatcherA });
+      let cooked!: () => void;
+      const cookedA = new Promise<void>((resolve) => { cooked = resolve; });
+      const dispatcherA = new FormulaDispatcher({ idPrefix: 'schema65', provider: a.provider, walker: new MoleculeWalker(h.store), eventBus: new EventBus({ noPersist: true }), onMoleculeCooked: (id) => { rootId = id; cooked(); } });
+      const stepsA = new StepDispatcher({ source: new StoreReadyStepSource(h.store, () => dispatcherA.liveMoleculeIds()), runner: dispatcherA });
       stepsA.setWake(() => undefined); // no self-ticking: this process gets exactly one tick, then it is gone
       void dispatcherA.run({ ...input, onStarted: (id) => { rootId = id; } }).catch(() => undefined);
-      await new Promise((r) => setTimeout(r, 250)); // let run() cook
+      // Wait for the cook to finish rather than a fixed delay: cooking through
+      // bd takes ~0.5 s per step bead, versus milliseconds over raw SQL.
+      await Promise.race([cookedA, new Promise((_, reject) => setTimeout(() => reject(new Error('molecule never cooked')), 30_000))]);
       expect(rootId).not.toBe('');
       await stepsA.tick();
       await stepsA.drain();
@@ -164,8 +169,10 @@ describe.skipIf(!RUN_ISOLATED_BEADS)('step retry policy on real bd (isolated rep
     const freshClient = new DoltClient({ beadsRoot: h.root, host: '127.0.0.1', port: h.port, database: h.database });
     try {
       const b = scripted({ worker: ['agent-fail', 'ok'] }); // B's first worker turn is the second overall try
-      const dispatcherB = new FormulaDispatcher({ provider: b.provider, walker: new MoleculeWalker(freshClient), eventBus: new EventBus({ noPersist: true }) });
-      const stepsB = new StepDispatcher({ source: new StoreReadyStepSource(freshClient, () => dispatcherB.liveMoleculeIds()), runner: dispatcherB });
+      // Fresh gateway too: SQL reads on the new pool, writes through bd.
+      const freshStore = new BeadsStore(freshClient, async (args) => h.bd(...args));
+      const dispatcherB = new FormulaDispatcher({ idPrefix: 'schema65', provider: b.provider, walker: new MoleculeWalker(freshStore), eventBus: new EventBus({ noPersist: true }) });
+      const stepsB = new StepDispatcher({ source: new StoreReadyStepSource(freshStore, () => dispatcherB.liveMoleculeIds()), runner: dispatcherB });
       stepsB.setWake(() => undefined);
       const doneB = dispatcherB.adopt(rootId, input);
       await new Promise((r) => setTimeout(r, 100));

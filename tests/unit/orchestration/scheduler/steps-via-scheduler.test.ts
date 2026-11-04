@@ -119,7 +119,7 @@ describe('the dispatcher no longer drives its own molecules (vibesync-efee)', ()
     const store = new InMemoryDoltClient();
     const provider = newFakeProvider({ kind: 'fake', script });
     const walker = new MoleculeWalker(store);
-    const dispatcher = new FormulaDispatcher({ provider, walker, eventBus: new EventBus({ noPersist: true }) });
+    const dispatcher = new FormulaDispatcher({ idPrefix: 'mol', provider, walker, eventBus: new EventBus({ noPersist: true }) });
     let settled = false;
     const run = dispatcher.run({ formula: formula(), pack: pack(), input: 'go' });
     run.then(() => { settled = true; }, () => { settled = true; });

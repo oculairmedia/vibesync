@@ -20,7 +20,8 @@ export interface BeadsReader {
   listMoleculeRoots(opts?: { statuses?: readonly string[]; limit?: number }): Promise<BeadRow[]>;
 }
 
-type WriterMethods = Omit<MoleculeStore, keyof BeadsReader> & Omit<WritebackStore, 'getBead'>;
+/** The writer's own signatures: a superset of the MoleculeStore ports (root metadata, step input payload). */
+type WriterMethods = Pick<BdMoleculeWriter, Exclude<keyof BdMoleculeWriter, never>>;
 
 export class BeadsStore implements MoleculeStore, WritebackStore {
   private readonly writer: BdMoleculeWriter;

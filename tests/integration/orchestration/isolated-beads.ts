@@ -74,6 +74,8 @@ export async function provisionIsolatedBeads(shape: SchemaShape = 'fresh') {
         "MODIFY COLUMN is_blocked tinyint(1) NOT NULL DEFAULT '0' AFTER started_at",
       ]) bd('sql', `ALTER TABLE issues ${ddl}`);
     }
+    // Production projects register the molecule bead types; bd rejects create otherwise.
+    bd('config', 'set', 'types.custom', 'molecule_root,molecule_step,mail');
     client = new DoltClient({ beadsRoot: root, host: '127.0.0.1', port, database });
     await client.verifyFingerprint();
     // Same bd binary, sandboxed env and project as the CLI calls above: every

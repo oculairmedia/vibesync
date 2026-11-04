@@ -670,7 +670,23 @@ export class DoltClient {
     return rows.map(toBeadRow);
   }
 
-    /** Read a single bead by id. */
+    /**
+   * The project's bd `issue_prefix`. bd rejects creating a bead whose id does
+   * not start with it, so molecule ids must be minted from this value.
+   */
+  async readIssuePrefix(): Promise<string> {
+    const [rows] = await this.pool.execute<mysql.RowDataPacket[]>(
+      'SELECT value FROM config WHERE `key` = ? LIMIT 1',
+      ['issue_prefix'],
+    );
+    const value = rows[0]?.['value'];
+    if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(value)) {
+      throw new Error(`DoltClient: ${this.database} has no valid issue_prefix in bd config (got ${JSON.stringify(value)})`);
+    }
+    return value;
+  }
+
+  /** Read a single bead by id. */
   async getBead(id: string): Promise<BeadRow | null> {
     const [rows] = await this.pool.execute<mysql.RowDataPacket[]>(
       `SELECT * FROM issues WHERE id = ?`,
