@@ -9,9 +9,19 @@ import { FormulaDispatchError, FormulaDispatcher } from '../../../../src/engine/
 import { MoleculeWalker, newMoleculeStepId } from '../../../../src/engine/molecule/index.js';
 import type { Pack } from '../../../../src/engine/packs/index.js';
 import type { SessionEvent, SessionSpec } from '../../../../src/engine/runtime/index.js';
+import { STEP_OUTCOME_INSTRUCTIONS } from '../../../../src/engine/dispatcher/step-outcome.js';
 import { newFakeProvider } from '../../../_fixtures/fake-provider.js';
 import { newDriven } from '../../../_fixtures/step-driver.js';
 import { InMemoryDoltClient } from '../../../_fixtures/in-memory-dolt-client.js';
+
+/**
+ * The rendered template body: every step prompt ends with the blocked-outcome
+ * instructions (vibesync-zvcm), so strip exactly that suffix and require it.
+ */
+function renderedBody(prompt: string): string {
+  if (!prompt.endsWith(STEP_OUTCOME_INSTRUCTIONS)) throw new Error(`prompt is missing the step-outcome instructions: ${prompt.slice(-80)}`);
+  return prompt.slice(0, prompt.length - STEP_OUTCOME_INSTRUCTIONS.length);
+}
 
 function isDispatcherEvent(event: Event): boolean {
   return event.layer === 'dispatcher';
@@ -206,7 +216,7 @@ describe('FormulaDispatcher', () => {
     await dispatcher.run({ formula, pack, input: 'go' });
 
     const betaPrompt = provider.recorder.prompts[1]?.content[0];
-    expect(betaPrompt?.type === 'text' ? betaPrompt.text : '').toBe('Beta alpha-output');
+    expect(renderedBody(betaPrompt?.type === 'text' ? betaPrompt.text : '')).toBe('Beta alpha-output');
   });
 
   it('fans out independent ready steps before waiting for either to finish', async () => {
@@ -278,7 +288,7 @@ describe('FormulaDispatcher', () => {
     gates[4]?.resolve(undefined);
 
     await Promise.all(runs);
-    expect(provider.recorder.prompts.map((prompt) => prompt.content[0]?.type === 'text' ? prompt.content[0].text : '')).toEqual([
+    expect(provider.recorder.prompts.map((prompt) => renderedBody(prompt.content[0]?.type === 'text' ? prompt.content[0].text : ''))).toEqual([
       'Run one',
       'Run two',
       'Run three',
