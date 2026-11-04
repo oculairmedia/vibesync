@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { FormulaCancellationConflictError } from '../../orchestration/dispatcher/index.js';
 import { discoverPacks, loadPack, type Pack } from '../../orchestration/packs/index.js';
@@ -64,7 +65,7 @@ export function registerFormulaRoutes(app: App, deps: FormulaRoutesDeps): void {
       }
 
       try {
-        const moleculeId = await startRunAndCaptureMoleculeId(orchestration, {
+        const result = await startRunAndCaptureMoleculeId(orchestration, {
           formula,
           pack,
           input: body.input,
@@ -73,7 +74,13 @@ export function registerFormulaRoutes(app: App, deps: FormulaRoutesDeps): void {
             ? { projectIdentifier: body.projectIdentifier }
             : {}),
         });
-        deps.sendJson(ctx.res, 202, { moleculeId, formulaName, pack: pack.manifest.name });
+        if (result === POOL_FULL) {
+          // vibesync-9lzk.17: an HTTP run must not exceed the scheduler's pool cap.
+          ctx.res.setHeader?.('Retry-After', String(POOL_FULL_RETRY_AFTER_S));
+          deps.sendError(ctx.res, 503, 'Agent pool is full; retry later', { formulaName, retryAfterSeconds: POOL_FULL_RETRY_AFTER_S });
+          return;
+        }
+        deps.sendJson(ctx.res, 202, { moleculeId: result, formulaName, pack: pack.manifest.name });
       } catch (error) {
         deps.logger.error({ err: error }, 'Failed to start formula run');
         deps.sendError(ctx.res, 500, 'Failed to start formula run', { error: error instanceof Error ? error.message : String(error) });
@@ -247,20 +254,35 @@ function loadNamedPack(name: string): Pack | null {
   }
 }
 
+const POOL_FULL = Symbol('pool-full');
+const POOL_FULL_RETRY_AFTER_S = 30;
+
+/**
+ * Start a run and resolve with its molecule id as soon as it is cooked. When
+ * the scheduler is running, the run takes a slot in its agent pool like a
+ * scheduled run does (vibesync-9lzk.17), so HTTP runs cannot push concurrency
+ * past `poolSize`; resolves POOL_FULL when no slot is free.
+ */
 async function startRunAndCaptureMoleculeId(
   orchestration: OrchestrationApi,
   input: Parameters<OrchestrationApi['dispatcher']['run']>[0],
-): Promise<string> {
-  let unsubscribe: (() => void) | null = null;
+): Promise<string | typeof POOL_FULL> {
+  const subscription: { unsubscribe: () => void } = { unsubscribe: () => undefined };
   const moleculeStarted = new Promise<string>((resolve) => {
-    unsubscribe = orchestration.bus.subscribe((event) => {
+    subscription.unsubscribe = orchestration.bus.subscribe((event) => {
       if (event.kind === 'dispatcher/formula.started' && event.payload?.formulaName === input.formula.name && event.molecule_id) {
         resolve(event.molecule_id);
       }
     });
   });
-  const runPromise = orchestration.dispatcher.run(input);
-  runPromise.catch(() => undefined).finally(() => unsubscribe?.());
+  const start = () => orchestration.dispatcher.run(input);
+  const daemon = orchestration.scheduler?.daemon;
+  const runPromise = daemon ? daemon.startExternalRun(randomUUID(), start) : start();
+  if (!runPromise) {
+    subscription.unsubscribe();
+    return POOL_FULL;
+  }
+  runPromise.catch(() => undefined).finally(() => subscription.unsubscribe());
   return Promise.race([
     moleculeStarted,
     runPromise.then((result) => result.moleculeId),
