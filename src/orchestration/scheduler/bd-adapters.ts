@@ -16,7 +16,7 @@
  * escalations are bd comments on the work bead.
  */
 
-import { isRepoAllowed } from './repo-allowlist.js';
+import { isRepoAllowed } from '../repo-allowlist.js';
 
 import type { Pack } from '../packs/index.js';
 import type { FormulaResolver, ReadyBeadSource, DaemonLogger } from './daemon.js';
