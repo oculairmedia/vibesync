@@ -30,8 +30,8 @@ describe.skipIf(!BUN)('registry on a fresh database under Bun (bun:sqlite)', () 
     const dir = mkdtempSync(join(tmpdir(), 'vibesync-bun-registry-'));
     const script = join(dir, 'probe.ts');
     writeFileSync(script, [
-      `const { createSyncDatabase } = await import(${JSON.stringify(resolve('src/database.ts'))});`,
-      `const db = createSyncDatabase(${JSON.stringify(join(dir, 'registry.db'))});`,
+      `const { createRegistry } = await import(${JSON.stringify(resolve('src/app/registry/registry.ts'))});`,
+      `const db = createRegistry(${JSON.stringify(join(dir, 'registry.db'))});`,
       `db.upsertProject({ identifier: 'p', name: 'P' });`,
       `db.upsertRoleAgent('p', 'coder', 'agent-1', 'http://shim');`,
       `console.log(JSON.stringify({ project: db.getProject('p')?.identifier ?? null, roles: db.listRoleAgents('p').length, runtime: typeof Bun }));`,
