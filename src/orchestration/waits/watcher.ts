@@ -18,7 +18,7 @@
  */
 
 import type { EventBus } from '../events/index.js';
-import { BEADS_ISSUE_STATUS_CHANGED_EVENT } from '../scheduler/index.js';
+import { BEADS_ISSUE_STATUS_CHANGED_EVENT } from '../events/beads.js';
 import { describeWait, evaluateWait, readyReason } from './evaluator.js';
 import {
   WAIT_EXPIRED_EVENT,

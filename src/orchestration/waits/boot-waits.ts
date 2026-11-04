@@ -7,7 +7,7 @@
  */
 
 import type { EventBus } from '../events/index.js';
-import type { CommandRunner } from '../scheduler/bd-adapters.js';
+import type { CommandRunner } from '../beads/cli.js';
 import { BdWaitStore } from './bd-wait-store.js';
 import { WaitService } from './service.js';
 import { WaitWatcher } from './watcher.js';

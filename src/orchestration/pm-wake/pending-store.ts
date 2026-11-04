@@ -1,9 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
-import type { CommandRunner } from './bd-adapters.js';
-import { parseJsonOutput } from './bd-adapters.js';
-import type { PmWakeInput, PmWakeOutcome, PmWakeSink } from './pm-waker.js';
-import { formatWakeMessage } from './pm-waker.js';
+import type { CommandRunner } from '../beads/cli.js';
+import { parseJsonOutput } from '../beads/cli.js';
+import { formatWakeMessage, type PmWakeInput, type PmWakeOutcome, type PmWakeSink } from './contract.js';
 
 export const PENDING_WAKE_LABEL = 'vibesync:pending-wake';
 const ACTIVE_STATUSES = 'open,in_progress,blocked,deferred';

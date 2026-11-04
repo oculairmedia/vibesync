@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { BdPendingWakeStore } from '../../../../src/orchestration/scheduler/bd-pending-wake-store.js';
+import { BdPendingWakeStore } from '../../../../src/orchestration/pm-wake/pending-store.js';
 
 it('finishes closing a confirmed delivery without sending it again', async () => {
   const receipt = { accepted: true, applicationDelivered: true, msgId: 'wake-1', observedAt: new Date(0).toISOString() };

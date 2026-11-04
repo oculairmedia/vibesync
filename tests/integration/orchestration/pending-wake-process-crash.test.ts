@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { expect, it } from 'vitest';
-import { BdPendingWakeStore } from '../../../src/orchestration/scheduler/bd-pending-wake-store.js';
+import { BdPendingWakeStore } from '../../../src/orchestration/pm-wake/pending-store.js';
 import { provisionIsolatedWakeRepo, RUN_ISOLATED_WAKES } from './isolated-bd-wakes.js';
 
 // Controlled subprocess receipts exercise the actual producer/CLI boundary,
@@ -30,13 +30,13 @@ process.stdin.on('end', () => {
 });
 `, { mode: 0o700 });
     const worker = join(repo.root, 'producer.ts');
-    const source = (name: string) => JSON.stringify(pathToFileURL(resolve(`src/orchestration/scheduler/${name}.ts`)).href);
+    const source = (path: string) => JSON.stringify(pathToFileURL(resolve(`src/orchestration/${path}.ts`)).href);
     writeFileSync(worker, `
 import { writeFileSync } from 'node:fs';
-import { BdPendingWakeStore } from ${source('bd-pending-wake-store')};
-import { createCliRunner } from ${source('bd-adapters')};
-import { createInboxCliAdapter } from ${source('inbox-cli-adapter')};
-import { formatWakeMessage } from ${source('pm-waker')};
+import { BdPendingWakeStore } from ${source('pm-wake/pending-store')};
+import { createCliRunner } from ${source('beads/cli')};
+import { createInboxCliAdapter } from ${source('pm-wake/inbox-cli-adapter')};
+import { formatWakeMessage } from ${source('pm-wake/contract')};
 const [binary,cwd,id,stage,marker,executable] = process.argv.slice(2);
 const cli = createCliRunner({binary,cwd});
 const runner = async args => {

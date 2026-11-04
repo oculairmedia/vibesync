@@ -17,7 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import type { WakeReason } from './pm-waker.js';
+import type { WakeReason } from './contract.js';
 
 export interface PmWakeProjectState {
   /** ISO time the loop first observed this project (backstop anchor until the first wake). */

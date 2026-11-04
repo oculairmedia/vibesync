@@ -15,8 +15,7 @@
  *   - `bd close` on an already-closed bead exits 0.
  */
 
-import type { CommandRunner } from '../scheduler/bd-adapters.js';
-import { parseJsonOutput } from '../scheduler/bd-adapters.js';
+import { parseJsonOutput, type CommandRunner } from '../beads/cli.js';
 import {
   WAIT_LABEL,
   type NewWait,

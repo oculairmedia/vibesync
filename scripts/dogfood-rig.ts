@@ -8,7 +8,7 @@ import { DoltClient, defaultDoltBootDeps } from '../src/orchestration/store/inde
 import { SchedulerDaemon, type ReadyBeadSource, type FormulaResolver } from '../src/orchestration/scheduler/daemon.js';
 import type { SlingContextStore } from '../src/orchestration/scheduler/sling-context.js';
 import type { PoolMemberIdentity } from '../src/orchestration/scheduler/agent-pool.js';
-import type { GitHubPort, PrFacts } from '../src/orchestration/scheduler/refinery.js';
+import type { GitHubPort, PrFacts } from '../src/orchestration/refinery/refinery.js';
 import type { RunLivenessProbe } from '../src/orchestration/scheduler/witness.js';
 import { loadPack } from '../src/orchestration/packs/index.js';
 import { createSyncDatabase } from '../src/database.js';
