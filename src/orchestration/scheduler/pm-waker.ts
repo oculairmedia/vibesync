@@ -221,6 +221,11 @@ export class PmWaker {
   private async evaluate(obs: PmWakeTickObservation): Promise<void> {
     const project = this.deps.projectIdentifier;
     await this.recovery;
+    const recovered = [...this.durablePending.values()].find((record) => record.payload.projectIdentifier === this.deps.projectIdentifier);
+    if (recovered) {
+      await this.retryDurablePending(recovered, this.now());
+      return;
+    }
     let agentId: string | null | undefined;
     try {
       agentId = this.deps.lookupAgentId(project);
@@ -249,18 +254,6 @@ export class PmWaker {
       if (failed !== undefined && now - failed < PM_WAKE_RETRY_BACKOFF_MS) {
         this.notifySkipped(c.reason, 'retry-backoff');
         continue;
-      }
-      const recovered = this.durablePending.get(c.reason);
-      if (recovered) {
-        const claim = await this.deps.pendingWakeStore?.claim(recovered.id);
-        if (claim?.authorized && claim.record) {
-          const sent = await this.deps.pendingWakeStore!.sendClaimed(claim.record, this.deps.sink, now);
-          if (sent.authorized && sent.outcome) {
-            this.applyOutcome(inputFromRecord(recovered), sent.outcome, now);
-            if (sent.receipt?.accepted && sent.receipt.applicationDelivered) this.durablePending.delete(c.reason);
-          }
-        }
-        return;
       }
       const correlation = this.correlationFor(c.reason);
       await this.send(agentId, c.reason, c.detail, now, correlation);
@@ -340,6 +333,16 @@ export class PmWaker {
       return bead ? { bead } : undefined;
     }
     return undefined;
+  }
+
+  private async retryDurablePending(record: PendingWakeRecord, now: number): Promise<void> {
+    const claim = await this.deps.pendingWakeStore?.claim(record.id);
+    if (!claim?.authorized || !claim.record || !this.deps.pendingWakeStore) return;
+    const sent = await this.deps.pendingWakeStore.sendClaimed(claim.record, this.deps.sink, now);
+    if (!sent.authorized || !sent.outcome) return;
+    const input = inputFromRecord(record);
+    this.applyOutcome(input, sent.outcome, now);
+    if (sent.receipt?.accepted && sent.receipt.applicationDelivered) this.durablePending.delete(record.payload.reason);
   }
 
   private async send(

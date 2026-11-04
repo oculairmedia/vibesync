@@ -10,6 +10,10 @@ export const RUN_ISOLATED_WAKES = process.env['VIBESYNC_TEST_BD_WAKES'] !== unde
 
 export interface IsolatedWakeRepo {
   readonly root: string;
+  readonly binary: string;
+  readonly database: string;
+  readonly port: number;
+  readonly env: NodeJS.ProcessEnv;
   readonly runner: CommandRunner;
   teardown(): Promise<void>;
 }
@@ -56,6 +60,10 @@ export async function provisionIsolatedWakeRepo(): Promise<IsolatedWakeRepo> {
   const runner = createCliRunner({ binary, cwd: root, env: { ...inherited, ...env, BEADS_DIR: join(root, '.beads') } });
   return {
     root,
+    binary,
+    database,
+    port,
+    env: { ...inherited, ...env, BEADS_DIR: join(root, '.beads') },
     runner: (args) => runner(['--sandbox', '--dolt-auto-commit=off', ...args]),
     async teardown() {
       try { bd('dolt', 'stop'); } finally { rmSync(root, { recursive: true, force: true }); }

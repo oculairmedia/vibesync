@@ -39,11 +39,45 @@ const bd = async (args: readonly string[]): Promise<string> => {
   throw new Error(`unexpected bd call: ${args.join(' ')}`);
 };
 
+function pendingWakeBd() {
+  const records = new Map<string, Record<string, unknown>>();
+  const run = async (args: readonly string[]): Promise<string> => {
+    const value = (flag: string) => args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined;
+    if (args[0] === 'create') {
+      const id = `pending-${records.size + 1}`;
+      records.set(id, { id, status: 'open', assignee: '', metadata: JSON.parse(value('--metadata')!) });
+      return id;
+    }
+    if (args[0] === 'list' && (value('--id') || value('--label') === 'vibesync:pending-wake')) {
+      return JSON.stringify([...records.values()].filter(row => value('--id') ? row.id === value('--id') : row.status !== 'closed'));
+    }
+    if (args[0] !== 'update' && args[0] !== 'heartbeat') return bd(args);
+    const row = records.get(args[1]!);
+    if (!row) throw new Error('unknown pending wake');
+    if (value('--if-assignee') !== undefined && row.assignee !== value('--if-assignee')) throw new Error('stale assignee');
+    if (value('--if-status') !== undefined && row.status !== value('--if-status')) throw new Error('stale status');
+    if (args.includes('--claim')) {
+      if (row.assignee && row.assignee !== value('--actor')) throw new Error('already claimed');
+      row.assignee = value('--actor');
+      row.status = 'in_progress';
+      row.lease_expires_at = new Date(Date.now() + 300_000).toISOString();
+    }
+    if (args[0] === 'heartbeat') {
+      if (row.status !== 'in_progress' || row.assignee !== value('--actor')) throw new Error('not lease holder');
+      row.lease_expires_at = new Date(Date.now() + 300_000).toISOString();
+    }
+    if (value('--metadata')) row.metadata = { ...(row.metadata as object), ...JSON.parse(value('--metadata')!) };
+    if (value('--status')) row.status = value('--status');
+    return '{}';
+  };
+  return { records, run };
+}
+
 function schedulerConfig(pmWake: Partial<NonNullable<BootSchedulerOptions['config']['pmWake']>>): BootSchedulerOptions['config'] {
   return {
     enabled: true,
     projectIdentifier: PROJECT,
-    intervalMs: 30 * MIN,
+    intervalMs: MIN,
     poolSize: 2,
     batchSize: 1,
     paused: false,
@@ -101,7 +135,7 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  async function boot(fake: FakeIrohWrapper, over: { provider?: string; pmWake?: Partial<NonNullable<BootSchedulerOptions['config']['pmWake']>>; connections?: IrohConnection[]; inboxAdapter?: InboxMessageAdapter; wakeSink?: import('../../../../src/orchestration/scheduler/pm-waker.js').PmWakeSink; listPoolMembers?: () => readonly { agentId: string; role: string; lettaBaseUrl: string }[] } = {}) {
+  async function boot(fake: FakeIrohWrapper, over: { bd?: typeof bd; provider?: string; pmWake?: Partial<NonNullable<BootSchedulerOptions['config']['pmWake']>>; connections?: IrohConnection[]; inboxAdapter?: InboxMessageAdapter; wakeSink?: import('../../../../src/orchestration/scheduler/pm-waker.js').PmWakeSink; listPoolMembers?: () => readonly { agentId: string; role: string; lettaBaseUrl: string }[] } = {}) {
     process.env['VIBESYNC_WORK_ACTIVITY_REPORT'] = '0';
     process.env['VIBESYNC_ORCHESTRATION_PROVIDER'] = over.provider ?? 'letta-code-iroh';
     process.env['VIBESYNC_LETTA_CODE_PARENT_AGENT_ID'] = PM;
@@ -121,7 +155,7 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
           { agentId: 'agent-a', role: 'role-one', lettaBaseUrl: 'http://shim' },
           { agentId: 'agent-b', role: 'role-two', lettaBaseUrl: 'http://shim' },
         ],
-        bd,
+        bd: over.bd ?? bd,
         appRoot: process.cwd(),
         // The registry lookup, exactly the shape src/index.ts wires: the PM id is DATA.
         pmWake: { lookupAgentId: () => PM, ...(over.wakeSink ? { sink: over.wakeSink } : {}), ...(over.inboxAdapter ? { inboxAdapter: over.inboxAdapter } : {}) },
@@ -168,18 +202,23 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
 
   it('inbox sends preserve wake identity and do not write directly into a PM conversation', async () => {
     const fake = new FakeIrohWrapper({ scope: [PM] });
+    const pending = pendingWakeBd();
     const sent: Array<{ to: string; body: string; msgId: string; correlation?: Readonly<Record<string, string>> }> = [];
     const { handle, woken } = await boot(fake, {
-      intervalMs: MIN,
+      bd: pending.run,
       pmWake: { sink: 'inbox', backstopMs: MIN, minIntervalMs: MIN },
       inboxAdapter: {
         sendInboxMessage: async (request) => {
+          expect(pending.records.size).toBe(1);
+          const row = [...pending.records.values()][0]!;
+          expect(row.status).toBe('in_progress');
+          expect(row.metadata).toMatchObject({ payload: { msgId: request.msgId, agentId: request.to, body: request.body } });
           sent.push(request);
           return { msgId: request.msgId, accepted: true, applicationDelivered: false, reason: 'queued' };
         },
       },
     });
-    await vi.advanceTimersByTimeAsync(30 * MIN);
+    await vi.advanceTimersByTimeAsync(MIN);
 
     expect(sent).toHaveLength(1);
     expect(new Set(sent.map((request) => request.msgId)).size).toBe(1);

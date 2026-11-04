@@ -7,13 +7,8 @@ import { formatWakeMessage } from './pm-waker.js';
 
 export const PENDING_WAKE_LABEL = 'vibesync:pending-wake';
 const ACTIVE_STATUSES = 'open,in_progress,blocked,deferred';
-const DEFAULT_LEASE_MS = 60_000;
-const MIN_LEASE_MS = 1_000;
-const MAX_LEASE_MS = 5 * 60_000;
+const HEARTBEAT_INTERVAL_MS = 10_000;
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
-const OWNER = `vibesync-pending-wake-${process.pid}-${randomUUID()}`;
-const HELD_CLAIMS = new Set<string>();
-const CLAIM_IN_FLIGHT = new Set<string>();
 
 export interface PendingWakePayload {
   readonly projectIdentifier: string;
@@ -40,7 +35,9 @@ export interface PendingWakeRecord {
   readonly payload: PendingWakePayload;
   readonly receipt?: PendingWakeReceipt;
   readonly owner?: string;
+  readonly assignee?: string;
   readonly leaseExpiresAt?: number;
+  readonly claimToken?: string;
   readonly rawMetadata?: Record<string, unknown>;
 }
 
@@ -62,17 +59,19 @@ export interface PendingWakeStore {
 }
 
 export interface BdPendingWakeStoreOptions {
-  readonly leaseMs?: number;
   readonly now?: () => number;
+  readonly logger?: { warn?(o: unknown, message: string): void };
 }
 
 export class BdPendingWakeStore implements PendingWakeStore {
-  private readonly leaseMs: number;
   private readonly now: () => number;
+  private readonly owner: string;
+  private readonly logger: { warn?(o: unknown, message: string): void } | undefined;
 
   constructor(private readonly bd: CommandRunner, options: BdPendingWakeStoreOptions = {}) {
-    this.leaseMs = Math.max(MIN_LEASE_MS, Math.min(MAX_LEASE_MS, options.leaseMs ?? DEFAULT_LEASE_MS));
     this.now = options.now ?? Date.now;
+    this.owner = `vibesync-pending-wake-${process.pid}-${randomUUID()}`;
+    this.logger = options.logger;
   }
 
   async enqueue(input: PmWakeInput, at = this.now()): Promise<PendingWakeRecord> {
@@ -121,71 +120,93 @@ export class BdPendingWakeStore implements PendingWakeStore {
 
   async claim(id: string): Promise<PendingWakeClaim> {
     assertId(id);
-    if (HELD_CLAIMS.has(id) || CLAIM_IN_FLIGHT.has(id)) return { authorized: false, record: await this.get(id) };
-    CLAIM_IN_FLIGHT.add(id);
-    try {
-      const record = await this.get(id);
-      if (!record || record.status === 'closed') return { authorized: false, record };
-      if (record.status === 'in_progress' && (record.leaseExpiresAt ?? Infinity) > this.now()) return { authorized: false, record };
-      if (record.status === 'in_progress') {
-        try {
-          await this.bd(['reclaim', '--older-than', '0s', '--id', id]);
-        } catch {
-          return { authorized: false, record: await this.get(id) };
-        }
-      }
-
+    const record = await this.get(id);
+    if (!record || record.status === 'closed') return { authorized: false, record };
+    if (record.status === 'in_progress' && (record.leaseExpiresAt ?? Infinity) > this.now()) return { authorized: false, record };
+    if (record.status === 'in_progress') {
       try {
-        await this.bd(['update', id, '--assignee', OWNER, '--status', 'in_progress']);
+        // Native reclaim checks the actual lease atomically and only on this
+        // replica. Metadata timestamps must never authorize stealing a claim.
+        await this.bd(['reclaim', '--older-than', '0s', '--id', id]);
       } catch {
         return { authorized: false, record: await this.get(id) };
       }
-      const claimed = await this.get(id);
-      if (!claimed || claimed.status !== 'in_progress' || claimed.owner !== OWNER) return { authorized: false, record: claimed };
-      const leaseExpiresAt = this.now() + this.leaseMs;
-      await this.bd(['update', id, '--metadata', JSON.stringify({ ...metadataFromRow(claimed), leaseExpiresAt })]);
-      HELD_CLAIMS.add(id);
-      return { authorized: true, record: { ...claimed, leaseExpiresAt } };
-    } finally {
-      CLAIM_IN_FLIGHT.delete(id);
+    }
+    const claimedFrom = await this.get(id);
+    if (!claimedFrom || (claimedFrom.status !== 'open' && claimedFrom.status !== 'blocked')) return { authorized: false, record: claimedFrom };
+
+    const claimToken = `${this.owner}-${randomUUID()}`;
+    try {
+      await this.bd([
+        'update', id,
+        '--claim', '--actor', claimToken,
+        '--metadata', JSON.stringify({ ...metadataFromRow(claimedFrom), claimToken }),
+      ]);
+    } catch {
+      return { authorized: false, record: await this.get(id) };
+    }
+    const claimed = await this.get(id);
+    if (!claimed || claimed.status !== 'in_progress' || claimed.assignee !== claimToken) return { authorized: false, record: claimed };
+    return { authorized: true, record: claimed };
+  }
+
+  private async renewClaim(record: PendingWakeRecord): Promise<PendingWakeClaim> {
+    try {
+      await this.bd(['heartbeat', record.id, '--actor', record.assignee ?? '']);
+      const renewed = await this.get(record.id);
+      return { authorized: renewed?.assignee === record.assignee && renewed?.claimToken === record.claimToken, record: renewed };
+    } catch {
+      return { authorized: false, record: await this.get(record.id) };
     }
   }
 
   async sendClaimed(record: PendingWakeRecord, sink: PmWakeSink, at = this.now()): Promise<PendingWakeSendResult> {
     const owned = await this.get(record.id);
-    if (!owned || owned.status !== 'in_progress' || owned.owner !== OWNER) return { authorized: false, record: owned };
-    let outcome: PmWakeOutcome;
+    if (!owned || owned.status !== 'in_progress' || owned.assignee !== record.assignee || owned.claimToken !== record.claimToken) return { authorized: false, record: owned };
+    const heartbeat = startLeaseHeartbeat(this.bd, record.id, record.assignee ?? '', this.logger);
     try {
-      outcome = await sink.wake({
-        agentId: owned.payload.agentId,
-        projectIdentifier: owned.payload.projectIdentifier,
-        reason: owned.payload.reason,
-        detail: owned.payload.detail,
-        wakeId: owned.payload.msgId,
-        ...(owned.payload.correlation ? { correlation: owned.payload.correlation } : {}),
-      });
-    } catch (error) {
-      outcome = { ok: false, error: errorMessage(error) };
+      const refreshed = await this.renewClaim(owned);
+      if (!refreshed.authorized || !refreshed.record) return { authorized: false, record: refreshed.record };
+      const renewed = await this.get(record.id);
+      if (!renewed || renewed.claimToken !== record.claimToken) return { authorized: false, record: renewed };
+      let outcome: PmWakeOutcome;
+      try {
+        outcome = await sink.wake({
+          agentId: owned.payload.agentId,
+          projectIdentifier: owned.payload.projectIdentifier,
+          reason: owned.payload.reason,
+          detail: owned.payload.detail,
+          wakeId: owned.payload.msgId,
+          ...(owned.payload.correlation ? { correlation: owned.payload.correlation } : {}),
+        });
+      } catch (error) {
+        outcome = { ok: false, error: errorMessage(error) };
+      }
+      const receipt: PendingWakeReceipt = {
+        accepted: outcome.accepted ?? outcome.ok,
+        applicationDelivered: outcome.applicationDelivered ?? false,
+        ...(outcome.reason ?? outcome.error ? { reason: outcome.reason ?? outcome.error } : {}),
+        msgId: owned.payload.msgId,
+        observedAt: new Date(at).toISOString(),
+      };
+      const delivered = receipt.accepted && receipt.applicationDelivered;
+      const metadata = metadataFromRow(owned);
+      await this.bd([
+        'update', record.id,
+        '--metadata', JSON.stringify({
+          ...metadata,
+          state: delivered ? 'delivered' : 'pending',
+          attempts: Number(metadata['attempts'] ?? 0) + 1,
+          receipt,
+        }),
+        '--if-assignee', record.assignee ?? '',
+        '--if-status', 'in_progress',
+      ]);
+      if (delivered) await this.bd(['update', record.id, '--status', 'closed', '--if-assignee', record.assignee ?? '', '--if-status', 'in_progress']);
+      return { authorized: true, record: await this.get(record.id), outcome, receipt };
+    } finally {
+      await heartbeat.stop();
     }
-    const receipt: PendingWakeReceipt = {
-      accepted: outcome.accepted ?? outcome.ok,
-      applicationDelivered: outcome.applicationDelivered ?? false,
-      ...(outcome.reason ?? outcome.error ? { reason: outcome.reason ?? outcome.error } : {}),
-      msgId: owned.payload.msgId,
-      observedAt: new Date(at).toISOString(),
-    };
-    const delivered = receipt.accepted && receipt.applicationDelivered;
-    const metadata = metadataFromRow(owned);
-    await this.bd(['update', record.id, '--metadata', JSON.stringify({
-      ...metadata,
-      state: delivered ? 'delivered' : 'pending',
-      attempts: Number(metadata['attempts'] ?? 0) + 1,
-      receipt,
-      leaseExpiresAt: delivered ? null : this.now() + this.leaseMs,
-    })]);
-    if (delivered) await this.bd(['update', record.id, '--status', 'closed']);
-    HELD_CLAIMS.delete(record.id);
-    return { authorized: true, record: await this.get(record.id), outcome, receipt };
   }
 
   async claimAndSend(id: string, sink: PmWakeSink): Promise<PendingWakeSendResult> {
@@ -193,6 +214,24 @@ export class BdPendingWakeStore implements PendingWakeStore {
     if (!claim.authorized || !claim.record) return claim;
     return this.sendClaimed(claim.record, sink);
   }
+}
+
+function startLeaseHeartbeat(bd: CommandRunner, id: string, assignee: string, logger?: { warn?(o: unknown, message: string): void }) {
+  let stopped = false;
+  let inFlight: Promise<void> = Promise.resolve();
+  const timer = setInterval(() => {
+    if (stopped) return;
+    inFlight = bd(['heartbeat', id, '--actor', assignee]).then(() => undefined).catch((error: unknown) => {
+      logger?.warn?.({ id, error: errorMessage(error) }, 'pm-wake: Beads lease heartbeat failed');
+    });
+  }, HEARTBEAT_INTERVAL_MS);
+  return {
+    async stop(): Promise<void> {
+      stopped = true;
+      clearInterval(timer);
+      await inFlight;
+    },
+  };
 }
 
 function assertId(id: string): void {
@@ -228,8 +267,11 @@ function toRecord(row: Record<string, unknown>): PendingWakeRecord | null {
   return {
     id,
     status: String(row['status'] ?? ''),
-    ...(typeof row['assignee'] === 'string' ? { owner: row['assignee'] } : typeof row['owner'] === 'string' ? { owner: row['owner'] } : {}),
-    ...(typeof md['leaseExpiresAt'] === 'number' ? { leaseExpiresAt: md['leaseExpiresAt'] } : {}),
+    assignee: typeof row['assignee'] === 'string' ? row['assignee'] : '',
+    ...(typeof row['owner'] === 'string' ? { owner: row['owner'] } : {}),
+    ...(typeof row['lease_expires_at'] === 'string' && Number.isFinite(Date.parse(row['lease_expires_at']))
+      ? { leaseExpiresAt: Date.parse(row['lease_expires_at']) } : {}),
+    ...(typeof md['claimToken'] === 'string' ? { claimToken: md['claimToken'] } : {}),
     rawMetadata: md,
     payload: {
       projectIdentifier: p['projectIdentifier'],

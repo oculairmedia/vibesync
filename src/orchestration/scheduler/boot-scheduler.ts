@@ -309,7 +309,7 @@ export function startSchedulerDaemon(
         lookupAgentId: opts.pmWake.lookupAgentId,
         sink: wakerSink,
         store: opts.pmWake.store ?? new FilePmWakeStateStore(pw.statePath, logger),
-        ...(pw.sink === 'inbox' ? { pendingWakeStore: new BdPendingWakeStore(opts.bd) } : {}),
+        ...(pw.sink === 'inbox' && opts.pmWake.inboxAdapter ? { pendingWakeStore: new BdPendingWakeStore(opts.bd, { ...(logger ? { logger } : {}) }) } : {}),
         backlog: () => daemon.backlogSnapshot(),
         emit: (kind, payload) => bus.emit({ layer: 'daemon', kind, payload }),
         minIntervalMs: pw.minIntervalMs,

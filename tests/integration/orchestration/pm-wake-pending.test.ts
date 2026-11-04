@@ -1,9 +1,9 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { spawn } from 'node:child_process';
-
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { formatWakeMessage } from '../../../src/orchestration/scheduler/pm-waker.js';
@@ -77,7 +77,7 @@ describeWithBd('durable PM inbox wakes (real isolated bd + CLI subprocess)', () 
     root = mkdtempSync(join(tmpdir(), 'vibesync-wake-fixture-'));
     const sender = fixture(root, mode);
     sender.setMode(mode);
-    const store = new BdPendingWakeStore(repo.runner, { leaseMs: 1000, now: () => Date.now() });
+    const store = new BdPendingWakeStore(repo.runner);
     return { sender, store };
   }
 
@@ -105,7 +105,6 @@ describeWithBd('durable PM inbox wakes (real isolated bd + CLI subprocess)', () 
         if (args[0] === 'create' && args.includes('vibesync:pending-wake')) throw new Error('store unavailable');
         return repo.runner(args);
       },
-      { leaseMs: 1000 },
     );
     let now = Date.now();
     const subject = await waker(failingStore, sinkFor(sender), () => now);
@@ -124,13 +123,40 @@ describeWithBd('durable PM inbox wakes (real isolated bd + CLI subprocess)', () 
     expect(sender.records()[0]!.result.msgId).toMatch(/^project-a-event-/);
   });
 
-  it('concurrent claim contenders authorize at most one sender while the lease is held', async () => {
+  it('concurrent claim contenders authorize one sender across separate processes on the real bd store', async () => {
     const { sender, store } = await setup();
     const created = await store.enqueue(input('wake-concurrent'));
-    const sink = sinkFor(sender);
-    const outcomes = await Promise.all([store.claimAndSend(created.id, sink), store.claimAndSend(created.id, sink)]);
-    expect(outcomes.filter((value) => value.authorized)).toHaveLength(1);
-    expect(outcomes).toHaveLength(2);
+    const worker = join(root, 'claim-worker.ts');
+    const sends = join(root, 'authorized-sends.jsonl');
+    writeFileSync(worker, `
+      import { appendFileSync, writeFileSync } from 'node:fs';
+      import { BdPendingWakeStore } from ${JSON.stringify(pathToFileURL(resolve('src/orchestration/scheduler/bd-pending-wake-store.ts')).href)};
+      import { createCliRunner } from ${JSON.stringify(pathToFileURL(resolve('src/orchestration/scheduler/bd-adapters.ts')).href)};
+      const [binary, cwd, issue, result, sends] = process.argv.slice(2);
+      const run = createCliRunner({ binary, cwd });
+      const store = new BdPendingWakeStore(args => run(['--sandbox', '--dolt-auto-commit=off', ...args]));
+      const outcome = await store.claimAndSend(issue, {
+        wake: async input => {
+          appendFileSync(sends, JSON.stringify(input) + '\\n');
+          return { ok: true, accepted: true, applicationDelivered: true, msgId: input.wakeId };
+        }
+      });
+      writeFileSync(result, outcome.authorized ? 'won' : 'lost');
+    `);
+    const results = await Promise.all([0, 1].map((index) => new Promise<string>((resolve, reject) => {
+      const result = join(root, `claim-result-${index}`);
+      const child = spawn('bun', [worker, repo.binary, repo.root, created.id, result, sends], { env: repo.env, shell: false, stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = '';
+      child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
+      child.on('error', reject);
+      child.on('close', (code) => {
+        try { resolve(readFileSync(result, 'utf8')); } catch { reject(new Error(`claim child exit ${code}: ${stderr || 'no result file'}`)); }
+      });
+    })));
+    expect(results, results.join(',')).toHaveLength(2);
+    expect(results.filter((result) => result === 'won')).toHaveLength(1);
+    expect(readFileSync(sends, 'utf8').trim().split('\n')).toHaveLength(1);
+    expect(sender.records()).toHaveLength(0);
   });
 
   it('restart after receiver acceptance reuses exact ID, recipient, body and correlation after bounded lease recovery', async () => {
@@ -143,8 +169,9 @@ describeWithBd('durable PM inbox wakes (real isolated bd + CLI subprocess)', () 
     expect(initial.args).not.toContain('--conversation-id');
     expect(initial.args).not.toContain('--lane');
 
-    await new Promise((resolve) => setTimeout(resolve, 1100));
-    const second = await store.claimAndSend(pending.id, sink);
+    await waitForNativeExpiry(store, pending.id);
+    const restarted = new BdPendingWakeStore(repo.runner);
+    const second = await restarted.claimAndSend(pending.id, sink);
     expect(second.authorized).toBe(true);
     const records = sender.records();
     expect(records).toHaveLength(2);
@@ -153,7 +180,7 @@ describeWithBd('durable PM inbox wakes (real isolated bd + CLI subprocess)', () 
     const newer = await store.enqueue(input('wake-newer', 'different event'));
     expect(newer.id).not.toBe(pending.id);
     expect((await store.get(pending.id))?.payload).toEqual(pending.payload);
-  });
+  }, 400_000);
 
   it('retains explicit denial and timeout ambiguity without generating a fresh logical ID', async () => {
     const { sender, store } = await setup('unaddressable');
@@ -167,21 +194,34 @@ describeWithBd('durable PM inbox wakes (real isolated bd + CLI subprocess)', () 
   });
 
   it('survives process replacement before any send and after send before receipt recording', async () => {
-    const { sender, store } = await setup();
+    const { sender, store } = await setup('accepted');
     const pending = await store.enqueue(input('wake-crash'));
     const initialPayload = pending.payload;
     const crashed = await store.claim(pending.id);
     expect(crashed.authorized).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await waitForNativeExpiry(store, pending.id);
     const sink = sinkFor(sender);
     const restarted = await store.claimAndSend(pending.id, sink);
     expect(restarted.authorized).toBe(true);
     expect(sender.records()[0]!.args).toContain(initialPayload.msgId);
     expect(sender.records()[0]!.body).toBe(initialPayload.body);
 
-    await new Promise((resolve) => setTimeout(resolve, 1100));
-    const replay = await store.claimAndSend(pending.id, sink);
+    await waitForNativeExpiry(store, pending.id);
+    const restartedStore = new BdPendingWakeStore(repo.runner);
+    const beforeReplay = await restartedStore.get(pending.id);
+    expect(beforeReplay?.leaseExpiresAt).toBeLessThanOrEqual(Date.now());
+    const replayClaim = await restartedStore.claim(pending.id);
+    expect(replayClaim.authorized, JSON.stringify(replayClaim)).toBe(true);
+    const replay = await restartedStore.sendClaimed(replayClaim.record!, sink);
     expect(replay.authorized).toBe(true);
     expect(sender.records()[1]).toEqual(sender.records()[0]);
-  });
+  }, 750_000);
 });
+
+async function waitForNativeExpiry(store: BdPendingWakeStore, id: string): Promise<void> {
+  const record = await store.get(id);
+  expect(record?.leaseExpiresAt, 'claim must establish a native bd lease').toBeTypeOf('number');
+  const remaining = record!.leaseExpiresAt! - Date.now();
+  expect(remaining).toBeLessThan(360_000);
+  await new Promise((resolve) => setTimeout(resolve, Math.max(0, remaining) + 1500));
+}
