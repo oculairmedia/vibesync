@@ -8,6 +8,7 @@ import type { Pack, RoleConfig } from '../packs/index.js';
 import type { RuntimeProvider, SessionEvent, SessionHandle } from '../runtime/index.js';
 import type { ReadyStep, ReadyStepRunner, StepRunOutcome } from '../molecule/index.js';
 import { parseBlockedOutcome, STEP_OUTCOME_INSTRUCTIONS } from './step-outcome.js';
+import type { DeliveryVerifier } from './delivery.js';
 import { renderTemplate } from './render.js';
 import {
   classifyFailure,
@@ -185,6 +186,12 @@ export interface FormulaDispatcherOptions {
    */
   readonly roleAgentContextResolver?: RoleAgentBootstrapContextResolver;
   /**
+   * Confirms a formula's declared delivery (`delivers = "pull_request"`)
+   * before the molecule may complete (vibesync-9lzk.21). Required whenever a
+   * formula declares one: a declared delivery with no verifier fails the run.
+   */
+  readonly deliveryVerifier?: DeliveryVerifier;
+  /**
    * vibesync-mcz Phase D — injectable conversation-id generator.
    * Defaults to a uuid-based generator. Tests inject a counter for
    * deterministic ids; resume code paths re-use stored ids and never
@@ -261,6 +268,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
   private readonly maxConcurrentMolecules: number;
   private readonly providerResolver: ProviderResolver | null;
   private readonly roleAgentContextResolver: RoleAgentBootstrapContextResolver | null;
+  private readonly deliveryVerifier: DeliveryVerifier | null;
   private readonly conversationIdGenerator: ConversationIdGenerator;
   private readonly onMoleculeCooked: ((moleculeId: string) => void) | null;
   private readonly moleculeQueue: QueuedMoleculeRun[] = [];
@@ -276,6 +284,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     this.maxConcurrentMolecules = normalizeMaxConcurrentMolecules(opts.maxConcurrentMolecules);
     this.providerResolver = opts.providerResolver ?? null;
     this.roleAgentContextResolver = opts.roleAgentContextResolver ?? null;
+    this.deliveryVerifier = opts.deliveryVerifier ?? null;
     this.conversationIdGenerator =
       opts.conversationIdGenerator ?? createDefaultConversationIdGenerator();
     this.onMoleculeCooked = opts.onMoleculeCooked ?? null;
@@ -363,6 +372,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
       formulaName: input.formula.name,
       title: `[formula:${input.formula.name}] ${input.formula.description || input.input.slice(0, 80)}`,
       ...(input.motivatingBeadId ? { motivatingBeadId: input.motivatingBeadId } : {}),
+      ...(input.formula.delivers ? { delivers: input.formula.delivers } : {}),
       steps: input.formula.steps,
     });
     return this.registerAndAwait({ input, view, provider, roleAgentContext, startedAt, outputs: {}, announce: true });
@@ -535,6 +545,17 @@ export class FormulaDispatcher implements ReadyStepRunner {
         return;
       }
       if (!(await this.walker.isComplete(run.moleculeId)) || run.finalized) return;
+      // vibesync-9lzk.21: every step finished, but a formula that declares a
+      // delivery only completes once that artifact verifiably exists.
+      const undelivered = await this.checkDelivery(run);
+      if (undelivered !== null) {
+        if (run.finalized) return;
+        run.failed = true;
+        run.failure = new FormulaDispatchError(`FormulaDispatcher: ${undelivered}`, run.moleculeId);
+        await this.settleMolecule(run);
+        return;
+      }
+      if (run.finalized) return;
       run.finalized = true;
       this.live.delete(run.moleculeId);
       await this.walker.markMoleculeRootStatus(run.moleculeId, 'closed', 'completed');
@@ -554,6 +575,69 @@ export class FormulaDispatcher implements ReadyStepRunner {
       this.live.delete(run.moleculeId);
       run.reject(error);
     }
+  }
+
+  /**
+   * Null when the formula declares no delivery or the verifier confirms it;
+   * otherwise the reason the run must fail. Verifier errors fail closed.
+   */
+  private async checkDelivery(run: MoleculeRun): Promise<string | null> {
+    const kind = run.input.formula.delivers;
+    if (kind === undefined) return null;
+    if (!this.deliveryVerifier) return `formula "${run.input.formula.name}" declares delivers = "${kind}" but no delivery verifier is configured`;
+    try {
+      const verdict = await this.deliveryVerifier.verify({
+        kind, outputs: run.outputs, moleculeId: run.moleculeId, startedAt: new Date(run.startedAt),
+        ...(run.input.motivatingBeadId ? { motivatingBeadId: run.input.motivatingBeadId } : {}),
+      });
+      // `in` narrowing works under the test tree's non-strict config too.
+      if ('reason' in verdict) return `declared delivery not met: ${verdict.reason}`;
+      this.emit('dispatcher/formula.delivered', run.moleculeId, undefined, { moleculeId: run.moleculeId, kind, artifact: verdict.artifact });
+      return null;
+    } catch (err) {
+      return `declared delivery could not be verified: ${stringifyError(err)}`;
+    }
+  }
+
+  /**
+   * resume() has no formula in scope, so it reads the delivery the root
+   * recorded at dispatch (vibesync-9lzk.21 review). Throws, after failing the
+   * root and emitting formula.failed, when that delivery is not met.
+   */
+  private async requireResumedDelivery(
+    root: BeadRow,
+    moleculeId: string,
+    outputs: Record<string, string>,
+    startedAt: number,
+    motivatingBeadId: string | null | undefined,
+  ): Promise<void> {
+    const exec = root.metadata['exec'];
+    const kind = typeof exec === 'object' && exec !== null ? (exec as Record<string, unknown>)['delivers'] : undefined;
+    if (kind === undefined) return;
+    // The run this resumes began when the root was created, not at this resume.
+    const runStarted = root.created_at instanceof Date ? root.created_at.getTime() : startedAt;
+    let reason: string | null = null;
+    if (kind !== 'pull_request') reason = `molecule records an unknown delivery kind ${JSON.stringify(kind)}`;
+    else if (!this.deliveryVerifier) reason = 'molecule declares delivers = "pull_request" but no delivery verifier is configured';
+    else {
+      try {
+        const verdict = await this.deliveryVerifier.verify({
+          kind, outputs, moleculeId, startedAt: new Date(runStarted),
+          ...(motivatingBeadId ? { motivatingBeadId } : {}),
+        });
+        if ('reason' in verdict) reason = `declared delivery not met: ${verdict.reason}`;
+        else this.emit('dispatcher/formula.delivered', moleculeId, undefined, { moleculeId, kind, artifact: verdict.artifact, resumed: true });
+      } catch (err) {
+        reason = `declared delivery could not be verified: ${stringifyError(err)}`;
+      }
+    }
+    if (reason === null) return;
+    await this.walker.markMoleculeRootStatus(moleculeId, 'closed', 'failed');
+    this.emit('dispatcher/formula.failed', moleculeId, undefined, {
+      moleculeId, error: reason, resumed: true,
+      ...(motivatingBeadId ? { motivating_bead: motivatingBeadId } : {}),
+    });
+    throw new FormulaDispatchError(`FormulaDispatcher: ${reason}`, moleculeId);
   }
 
   private acquireMoleculeSlot(input: DispatchInput): Promise<void> {
@@ -606,6 +690,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     const running = await this.walker.findRunning(moleculeId);
     if (running.length === 0) {
       if (await this.walker.isComplete(moleculeId)) {
+        await this.requireResumedDelivery(view.root, moleculeId, outputs, startedAt, motivatingBeadId);
         this.emit('dispatcher/formula.completed', moleculeId, undefined, {
           moleculeId,
           durationMs: Date.now() - startedAt,
@@ -632,6 +717,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     }
 
     if (await this.walker.isComplete(moleculeId)) {
+      await this.requireResumedDelivery(view.root, moleculeId, outputs, startedAt, motivatingBeadId);
       this.emit('dispatcher/formula.completed', moleculeId, undefined, {
         moleculeId,
         durationMs: Date.now() - startedAt,

@@ -11,6 +11,7 @@ interface RootInsert {
   readonly formulaName: string;
   readonly title: string;
   readonly motivatingBeadId?: string;
+  readonly delivers?: string;
   readonly metadata?: Record<string, unknown>;
 }
 
@@ -55,6 +56,7 @@ export class InMemoryDoltClient {
       exec: {
         formula: args.formulaName,
         ...(args.motivatingBeadId ? { motivating_bead: args.motivatingBeadId } : {}),
+        ...(args.delivers ? { delivers: args.delivers } : {}),
       },
     };
     this.beads.set(

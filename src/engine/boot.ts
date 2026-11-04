@@ -1,4 +1,7 @@
 import {
+  createGhDeliveryVerifier,
+  ghRepositoryTarget,
+  type DeliveryVerifier,
   FormulaDispatcher,
   installWritebackHook,
   type ProviderResolver,
@@ -88,6 +91,11 @@ export interface BootOrchestrationPlaneOptions {
    * pool-member lookup) are injected so this plane imports no database.
    */
   readonly scheduler?: BootSchedulerOptions;
+  /**
+   * Confirms declared formula deliveries (vibesync-9lzk.21). Defaults to the
+   * `gh` CLI (the scheduler's gh runner when supplied, else `gh` on PATH).
+   */
+  readonly deliveryVerifier?: DeliveryVerifier;
   /**
    * Durable wait-on-beads watcher (vibesync-9g24, invariant 4). Absent or
    * `config.enabled === false` => nothing is constructed: no watcher, no timer,
@@ -309,6 +317,12 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     ...(maxConcurrentMolecules === undefined ? {} : { maxConcurrentMolecules }),
     ...(providerResolver ? { providerResolver } : {}),
     ...(roleAgentContextResolver ? { roleAgentContextResolver } : {}),
+    deliveryVerifier: opts.deliveryVerifier ?? (() => {
+      // The scheduler's gh runs in the project checkout, so `gh repo view`
+      // names the repository a run's PR must live in.
+      const gh = opts.scheduler?.gh ?? createCliRunner({ binary: 'gh', cwd: opts.dolt.beadsRoot });
+      return createGhDeliveryVerifier(gh, ghRepositoryTarget(gh));
+    })(),
   });
 
   steps = new StepDispatcher({
