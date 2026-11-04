@@ -11,12 +11,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { bootOrchestrationPlane, type OrchestrationHandle } from '../../../../src/orchestration/boot.js';
-import type { Event } from '../../../../src/orchestration/events/index.js';
+import { bootOrchestrationPlane, type OrchestrationHandle } from '../../../../src/engine/boot.js';
+import type { Event } from '../../../../src/engine/events/index.js';
 import {
   BEADS_ISSUE_STATUS_CHANGED_EVENT,
   type BootSchedulerOptions,
-} from '../../../../src/orchestration/scheduler/boot-scheduler.js';
+} from '../../../../src/engine/scheduler/boot-scheduler.js';
 import { InMemoryDoltClient, inMemoryBeads } from '../../../_fixtures/in-memory-dolt-client.js';
 
 const TICK = 'daemon/scheduler.tick';

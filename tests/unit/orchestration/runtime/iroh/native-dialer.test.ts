@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { IrohConfigError } from '../../../../../src/orchestration/runtime/iroh/connection.js';
+import { IrohConfigError } from '../../../../../src/engine/runtime/iroh/connection.js';
 import {
   createNativeIrohConnection,
   type NativeIrohLib,
@@ -11,7 +11,7 @@ import {
   readHostFromKv,
   readSecretKey,
   resolveNativeIrohConfig,
-} from '../../../../../src/orchestration/runtime/iroh/native-dialer.js';
+} from '../../../../../src/engine/runtime/iroh/native-dialer.js';
 
 const NODE = 'ab'.repeat(32);
 

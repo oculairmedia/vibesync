@@ -7,7 +7,7 @@ import {
   discoverPacks,
   loadPack,
   validatePackPath,
-} from '../../../../src/orchestration/packs/index.js';
+} from '../../../../src/engine/packs/index.js';
 
 function writePack(root: string, name: string, opts: {
   manifest?: string;

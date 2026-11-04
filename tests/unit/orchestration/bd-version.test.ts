@@ -7,8 +7,8 @@ import {
   bdVersionSatisfies,
   compareBdVersions,
   parseBdVersion,
-} from '../../../src/orchestration/bd-version.js';
-import { bootOrchestrationPlane } from '../../../src/orchestration/boot.js';
+} from '../../../src/engine/bd-version.js';
+import { bootOrchestrationPlane } from '../../../src/engine/boot.js';
 import { checkBdVersion } from '../../../scripts/preflight/bd-preflight.js';
 import { InMemoryDoltClient, inMemoryBeads } from '../../_fixtures/in-memory-dolt-client.js';
 import { newFakeProvider } from '../../_fixtures/fake-provider.js';

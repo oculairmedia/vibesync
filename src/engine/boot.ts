@@ -28,7 +28,6 @@ import type { BootSchedulerOptions, SchedulerHandle } from './scheduler/boot-sch
 import type { DoltClient } from './store/index.js';
 import { startWaitWatcher } from './waits/boot-waits.js';
 import type { BootWaitsOptions, WaitsHandle } from './waits/boot-waits.js';
-import { installLettaClientValidationFilter } from '../letta/LettaClientValidationFilter.js';
 
 export interface OrchestrationHandle {
   readonly dispatcher: FormulaDispatcher;
@@ -237,10 +236,6 @@ export async function releaseDoltAfterFailedBoot(
 }
 
 export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions): Promise<OrchestrationHandle> {
-  // Opt-in silence of @letta-ai/letta-client "Failed to validate." spam
-  // (vibesync-vkp). No-op unless LETTA_SILENCE_VALIDATION_SPAM is set.
-  installLettaClientValidationFilter();
-
   // vibesync-efee: fail before any side effect when bd is too old for the
   // primitives formula steps depend on.
   if (opts.bdVersion) assertBdVersion(await opts.bdVersion());

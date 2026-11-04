@@ -1,5 +1,5 @@
 /**
- * Public exports for src/orchestration/health/.
+ * Public exports for src/engine/health/.
  */
 
 export { HealthPatrol } from './patrol.js';

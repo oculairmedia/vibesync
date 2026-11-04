@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { evaluateWait, readyReason, type EvaluableWait } from '../../../../src/orchestration/waits/index.js';
+import { evaluateWait, readyReason, type EvaluableWait } from '../../../../src/engine/waits/index.js';
 
 const wait = (over: Partial<EvaluableWait> = {}): EvaluableWait => ({
   id: 'w1', mode: 'all', on: ['a', 'b'], note: undefined, expiresAt: undefined, ...over,

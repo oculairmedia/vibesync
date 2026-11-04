@@ -5,7 +5,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createSyncDatabase, type SyncDatabase } from '../../src/database.js';
+import { createSyncDatabase, type SyncDatabase } from '../../src/app/registry/registry.js';
 
 const LEGACY_PROJECTS_SQL = `CREATE TABLE projects (
   identifier TEXT PRIMARY KEY, name TEXT NOT NULL, huly_id TEXT, vibe_id INTEGER,

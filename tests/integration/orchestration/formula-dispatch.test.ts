@@ -2,9 +2,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { DoltClient } from '../../../src/orchestration/store/index.js';
-import { MoleculeWalker } from '../../../src/orchestration/molecule/index.js';
-import { loadPack } from '../../../src/orchestration/packs/index.js';
+import { DoltClient } from '../../../src/engine/store/index.js';
+import { MoleculeWalker } from '../../../src/engine/molecule/index.js';
+import { loadPack } from '../../../src/engine/packs/index.js';
 
 /**
  * huly-vibe-sync-k6h acceptance: "`vibesync dispatch --formula

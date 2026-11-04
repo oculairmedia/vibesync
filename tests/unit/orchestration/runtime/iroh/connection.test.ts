@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { IrohConnection, IrohConnectionLostError } from '../../../../../src/orchestration/runtime/iroh/connection.js';
+import { IrohConnection, IrohConnectionLostError } from '../../../../../src/engine/runtime/iroh/connection.js';
 import { FakeIrohWrapper } from '../../../../_fixtures/fake-iroh-wrapper.js';
 
 let conn: IrohConnection | null = null;

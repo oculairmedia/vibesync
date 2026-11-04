@@ -8,7 +8,7 @@ import {
   DoltClient,
   resolveDoltPort,
   type DoltBootDeps,
-} from '../../../../src/orchestration/store/dolt-client.js';
+} from '../../../../src/engine/store/dolt-client.js';
 
 vi.mock('mysql2/promise', () => ({ default: { createPool: vi.fn(() => ({
   end: vi.fn(async () => {}),

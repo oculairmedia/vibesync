@@ -11,9 +11,9 @@ import { appendFileSync } from 'node:fs';
 
 import { afterAll, describe, expect, it } from 'vitest';
 
-import { createNativeIrohConnection, resolveNativeIrohConfig } from '../../src/orchestration/runtime/iroh/native-dialer.js';
-import { IrohWrapperProvider } from '../../src/orchestration/runtime/iroh-wrapper-provider.js';
-import type { SessionEvent } from '../../src/orchestration/runtime/provider.js';
+import { createNativeIrohConnection, resolveNativeIrohConfig } from '../../src/engine/runtime/iroh/native-dialer.js';
+import { IrohWrapperProvider } from '../../src/engine/runtime/iroh-wrapper-provider.js';
+import type { SessionEvent } from '../../src/engine/runtime/provider.js';
 import { MIN_MODEL_RESPONSE_MS, assertNotFalsePass } from '../_fixtures/false-pass-guard.js';
 
 const LIVE = process.env['VIBESYNC_IROH_LIVE'] === '1';

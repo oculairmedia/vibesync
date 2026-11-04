@@ -3,12 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { EventBus, type Event } from '../../../../src/orchestration/events/index.js';
-import type { Formula } from '../../../../src/orchestration/formula/index.js';
-import { FormulaDispatchError, FormulaDispatcher } from '../../../../src/orchestration/dispatcher/index.js';
-import { MoleculeWalker, newMoleculeStepId } from '../../../../src/orchestration/molecule/index.js';
-import type { Pack } from '../../../../src/orchestration/packs/index.js';
-import type { SessionEvent, SessionSpec } from '../../../../src/orchestration/runtime/index.js';
+import { EventBus, type Event } from '../../../../src/engine/events/index.js';
+import type { Formula } from '../../../../src/engine/formula/index.js';
+import { FormulaDispatchError, FormulaDispatcher } from '../../../../src/engine/dispatcher/index.js';
+import { MoleculeWalker, newMoleculeStepId } from '../../../../src/engine/molecule/index.js';
+import type { Pack } from '../../../../src/engine/packs/index.js';
+import type { SessionEvent, SessionSpec } from '../../../../src/engine/runtime/index.js';
 import { newFakeProvider } from '../../../_fixtures/fake-provider.js';
 import { newDriven } from '../../../_fixtures/step-driver.js';
 import { InMemoryDoltClient } from '../../../_fixtures/in-memory-dolt-client.js';

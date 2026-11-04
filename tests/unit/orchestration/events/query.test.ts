@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { queryEventLog } from '../../../../src/orchestration/events/index.js';
-import type { Event } from '../../../../src/orchestration/events/index.js';
+import { queryEventLog } from '../../../../src/engine/events/index.js';
+import type { Event } from '../../../../src/engine/events/index.js';
 
 describe('queryEventLog', () => {
   it('filters by molecule, layer, and kind prefix with cursor pagination', () => {

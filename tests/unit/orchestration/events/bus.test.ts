@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { EventBus, type Event } from '../../../../src/orchestration/events/index.js';
+import { EventBus, type Event } from '../../../../src/engine/events/index.js';
 
 describe('EventBus', () => {
   let tmpRoot: string;

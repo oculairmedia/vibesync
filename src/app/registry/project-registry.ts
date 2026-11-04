@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { logger as rootLogger } from './logger';
-import { stripUrlCredentials } from './utils';
+import { logger as rootLogger } from '../logger';
+import { stripUrlCredentials } from '../utils';
 import { ensureRig, type EnsureRigResult } from './rig/provisioner.js';
-import type { SyncDatabase } from './database';
-import type { ProjectRow } from './types/db.js';
+import type { SyncDatabase } from './registry';
+import type { ProjectRow } from '../types/db.js';
 
 export interface RigEvent {
   type: 'rig:provisioned' | 'rig:error';

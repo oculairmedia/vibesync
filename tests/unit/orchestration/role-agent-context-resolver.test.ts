@@ -9,9 +9,9 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { buildRoleAgentContextResolver } from '../../../src/orchestration/boot.js';
-import type { ProjectProviderRoutingStore } from '../../../src/orchestration/boot.js';
-import type { RoleAgentBootstrapperLike } from '../../../src/orchestration/dispatcher/index.js';
+import { buildRoleAgentContextResolver } from '../../../src/engine/boot.js';
+import type { ProjectProviderRoutingStore } from '../../../src/engine/boot.js';
+import type { RoleAgentBootstrapperLike } from '../../../src/engine/dispatcher/index.js';
 
 function fakeStore(rows: Record<string, {
   providerKind: string | null;

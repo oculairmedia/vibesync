@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 
-import { EventBus } from '../../../../src/orchestration/events/bus.js';
-import { WorkActivityReporter } from '../../../../src/orchestration/events/work-activity-reporter.js';
+import { EventBus } from '../../../../src/engine/events/bus.js';
+import { WorkActivityReporter } from '../../../../src/engine/events/work-activity-reporter.js';
 
 describe('WorkActivityReporter', () => {
   describe('event filtering', () => {

@@ -7,8 +7,8 @@ import {
   type SchedulerConfig,
   type SchedulerContextStore,
   type DispatchCandidate,
-} from '../../../../src/orchestration/scheduler/index.js';
-import type { SlingContextRecord } from '../../../../src/orchestration/scheduler/sling-context.js';
+} from '../../../../src/engine/scheduler/index.js';
+import type { SlingContextRecord } from '../../../../src/engine/scheduler/sling-context.js';
 
 /** Build a sling-context record with sensible defaults. */
 function ctx(workBeadId: string, over: Partial<{

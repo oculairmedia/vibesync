@@ -1,5 +1,5 @@
 /**
- * Tests for src/beads/PortSweeper.ts.
+ * Tests for src/app/registry/port-sweep/PortSweeper.ts.
  *
  * Covers vibesync-d15: detection (duplicate-configured-port + wrong-owner),
  * pickFreePort recompute, repairProject command sequence + dry-run, and
@@ -15,7 +15,7 @@ import {
   type CommandResult,
   type PortSweeperDeps,
   type SweeperProject,
-} from '../../src/beads/PortSweeper.js';
+} from '../../src/app/registry/port-sweep/PortSweeper.js';
 
 function makeDeps(overrides: Partial<PortSweeperDeps> = {}): PortSweeperDeps {
   return {

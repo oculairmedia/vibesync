@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import type { OrchestrationHandle } from '../orchestration/boot.js';
+import type { OrchestrationHandle } from '../../engine/boot.js';
 import type { ProjectRow } from './db.js';
 
 export type Logger = {

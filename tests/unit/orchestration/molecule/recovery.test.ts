@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { bootOrchestrationPlane, type OrchestrationHandle } from '../../../../src/orchestration/boot.js';
-import { INTERRUPTED_EVENT, MoleculeWalker, recoverInterruptedMolecules } from '../../../../src/orchestration/molecule/index.js';
-import type { StepSpec } from '../../../../src/orchestration/molecule/index.js';
-import type { Event } from '../../../../src/orchestration/events/index.js';
+import { bootOrchestrationPlane, type OrchestrationHandle } from '../../../../src/engine/boot.js';
+import { INTERRUPTED_EVENT, MoleculeWalker, recoverInterruptedMolecules } from '../../../../src/engine/molecule/index.js';
+import type { StepSpec } from '../../../../src/engine/molecule/index.js';
+import type { Event } from '../../../../src/engine/events/index.js';
 import { InMemoryDoltClient, inMemoryBeads } from '../../../_fixtures/in-memory-dolt-client.js';
 import { newFakeProvider } from '../../../_fixtures/fake-provider.js';
 

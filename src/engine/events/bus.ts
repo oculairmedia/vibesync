@@ -30,7 +30,7 @@ import { randomUUID } from 'node:crypto';
 /**
  * One observation event. All cross-layer signals use this shape.
  *
- * `layer` identifies who emitted (matches the src/orchestration/ subdir
+ * `layer` identifies who emitted (matches the src/engine/ subdir
  * names). `kind` is layer-specific; e.g. `runtime/session.started`,
  * `molecule/step.dispatched`, `formula/dispatch.requested`. Convention:
  * dot-separated, scoped under the layer name.

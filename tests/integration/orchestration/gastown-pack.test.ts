@@ -5,8 +5,8 @@ import {
   discoverPacks,
   loadPack,
   validatePackPath,
-} from '../../../src/orchestration/packs/index.js';
-import { renderTemplate } from '../../../src/orchestration/dispatcher/render.js';
+} from '../../../src/engine/packs/index.js';
+import { renderTemplate } from '../../../src/engine/dispatcher/render.js';
 
 /**
  * Integration: the gastown pack at packs/gastown/ loads cleanly and

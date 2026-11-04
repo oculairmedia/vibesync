@@ -1,13 +1,13 @@
 import http from 'node:http';
 
-import { logger } from './logger';
-import { registerFormulaRoutes } from './api/routes/formulas.js';
-import { registerHealthRoutes } from './api/routes/health.js';
-import { registerOpenApiRoutes } from './api/routes/openapi.js';
-import { registerProjectRoutes } from './api/routes/projects.js';
-import { sseManager } from './api/SSEManager.js';
-import type { SyncDatabase } from './database.js';
-import type { App, DoltHubProvisionerApi, HandleContext, OrchestrationApi, ProjectRegistryApi, RouteContext } from './types/api.js';
+import { logger } from '../logger';
+import { registerFormulaRoutes } from './routes/formulas.js';
+import { registerHealthRoutes } from './routes/health.js';
+import { registerOpenApiRoutes } from './routes/openapi.js';
+import { registerProjectRoutes } from './routes/projects.js';
+import { sseManager } from './SSEManager.js';
+import type { SyncDatabase } from '../registry/registry.js';
+import type { App, DoltHubProvisionerApi, HandleContext, OrchestrationApi, ProjectRegistryApi, RouteContext } from '../types/api.js';
 
 function parseJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {

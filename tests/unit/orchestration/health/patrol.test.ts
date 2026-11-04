@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { EventBus, type Event } from '../../../../src/orchestration/events/index.js';
-import { HealthPatrol, type DaemonSupervisor } from '../../../../src/orchestration/health/index.js';
+import { EventBus, type Event } from '../../../../src/engine/events/index.js';
+import { HealthPatrol, type DaemonSupervisor } from '../../../../src/engine/health/index.js';
 import type {
   RuntimeProvider,
   SessionEvent,
   SessionHandle,
   SessionSpec,
-} from '../../../../src/orchestration/runtime/index.js';
+} from '../../../../src/engine/runtime/index.js';
 
 /** Manual clock so tests don't sleep. */
 function manualClock() {

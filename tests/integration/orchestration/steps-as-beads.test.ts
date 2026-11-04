@@ -12,9 +12,9 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { bootOrchestrationPlane } from '../../../src/orchestration/boot.js';
-import { MoleculeWalker, newMoleculeStepId, type StepSpec } from '../../../src/orchestration/molecule/index.js';
-import { StoreReadyStepSource, type ReadyStep, type ReadyStepSource } from '../../../src/orchestration/scheduler/step-dispatcher.js';
+import { bootOrchestrationPlane } from '../../../src/engine/boot.js';
+import { MoleculeWalker, newMoleculeStepId, type StepSpec } from '../../../src/engine/molecule/index.js';
+import { StoreReadyStepSource, type ReadyStep, type ReadyStepSource } from '../../../src/engine/scheduler/step-dispatcher.js';
 import { newFakeProvider } from '../../_fixtures/fake-provider.js';
 import { provisionIsolatedBeads, RUN_ISOLATED_BEADS } from './isolated-beads.js';
 

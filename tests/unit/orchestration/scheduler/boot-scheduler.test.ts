@@ -10,9 +10,9 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { bootOrchestrationPlane, type OrchestrationHandle } from '../../../../src/orchestration/boot.js';
-import type { Event } from '../../../../src/orchestration/events/index.js';
-import type { BootSchedulerOptions } from '../../../../src/orchestration/scheduler/boot-scheduler.js';
+import { bootOrchestrationPlane, type OrchestrationHandle } from '../../../../src/engine/boot.js';
+import type { Event } from '../../../../src/engine/events/index.js';
+import type { BootSchedulerOptions } from '../../../../src/engine/scheduler/boot-scheduler.js';
 import { InMemoryDoltClient, inMemoryBeads } from '../../../_fixtures/in-memory-dolt-client.js';
 
 const TICK = 'daemon/scheduler.tick';
@@ -290,7 +290,7 @@ describe('bootOrchestrationPlane — SchedulerDaemon wiring (vibesync-z2ws)', ()
   });
 
   it('auto-merge is OFF by default: merging is impossible even if a PR were queued', async () => {
-    const { disabledGitHubPort } = await import('../../../../src/orchestration/refinery/github.js');
+    const { disabledGitHubPort } = await import('../../../../src/engine/refinery/github.js');
     await expect(disabledGitHubPort.merge('o/r', 1)).rejects.toThrow('auto-merge is disabled');
     await expect(disabledGitHubPort.fetchFacts('o/r', 1, [])).rejects.toThrow('auto-merge is disabled');
 

@@ -1,19 +1,19 @@
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { logger as defaultLogger } from './logger';
-import type { BeadsRemoteSnapshot } from './database/repositories/ProjectRepository';
+import { logger as defaultLogger } from '../logger';
+import type { BeadsRemoteSnapshot } from './repositories/ProjectRepository';
 import {
   defaultDeps as defaultPortSweeperDeps,
   detectConflict as detectPortConflict,
   pickFreePort,
   type PortSweeperDeps,
   type SweeperProject,
-} from './beads/PortSweeper';
+} from './port-sweep/PortSweeper';
 import type {
   DoltHubProvisioningConfig,
   DoltHubProvisioningResult,
-} from './types/dolthub';
+} from '../types/dolthub';
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_BRANCH = 'main';

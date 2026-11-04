@@ -8,7 +8,7 @@ import {
   IrohProtocolError,
   encodeFrame,
   encodeFrameParts,
-} from '../../../../../src/orchestration/runtime/iroh/frame-codec.js';
+} from '../../../../../src/engine/runtime/iroh/frame-codec.js';
 
 function feedAll(decoder: FrameDecoder, wire: Uint8Array[], chunkSize?: number): string[] {
   const out: string[] = [];

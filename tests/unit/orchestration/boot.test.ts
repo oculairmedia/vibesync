@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { HealthPatrol } from '../../../src/orchestration/health/patrol.js';
-import { WrongDoltDatabaseError } from '../../../src/orchestration/store/dolt-client.js';
+import { HealthPatrol } from '../../../src/engine/health/patrol.js';
+import { WrongDoltDatabaseError } from '../../../src/engine/store/dolt-client.js';
 
-import { bootOrchestrationPlane, releaseDoltAfterFailedBoot } from '../../../src/orchestration/boot.js';
+import { bootOrchestrationPlane, releaseDoltAfterFailedBoot } from '../../../src/engine/boot.js';
 import { InMemoryDoltClient, inMemoryBeads } from '../../_fixtures/in-memory-dolt-client.js';
 import { FakeIrohWrapper } from '../../_fixtures/fake-iroh-wrapper.js';
-import { IrohConnection } from '../../../src/orchestration/runtime/iroh/connection.js';
-import { WorkActivityReporter } from '../../../src/orchestration/events/index.js';
+import { IrohConnection } from '../../../src/engine/runtime/iroh/connection.js';
+import { WorkActivityReporter } from '../../../src/engine/events/index.js';
 
 describe('bootOrchestrationPlane', () => {
   it('rejects identity mismatch before schema checks or runtime startup', async () => {

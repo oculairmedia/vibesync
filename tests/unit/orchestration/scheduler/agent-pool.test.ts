@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AgentPool,
   type PoolMemberIdentity,
-} from '../../../../src/orchestration/scheduler/index.js';
+} from '../../../../src/engine/scheduler/index.js';
 
 function members(n: number): PoolMemberIdentity[] {
   return Array.from({ length: n }, (_, i) => ({

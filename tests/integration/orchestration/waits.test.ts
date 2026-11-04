@@ -13,8 +13,8 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { EventBus } from '../../../src/orchestration/events/index.js';
-import { BEADS_ISSUE_STATUS_CHANGED_EVENT } from '../../../src/orchestration/scheduler/index.js';
+import { EventBus } from '../../../src/engine/events/index.js';
+import { BEADS_ISSUE_STATUS_CHANGED_EVENT } from '../../../src/engine/scheduler/index.js';
 import {
   BdWaitStore,
   WAIT_READY_EVENT,
@@ -22,7 +22,7 @@ import {
   WaitWatcher,
   type WaitWakeSink,
   type WakeRequest,
-} from '../../../src/orchestration/waits/index.js';
+} from '../../../src/engine/waits/index.js';
 import { RUN_ISOLATED_WAITS, provisionIsolatedWaitRepo, type IsolatedWaitRepo } from './isolated-bd-waits.js';
 
 function recordingSink(opts: { failTimes?: number } = {}) {

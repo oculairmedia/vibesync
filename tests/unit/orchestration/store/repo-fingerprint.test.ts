@@ -1,5 +1,5 @@
 /**
- * Tests for src/orchestration/store/repo-fingerprint.ts — vibesync-84a.
+ * Tests for src/engine/store/repo-fingerprint.ts — vibesync-84a.
  *
  * The canonical URL algorithm must stay in lockstep with bd's Go
  * `canonicalizeGitURL` (beads/internal/beads/fingerprint.go). These tests
@@ -11,7 +11,7 @@ import {
   canonicalizeGitURL,
   computeRepoId,
   type RepoFingerprintDeps,
-} from '../../../../src/orchestration/store/repo-fingerprint.js';
+} from '../../../../src/engine/store/repo-fingerprint.js';
 import { createHash } from 'node:crypto';
 
 function makeDeps(overrides: Partial<RepoFingerprintDeps> = {}): RepoFingerprintDeps {

@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { installWritebackHook } from '../../../../src/orchestration/dispatcher/writeback-hook.js';
-import { EventBus } from '../../../../src/orchestration/events/index.js';
-import { MoleculeWalker } from '../../../../src/orchestration/molecule/index.js';
+import { installWritebackHook } from '../../../../src/engine/dispatcher/writeback-hook.js';
+import { EventBus } from '../../../../src/engine/events/index.js';
+import { MoleculeWalker } from '../../../../src/engine/molecule/index.js';
 import { InMemoryDoltClient } from '../../../_fixtures/in-memory-dolt-client.js';
 
 interface MoleculeFixture {

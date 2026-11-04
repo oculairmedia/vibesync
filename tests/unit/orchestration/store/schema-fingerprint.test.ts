@@ -8,7 +8,7 @@ import {
   canonicalizeCreateTableSql,
   computeSchemaFingerprint,
   perTableHashes,
-} from '../../../../src/orchestration/store/schema-fingerprint.js';
+} from '../../../../src/engine/store/schema-fingerprint.js';
 
 const issuesCreate = `CREATE TABLE \`issues\` (
   \`id\` varchar(255) NOT NULL,

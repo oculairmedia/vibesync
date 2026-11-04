@@ -15,7 +15,7 @@ import {
   MoleculeRootExec,
   ApiErrorContract,
   type ContractName,
-} from '../../../../src/orchestration/contracts/index.js';
+} from '../../../../src/engine/contracts/index.js';
 
 const ALL_NAMES = Object.keys(CONTRACTS) as ContractName[];
 

@@ -9,8 +9,8 @@ import {
   type SlotReaper,
   type WitnessEscalation,
   type WorkingSlot,
-} from '../../../../src/orchestration/scheduler/witness.js';
-import type { PoolSlotView } from '../../../../src/orchestration/scheduler/agent-pool.js';
+} from '../../../../src/engine/scheduler/witness.js';
+import type { PoolSlotView } from '../../../../src/engine/scheduler/agent-pool.js';
 
 const IDENT = { agentId: 'a0', role: 'coder', lettaBaseUrl: 'http://x' };
 

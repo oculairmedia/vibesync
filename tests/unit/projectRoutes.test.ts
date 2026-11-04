@@ -10,10 +10,10 @@ import type { AddressInfo } from 'node:net';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createApiServer } from '../../src/ApiServer.js';
-import { createSyncDatabase, type SyncDatabase } from '../../src/database.js';
-import { ProjectRegistry } from '../../src/ProjectRegistry.js';
-import type { DoltHubProvisionerApi } from '../../src/types/api.js';
+import { createApiServer } from '../../src/app/http/server.js';
+import { createSyncDatabase, type SyncDatabase } from '../../src/app/registry/registry.js';
+import { ProjectRegistry } from '../../src/app/registry/project-registry.js';
+import type { DoltHubProvisionerApi } from '../../src/app/types/api.js';
 
 describe('project registry routes', () => {
   let dir: string;

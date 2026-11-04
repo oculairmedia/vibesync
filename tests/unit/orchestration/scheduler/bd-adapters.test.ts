@@ -6,10 +6,10 @@ import {
   BdReadyBeadSource,
   BdSlingContextStore,
   parseJsonOutput,
-} from '../../../../src/orchestration/scheduler/bd-adapters.js';
-import { BdCommentEscalationStore } from '../../../../src/orchestration/escalation/bd-store.js';
-import { GhCliGitHubPort } from '../../../../src/orchestration/refinery/github.js';
-import { serializeParams, SLING_CONTEXT_LABEL, SLING_CONTEXT_VERSION } from '../../../../src/orchestration/scheduler/sling-context.js';
+} from '../../../../src/engine/scheduler/bd-adapters.js';
+import { BdCommentEscalationStore } from '../../../../src/engine/escalation/bd-store.js';
+import { GhCliGitHubPort } from '../../../../src/engine/refinery/github.js';
+import { serializeParams, SLING_CONTEXT_LABEL, SLING_CONTEXT_VERSION } from '../../../../src/engine/scheduler/sling-context.js';
 
 function runner(responses: (args: readonly string[]) => string) {
   const calls: string[][] = [];

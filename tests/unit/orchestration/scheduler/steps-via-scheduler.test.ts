@@ -13,17 +13,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { registerFormulaRoutes } from '../../../../src/api/routes/formulas.js';
-import { bootOrchestrationPlane, type OrchestrationHandle } from '../../../../src/orchestration/boot.js';
-import { FormulaDispatcher } from '../../../../src/orchestration/dispatcher/index.js';
-import { EventBus, type Event } from '../../../../src/orchestration/events/index.js';
-import type { Formula } from '../../../../src/orchestration/formula/index.js';
-import { MoleculeWalker, newMoleculeStepId } from '../../../../src/orchestration/molecule/index.js';
-import type { Pack } from '../../../../src/orchestration/packs/index.js';
-import type { BootSchedulerOptions } from '../../../../src/orchestration/scheduler/boot-scheduler.js';
-import { StepDispatcher, type ReadyStepSource } from '../../../../src/orchestration/scheduler/step-dispatcher.js';
-import type { SessionEvent, SessionSpec } from '../../../../src/orchestration/runtime/index.js';
-import type { App, HandleContext, OrchestrationApi, RouteContext } from '../../../../src/types/api.js';
+import { registerFormulaRoutes } from '../../../../src/app/http/routes/formulas.js';
+import { bootOrchestrationPlane, type OrchestrationHandle } from '../../../../src/engine/boot.js';
+import { FormulaDispatcher } from '../../../../src/engine/dispatcher/index.js';
+import { EventBus, type Event } from '../../../../src/engine/events/index.js';
+import type { Formula } from '../../../../src/engine/formula/index.js';
+import { MoleculeWalker, newMoleculeStepId } from '../../../../src/engine/molecule/index.js';
+import type { Pack } from '../../../../src/engine/packs/index.js';
+import type { BootSchedulerOptions } from '../../../../src/engine/scheduler/boot-scheduler.js';
+import { StepDispatcher, type ReadyStepSource } from '../../../../src/engine/scheduler/step-dispatcher.js';
+import type { SessionEvent, SessionSpec } from '../../../../src/engine/runtime/index.js';
+import type { App, HandleContext, OrchestrationApi, RouteContext } from '../../../../src/app/types/api.js';
 import { newFakeProvider } from '../../../_fixtures/fake-provider.js';
 import { InMemoryDoltClient } from '../../../_fixtures/in-memory-dolt-client.js';
 

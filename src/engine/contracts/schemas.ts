@@ -86,7 +86,7 @@ export const MoleculeStepExec = z.looseObject({
   attempts: z.number().int().nonnegative().optional(),
 });
 
-// --- RuntimeProvider contract (src/orchestration/runtime/provider.ts) ---
+// --- RuntimeProvider contract (src/engine/runtime/provider.ts) ---
 
 export const SessionSpecContract = z.looseObject({
   schema_version: SchemaVersion,

@@ -5,8 +5,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { bootOrchestrationPlane, type OrchestrationHandle } from '../../../../src/orchestration/boot.js';
-import type { BootWaitsOptions } from '../../../../src/orchestration/waits/index.js';
+import { bootOrchestrationPlane, type OrchestrationHandle } from '../../../../src/engine/boot.js';
+import type { BootWaitsOptions } from '../../../../src/engine/waits/index.js';
 import { InMemoryDoltClient, inMemoryBeads } from '../../../_fixtures/in-memory-dolt-client.js';
 
 function fakeBd() {

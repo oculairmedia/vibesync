@@ -4,7 +4,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 
-import { createCliRunner, type CommandRunner } from '../../../src/orchestration/scheduler/bd-adapters.js';
+import { createCliRunner, type CommandRunner } from '../../../src/engine/scheduler/bd-adapters.js';
 
 export const RUN_ISOLATED_WAKES = process.env['VIBESYNC_TEST_BD_WAKES'] !== undefined;
 

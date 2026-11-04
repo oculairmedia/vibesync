@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { IrohAuthError, IrohConnection, IrohRefusedError } from '../../../../../src/orchestration/runtime/iroh/connection.js';
-import { runTurn, createConversation, lastAssistantText, chronological } from '../../../../../src/orchestration/runtime/iroh/turn-client.js';
+import { IrohAuthError, IrohConnection, IrohRefusedError } from '../../../../../src/engine/runtime/iroh/connection.js';
+import { runTurn, createConversation, lastAssistantText, chronological } from '../../../../../src/engine/runtime/iroh/turn-client.js';
 import { FakeIrohWrapper } from '../../../../_fixtures/fake-iroh-wrapper.js';
 
 const AGENT = 'agent-parent';

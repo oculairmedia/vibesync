@@ -9,7 +9,7 @@ import {
   type SlingContextStore,
   type SlingCloseReason,
   type SlingContextParams,
-} from '../../../../src/orchestration/scheduler/index.js';
+} from '../../../../src/engine/scheduler/index.js';
 
 /**
  * In-memory SlingContextStore fake. Also records every bead id it ever wrote

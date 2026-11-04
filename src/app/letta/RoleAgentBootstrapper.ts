@@ -45,7 +45,7 @@ import {
   type CreateAgentOptions,
 } from '@letta-ai/letta-code-sdk';
 
-import type { ProjectRoleAgentRecord } from '../database/repositories/ProjectRoleAgentRepository.js';
+import type { ProjectRoleAgentRecord } from '../registry/repositories/ProjectRoleAgentRepository.js';
 
 /**
  * Subset of `SyncDatabase` the bootstrapper needs. Lets tests pass a

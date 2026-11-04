@@ -1,5 +1,5 @@
 /**
- * Public exports for src/orchestration/molecule/.
+ * Public exports for src/engine/molecule/.
  */
 
 export { MoleculeWalker, newMoleculeRootId, newMoleculeStepId } from './molecule.js';

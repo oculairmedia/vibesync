@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { FormulaCancellationConflictError } from '../../orchestration/dispatcher/index.js';
-import { discoverPacks, loadPack, type Pack } from '../../orchestration/packs/index.js';
-import { defaultEventLogPath, queryEventLog } from '../../orchestration/events/index.js';
-import type { Event } from '../../orchestration/events/index.js';
-import type { BeadRow } from '../../orchestration/store/index.js';
+import { FormulaCancellationConflictError } from '../../../engine/dispatcher/index.js';
+import { discoverPacks, loadPack, type Pack } from '../../../engine/packs/index.js';
+import { defaultEventLogPath, queryEventLog } from '../../../engine/events/index.js';
+import type { Event } from '../../../engine/events/index.js';
+import type { BeadRow } from '../../../engine/store/index.js';
 import { resolveFromAppRoot } from '../../runtimePaths.js';
 import type { App, HandleContext, Logger, OrchestrationApi, ParseJsonBody, SendError, SendJson } from '../../types/api.js';
 import type { SSEManager } from '../SSEManager.js';

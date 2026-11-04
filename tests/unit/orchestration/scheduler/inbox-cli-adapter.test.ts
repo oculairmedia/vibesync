@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { createInboxCliAdapter } from '../../../../src/orchestration/pm-wake/inbox-cli-adapter.js';
+import { createInboxCliAdapter } from '../../../../src/engine/pm-wake/inbox-cli-adapter.js';
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });

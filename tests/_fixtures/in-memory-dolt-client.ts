@@ -1,5 +1,5 @@
-import type { MoleculeOutcome } from '../../src/orchestration/molecule/molecule.js';
-import type { BeadRow, DependencyRow } from '../../src/orchestration/store/index.js';
+import type { MoleculeOutcome } from '../../src/engine/molecule/molecule.js';
+import type { BeadRow, DependencyRow } from '../../src/engine/store/index.js';
 
 export interface BeadNote {
   readonly beadId: string;

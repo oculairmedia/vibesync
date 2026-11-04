@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { EXPECTED_BD_SCHEMA_FINGERPRINT } from '../../src/orchestration/store/schema-fingerprint.js';
+import { EXPECTED_BD_SCHEMA_FINGERPRINT } from '../../src/engine/store/schema-fingerprint.js';
 import { provisionIsolatedBeads, RUN_ISOLATED_BEADS } from './orchestration/isolated-beads.js';
 
 // VIBESYNC_TEST_BD=/absolute/path/to/pinned/bd npx vitest run tests/integration/dolt-schema-fingerprint.test.ts

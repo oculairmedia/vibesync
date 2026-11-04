@@ -7,12 +7,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { runMigrations } from './database/migrations';
-import { ProjectRepository } from './database/repositories/ProjectRepository';
+import { runMigrations } from './migrations';
+import { ProjectRepository } from './repositories/ProjectRepository';
 
 import type BetterSqlite3 from 'better-sqlite3';
-import type { ProjectRow } from './types/db.js';
-import type { BeadsRemoteSnapshot, ProjectUpdate, ProjectUpsert } from './database/repositories/ProjectRepository';
+import type { ProjectRow } from '../types/db.js';
+import type { BeadsRemoteSnapshot, ProjectUpdate, ProjectUpsert } from './repositories/ProjectRepository';
 
 const sqliteModuleName = (globalThis as Record<string, unknown>).Bun ? 'bun:sqlite' : 'better-sqlite3';
 const sqliteModule = await import(sqliteModuleName);

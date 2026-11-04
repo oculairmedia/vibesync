@@ -23,9 +23,9 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { bootOrchestrationPlane, type OrchestrationHandle } from '../../../../src/orchestration/boot.js';
-import type { Event } from '../../../../src/orchestration/events/index.js';
-import type { BootSchedulerOptions } from '../../../../src/orchestration/scheduler/boot-scheduler.js';
+import { bootOrchestrationPlane, type OrchestrationHandle } from '../../../../src/engine/boot.js';
+import type { Event } from '../../../../src/engine/events/index.js';
+import type { BootSchedulerOptions } from '../../../../src/engine/scheduler/boot-scheduler.js';
 import {
   PM_WAKE_RETRY_BACKOFF_MS,
   PM_WAKE_SKIPPED_EVENT,
@@ -34,7 +34,7 @@ import {
   type PmWakeInput,
   type PmWakeSink,
   type WakeReason,
-} from '../../../../src/orchestration/scheduler/index.js';
+} from '../../../../src/engine/scheduler/index.js';
 import { InMemoryDoltClient, inMemoryBeads } from '../../../_fixtures/in-memory-dolt-client.js';
 
 const HOUR = 3_600_000;
@@ -432,7 +432,7 @@ describe('PM wake (vibesync-2bgv)', () => {
   });
 
   it('6b. production resolution path: the lookup wired to a REAL SyncDatabase (projects.letta_agent_id)', async () => {
-    const { createSyncDatabase } = await import('../../../../src/database.js');
+    const { createSyncDatabase } = await import('../../../../src/app/registry/registry.js');
     const db = createSyncDatabase(path.join(dir, 'sync-state.db'));
     try {
       const s = fakeSink();

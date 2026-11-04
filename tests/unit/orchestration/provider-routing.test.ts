@@ -4,7 +4,7 @@ import {
   buildProviderResolver,
   wrapWithParentAgentId,
   type ProjectProviderRoutingStore,
-} from '../../../src/orchestration/boot.js';
+} from '../../../src/engine/boot.js';
 import type {
   ContentBlock,
   PromptResult,
@@ -13,8 +13,8 @@ import type {
   SessionEvent,
   SessionHandle,
   SessionSpec,
-} from '../../../src/orchestration/runtime/index.js';
-import type { DispatchInput } from '../../../src/orchestration/dispatcher/index.js';
+} from '../../../src/engine/runtime/index.js';
+import type { DispatchInput } from '../../../src/engine/dispatcher/index.js';
 
 /**
  * Unit tests for the per-project routing wiring (vibesync-f5g / vibesync-8hk):

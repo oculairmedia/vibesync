@@ -8,7 +8,7 @@ import {
   type EscalationRecord,
   type EscalationSeverity,
   type NotificationTransport,
-} from '../../../../src/orchestration/scheduler/index.js';
+} from '../../../../src/engine/scheduler/index.js';
 
 /** In-memory escalation store: records the marker comments + records. */
 class FakeStore implements EscalationStore {

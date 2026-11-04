@@ -14,8 +14,8 @@
  *   - dedupe on (conversation, client_message_id); parked frames are replayed
  *     to a redialed link (unless `replay` is off, modelling a wrapper restart)
  */
-import { FrameDecoder, encodeFrameParts } from '../../src/orchestration/runtime/iroh/frame-codec.js';
-import type { DuplexLike, IrohLink } from '../../src/orchestration/runtime/iroh/connection.js';
+import { FrameDecoder, encodeFrameParts } from '../../src/engine/runtime/iroh/frame-codec.js';
+import type { DuplexLike, IrohLink } from '../../src/engine/runtime/iroh/connection.js';
 
 type F = Record<string, unknown>;
 

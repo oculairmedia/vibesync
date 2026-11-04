@@ -7,7 +7,7 @@ import {
   type PrFacts,
   type GitHubPort,
   type RefineryEscalationSink,
-} from '../../../../src/orchestration/refinery/refinery.js';
+} from '../../../../src/engine/refinery/refinery.js';
 
 const REQUIRED = ['test (18.x)', 'test (20.x)', 'typecheck'];
 

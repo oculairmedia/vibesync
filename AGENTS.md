@@ -61,7 +61,7 @@ This reports:
 
 Exit codes: `0` = all clean, `1` = warnings (proceed with care), `2` = errors (fix before working).
 
-**Do NOT** mutate `.beads/dolt/` directly. All writes go through the `bd` CLI; reads can also go directly to the local Dolt MySQL port that `bd init` manages (this is the daemon-hot-path; see VibeSync's `src/orchestration/store/dolt-client.ts` for the pattern).
+**Do NOT** mutate `.beads/dolt/` directly. All writes go through the `bd` CLI; reads can also go directly to the local Dolt MySQL port that `bd init` manages (this is the daemon-hot-path; see VibeSync's `src/engine/store/dolt-client.ts` for the pattern).
 
 ### Persistence
 
@@ -95,7 +95,7 @@ Background: an autonomous rig run pushed broken, unreviewed code straight to `or
 
 These five rules — verbatim from [Gas City](https://github.com/gastownhall/gascity)'s
 `AGENTS.md` — are the load-bearing architecture discipline for everything
-under `src/orchestration/` and any code that integrates with it. Cite them
+under `src/engine/` and any code that integrates with it. Cite them
 in PR reviews when blocking a change. A violation is a defect even if the
 code "works."
 
@@ -114,9 +114,9 @@ wire-format stability) is owned by `vibesync-jxri.5`, not by this
 ADR.
 
 1. **No upward dependencies.** Layer N never imports Layer N+1. Concretely
-   in VibeSync: `src/orchestration/runtime/` never imports
-   `src/orchestration/formula/`; `src/orchestration/formula/` never imports
-   `src/orchestration/daemon.ts`. If a lower layer needs to call back into
+   in VibeSync: `src/engine/runtime/` never imports
+   `src/engine/formula/`; `src/engine/formula/` never imports
+   `src/engine/daemon.ts`. If a lower layer needs to call back into
    a higher one, pass a callback / interface, never an import.
 
 2. **Beads is the universal persistence substrate** for domain state. The
@@ -167,7 +167,7 @@ against.
 Spawned Gastown role sessions (mayor, coder, reviewer, refinery,
 tester) run on the letta-code local backend via
 `LettaCodeSubagentProvider` in
-`src/orchestration/runtime/letta-code-subagent-provider.ts`.
+`src/engine/runtime/letta-code-subagent-provider.ts`.
 `LettaTeamsProvider` and the `letta-teams-sdk` dependency have been
 removed. New code must not route projects to `provider_kind=letta-teams`
 or add `letta-teams-sdk` integrations.
@@ -182,7 +182,7 @@ Specifically, **do not**:
    memory block content. Teams' built-in init prompts are overridden
    in the provider, not consumed.
 3. **Use teams' task-graph or dep semantics.** Formulas
-   (`src/orchestration/formula/`) and molecules (`.beads/` molecule
+   (`src/engine/formula/`) and molecules (`.beads/` molecule
    rows) own dep graphs, retry, and `wait_for`.
 4. **Add a second path to `@letta-ai/letta-code-sdk`.**
    `LettaCodeSubagentProvider` is the local-backend convergence point;

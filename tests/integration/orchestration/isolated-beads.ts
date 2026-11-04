@@ -4,9 +4,9 @@ import { tmpdir } from 'node:os';
 import { join, isAbsolute } from 'node:path';
 import { createServer } from 'node:net';
 
-import { MIN_BD_VERSION, bdVersionSatisfies } from '../../../src/orchestration/bd-version.js';
-import { DoltClient } from '../../../src/orchestration/store/dolt-client.js';
-import { BeadsStore } from '../../../src/orchestration/beads/store.js';
+import { MIN_BD_VERSION, bdVersionSatisfies } from '../../../src/engine/bd-version.js';
+import { DoltClient } from '../../../src/engine/store/dolt-client.js';
+import { BeadsStore } from '../../../src/engine/beads/store.js';
 
 // Opt-in only: never discover a store from cwd or accept a caller-owned database.
 export const RUN_ISOLATED_BEADS = process.env['VIBESYNC_TEST_BD'] !== undefined;

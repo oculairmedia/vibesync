@@ -10,8 +10,8 @@ import {
   type SelfCompletionSink,
   type EscalationSink,
   type SlotReleaser,
-} from '../../../../src/orchestration/scheduler/index.js';
-import type { DispatchCandidate } from '../../../../src/orchestration/scheduler/plan-dispatch.js';
+} from '../../../../src/engine/scheduler/index.js';
+import type { DispatchCandidate } from '../../../../src/engine/scheduler/plan-dispatch.js';
 
 function candidate(workBeadId: string): DispatchCandidate {
   return {
@@ -156,7 +156,7 @@ describe('PropulsionExecutor (vibesync-63zx.4)', () => {
 
 describe('PropulsionExecutor end-to-end with SchedulerLoop + AgentPool (vibesync-63zx.4)', () => {
   it('freed slot triggers the next dispatch: pool_size=1, two ready beads dispatch across two ticks', async () => {
-    const { AgentPool, SchedulerLoop } = await import('../../../../src/orchestration/scheduler/index.js');
+    const { AgentPool, SchedulerLoop } = await import('../../../../src/engine/scheduler/index.js');
     // Build the same fakes the 63zx.3 loop uses.
     const { InMemory } = await buildLoopHarness();
     const pool = new AgentPool({ members: [{ agentId: 'a0', role: 'coder', lettaBaseUrl: 'x' }] }); // size 1
@@ -208,7 +208,7 @@ async function buildLoopHarness(): Promise<{ InMemory: typeof InMemoryStore }> {
   return { InMemory: InMemoryStore };
 }
 
-function ctxRow(workBeadId: string): import('../../../../src/orchestration/scheduler/sling-context.js').SlingContextRecord {
+function ctxRow(workBeadId: string): import('../../../../src/engine/scheduler/sling-context.js').SlingContextRecord {
   return {
     id: `ctx-${workBeadId}`, status: 'open',
     params: {
@@ -220,7 +220,7 @@ function ctxRow(workBeadId: string): import('../../../../src/orchestration/sched
 }
 
 class InMemoryStore {
-  constructor(private contexts: Array<import('../../../../src/orchestration/scheduler/sling-context.js').SlingContextRecord>) {}
+  constructor(private contexts: Array<import('../../../../src/engine/scheduler/sling-context.js').SlingContextRecord>) {}
   async queryPending() { return this.contexts.filter((c) => c.status === 'open'); }
   async closeContext(id: string) {
     const c = this.contexts.find((x) => x.id === id);

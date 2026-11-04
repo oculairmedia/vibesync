@@ -17,11 +17,11 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { bootOrchestrationPlane, type OrchestrationHandle } from '../../../../src/orchestration/boot.js';
-import type { Event } from '../../../../src/orchestration/events/index.js';
-import { IrohConnection } from '../../../../src/orchestration/runtime/iroh/connection.js';
-import { normalizeInboxWakeAck, type BootSchedulerOptions, type InboxMessageAdapter } from '../../../../src/orchestration/scheduler/boot-scheduler.js';
-import { formatWakeMessage, PM_WOKEN_EVENT } from '../../../../src/orchestration/scheduler/index.js';
+import { bootOrchestrationPlane, type OrchestrationHandle } from '../../../../src/engine/boot.js';
+import type { Event } from '../../../../src/engine/events/index.js';
+import { IrohConnection } from '../../../../src/engine/runtime/iroh/connection.js';
+import { normalizeInboxWakeAck, type BootSchedulerOptions, type InboxMessageAdapter } from '../../../../src/engine/scheduler/boot-scheduler.js';
+import { formatWakeMessage, PM_WOKEN_EVENT } from '../../../../src/engine/scheduler/index.js';
 import { FakeIrohWrapper } from '../../../_fixtures/fake-iroh-wrapper.js';
 import { InMemoryDoltClient, inMemoryBeads } from '../../../_fixtures/in-memory-dolt-client.js';
 
@@ -135,7 +135,7 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  async function boot(fake: FakeIrohWrapper, over: { intervalMs?: number; bd?: typeof bd; provider?: string; pmWake?: Partial<NonNullable<BootSchedulerOptions['config']['pmWake']>>; connections?: IrohConnection[]; inboxAdapter?: InboxMessageAdapter; wakeSink?: import('../../../../src/orchestration/pm-wake/waker.js').PmWakeSink; listPoolMembers?: () => readonly { agentId: string; role: string; lettaBaseUrl: string }[] } = {}) {
+  async function boot(fake: FakeIrohWrapper, over: { intervalMs?: number; bd?: typeof bd; provider?: string; pmWake?: Partial<NonNullable<BootSchedulerOptions['config']['pmWake']>>; connections?: IrohConnection[]; inboxAdapter?: InboxMessageAdapter; wakeSink?: import('../../../../src/engine/pm-wake/waker.js').PmWakeSink; listPoolMembers?: () => readonly { agentId: string; role: string; lettaBaseUrl: string }[] } = {}) {
     process.env['VIBESYNC_WORK_ACTIVITY_REPORT'] = '0';
     process.env['VIBESYNC_ORCHESTRATION_PROVIDER'] = over.provider ?? 'letta-code-iroh';
     process.env['VIBESYNC_LETTA_CODE_PARENT_AGENT_ID'] = PM;

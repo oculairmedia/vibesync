@@ -6,11 +6,11 @@ import { pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { formatWakeMessage } from '../../../src/orchestration/pm-wake/waker.js';
-import { BdPendingWakeStore } from '../../../src/orchestration/pm-wake/pending-store.js';
-import { FilePmWakeStateStore } from '../../../src/orchestration/pm-wake/state.js';
-import type { PmWakeSink } from '../../../src/orchestration/pm-wake/waker.js';
-import { PmWaker, type PmWakeInput } from '../../../src/orchestration/pm-wake/waker.js';
+import { formatWakeMessage } from '../../../src/engine/pm-wake/waker.js';
+import { BdPendingWakeStore } from '../../../src/engine/pm-wake/pending-store.js';
+import { FilePmWakeStateStore } from '../../../src/engine/pm-wake/state.js';
+import type { PmWakeSink } from '../../../src/engine/pm-wake/waker.js';
+import { PmWaker, type PmWakeInput } from '../../../src/engine/pm-wake/waker.js';
 import { RUN_ISOLATED_WAKES, provisionIsolatedWakeRepo } from './isolated-bd-wakes.js';
 
 const describeWithBd = RUN_ISOLATED_WAKES ? describe : describe.skip;
@@ -130,8 +130,8 @@ describeWithBd('durable PM inbox wakes (real isolated bd + CLI subprocess)', () 
     const sends = join(root, 'authorized-sends.jsonl');
     writeFileSync(worker, `
       import { appendFileSync, writeFileSync } from 'node:fs';
-      import { BdPendingWakeStore } from ${JSON.stringify(pathToFileURL(resolve('src/orchestration/pm-wake/pending-store.ts')).href)};
-      import { createCliRunner } from ${JSON.stringify(pathToFileURL(resolve('src/orchestration/scheduler/bd-adapters.ts')).href)};
+      import { BdPendingWakeStore } from ${JSON.stringify(pathToFileURL(resolve('src/engine/pm-wake/pending-store.ts')).href)};
+      import { createCliRunner } from ${JSON.stringify(pathToFileURL(resolve('src/engine/scheduler/bd-adapters.ts')).href)};
       const [binary, cwd, issue, result, sends] = process.argv.slice(2);
       const run = createCliRunner({ binary, cwd });
       const store = new BdPendingWakeStore(args => run(['--sandbox', '--dolt-auto-commit=off', ...args]));

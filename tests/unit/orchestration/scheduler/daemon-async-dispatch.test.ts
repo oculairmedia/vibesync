@@ -13,15 +13,15 @@ import {
   SchedulerDaemon,
   type DaemonTickResult,
   type SchedulerDaemonDeps,
-} from '../../../../src/orchestration/scheduler/daemon.js';
-import type { FormulaDispatcher } from '../../../../src/orchestration/dispatcher/dispatcher.js';
+} from '../../../../src/engine/scheduler/daemon.js';
+import type { FormulaDispatcher } from '../../../../src/engine/dispatcher/dispatcher.js';
 import {
   tryParseParams,
   type SlingContextStore,
-} from '../../../../src/orchestration/scheduler/sling-context.js';
-import type { RunLiveness } from '../../../../src/orchestration/scheduler/witness.js';
-import type { AgentPool } from '../../../../src/orchestration/scheduler/agent-pool.js';
-import type { PrFacts } from '../../../../src/orchestration/refinery/refinery.js';
+} from '../../../../src/engine/scheduler/sling-context.js';
+import type { RunLiveness } from '../../../../src/engine/scheduler/witness.js';
+import type { AgentPool } from '../../../../src/engine/scheduler/agent-pool.js';
+import type { PrFacts } from '../../../../src/engine/refinery/refinery.js';
 
 interface Deferred {
   readonly beadId: string;

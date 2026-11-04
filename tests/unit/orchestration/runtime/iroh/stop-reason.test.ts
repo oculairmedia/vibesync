@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { boundaryOf, isTerminal } from '../../../../../src/orchestration/runtime/iroh/stop-reason.js';
+import { boundaryOf, isTerminal } from '../../../../../src/engine/runtime/iroh/stop-reason.js';
 
 describe('boundaryOf (port of AppServerStopReason.kt)', () => {
   it.each(['end_turn', 'max_steps', 'max_tokens_exceeded', 'no_tool_call', 'tool_rule', 'stop_sequence', 'max_tokens', 'length'])(

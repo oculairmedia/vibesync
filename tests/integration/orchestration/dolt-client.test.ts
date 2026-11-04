@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { DoltClient } from '../../../src/orchestration/store/dolt-client.js';
-import { computeSchemaFingerprint, WrongBdSchemaError } from '../../../src/orchestration/store/schema-fingerprint.js';
+import { DoltClient } from '../../../src/engine/store/dolt-client.js';
+import { computeSchemaFingerprint, WrongBdSchemaError } from '../../../src/engine/store/schema-fingerprint.js';
 import { provisionIsolatedBeads, RUN_ISOLATED_BEADS, SCHEMA65_FINGERPRINT, FRESH65_FINGERPRINT } from './isolated-beads.js';
 
 /** Exact-shape compatibility: only newly CLI-provisioned temporary databases

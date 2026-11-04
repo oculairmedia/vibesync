@@ -6,9 +6,9 @@ import {
   bunNoFetchTimeout,
   parseSseFrame,
   translateShimEvent,
-} from '../../../../src/orchestration/runtime/index.js';
-import type { PersonaLoader } from '../../../../src/orchestration/runtime/index.js';
-import type { SessionEvent } from '../../../../src/orchestration/runtime/provider.js';
+} from '../../../../src/engine/runtime/index.js';
+import type { PersonaLoader } from '../../../../src/engine/runtime/index.js';
+import type { SessionEvent } from '../../../../src/engine/runtime/provider.js';
 
 /**
  * Unit tests for LettaCodeSubagentProvider (vibesync-573 / vibesync-f5g).

@@ -15,7 +15,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { resolveDoltPort, type DoltBootDeps } from '../../../../src/orchestration/store/dolt-client.js';
+import { resolveDoltPort, type DoltBootDeps } from '../../../../src/engine/store/dolt-client.js';
 
 function makeDeps(overrides: Partial<DoltBootDeps> = {}): DoltBootDeps {
   return {

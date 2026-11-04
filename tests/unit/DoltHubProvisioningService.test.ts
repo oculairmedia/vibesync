@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import {
   DoltHubProvisioningService,
   normalizeDoltHubRepoName,
-} from '../../src/DoltHubProvisioningService.js';
+} from '../../src/app/registry/dolthub-provisioning.js';
 
 interface TestProjectRecord {
   identifier: string;

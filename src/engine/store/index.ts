@@ -1,5 +1,5 @@
 /**
- * Public exports for src/orchestration/store/.
+ * Public exports for src/engine/store/.
  */
 
 export { DoltClient, WrongDoltDatabaseError, resolveDoltPort, defaultDoltBootDeps } from './dolt-client.js';

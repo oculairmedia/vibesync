@@ -4,8 +4,8 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 
-import { createCliRunner, type CommandRunner } from '../../../src/orchestration/scheduler/bd-adapters.js';
-import { MIN_BD_VERSION_FOR_WAITS } from '../../../src/orchestration/waits/index.js';
+import { createCliRunner, type CommandRunner } from '../../../src/engine/scheduler/bd-adapters.js';
+import { MIN_BD_VERSION_FOR_WAITS } from '../../../src/engine/waits/index.js';
 
 /**
  * Disposable bd repository for the wait tests (vibesync-9g24).

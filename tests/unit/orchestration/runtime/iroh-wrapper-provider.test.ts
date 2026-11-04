@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { IrohConnection } from '../../../../src/orchestration/runtime/iroh/connection.js';
-import { IrohWrapperProvider } from '../../../../src/orchestration/runtime/iroh-wrapper-provider.js';
-import type { SessionEvent, SessionSpec } from '../../../../src/orchestration/runtime/provider.js';
+import { IrohConnection } from '../../../../src/engine/runtime/iroh/connection.js';
+import { IrohWrapperProvider } from '../../../../src/engine/runtime/iroh-wrapper-provider.js';
+import type { SessionEvent, SessionSpec } from '../../../../src/engine/runtime/provider.js';
 import { FakeIrohWrapper } from '../../../_fixtures/fake-iroh-wrapper.js';
 
 const PARENT = 'agent-parent';
@@ -113,7 +113,7 @@ describe('IrohWrapperProvider', () => {
     const fake = new FakeIrohWrapper({ scope: SCOPE });
     const connection = new IrohConnection({ dial: fake.dial, peerName: 'generic', sleep: async () => undefined, backoff: { initialMs: 1, capMs: 2, maxAttempts: 3 } });
     await connection.connect();
-    const { createConversation } = await import('../../../../src/orchestration/runtime/iroh/turn-client.js');
+    const { createConversation } = await import('../../../../src/engine/runtime/iroh/turn-client.js');
     await createConversation(connection, ROLE_AGENT, 'wake title');
     await connection.close();
 

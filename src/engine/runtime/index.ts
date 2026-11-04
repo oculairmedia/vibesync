@@ -1,5 +1,5 @@
 /**
- * Public exports for src/orchestration/runtime/.
+ * Public exports for src/engine/runtime/.
  *
  * Higher layers import from this module; they MUST NOT reach into the
  * individual files directly. This re-export shape is the layering

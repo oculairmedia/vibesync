@@ -1,5 +1,5 @@
 /**
- * Public exports for src/orchestration/formula/.
+ * Public exports for src/engine/formula/.
  */
 
 export { loadFormulasFromFile, parseFormulasFromToml } from './formula.js';

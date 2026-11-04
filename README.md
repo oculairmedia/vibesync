@@ -31,7 +31,7 @@ bun run start
 
 ## Configuration
 
-Configuration is loaded by `src/config.ts` and validated by `src/configSchema.ts`.
+Configuration is loaded by `src/app/config.ts` and validated by `src/app/configSchema.ts`.
 
 ```bash
 ENABLE_ORCHESTRATION=true
@@ -51,7 +51,7 @@ VIBESYNC_PM_WAKE_CLI_CONTRACT_VERIFIED=false
 ```
 
 The Iroh connection is configured with the `VIBESYNC_IROH_*` settings in
-`src/orchestration/runtime/iroh/native-dialer.ts`.
+`src/engine/runtime/iroh/native-dialer.ts`.
 
 ## How work runs
 

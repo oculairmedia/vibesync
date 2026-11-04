@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { MoleculeWalker, newMoleculeStepId } from '../../../../src/orchestration/molecule/molecule.js';
+import { MoleculeWalker, newMoleculeStepId } from '../../../../src/engine/molecule/molecule.js';
 import { InMemoryDoltClient } from '../../../_fixtures/in-memory-dolt-client.js';
-import type { BeadRow } from '../../../../src/orchestration/store/index.js';
+import type { BeadRow } from '../../../../src/engine/store/index.js';
 
 describe('MoleculeWalker', () => {
   it('dispatch creates a molecule root with step beads and dependency edges', async () => {

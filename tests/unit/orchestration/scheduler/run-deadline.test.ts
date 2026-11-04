@@ -19,10 +19,10 @@ import {
   SchedulerDaemon,
   type DaemonTickReport,
   type SchedulerDaemonDeps,
-} from '../../../../src/orchestration/scheduler/daemon.js';
-import { FormulaCancellationConflictError, type FormulaDispatcher } from '../../../../src/orchestration/dispatcher/dispatcher.js';
-import { tryParseParams, type SlingContextStore } from '../../../../src/orchestration/scheduler/sling-context.js';
-import type { AgentPool } from '../../../../src/orchestration/scheduler/agent-pool.js';
+} from '../../../../src/engine/scheduler/daemon.js';
+import { FormulaCancellationConflictError, type FormulaDispatcher } from '../../../../src/engine/dispatcher/dispatcher.js';
+import { tryParseParams, type SlingContextStore } from '../../../../src/engine/scheduler/sling-context.js';
+import type { AgentPool } from '../../../../src/engine/scheduler/agent-pool.js';
 
 const DEADLINE = 10_000;
 const INTERVAL = 600_000;

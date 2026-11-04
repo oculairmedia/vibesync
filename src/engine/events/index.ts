@@ -1,5 +1,5 @@
 /**
- * Public exports for src/orchestration/events/.
+ * Public exports for src/engine/events/.
  */
 
 export { EventBus } from './bus.js';

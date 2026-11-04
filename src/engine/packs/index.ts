@@ -1,5 +1,5 @@
 /**
- * Public exports for src/orchestration/packs/.
+ * Public exports for src/engine/packs/.
  */
 
 export { discoverPacks, loadPack, validatePackPath } from './pack.js';

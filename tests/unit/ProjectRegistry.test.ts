@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { ProjectRegistry } from '../../src/ProjectRegistry.js';
-import { SyncDatabase } from '../../src/database.js';
+import { ProjectRegistry } from '../../src/app/registry/project-registry.js';
+import { SyncDatabase } from '../../src/app/registry/registry.js';
 import fs from 'fs';
 import path from 'path';
 

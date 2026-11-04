@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest';
-import { PmWaker } from '../../../../src/orchestration/pm-wake/waker.js';
-import type { PendingWakeRecord, PendingWakeStore } from '../../../../src/orchestration/pm-wake/pending-store.js';
+import { PmWaker } from '../../../../src/engine/pm-wake/waker.js';
+import type { PendingWakeRecord, PendingWakeStore } from '../../../../src/engine/pm-wake/pending-store.js';
 
 function record(id: string): PendingWakeRecord {
   return { id, status: 'open', payload: { projectIdentifier: 'project', agentId: 'pm', msgId: id, reason: 'event', detail: id, body: id, createdAt: new Date(0).toISOString() } };

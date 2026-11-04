@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { INFRA_RETRY_CAP, classifyFailure, decideRetry, readFailureClass, readRetryState, resolveRetryPolicy } from '../../../../src/orchestration/retry/index.js';
+import { INFRA_RETRY_CAP, classifyFailure, decideRetry, readFailureClass, readRetryState, resolveRetryPolicy } from '../../../../src/engine/retry/index.js';
 
 const policy = (maxAttempts: number, onExhausted: 'fail' | 'soft_fail' = 'fail') => resolveRetryPolicy({ retry: { maxAttempts, onExhausted, backoffMs: 7 } });
 

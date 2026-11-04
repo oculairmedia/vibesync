@@ -2,10 +2,10 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { BdMoleculeWriter } from '../../../../src/orchestration/beads/molecule-writer.js';
-import { createCliRunner, redactArgs } from '../../../../src/orchestration/beads/cli.js';
-import { bootOrchestrationPlane } from '../../../../src/orchestration/boot.js';
-import type { BeadRow } from '../../../../src/orchestration/store/index.js';
+import { BdMoleculeWriter } from '../../../../src/engine/beads/molecule-writer.js';
+import { createCliRunner, redactArgs } from '../../../../src/engine/beads/cli.js';
+import { bootOrchestrationPlane } from '../../../../src/engine/boot.js';
+import type { BeadRow } from '../../../../src/engine/store/index.js';
 
 const bead = (id: string): BeadRow => ({
   id, title: id, description: '', status: 'in_progress', priority: 2, issue_type: 'molecule_step',

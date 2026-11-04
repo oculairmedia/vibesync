@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { logger as rootLogger } from '../logger.js';
+import { logger as rootLogger } from '../../logger.js';
 
 const log = rootLogger.child({ module: 'rig-provisioner' });
 
