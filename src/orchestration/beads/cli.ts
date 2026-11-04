@@ -8,6 +8,23 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
+/** bd stderr can echo payloads; keep error text bounded. */
+const ERROR_DETAIL_MAX = 500;
+/** Flags whose value can carry step input/output or notes. */
+const SENSITIVE_FLAGS = new Set(['--metadata', '--notes', '--append-notes', '--description', '--body']);
+
+/**
+ * Error messages are persisted (step `error_trace`) and emitted on the event
+ * bus, so never copy agent payloads into them.
+ */
+export function redactArgs(args: readonly string[]): string[] {
+  return args.map((arg, i) => {
+    if (i > 0 && SENSITIVE_FLAGS.has(args[i - 1]!)) return arg.startsWith('@') ? arg : '<redacted>';
+    const eq = arg.indexOf('=');
+    return eq > 0 && SENSITIVE_FLAGS.has(arg.slice(0, eq)) ? `${arg.slice(0, eq)}=<redacted>` : arg;
+  });
+}
+
 /** Runs a CLI with the given args and resolves with stdout. Rejects on failure. */
 export type CommandRunner = (args: readonly string[]) => Promise<string>;
 
@@ -36,9 +53,8 @@ export function createCliRunner(opts: CliRunnerOptions): CommandRunner {
       return stdout;
     } catch (err) {
       const e = err as { message?: string; stderr?: string };
-      throw new Error(
-        `${opts.binary} ${args.join(' ')} failed: ${(e.stderr ?? '').trim() || e.message || String(err)}`,
-      );
+      const detail = ((e.stderr ?? '').trim() || e.message || String(err)).slice(0, ERROR_DETAIL_MAX);
+      throw new Error(`${opts.binary} ${redactArgs(args).join(' ')} failed: ${detail}`);
     }
   };
 }

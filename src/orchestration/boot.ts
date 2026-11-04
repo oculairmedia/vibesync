@@ -252,10 +252,16 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   }
 
   // Verify the bd schema matches the version we vendored a fingerprint
-  // for before any hot-path INSERT runs. See vibesync-bll.
+  // for before any hot-path read runs. See vibesync-bll.
   if (typeof (opts.dolt as { verifySchema?: () => Promise<void> }).verifySchema === 'function') {
     await (opts.dolt as { verifySchema: () => Promise<void> }).verifySchema();
   }
+
+  // bd enforces the project's issue prefix on create; the SQL writes used to
+  // bypass that and mint `mol-mol-*` ids under a `vibesync` prefix. Read it
+  // with the other preflight checks so a bad config fails before any timer,
+  // patrol or provider starts.
+  const moleculeIdPrefix = opts.moleculeIdPrefix ?? await opts.dolt.readIssuePrefix();
 
   const bus = new EventBus({ noPersist: opts.persistEvents === false });
   // vibesync-x38j: ONE Iroh provider (one dialed connection) shared by the
@@ -304,9 +310,6 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   // vibesync-efee: steps are beads; the bead graph decides what is ready and
   // the StepDispatcher offers it to the dispatcher. A cooked molecule wakes it.
   let steps: StepDispatcher | null = null;
-  // bd enforces the project's issue prefix on create; the SQL writes used to
-  // bypass that and mint `mol-mol-*` ids under a `vibesync` prefix.
-  const moleculeIdPrefix = opts.moleculeIdPrefix ?? await opts.dolt.readIssuePrefix();
   const dispatcher = new FormulaDispatcher({
     provider,
     walker,

@@ -16,6 +16,10 @@
  */
 import { INFRA_RETRIES_KEY, LAST_FAILURE_CLASS_KEY, RETRY_ATTEMPT_KEY, RETRY_OUTCOME_KEY, FAILURE_CLASS_KEY } from '../retry/policy.js';
 import type { BeadRow } from '../store/index.js';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import type { CommandRunner } from './cli.js';
 
 /** bd stores `close_reason` verbatim; keep it short like the SQL path did. */
@@ -27,6 +31,22 @@ export interface MoleculeBeadReader {
 }
 
 type Exec = Record<string, unknown>;
+
+/**
+ * Pass metadata to bd as `@file` rather than an argv value: step input/output
+ * payloads are agent text of unbounded size (one argv string is capped at
+ * 128 KiB on Linux), and argv is visible to every process on the host.
+ */
+async function withMetadataFile<T>(metadata: Record<string, unknown>, run: (ref: string) => Promise<T>): Promise<T> {
+  const dir = await mkdtemp(join(tmpdir(), 'vibesync-bd-meta-'));
+  const file = join(dir, 'metadata.json');
+  try {
+    await writeFile(file, JSON.stringify(metadata), { mode: 0o600 });
+    return await run(`@${file}`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
 
 export class BdMoleculeWriter {
   constructor(
@@ -114,7 +134,7 @@ export class BdMoleculeWriter {
     };
     delete metadata[FAILURE_CLASS_KEY];
     if (args.failureClass) metadata[LAST_FAILURE_CLASS_KEY] = args.failureClass;
-    await this.bd(['update', stepId, '--status', 'open', '--metadata', JSON.stringify(metadata), '--actor', ACTOR]);
+    await withMetadataFile(metadata, (ref) => this.bd(['update', stepId, '--status', 'open', '--metadata', ref, '--actor', ACTOR]));
     // `--metadata` merges top-level keys, so a removed key must be unset explicitly.
     if (FAILURE_CLASS_KEY in bead.metadata) {
       await this.bd(['update', stepId, '--unset-metadata', FAILURE_CLASS_KEY, '--actor', ACTOR]);
@@ -123,18 +143,15 @@ export class BdMoleculeWriter {
 
   async markStepDone(stepId: string, output: unknown): Promise<void> {
     const bead = await this.require(stepId);
-    await this.bd([
-      'update', stepId, '--status', 'closed',
-      '--metadata', JSON.stringify({ exec: { ...execOf(bead), output_payload: output } }),
-      '--actor', ACTOR,
-    ]);
+    await withMetadataFile({ exec: { ...execOf(bead), output_payload: output } }, (ref) =>
+      this.bd(['update', stepId, '--status', 'closed', '--metadata', ref, '--actor', ACTOR]));
   }
 
   async markStepFailed(stepId: string, errorTrace: string, retryOutcome?: string): Promise<void> {
     const bead = await this.require(stepId);
     const metadata: Record<string, unknown> = { exec: { ...execOf(bead), error_trace: errorTrace } };
     if (retryOutcome) metadata[RETRY_OUTCOME_KEY] = retryOutcome;
-    await this.bd(['update', stepId, '--metadata', JSON.stringify(metadata), '--actor', ACTOR]);
+    await withMetadataFile(metadata, (ref) => this.bd(['update', stepId, '--metadata', ref, '--actor', ACTOR]));
     await this.bd(['close', stepId, '--reason', `step failed: ${errorTrace.slice(0, CLOSE_REASON_MAX)}`, '--actor', ACTOR]);
   }
 
@@ -145,11 +162,8 @@ export class BdMoleculeWriter {
    */
   async markMoleculeRootStatus(rootId: string, status: 'closed', outcome: 'completed' | 'failed' | 'cancelled'): Promise<void> {
     const bead = await this.require(rootId);
-    await this.bd([
-      'update', rootId, '--status', status, '--force',
-      '--metadata', JSON.stringify({ exec: { ...execOf(bead), outcome } }),
-      '--actor', ACTOR,
-    ]);
+    await withMetadataFile({ exec: { ...execOf(bead), outcome } }, (ref) =>
+      this.bd(['update', rootId, '--status', status, '--force', '--metadata', ref, '--actor', ACTOR]));
   }
 
   async appendNoteToBead(beadId: string, note: string): Promise<void> {
@@ -173,13 +187,15 @@ export class BdMoleculeWriter {
   }
 
   private async create(id: string, type: string, title: string, metadata: Record<string, unknown>): Promise<void> {
-    await this.bd(['create', '--id', id, '--type', type, '--title', title, '--metadata', JSON.stringify(metadata), '--actor', ACTOR, '--silent']);
+    await withMetadataFile(metadata, (ref) =>
+      this.bd(['create', '--id', id, '--type', type, '--title', title, '--metadata', ref, '--actor', ACTOR, '--silent']));
   }
 
   /** Merge keys into `metadata.exec` (and optionally top-level keys) with one bd write. */
   private async mergeExec(id: string, exec: Exec, topLevel: Record<string, unknown> = {}, known?: BeadRow): Promise<void> {
     const bead = known ?? await this.require(id);
-    await this.bd(['update', id, '--metadata', JSON.stringify({ ...topLevel, exec: { ...execOf(bead), ...exec } }), '--actor', ACTOR]);
+    await withMetadataFile({ ...topLevel, exec: { ...execOf(bead), ...exec } }, (ref) =>
+      this.bd(['update', id, '--metadata', ref, '--actor', ACTOR]));
   }
 
   private async require(id: string): Promise<BeadRow> {
