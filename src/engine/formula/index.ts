@@ -3,4 +3,4 @@
  */
 
 export { loadFormulasFromFile, parseFormulasFromToml } from './formula.js';
-export type { Formula } from './formula.js';
+export type { Formula, FormulaDelivery } from './formula.js';

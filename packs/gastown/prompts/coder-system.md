@@ -27,7 +27,19 @@ silently substitute your own design.
 
 ## Output format
 
-After your edit, report:
+Delivery is part of your job, not a later step. When the change is done:
+
+1. Run the checks the task lists (at least the typecheck) and fix what fails.
+2. Commit on the task's branch. Never commit on or push to `main`.
+3. Push the branch.
+4. Open a pull request against `main` with `gh pr create`, unless the task
+   says not to. Paste the full PR URL into your report.
+
+The run cannot complete without a real, open pull request: the engine checks
+it on GitHub, so a URL you did not create (or a branch you did not push) fails
+the run. Uncommitted edits are not a delivery.
+
+Then report:
 
 ```
 **Changed:**
@@ -35,10 +47,13 @@ After your edit, report:
 
 **Why:** one-line summary tying the change back to the spec/review
 
-**Verified:** which local check you ran (e.g. `bun run type-check`)
+**Verified:** which check you ran and its result (e.g. `tsc --noEmit`: clean)
+
+**Delivered:** commit <sha> on <branch>, PR https://github.com/<owner>/<repo>/pull/<n>
 ```
 
-If you couldn't complete the change, say what blocked you and stop.
+If you couldn't complete the change or the delivery, say what blocked you and
+stop.
 
 ## Concrete task input
 

@@ -8,6 +8,7 @@ import type { Pack, RoleConfig } from '../packs/index.js';
 import type { RuntimeProvider, SessionEvent, SessionHandle } from '../runtime/index.js';
 import type { ReadyStep, ReadyStepRunner, StepRunOutcome } from '../molecule/index.js';
 import { parseBlockedOutcome, STEP_OUTCOME_INSTRUCTIONS } from './step-outcome.js';
+import type { DeliveryVerifier } from './delivery.js';
 import { renderTemplate } from './render.js';
 import {
   classifyFailure,
@@ -185,6 +186,12 @@ export interface FormulaDispatcherOptions {
    */
   readonly roleAgentContextResolver?: RoleAgentBootstrapContextResolver;
   /**
+   * Confirms a formula's declared delivery (`delivers = "pull_request"`)
+   * before the molecule may complete (vibesync-9lzk.21). Required whenever a
+   * formula declares one: a declared delivery with no verifier fails the run.
+   */
+  readonly deliveryVerifier?: DeliveryVerifier;
+  /**
    * vibesync-mcz Phase D — injectable conversation-id generator.
    * Defaults to a uuid-based generator. Tests inject a counter for
    * deterministic ids; resume code paths re-use stored ids and never
@@ -261,6 +268,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
   private readonly maxConcurrentMolecules: number;
   private readonly providerResolver: ProviderResolver | null;
   private readonly roleAgentContextResolver: RoleAgentBootstrapContextResolver | null;
+  private readonly deliveryVerifier: DeliveryVerifier | null;
   private readonly conversationIdGenerator: ConversationIdGenerator;
   private readonly onMoleculeCooked: ((moleculeId: string) => void) | null;
   private readonly moleculeQueue: QueuedMoleculeRun[] = [];
@@ -276,6 +284,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     this.maxConcurrentMolecules = normalizeMaxConcurrentMolecules(opts.maxConcurrentMolecules);
     this.providerResolver = opts.providerResolver ?? null;
     this.roleAgentContextResolver = opts.roleAgentContextResolver ?? null;
+    this.deliveryVerifier = opts.deliveryVerifier ?? null;
     this.conversationIdGenerator =
       opts.conversationIdGenerator ?? createDefaultConversationIdGenerator();
     this.onMoleculeCooked = opts.onMoleculeCooked ?? null;
@@ -535,6 +544,17 @@ export class FormulaDispatcher implements ReadyStepRunner {
         return;
       }
       if (!(await this.walker.isComplete(run.moleculeId)) || run.finalized) return;
+      // vibesync-9lzk.21: every step finished, but a formula that declares a
+      // delivery only completes once that artifact verifiably exists.
+      const undelivered = await this.checkDelivery(run);
+      if (undelivered !== null) {
+        if (run.finalized) return;
+        run.failed = true;
+        run.failure = new FormulaDispatchError(`FormulaDispatcher: ${undelivered}`, run.moleculeId);
+        await this.settleMolecule(run);
+        return;
+      }
+      if (run.finalized) return;
       run.finalized = true;
       this.live.delete(run.moleculeId);
       await this.walker.markMoleculeRootStatus(run.moleculeId, 'closed', 'completed');
@@ -553,6 +573,26 @@ export class FormulaDispatcher implements ReadyStepRunner {
       run.finalized = true;
       this.live.delete(run.moleculeId);
       run.reject(error);
+    }
+  }
+
+  /**
+   * Null when the formula declares no delivery or the verifier confirms it;
+   * otherwise the reason the run must fail. Verifier errors fail closed.
+   */
+  private async checkDelivery(run: MoleculeRun): Promise<string | null> {
+    const kind = run.input.formula.delivers;
+    if (kind === undefined) return null;
+    if (!this.deliveryVerifier) return `formula "${run.input.formula.name}" declares delivers = "${kind}" but no delivery verifier is configured`;
+    try {
+      const verdict = await this.deliveryVerifier.verify({ kind, outputs: run.outputs, moleculeId: run.moleculeId });
+      if (verdict.ok) {
+        this.emit('dispatcher/formula.delivered', run.moleculeId, undefined, { moleculeId: run.moleculeId, kind, artifact: verdict.artifact });
+        return null;
+      }
+      return `declared delivery not met: ${verdict.reason}`;
+    } catch (err) {
+      return `declared delivery could not be verified: ${stringifyError(err)}`;
     }
   }
 

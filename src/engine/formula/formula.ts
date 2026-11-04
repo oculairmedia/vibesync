@@ -64,8 +64,18 @@ export interface Formula {
    * `when_to_use`. See vibesync-cy4.
    */
   readonly whenToUse: string;
+  /**
+   * What a successful run must leave behind (vibesync-9lzk.21). When set, the
+   * molecule only completes after the dispatcher's DeliveryVerifier confirms
+   * the artifact exists; otherwise it fails. Absent = no delivery check.
+   */
+  readonly delivers?: FormulaDelivery;
   readonly steps: readonly StepSpec[];
 }
+
+/** Artifact kinds a formula can require. */
+export type FormulaDelivery = 'pull_request';
+const DELIVERY_KINDS: ReadonlySet<string> = new Set(['pull_request']);
 
 /**
  * Parse a TOML string and return the formulas defined under
@@ -106,6 +116,10 @@ export function loadFormulasFromFile(path: string): Formula[] {
 function parseFormulaBody(name: string, body: Record<string, unknown>): Formula {
   const description = typeof body['description'] === 'string' ? body['description'] : '';
   const whenToUse = typeof body['when_to_use'] === 'string' ? body['when_to_use'] : '';
+  const deliversRaw = body['delivers'];
+  if (deliversRaw !== undefined && (typeof deliversRaw !== 'string' || !DELIVERY_KINDS.has(deliversRaw))) {
+    throw new Error(`formula "${name}": delivers must be one of ${[...DELIVERY_KINDS].join(', ')} (got ${JSON.stringify(deliversRaw)})`);
+  }
   const stepsRaw = body['steps'];
   if (stepsRaw !== undefined && !Array.isArray(stepsRaw)) {
     throw new Error(`formula "${name}": steps must be an array of tables`);
@@ -120,7 +134,7 @@ function parseFormulaBody(name: string, body: Record<string, unknown>): Formula 
     steps.push(step);
     seenNames.add(step.name);
   }
-  return { name, description, whenToUse, steps };
+  return { name, description, whenToUse, ...(deliversRaw !== undefined ? { delivers: deliversRaw as FormulaDelivery } : {}), steps };
 }
 
 function parseStep(

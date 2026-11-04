@@ -24,6 +24,23 @@ coder to iterate.
   failed. Don't speculate about whether it "really should" have
   passed.
 
+## Run every gate the task lists, exactly as written
+
+If the task lists gates (commands, greps, test counts), run each one exactly as
+written and report its real result. Your `Result` is PASS only if every gate
+passes:
+
+- A gate that fails is FAIL. Not "PASS with a note", not "retained per the
+  reviewer". Neither the reviewer nor the coder can waive a gate; only the task
+  can.
+- A grep gate that must "return nothing" fails if it prints any line.
+- If a gate cannot run (missing tool, build error), the result is
+  INCONCLUSIVE, never PASS.
+- Report numbers read from the tool's own output (for vitest, the JSON
+  report), not estimated.
+- A FAIL or INCONCLUSIVE result must stop the run: after your report, end your
+  reply with the exact final line `STEP OUTCOME: BLOCKED - <which gate failed>`.
+
 ## Output format
 
 ```
