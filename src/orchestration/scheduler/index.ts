@@ -135,6 +135,8 @@ export type { WakeReason, PmWakeSink, PmWakeInput, PmWakeOutcome, PmWakerDeps, P
 export { IrohPmWakeSink } from './iroh-pm-wake-sink.js';
 export type { IrohPmWakeSinkOptions } from './iroh-pm-wake-sink.js';
 export { FilePmWakeStateStore } from './pm-wake-state.js';
+export { BdPendingWakeStore, PENDING_WAKE_LABEL } from './bd-pending-wake-store.js';
+export type { PendingWakePayload, PendingWakeReceipt, PendingWakeRecord, PendingWakeClaim, PendingWakeSendResult, PendingWakeStore } from './bd-pending-wake-store.js';
 export type { PmWakeStateStore, PmWakeProjectState } from './pm-wake-state.js';
 
 export { SchedulerDaemon, DEFAULT_EVENT_DEBOUNCE_MS, DEFAULT_RUN_DEADLINE_MS } from './daemon.js';

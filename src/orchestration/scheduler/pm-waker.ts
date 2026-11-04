@@ -40,6 +40,7 @@
  */
 
 import type { PmWakeStateStore, PmWakeProjectState } from './pm-wake-state.js';
+import type { PendingWakeRecord, PendingWakeStore } from './bd-pending-wake-store.js';
 
 export type WakeReason = 'event' | 'ready' | 'stall' | 'backstop';
 
@@ -127,6 +128,7 @@ export interface PmWakerDeps {
   readonly lookupAgentId: (projectIdentifier: string) => string | null | undefined;
   readonly sink: PmWakeSink;
   readonly store: PmWakeStateStore;
+  readonly pendingWakeStore?: PendingWakeStore;
   /** Backlog as of the tick that just ran; null when it could not be determined. */
   readonly backlog: () => PmBacklogSnapshot | null;
   readonly emit: (kind: string, payload: Record<string, unknown>) => void;
@@ -148,15 +150,28 @@ export class PmWaker {
   private readonly retryWakeId = new Map<WakeReason, string>();
   private readonly failedAt = new Map<WakeReason, number>();
   private readonly retryInput = new Map<WakeReason, PmWakeInput>();
+  private readonly durablePending = new Map<WakeReason, PendingWakeRecord>();
   /** `${reason}:${why}` skip notices already emitted (cleared when that reason wakes). */
   private readonly skipNoticed = new Set<string>();
   private warnedNoAgent = false;
   private busy = false;
   private disposed = false;
   private pending: Promise<void> = Promise.resolve();
+  private recovery: Promise<void> = Promise.resolve();
 
   constructor(private readonly deps: PmWakerDeps) {
     this.now = deps.now ?? (() => Date.now());
+    if (deps.pendingWakeStore) {
+      this.recovery = deps.pendingWakeStore.listPending().then((records) => {
+        for (const record of records) {
+          if (record.payload.projectIdentifier === deps.projectIdentifier) {
+            this.durablePending.set(record.payload.reason, record);
+          }
+        }
+      }).catch((error: unknown) => {
+        deps.logger?.warn?.({ project: deps.projectIdentifier, error: errMsg(error) }, 'pm-wake: pending wake recovery failed');
+      });
+    }
     const loaded = deps.store.load(deps.projectIdentifier);
     if (loaded) {
       this.state = loaded;
@@ -195,7 +210,7 @@ export class PmWaker {
 
   /** Resolves when the evaluation in progress (if any) has finished. For tests and shutdown. */
   idle(): Promise<void> {
-    return this.pending;
+    return Promise.all([this.pending, this.recovery]).then(() => undefined);
   }
 
   /** Stop all further wakes and emissions. Idempotent. */
@@ -205,6 +220,7 @@ export class PmWaker {
 
   private async evaluate(obs: PmWakeTickObservation): Promise<void> {
     const project = this.deps.projectIdentifier;
+    await this.recovery;
     let agentId: string | null | undefined;
     try {
       agentId = this.deps.lookupAgentId(project);
@@ -233,6 +249,18 @@ export class PmWaker {
       if (failed !== undefined && now - failed < PM_WAKE_RETRY_BACKOFF_MS) {
         this.notifySkipped(c.reason, 'retry-backoff');
         continue;
+      }
+      const recovered = this.durablePending.get(c.reason);
+      if (recovered) {
+        const claim = await this.deps.pendingWakeStore?.claim(recovered.id);
+        if (claim?.authorized && claim.record) {
+          const sent = await this.deps.pendingWakeStore!.sendClaimed(claim.record, this.deps.sink, now);
+          if (sent.authorized && sent.outcome) {
+            this.applyOutcome(inputFromRecord(recovered), sent.outcome, now);
+            if (sent.receipt?.accepted && sent.receipt.applicationDelivered) this.durablePending.delete(c.reason);
+          }
+        }
+        return;
       }
       const correlation = this.correlationFor(c.reason);
       await this.send(agentId, c.reason, c.detail, now, correlation);
@@ -329,12 +357,38 @@ export class PmWaker {
       agentId, projectIdentifier: project, reason, detail, wakeId,
       ...(correlation ? { correlation: { ...correlation } } : {}),
     };
+    const pendingStore = this.deps.pendingWakeStore;
+    if (pendingStore) {
+      try {
+        const record = await pendingStore.enqueue(input, now);
+        this.durablePending.set(reason, record);
+        const result = await pendingStore.claim(record.id);
+        if (!result.authorized || !result.record) return;
+        const sent = await pendingStore.sendClaimed(result.record, this.deps.sink, now);
+        if (!sent.authorized || !sent.outcome) return;
+        this.retryWakeId.delete(reason);
+        this.retryInput.delete(reason);
+        this.failedAt.delete(reason);
+        this.applyOutcome(inputFromRecord(record), sent.outcome, now);
+        if (sent.receipt?.accepted && sent.receipt.applicationDelivered) this.durablePending.delete(reason);
+      } catch (error) {
+        this.failedAt.set(reason, now);
+        this.deps.logger?.warn?.({ project, reason, wakeId, error: errMsg(error) }, 'pm-wake: durable send failed closed');
+      }
+      return;
+    }
+
     let outcome: PmWakeOutcome = { ok: false, error: 'sink returned no outcome' };
     try {
       outcome = await this.deps.sink.wake(input);
     } catch (err) {
       outcome = { ok: false, error: errMsg(err) };
     }
+    this.applyOutcome(input, outcome, now);
+  }
+
+  private applyOutcome(input: PmWakeInput, outcome: PmWakeOutcome, now: number): void {
+    const { agentId, projectIdentifier: project, reason, detail, wakeId } = input;
     const ok = outcome.applicationDelivered === undefined
       ? outcome.ok && outcome.accepted !== false
       : outcome.ok && outcome.accepted !== false && outcome.applicationDelivered;
@@ -404,6 +458,17 @@ export class PmWaker {
       );
     }
   }
+}
+
+function inputFromRecord(record: PendingWakeRecord): PmWakeInput {
+  return {
+    agentId: record.payload.agentId,
+    projectIdentifier: record.payload.projectIdentifier,
+    reason: record.payload.reason,
+    detail: record.payload.detail,
+    wakeId: record.payload.msgId,
+    ...(record.payload.correlation ? { correlation: record.payload.correlation } : {}),
+  };
 }
 
 function errMsg(err: unknown): string {
