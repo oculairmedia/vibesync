@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { logger, createSyncLogger, createContextLogger, LogLevel } from '../../src/logger';
+import { logger, createSyncLogger, createContextLogger, LogLevel } from '../../src/app/logger';
 
 describe('logger', () => {
   describe('base logger', () => {

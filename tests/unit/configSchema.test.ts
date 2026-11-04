@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { configSchema } from '../../src/configSchema';
+import { configSchema } from '../../src/app/configSchema';
 
 function schedulerDefaults(overrides = {}) {
   return {

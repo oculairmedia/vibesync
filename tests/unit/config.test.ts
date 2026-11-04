@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { loadConfig, getConfigSummary } from '../../src/config';
+import { loadConfig, getConfigSummary } from '../../src/app/config';
 
 describe('config', () => {
   // Store original environment variables

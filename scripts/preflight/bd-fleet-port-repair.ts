@@ -28,7 +28,7 @@ import {
   detectConflict,
   pickFreePort,
   type SweeperProject,
-} from '../../src/beads/PortSweeper.js';
+} from '../../src/app/registry/port-sweep/PortSweeper.js';
 
 interface ProjectRow {
   readonly identifier: string;
