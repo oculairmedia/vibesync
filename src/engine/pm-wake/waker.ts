@@ -110,6 +110,13 @@ export interface PmWakerDeps {
   };
 }
 
+interface Candidate {
+  reason: WakeReason;
+  due: boolean;
+  detail: string;
+  why?: string;
+}
+
 export class PmWaker {
   private readonly now: () => number;
   private state: PmWakeProjectState;
@@ -195,23 +202,14 @@ export class PmWaker {
 
   private async evaluate(obs: PmWakeTickObservation): Promise<void> {
     const project = this.deps.projectIdentifier;
-    await this.recovery;
-    if (this.recoveryFailed) await this.recoverPending();
-    // A failed read cannot establish that no message is pending. Stay closed
-    // rather than minting a replacement identity after an ambiguous send.
-    if (this.recoveryFailed) return;
-    const recovered = [...this.durablePending.values()].find((record) => record.payload.projectIdentifier === this.deps.projectIdentifier);
+    if (!await this.prepareDurableRecovery()) return;
+    const recovered = this.findDurablePending();
     if (recovered) {
       await this.retryDurablePending(recovered, this.now());
       return;
     }
-    let agentId: string | null | undefined;
-    try {
-      agentId = this.deps.lookupAgentId(project);
-    } catch (err) {
-      this.deps.logger?.warn?.({ project, error: errMsg(err) }, 'pm-wake: PM agent lookup failed');
-      return;
-    }
+    const agentId = this.lookupAgent(project);
+    if (agentId === undefined) return;
     if (!agentId) {
       if (!this.warnedNoAgent) {
         this.warnedNoAgent = true;
@@ -223,76 +221,117 @@ export class PmWaker {
     this.warnedNoAgent = false;
 
     const now = this.now();
-    const candidates = this.candidates(obs, now);
-    for (const c of candidates) {
-      if (!c.due) {
-        if (c.why) this.notifySkipped(c.reason, c.why);
-        continue;
-      }
-      const failed = this.failedAt.get(c.reason);
-      if (failed !== undefined && now - failed < PM_WAKE_RETRY_BACKOFF_MS) {
-        this.notifySkipped(c.reason, 'retry-backoff');
-        continue;
-      }
-      const correlation = this.correlationFor(c.reason);
-      await this.send(agentId, c.reason, c.detail, now, correlation);
-      return; // one wake per tick
+    const candidate = this.firstSendableCandidate(obs, now);
+    if (candidate) await this.send(candidate, now, agentId);
+  }
+
+  private async prepareDurableRecovery(): Promise<boolean> {
+    await this.recovery;
+    if (this.recoveryFailed) await this.recoverPending();
+    // A failed read cannot establish that no message is pending. Stay closed
+    // rather than minting a replacement identity after an ambiguous send.
+    return !this.recoveryFailed;
+  }
+
+  private findDurablePending(): PendingWakeRecord | undefined {
+    return [...this.durablePending.values()].find(
+      (record) => record.payload.projectIdentifier === this.deps.projectIdentifier,
+    );
+  }
+
+  private lookupAgent(project: string): string | null | undefined {
+    try {
+      return this.deps.lookupAgentId(project);
+    } catch (err) {
+      this.deps.logger?.warn?.({ project, error: errMsg(err) }, 'pm-wake: PM agent lookup failed');
+      return undefined;
     }
+  }
+
+  private firstSendableCandidate(
+    obs: PmWakeTickObservation,
+    now: number,
+  ): Candidate | undefined {
+    for (const candidate of this.candidates(obs, now)) {
+      if (!this.isCandidateSendable(candidate, now)) continue;
+      return candidate;
+    }
+    return undefined;
+  }
+
+  private isCandidateSendable(
+    candidate: Candidate,
+    now: number,
+  ): boolean {
+    if (!candidate.due) {
+      if (candidate.why) this.notifySkipped(candidate.reason, candidate.why);
+      return false;
+    }
+    const failed = this.failedAt.get(candidate.reason);
+    if (failed !== undefined && now - failed < PM_WAKE_RETRY_BACKOFF_MS) {
+      this.notifySkipped(candidate.reason, 'retry-backoff');
+      return false;
+    }
+    return true;
   }
 
   private candidates(
     obs: PmWakeTickObservation,
     now: number,
-  ): Array<{ reason: WakeReason; due: boolean; detail: string; why?: string }> {
-    const out: Array<{ reason: WakeReason; due: boolean; detail: string; why?: string }> = [];
-    const intervalOk = (reason: WakeReason): boolean => {
-      const last = this.state.lastByReason[reason];
-      return last === undefined || now - Date.parse(last) >= this.deps.minIntervalMs;
-    };
+  ): Candidate[] {
+    const out: Candidate[] = [];
+    this.addStallCandidate(out, now);
+    this.addEventCandidate(out, now);
+    this.addReadyCandidate(out, obs, now);
+    out.push(this.backstopCandidate(now));
+    return out;
+  }
 
-    if (this.pendingStalls.size > 0) {
-      const ids = [...this.pendingStalls.keys()];
-      const latest = this.pendingStalls.get(ids[ids.length - 1]!)!;
-      out.push({
-        reason: 'stall',
-        due: intervalOk('stall'),
-        detail: `stalled ${ids.join(', ')}: ${latest}`,
-        why: 'min-interval',
-      });
-    }
-    if (this.pendingEvents.length > 0) {
-      const latest = this.pendingEvents[this.pendingEvents.length - 1]!;
-      out.push({
-        reason: 'event',
-        due: intervalOk('event'),
-        detail: this.pendingEvents.length === 1 ? latest : `${this.pendingEvents.length} events, latest: ${latest}`,
-        why: 'min-interval',
-      });
-    }
+  private addStallCandidate(out: Candidate[], now: number): void {
+    if (this.pendingStalls.size === 0) return;
+    const ids = [...this.pendingStalls.keys()];
+    const latest = this.pendingStalls.get(ids[ids.length - 1]!)!;
+    out.push({ reason: 'stall', due: this.intervalOk('stall', now), detail: `stalled ${ids.join(', ')}: ${latest}`, why: 'min-interval' });
+  }
 
+  private addEventCandidate(out: Candidate[], now: number): void {
+    if (this.pendingEvents.length === 0) return;
+    const latest = this.pendingEvents[this.pendingEvents.length - 1]!;
+    out.push({
+      reason: 'event',
+      due: this.intervalOk('event', now),
+      detail: this.pendingEvents.length === 1 ? latest : `${this.pendingEvents.length} events, latest: ${latest}`,
+      why: 'min-interval',
+    });
+  }
+
+  private addReadyCandidate(out: Candidate[], obs: PmWakeTickObservation, now: number): void {
     const sched = obs.result.scheduler;
-    if (sched.skippedReason !== 'paused' && sched.dispatched.length === 0) {
-      const backlog = this.safeBacklog();
-      if (backlog && backlog.readyCount > 0 && backlog.freeCapacity > 0) {
-        out.push({
-          reason: 'ready',
-          due: intervalOk('ready'),
-          detail: `${backlog.readyCount} ready beads, capacity ${backlog.freeCapacity}`,
-          why: 'min-interval',
-        });
-      }
-    }
+    if (sched.skippedReason === 'paused' || sched.dispatched.length > 0) return;
+    const backlog = this.safeBacklog();
+    if (!backlog || backlog.readyCount <= 0 || backlog.freeCapacity <= 0) return;
+    out.push({
+      reason: 'ready',
+      due: this.intervalOk('ready', now),
+      detail: `${backlog.readyCount} ready beads, capacity ${backlog.freeCapacity}`,
+      why: 'min-interval',
+    });
+  }
 
+  private backstopCandidate(now: number): Candidate {
     const anchor = Date.parse(this.state.lastWokenAt ?? this.state.firstSeenAt);
     const sinceMs = now - anchor;
-    const backstopDue = sinceMs >= this.deps.backstopMs;
-    const backstopFailedAt = this.failedAt.get('backstop');
-    out.push({
+    const failedAt = this.failedAt.get('backstop');
+    return {
       reason: 'backstop',
-      due: backstopDue || (backstopFailedAt !== undefined && now - backstopFailedAt >= PM_WAKE_RETRY_BACKOFF_MS),
+      due: sinceMs >= this.deps.backstopMs || (failedAt !== undefined && now - failedAt >= PM_WAKE_RETRY_BACKOFF_MS),
       detail: `no wake for ${Math.floor(sinceMs / 60_000)} min`,
-    });
-    return out;
+    };
+  }
+
+  private intervalOk(reason: WakeReason, now: number): boolean {
+    const last = this.state.lastByReason[reason];
+    return last === undefined || now - Date.parse(last) >= this.deps.minIntervalMs;
   }
 
   private safeBacklog(): PmBacklogSnapshot | null {
@@ -322,52 +361,72 @@ export class PmWaker {
     }
     if (!claim?.authorized || !claim.record || !this.deps.pendingWakeStore) return;
     const sent = await this.deps.pendingWakeStore.sendClaimed(claim.record, this.deps.sink, now);
-    if (!sent.authorized || !sent.outcome) return;
-    const input = inputFromRecord(record);
-    this.applyOutcome(input, sent.outcome, now);
-    if (sent.receipt?.accepted && sent.receipt.applicationDelivered) this.durablePending.delete(record.id);
+    if (sent.authorized && sent.outcome) this.applyDurableOutcome(record, sent, now);
+  }
+
+  private applyDurableOutcome(
+    record: PendingWakeRecord,
+    sent: Awaited<ReturnType<PendingWakeStore['sendClaimed']>>,
+    now: number,
+  ): void {
+    this.applyOutcome(inputFromRecord(record), sent.outcome!, now);
+    if (this.disposed) return;
+    if (sent.receipt?.accepted && sent.receipt.applicationDelivered) {
+      this.retryWakeId.delete(record.payload.reason);
+      this.retryInput.delete(record.payload.reason);
+      this.failedAt.delete(record.payload.reason);
+      this.durablePending.delete(record.id);
+    }
   }
 
   private async send(
-    agentId: string,
-    reason: WakeReason,
-    detail: string,
+    candidate: Candidate,
     now: number,
-    correlation?: Readonly<Record<string, string>>,
+    agentId: string,
   ): Promise<void> {
     const project = this.deps.projectIdentifier;
+    const { reason, detail } = candidate;
     const wakeId = this.retryWakeId.get(reason) ?? `${project}-${reason}-${now}`;
     // A logical message ID must retain its recipient and complete payload,
     // even if newer events arrive or the registry changes before a retry.
     const input = this.retryInput.get(reason) ?? {
       agentId, projectIdentifier: project, reason, detail, wakeId,
-      ...(correlation ? { correlation: { ...correlation } } : {}),
+      ...this.correlationInput(reason),
     };
-    const pendingStore = this.deps.pendingWakeStore;
-    if (pendingStore) {
-      try {
-        const record = await pendingStore.enqueue(input, now);
-        this.durablePending.set(record.id, record);
-        const result = await pendingStore.claim(record.id);
-        if (!result.record || result.record.status === 'closed') {
-          this.durablePending.delete(record.id);
-          return;
-        }
-        if (!result.authorized || !result.record) return;
-        const sent = await pendingStore.sendClaimed(result.record, this.deps.sink, now);
-        if (!sent.authorized || !sent.outcome) return;
-        this.retryWakeId.delete(reason);
-        this.retryInput.delete(reason);
-        this.failedAt.delete(reason);
-        this.applyOutcome(inputFromRecord(record), sent.outcome, now);
-        if (sent.receipt?.accepted && sent.receipt.applicationDelivered) this.durablePending.delete(record.id);
-      } catch (error) {
-        this.failedAt.set(reason, now);
-        this.deps.logger?.warn?.({ project, reason, wakeId, error: errMsg(error) }, 'pm-wake: durable send failed closed');
-      }
-      return;
-    }
+    if (this.deps.pendingWakeStore) return this.sendDurable(input, now);
+    await this.sendDirect(input, now);
+  }
 
+  private correlationInput(reason: WakeReason): Pick<PmWakeInput, 'correlation'> | Record<string, never> {
+    const correlation = this.correlationFor(reason);
+    return correlation ? { correlation: { ...correlation } } : {};
+  }
+
+  private async sendDurable(input: PmWakeInput, now: number): Promise<void> {
+    const store = this.deps.pendingWakeStore!;
+    const { reason, wakeId } = input;
+    try {
+      const record = await store.enqueue(input, now);
+      this.durablePending.set(record.id, record);
+      const claim = await store.claim(record.id);
+      if (!claim.record || claim.record.status === 'closed') {
+        this.durablePending.delete(record.id);
+        return;
+      }
+      if (!claim.authorized) return;
+      const sent = await store.sendClaimed(claim.record, this.deps.sink, now);
+      if (!sent.authorized || !sent.outcome) return;
+      this.applyDurableOutcome(record, sent, now);
+    } catch (error) {
+      this.failedAt.set(reason, now);
+      this.deps.logger?.warn?.(
+        { project: this.deps.projectIdentifier, reason, wakeId, error: errMsg(error) },
+        'pm-wake: durable send failed closed',
+      );
+    }
+  }
+
+  private async sendDirect(input: PmWakeInput, now: number): Promise<void> {
     let outcome: PmWakeOutcome = { ok: false, error: 'sink returned no outcome' };
     try {
       outcome = await this.deps.sink.wake(input);
@@ -378,36 +437,48 @@ export class PmWaker {
   }
 
   private applyOutcome(input: PmWakeInput, outcome: PmWakeOutcome, now: number): void {
-    const { agentId, projectIdentifier: project, reason, detail, wakeId } = input;
-    const ok = outcome.applicationDelivered === undefined
-      ? outcome.ok && outcome.accepted !== false
-      : outcome.ok && outcome.accepted !== false && outcome.applicationDelivered;
-    const error = outcome.reason ?? outcome.error ?? (outcome.accepted ? 'accepted but application delivery is unconfirmed' : undefined);
     if (this.disposed) return;
+    const ok = isConfirmedDelivery(outcome);
+    const error = outcomeError(outcome);
 
     if (ok) {
-      const at = new Date(now).toISOString();
-      this.state = {
-        ...this.state,
-        lastWokenAt: at,
-        lastByReason: { ...this.state.lastByReason, [reason]: at },
-      };
-      this.persist();
-      this.retryWakeId.delete(reason);
-      this.retryInput.delete(reason);
-      this.failedAt.delete(reason);
-      for (const key of [...this.skipNoticed]) if (key.startsWith(`${reason}:`)) this.skipNoticed.delete(key);
-      if (reason === 'stall') this.pendingStalls.clear();
-      if (reason === 'event') this.pendingEvents.length = 0;
+      this.recordDelivered(input, now);
     } else {
-      this.retryWakeId.set(reason, wakeId);
-      this.retryInput.set(reason, input);
-      this.failedAt.set(reason, now);
-      this.deps.logger?.warn?.(
-        { project, reason, wakeId, accepted: outcome.accepted ?? false, applicationDelivered: outcome.applicationDelivered ?? false, ...(outcome.reason ? { sinkReason: outcome.reason } : {}), error },
-        'pm-wake: wake not confirmed delivered — lastWokenAt unchanged',
-      );
+      this.recordFailed(input, outcome, error, now);
     }
+    this.emitOutcome(input, outcome, ok, error);
+  }
+
+  private recordDelivered(input: PmWakeInput, now: number): void {
+    const { reason } = input;
+    const at = new Date(now).toISOString();
+    this.state = {
+      ...this.state,
+      lastWokenAt: at,
+      lastByReason: { ...this.state.lastByReason, [reason]: at },
+    };
+    this.persist();
+    this.retryWakeId.delete(reason);
+    this.retryInput.delete(reason);
+    this.failedAt.delete(reason);
+    for (const key of [...this.skipNoticed]) if (key.startsWith(`${reason}:`)) this.skipNoticed.delete(key);
+    if (reason === 'stall') this.pendingStalls.clear();
+    if (reason === 'event') this.pendingEvents.length = 0;
+  }
+
+  private recordFailed(input: PmWakeInput, outcome: PmWakeOutcome, error: string | undefined, now: number): void {
+    const { projectIdentifier: project, reason, wakeId } = input;
+    this.retryWakeId.set(reason, wakeId);
+    this.retryInput.set(reason, input);
+    this.failedAt.set(reason, now);
+    this.deps.logger?.warn?.(
+      { project, reason, wakeId, accepted: outcome.accepted ?? false, applicationDelivered: outcome.applicationDelivered ?? false, ...(outcome.reason ? { sinkReason: outcome.reason } : {}), error },
+      'pm-wake: wake not confirmed delivered — lastWokenAt unchanged',
+    );
+  }
+
+  private emitOutcome(input: PmWakeInput, outcome: PmWakeOutcome, ok: boolean, error: string | undefined): void {
+    const { agentId, projectIdentifier: project, reason, detail, wakeId } = input;
     this.emitSafely(PM_WOKEN_EVENT, {
       project,
       agentId,
@@ -448,6 +519,14 @@ export class PmWaker {
       );
     }
   }
+}
+
+function isConfirmedDelivery(outcome: PmWakeOutcome): boolean {
+  return outcome.ok && outcome.accepted !== false && outcome.applicationDelivered !== false;
+}
+
+function outcomeError(outcome: PmWakeOutcome): string | undefined {
+  return outcome.reason ?? outcome.error ?? (outcome.accepted ? 'accepted but application delivery is unconfirmed' : undefined);
 }
 
 function inputFromRecord(record: PendingWakeRecord): PmWakeInput {
