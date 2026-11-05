@@ -28,6 +28,7 @@ describe('port sweep scope', () => {
     const runBd = vi.fn(async (_command: string, _args: readonly string[], _options: { cwd: string; timeout: number; env: NodeJS.ProcessEnv }) => ({ stdout: '', stderr: '' }));
     const deps: PortSweeperDeps = {
       readPort: () => 32000, // both pin the same port, neither is listening yet
+      isEmbedded: () => false,
       listeningPorts: () => new Set(),
       portOwnerCwd: () => null,
       runBd,

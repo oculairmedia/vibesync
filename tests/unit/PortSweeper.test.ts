@@ -6,9 +6,13 @@
  * the sweepAll fleet entry point.
  */
 
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   detectConflict,
+  isEmbeddedBeadsProject,
   pickFreePort,
   repairProject,
   sweepAll,
@@ -20,6 +24,7 @@ import {
 function makeDeps(overrides: Partial<PortSweeperDeps> = {}): PortSweeperDeps {
   return {
     readPort: () => null,
+    isEmbedded: () => false,
     listeningPorts: () => new Set<number>(),
     portOwnerCwd: () => null,
     runBd: async () => ({ stdout: '', stderr: '' }),
@@ -168,6 +173,45 @@ describe('repairProject', () => {
 });
 
 describe('sweepAll', () => {
+  it('skips embedded projects before conflict detection and does not invoke bd', async () => {
+    let invoked = false;
+    const report = await sweepAll([projectA], makeDeps({
+      isEmbedded: () => true,
+      readPort: () => 3308,
+      portOwnerCwd: () => '/wrong-owner',
+      runBd: async () => {
+        invoked = true;
+        return { stdout: '', stderr: '' };
+      },
+    }), { apply: true });
+
+    expect(report.skipped).toEqual([{
+      identifier: 'a',
+      reason: 'embedded Dolt (no server port to repair)',
+    }]);
+    expect(report.conflicts).toHaveLength(0);
+    expect(invoked).toBe(false);
+  });
+
+  it('still repairs server-mode project conflicts', async () => {
+    const calls: string[][] = [];
+    const report = await sweepAll([projectA], makeDeps({
+      readPort: () => 3308,
+      portOwnerCwd: () => '/wrong-owner',
+      runBd: async (_cmd, args): Promise<CommandResult> => {
+        calls.push([...args]);
+        return { stdout: '', stderr: '' };
+      },
+    }), { apply: true, portStart: 34000, portEnd: 34010 });
+
+    expect(report.repairs).toHaveLength(1);
+    expect(report.repairs[0]?.ok).toBe(true);
+    expect(calls).toEqual([
+      ['dolt', 'set', 'port', '34000'],
+      ['dolt', 'start'],
+    ]);
+  });
+
   it('flags both projects as duplicate when two pin the same port (symmetric)', async () => {
     // Two projects pin port 32000. detectConflict is symmetric: a sees b as
     // duplicate, b sees a as duplicate. Both surface as conflicts so the
@@ -236,5 +280,52 @@ describe('sweepAll', () => {
     const orphan: SweeperProject = { identifier: 'orphan', filesystem_path: null };
     const report = await sweepAll([orphan], makeDeps());
     expect(report.skipped).toEqual([{ identifier: 'orphan', reason: 'no filesystem_path' }]);
+  });
+});
+
+describe('isEmbeddedBeadsProject', () => {
+  it('detects embedded Dolt without server metadata', () => {
+    const projectPath = mkdtempSync(join(tmpdir(), 'port-sweeper-'));
+    try {
+      const beadsPath = join(projectPath, '.beads');
+      mkdirSync(join(beadsPath, 'embeddeddolt'), { recursive: true });
+      writeFileSync(join(beadsPath, 'metadata.json'), JSON.stringify({ database: 'beads.db' }));
+      expect(isEmbeddedBeadsProject(projectPath)).toBe(true);
+    } finally {
+      rmSync(projectPath, { recursive: true, force: true });
+    }
+  });
+
+  it('does not classify server-mode projects as embedded', () => {
+    const projectPath = mkdtempSync(join(tmpdir(), 'port-sweeper-'));
+    try {
+      const beadsPath = join(projectPath, '.beads');
+      mkdirSync(join(beadsPath, 'embeddeddolt'), { recursive: true });
+      writeFileSync(join(beadsPath, 'metadata.json'), JSON.stringify({ dolt_mode: 'server' }));
+      expect(isEmbeddedBeadsProject(projectPath)).toBe(false);
+    } finally {
+      rmSync(projectPath, { recursive: true, force: true });
+    }
+  });
+
+  it('does not classify projects without .beads as embedded', () => {
+    const projectPath = mkdtempSync(join(tmpdir(), 'port-sweeper-'));
+    try {
+      expect(isEmbeddedBeadsProject(projectPath)).toBe(false);
+    } finally {
+      rmSync(projectPath, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['null', '[]', '"x"', '42'])('does not classify non-object metadata %s as embedded', (metadata) => {
+    const projectPath = mkdtempSync(join(tmpdir(), 'port-sweeper-'));
+    try {
+      const beadsPath = join(projectPath, '.beads');
+      mkdirSync(join(beadsPath, 'embeddeddolt'), { recursive: true });
+      writeFileSync(join(beadsPath, 'metadata.json'), metadata);
+      expect(isEmbeddedBeadsProject(projectPath)).toBe(false);
+    } finally {
+      rmSync(projectPath, { recursive: true, force: true });
+    }
   });
 });

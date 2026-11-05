@@ -35,7 +35,7 @@
  */
 
 import { execFile, execFileSync } from 'node:child_process';
-import { readFileSync, readlinkSync } from 'node:fs';
+import { existsSync, readFileSync, readlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -79,6 +79,8 @@ export type CommandRunner = (
 export interface PortSweeperDeps {
   /** Read .beads/dolt-server.port. */
   readonly readPort: (projectPath: string) => number | null;
+  /** True when Beads uses embedded Dolt and has no server port to repair. */
+  readonly isEmbedded: (projectPath: string) => boolean;
   /** Return the set of TCP ports currently in LISTEN state on this host. */
   readonly listeningPorts: () => Set<number>;
   /** Resolve /proc/<pid>/cwd → directory the process was started in. */
@@ -128,6 +130,18 @@ export function readBeadsPortFromDisk(projectPath: string): number | null {
     return Number.isFinite(port) && port > 0 ? port : null;
   } catch {
     return null;
+  }
+}
+
+export function isEmbeddedBeadsProject(projectPath: string): boolean {
+  const beadsPath = join(projectPath, '.beads');
+  try {
+    if (!existsSync(join(beadsPath, 'embeddeddolt'))) return false;
+    const metadata: unknown = JSON.parse(readFileSync(join(beadsPath, 'metadata.json'), 'utf8'));
+    if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata)) return false;
+    return (metadata as { dolt_mode?: unknown }).dolt_mode !== 'server';
+  } catch {
+    return false;
   }
 }
 
@@ -182,6 +196,7 @@ async function defaultRunBd(
 
 export const defaultDeps: PortSweeperDeps = {
   readPort: readBeadsPortFromDisk,
+  isEmbedded: isEmbeddedBeadsProject,
   listeningPorts: listeningPortsFromSs,
   portOwnerCwd: portOwnerCwdFromProc,
   runBd: defaultRunBd,
@@ -366,6 +381,10 @@ export async function sweepAll(
   for (const project of selected) {
     if (!project.filesystem_path) {
       skipped.push({ identifier: project.identifier, reason: 'no filesystem_path' });
+      continue;
+    }
+    if (deps.isEmbedded(project.filesystem_path)) {
+      skipped.push({ identifier: project.identifier, reason: 'embedded Dolt (no server port to repair)' });
       continue;
     }
     const conflict = detectConflict(project, registry, deps);
