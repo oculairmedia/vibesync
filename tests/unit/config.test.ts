@@ -91,9 +91,14 @@ describe('config', () => {
         'VIBESYNC_SCHEDULER_POOL_SIZE',
         'VIBESYNC_SCHEDULER_BATCH_SIZE',
       ];
+      // One setting junk at a time, the others valid: each parser is tested
+      // on its own (a leftover invalid value would make every later check
+      // pass for the wrong reason).
       for (const key of keys) {
+        for (const other of keys) delete process.env[other];
         process.env[key] = '30000junk';
         expect(() => loadConfig(), key).toThrow('Config validation failed');
+        delete process.env[key];
       }
       process.env.VIBESYNC_SCHEDULER_INTERVAL_MS = '30000';
       process.env.VIBESYNC_SCHEDULER_POOL_SIZE = '1';

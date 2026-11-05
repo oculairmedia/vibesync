@@ -150,6 +150,11 @@ describe('GhCliGitHubPort', () => {
     }, ['o/r']);
 
     await expect(port.fetchFacts('o/r', 17, [])).rejects.toThrow('o/r#17');
+    // Empty or whitespace-only output is no answer, not zero deleted files.
+    for (const empty of ['', '   ']) {
+      deletedCount = empty;
+      await expect(port.fetchFacts('o/r', 17, [])).rejects.toThrow('invalid deleted-files count');
+    }
     deletedCount = '0';
     await expect(port.fetchFacts('o/r', 17, [])).resolves.toMatchObject({ deletedFiles: 0 });
     deletedCount = '3';
