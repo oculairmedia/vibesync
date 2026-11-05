@@ -55,6 +55,21 @@ describe('formula routes', () => {
     expect(codeReview!.whenToUse).toMatch(/when a bead represents a concrete code change/);
   });
 
+  it('GET /formulas exposes formula delivery requirements', async () => {
+    const harness = newHarness();
+    const route = harness.find('GET', '/formulas');
+
+    await route.handle(ctx('/formulas'));
+
+    const call = harness.sendJson.mock.calls.at(-1);
+    expect(call).toBeDefined();
+    const body = call![2] as { formulas: { name: string; delivers: string | null }[] };
+    const onboardFeature = body.formulas.find((f) => f.name === 'onboard-feature');
+    const codeReview = body.formulas.find((f) => f.name === 'code-review');
+    expect(onboardFeature?.delivers).toBe('pull_request');
+    expect(codeReview?.delivers).toBeNull();
+  });
+
   it('POST /formulas/:name/run rejects missing input', async () => {
     const harness = newHarness();
     const route = harness.find('POST', '/formulas/code-review/run');
