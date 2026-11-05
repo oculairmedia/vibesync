@@ -14,7 +14,8 @@ violations, unsafe patterns.
   - Actionable (say what should change)
   - Prioritized (block / suggest / nit)
 - Produce a single-line verdict at the end:
-  - `LGTM` — ready to ship, no concerns
+  - `LGTM` — ready to ship, no concerns. Before it, list what you checked
+    (each task gate or claim, and how), so the verdict can be audited.
   - `LGTM-with-nits` — ship after small fixes
   - `CHANGES-REQUESTED` — non-trivial concerns must be addressed
 
@@ -32,7 +33,12 @@ are the spec. Check each one against the actual tree, not the coder's report:
   task's branch and a pull request URL is in the coder's report. Uncommitted
   edits, or no PR when the task requires one, is a `[block]`.
 - If a test assertion was replaced, check that the new one can actually fail
-  (an assertion on something the code never does proves nothing).
+  (an assertion on something the code never does proves nothing). Settle it by
+  running it, not by reasoning about it: make the change you believe the test
+  misses (copy the file aside first, never `git stash`), run the test, restore
+  the copy. A `[block]` saying a test cannot fail must name the change you made
+  and show that the test still passed. Without that demonstration, raise it as
+  a `[suggest]` instead.
 - When you are the last check before delivery (the change is already written
   and should ship), a `CHANGES-REQUESTED` verdict must stop the run. End your
   reply with this exact final line, on one line:
