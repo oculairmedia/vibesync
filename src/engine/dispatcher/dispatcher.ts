@@ -9,6 +9,7 @@ import type { RuntimeProvider, SessionEvent, SessionHandle } from '../runtime/in
 import type { ReadyStep, ReadyStepRunner, StepRunOutcome } from '../molecule/index.js';
 import { parseBlockedOutcome, STEP_OUTCOME_INSTRUCTIONS } from './step-outcome.js';
 import type { DeliveryVerifier } from './delivery.js';
+import { renderProjectMemory, type ProjectMemorySource } from './project-memory.js';
 import { renderTemplate } from './render.js';
 import {
   classifyFailure,
@@ -192,6 +193,11 @@ export interface FormulaDispatcherOptions {
    */
   readonly deliveryVerifier?: DeliveryVerifier;
   /**
+   * Durable codebase knowledge rendered into every step prompt, read fresh
+   * before each step (vibesync-9lzk.25). Absent = no memory section.
+   */
+  readonly projectMemory?: ProjectMemorySource;
+  /**
    * vibesync-mcz Phase D — injectable conversation-id generator.
    * Defaults to a uuid-based generator. Tests inject a counter for
    * deterministic ids; resume code paths re-use stored ids and never
@@ -269,6 +275,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
   private readonly providerResolver: ProviderResolver | null;
   private readonly roleAgentContextResolver: RoleAgentBootstrapContextResolver | null;
   private readonly deliveryVerifier: DeliveryVerifier | null;
+  private readonly projectMemory: ProjectMemorySource | null;
   private readonly conversationIdGenerator: ConversationIdGenerator;
   private readonly onMoleculeCooked: ((moleculeId: string) => void) | null;
   private readonly moleculeQueue: QueuedMoleculeRun[] = [];
@@ -285,6 +292,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     this.providerResolver = opts.providerResolver ?? null;
     this.roleAgentContextResolver = opts.roleAgentContextResolver ?? null;
     this.deliveryVerifier = opts.deliveryVerifier ?? null;
+    this.projectMemory = opts.projectMemory ?? null;
     this.conversationIdGenerator =
       opts.conversationIdGenerator ?? createDefaultConversationIdGenerator();
     this.onMoleculeCooked = opts.onMoleculeCooked ?? null;
@@ -822,7 +830,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
         step_id: args.step.id,
         attempt: state.attempt,
       },
-    }) + STEP_OUTCOME_INSTRUCTIONS;
+    }) + (this.projectMemory ? renderProjectMemory(await this.projectMemory.read()) : '') + STEP_OUTCOME_INSTRUCTIONS;
 
     let failure: { readonly signal: FailureSignal; readonly error: unknown; readonly failureClass: string | null } | null = null;
     // Only the AGENT TURN is retryable. Anything after it succeeded (reading the
