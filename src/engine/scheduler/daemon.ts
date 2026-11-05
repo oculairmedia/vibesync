@@ -620,13 +620,7 @@ export class SchedulerDaemon {
   async tick(): Promise<DaemonTickResult> {
     // Phase 0: schedule newly-ready beads (create sling contexts) so the
     // scheduler loop has claimed work to dispatch this tick.
-    try {
-      await this.scheduleReady();
-    } catch (err) {
-      this.deps.logger?.warn?.({ error: msg(err) }, 'daemon: schedule phase failed');
-    }
-
-    let scheduler: TickResult;
+    await this.runPhase('schedule', () => this.scheduleReady());
     if (this.stopping) {
       return { scheduler: { dispatched: [], failed: [], circuitBroken: [], skippedReason: 'paused' }, merged: [], recovered: [] };
     }
@@ -634,44 +628,49 @@ export class SchedulerDaemon {
     // Phase 0b: offer ready formula STEPS (molecule-scoped readiness from the
     // bead graph) to the dispatcher. Offering returns at once; steps run off the
     // tick. Honors the town-wide pause like every other dispatch.
-    if (this.deps.steps && !this.deps.config().paused) {
-      try {
-        await this.deps.steps.tick();
-      } catch (err) {
-        this.deps.logger?.warn?.({ error: msg(err) }, 'daemon: step phase failed');
-      }
-    }
-    try {
-      scheduler = await this.scheduler.runTick();
-    } catch (err) {
-      this.deps.logger?.warn?.({ error: msg(err) }, 'daemon: scheduler phase failed');
-      scheduler = { dispatched: [], failed: [], circuitBroken: [], skippedReason: 'no-ready' };
-    }
+    const steps = this.deps.steps;
+    if (steps && !this.deps.config().paused) await this.runPhase('step', () => steps.tick());
 
-    const merged: number[] = [];
+    const scheduler = await this.runPhase('scheduler', () => this.scheduler.runTick())
+      ?? { dispatched: [], failed: [], circuitBroken: [], skippedReason: 'no-ready' };
+
     // Once stop() was requested, do not start the externally-visible refinery
     // (merge) or witness phases: shutdown must not be followed by new writes.
-    if (this.stopping) return { scheduler, merged, recovered: [] };
-    try {
-      const processed = await this.refinery.processQueue();
-      for (const p of processed) if (p.state === 'merged') merged.push(p.request.prNumber);
-    } catch (err) {
-      this.deps.logger?.warn?.({ error: msg(err) }, 'daemon: refinery phase failed');
-    }
+    if (this.stopping) return { scheduler, merged: [], recovered: [] };
+    const merged = (await this.runPhase('refinery', () => this.mergePhase())) ?? [];
 
-    const recovered: string[] = [];
-    if (this.stopping) return { scheduler, merged, recovered };
-    try {
-      const patrol = await this.witness.patrol(this.pool.view());
-      for (const r of patrol.recovered) {
-        recovered.push(r.slotId);
-        this.slotForBead.delete(r.workBeadId); // slot freed by the witness
-      }
-    } catch (err) {
-      this.deps.logger?.warn?.({ error: msg(err) }, 'daemon: witness phase failed');
-    }
+    if (this.stopping) return { scheduler, merged, recovered: [] };
+    const recovered = (await this.runPhase('witness', () => this.witnessPhase())) ?? [];
 
     return { scheduler, merged, recovered };
+  }
+
+  /**
+   * Run one tick phase. A phase that throws is logged with its name and yields
+   * undefined, so one failing phase never stops the others.
+   */
+  private async runPhase<T>(name: string, phase: () => Promise<T>): Promise<T | undefined> {
+    try {
+      return await phase();
+    } catch (err) {
+      this.deps.logger?.warn?.({ error: msg(err) }, `daemon: ${name} phase failed`);
+      return undefined;
+    }
+  }
+
+  /** Refinery phase: PR numbers merged this tick. */
+  private async mergePhase(): Promise<number[]> {
+    const processed = await this.refinery.processQueue();
+    return processed.filter((p) => p.state === 'merged').map((p) => p.request.prNumber);
+  }
+
+  /** Witness phase: slots recovered this tick (each frees its work bead's slot). */
+  private async witnessPhase(): Promise<string[]> {
+    const patrol = await this.witness.patrol(this.pool.view());
+    return patrol.recovered.map((r) => {
+      this.slotForBead.delete(r.workBeadId); // slot freed by the witness
+      return r.slotId;
+    });
   }
 
   /**
@@ -722,19 +721,20 @@ export class SchedulerDaemon {
       return 'locked';
     }
     const now = Date.now();
-    if (this.lastEventTickAt !== null) {
-      const remaining = this.lastEventTickAt + this.eventDebounceMs - now;
-      if (remaining > 0) {
-        this.trailingReason = reason; // latest wins; the tick is one regardless of how many were coalesced
-        if (!this.trailingTimer) {
-          this.trailingTimer = setTimeout(() => this.fireTrailing(), remaining);
-        }
-        return 'debounced';
-      }
+    const remaining = this.lastEventTickAt === null ? 0 : this.lastEventTickAt + this.eventDebounceMs - now;
+    if (remaining > 0) {
+      this.deferToTrailingTick(reason, remaining);
+      return 'debounced';
     }
     this.lastEventTickAt = now;
     this.startTick(reason);
     return 'started';
+  }
+
+  /** Inside the debounce window: one trailing tick at the window's end, latest reason wins. */
+  private deferToTrailingTick(reason: TickReason, remainingMs: number): void {
+    this.trailingReason = reason; // latest wins; the tick is one regardless of how many were coalesced
+    this.trailingTimer ??= setTimeout(() => this.fireTrailing(), remainingMs);
   }
 
   /**
