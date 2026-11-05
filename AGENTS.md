@@ -164,32 +164,27 @@ against.
 
 ## RuntimeProvider discipline
 
-Spawned Gastown role sessions (mayor, coder, reviewer, refinery,
-tester) run on the letta-code local backend via
-`LettaCodeSubagentProvider` in
-`src/engine/runtime/letta-code-subagent-provider.ts`.
-`LettaTeamsProvider` and the `letta-teams-sdk` dependency have been
-removed. New code must not route projects to `provider_kind=letta-teams`
-or add `letta-teams-sdk` integrations.
+Formula steps run on persistent role agents over the Iroh wrapper:
+`IrohWrapperProvider` (`src/engine/runtime/iroh-wrapper-provider.ts`,
+provider kind `letta-code-iroh`) is the only RuntimeProvider. Each step is
+sent directly to the role agent named in `project_role_agents`; the wrapper
+creates the step's conversation and reports its id.
 
-Specifically, **do not**:
+The shim provider (`letta-code-subagent`, the admin shim on :8291) and Letta
+Teams were removed (vibesync-9lzk.29). A project routing row or
+`VIBESYNC_ORCHESTRATION_PROVIDER` naming a removed kind is a configuration
+error and fails loudly; there is no fallback path.
 
-1. **Import from `letta-teams-sdk/council`.** Code review is owned by
-   `formulas/code-review.toml` driving a reviewer/coder/tester loop on
-   our own dispatcher — not by teams' built-in council module.
-2. **Rely on `letta-teams-sdk/init` to populate memory blocks.** Role
-   packs in `packs/<name>/roles/*.toml` are the source of truth for
-   memory block content. Teams' built-in init prompts are overridden
-   in the provider, not consumed.
-3. **Use teams' task-graph or dep semantics.** Formulas
-   (`src/engine/formula/`) and molecules (`.beads/` molecule
-   rows) own dep graphs, retry, and `wait_for`.
-4. **Add a second path to `@letta-ai/letta-code-sdk`.**
-   `LettaCodeSubagentProvider` is the local-backend convergence point;
-   extend it instead of creating another letta-code route.
+Do **not**:
 
-If a change would cross any of these, the layering invariant has been
-crossed — block in review and route the work above the
-`RuntimeProvider` interface instead.
+1. Add a second route to the Letta runtime. New transport needs go through
+   the Iroh wrapper and its grants.
+2. Rely on a runtime to own task graphs, retries or memory seeding.
+   Formulas (`src/engine/formula/`) and molecule beads own dependency
+   graphs, retry and waits; role packs (`packs/<name>/roles/*.toml`) own
+   memory block content.
+
+If a change would cross either of these, block it in review and route the
+work above the `RuntimeProvider` interface instead.
 
 <!-- VIBESYNC:runtime-provider-discipline:END -->

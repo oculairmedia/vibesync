@@ -201,7 +201,7 @@
       "tests": "temporal/*",
       "classification": "compatibility-only",
       "kotlin_fate": "evaluate",
-      "notes": "Temporal path \u2014 may not survive Kotlin convergence; flag for decision."
+      "notes": "Temporal path — may not survive Kotlin convergence; flag for decision."
     },
     {
       "surface_id": "GET /openapi.json, GET /docs",
@@ -237,7 +237,7 @@
       "surface_id": "dispatcher/formula.started",
       "kind": "event",
       "owner": "src/orchestration/dispatcher/dispatcher.ts",
-      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "consumers": "writeback-hook, UI, events.jsonl",
       "tests": "dispatcher.test, writeback-hook.test",
       "classification": "normative",
       "kotlin_fate": "port",
@@ -247,7 +247,7 @@
       "surface_id": "dispatcher/formula.completed",
       "kind": "event",
       "owner": "src/orchestration/dispatcher/dispatcher.ts",
-      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "consumers": "writeback-hook, UI, events.jsonl",
       "tests": "dispatcher.test, writeback-hook.test",
       "classification": "normative",
       "kotlin_fate": "port",
@@ -257,7 +257,7 @@
       "surface_id": "dispatcher/formula.failed",
       "kind": "event",
       "owner": "src/orchestration/dispatcher/dispatcher.ts",
-      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "consumers": "writeback-hook, UI, events.jsonl",
       "tests": "dispatcher.test, writeback-hook.test",
       "classification": "normative",
       "kotlin_fate": "port",
@@ -267,7 +267,7 @@
       "surface_id": "dispatcher/formula.queued",
       "kind": "event",
       "owner": "src/orchestration/dispatcher/dispatcher.ts",
-      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "consumers": "writeback-hook, UI, events.jsonl",
       "tests": "dispatcher.test, writeback-hook.test",
       "classification": "normative",
       "kotlin_fate": "port",
@@ -277,7 +277,7 @@
       "surface_id": "dispatcher/formula.resumed",
       "kind": "event",
       "owner": "src/orchestration/dispatcher/dispatcher.ts",
-      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "consumers": "writeback-hook, UI, events.jsonl",
       "tests": "dispatcher.test, writeback-hook.test",
       "classification": "normative",
       "kotlin_fate": "port",
@@ -287,7 +287,7 @@
       "surface_id": "dispatcher/formula.resume.paused",
       "kind": "event",
       "owner": "src/orchestration/dispatcher/dispatcher.ts",
-      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "consumers": "writeback-hook, UI, events.jsonl",
       "tests": "dispatcher.test, writeback-hook.test",
       "classification": "normative",
       "kotlin_fate": "port",
@@ -297,7 +297,7 @@
       "surface_id": "dispatcher/formula.cancelled",
       "kind": "event",
       "owner": "src/orchestration/dispatcher/dispatcher.ts",
-      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "consumers": "writeback-hook, UI, events.jsonl",
       "tests": "dispatcher.test, writeback-hook.test",
       "classification": "normative",
       "kotlin_fate": "port",
@@ -307,7 +307,7 @@
       "surface_id": "dispatcher/step.started",
       "kind": "event",
       "owner": "src/orchestration/dispatcher/dispatcher.ts",
-      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "consumers": "writeback-hook, UI, events.jsonl",
       "tests": "dispatcher.test, writeback-hook.test",
       "classification": "normative",
       "kotlin_fate": "port",
@@ -317,7 +317,7 @@
       "surface_id": "dispatcher/step.finished",
       "kind": "event",
       "owner": "src/orchestration/dispatcher/dispatcher.ts",
-      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "consumers": "writeback-hook, UI, events.jsonl",
       "tests": "dispatcher.test, writeback-hook.test",
       "classification": "normative",
       "kotlin_fate": "port",
@@ -327,7 +327,7 @@
       "surface_id": "dispatcher/step.failed",
       "kind": "event",
       "owner": "src/orchestration/dispatcher/dispatcher.ts",
-      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "consumers": "writeback-hook, UI, events.jsonl",
       "tests": "dispatcher.test, writeback-hook.test",
       "classification": "normative",
       "kotlin_fate": "port",
@@ -337,7 +337,7 @@
       "surface_id": "dispatcher/step.retry",
       "kind": "event",
       "owner": "src/orchestration/dispatcher/dispatcher.ts",
-      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "consumers": "writeback-hook, UI, events.jsonl",
       "tests": "dispatcher.test, writeback-hook.test",
       "classification": "normative",
       "kotlin_fate": "port",
@@ -347,7 +347,7 @@
       "surface_id": "dispatcher/step.cancelled",
       "kind": "event",
       "owner": "src/orchestration/dispatcher/dispatcher.ts",
-      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "consumers": "writeback-hook, UI, events.jsonl",
       "tests": "dispatcher.test, writeback-hook.test",
       "classification": "normative",
       "kotlin_fate": "port",
@@ -357,7 +357,7 @@
       "surface_id": "dispatcher/step.reattached",
       "kind": "event",
       "owner": "src/orchestration/dispatcher/dispatcher.ts",
-      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "consumers": "writeback-hook, UI, events.jsonl",
       "tests": "dispatcher.test, writeback-hook.test",
       "classification": "normative",
       "kotlin_fate": "port",
@@ -367,17 +367,7 @@
       "surface_id": "dispatcher/step.task_recorded",
       "kind": "event",
       "owner": "src/orchestration/dispatcher/dispatcher.ts",
-      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
-      "tests": "dispatcher.test, writeback-hook.test",
-      "classification": "normative",
-      "kotlin_fate": "port",
-      "notes": ""
-    },
-    {
-      "surface_id": "dispatcher/step.role_agent_bootstrapped",
-      "kind": "event",
-      "owner": "src/orchestration/dispatcher/dispatcher.ts",
-      "consumers": "writeback-hook, work-activity-reporter, UI, events.jsonl",
+      "consumers": "writeback-hook, UI, events.jsonl",
       "tests": "dispatcher.test, writeback-hook.test",
       "classification": "normative",
       "kotlin_fate": "port",
@@ -387,7 +377,7 @@
       "surface_id": "runtime/session.started",
       "kind": "event",
       "owner": "src/orchestration/runtime (emitRuntimeSessionEvent)",
-      "consumers": "UI live view, work-activity-reporter",
+      "consumers": "UI live view",
       "tests": "-",
       "classification": "normative",
       "kotlin_fate": "port",
@@ -397,7 +387,7 @@
       "surface_id": "runtime/session.error",
       "kind": "event",
       "owner": "src/orchestration/runtime (emitRuntimeSessionEvent)",
-      "consumers": "UI live view, work-activity-reporter",
+      "consumers": "UI live view",
       "tests": "-",
       "classification": "normative",
       "kotlin_fate": "port",
@@ -407,7 +397,7 @@
       "surface_id": "runtime/session.tool_call",
       "kind": "event",
       "owner": "src/orchestration/runtime (emitRuntimeSessionEvent)",
-      "consumers": "UI live view, work-activity-reporter",
+      "consumers": "UI live view",
       "tests": "-",
       "classification": "normative",
       "kotlin_fate": "port",
@@ -417,7 +407,7 @@
       "surface_id": "runtime/session.tool_result",
       "kind": "event",
       "owner": "src/orchestration/runtime (emitRuntimeSessionEvent)",
-      "consumers": "UI live view, work-activity-reporter",
+      "consumers": "UI live view",
       "tests": "-",
       "classification": "normative",
       "kotlin_fate": "port",
@@ -427,7 +417,7 @@
       "surface_id": "runtime/session.turn_done",
       "kind": "event",
       "owner": "src/orchestration/runtime (emitRuntimeSessionEvent)",
-      "consumers": "UI live view, work-activity-reporter",
+      "consumers": "UI live view",
       "tests": "-",
       "classification": "normative",
       "kotlin_fate": "port",
@@ -437,7 +427,7 @@
       "surface_id": "runtime/session.usage",
       "kind": "event",
       "owner": "src/orchestration/runtime (emitRuntimeSessionEvent)",
-      "consumers": "UI live view, work-activity-reporter",
+      "consumers": "UI live view",
       "tests": "-",
       "classification": "normative",
       "kotlin_fate": "port",
@@ -471,7 +461,7 @@
       "tests": "walker.test, writeback-hook.test",
       "classification": "normative",
       "kotlin_fate": "port",
-      "notes": "bead id that motivated dispatch \u2014 writeback target (er21/u32z)"
+      "notes": "bead id that motivated dispatch — writeback target (er21/u32z)"
     },
     {
       "surface_id": "molecule.exec.writeback_status",
@@ -551,7 +541,7 @@
       "tests": "walker.test, writeback-hook.test",
       "classification": "normative",
       "kotlin_fate": "port",
-      "notes": "letta-code-subagent"
+      "notes": "letta-code-iroh"
     },
     {
       "surface_id": "molecule.exec.session_id",
@@ -621,27 +611,7 @@
       "tests": "letta-code-subagent-provider.test, extra-providers.test",
       "classification": "normative",
       "kotlin_fate": "port",
-      "notes": "9-variant observe() event union \u2014 jxri.3/jxri.5 versions this"
-    },
-    {
-      "surface_id": "provider_kind=letta-code-subagent",
-      "kind": "provider",
-      "owner": "src/orchestration/runtime/letta-code-subagent-provider.ts",
-      "consumers": "boot, dispatcher resolver",
-      "tests": "provider-routing.test",
-      "classification": "normative",
-      "kotlin_fate": "port",
-      "notes": "Only executable provider; letta-teams removed (legacy rows fall back)."
-    },
-    {
-      "surface_id": "provider turnTimeout: effectiveTimeout=stepTimeoutMs??turnTimeoutMs",
-      "kind": "provider_contract",
-      "owner": "letta-code-subagent-provider.ts:501-502",
-      "consumers": "dispatcher",
-      "tests": "-",
-      "classification": "normative",
-      "kotlin_fate": "port",
-      "notes": "setTimeout(abort). Default resolveDefaultTurnTimeout()=10min, env VIBESYNC_TURN_TIMEOUT_MS override. vibesync-2hgr: real ~4min abort is NOT this path (env=900000); true 240000 source still under investigation."
+      "notes": "9-variant observe() event union — jxri.3/jxri.5 versions this"
     },
     {
       "surface_id": "formula:onboard-feature",
@@ -891,7 +861,7 @@
       "tests": "database.test",
       "classification": "normative",
       "kotlin_fate": "migrate",
-      "notes": "idempotency_key UNIQUE(key,issue,action) \u2014 ETag/idempotency semantics"
+      "notes": "idempotency_key UNIQUE(key,issue,action) — ETag/idempotency semantics"
     },
     {
       "surface_id": "table:bookstack_pages",
@@ -904,16 +874,6 @@
       "notes": "docs cache"
     },
     {
-      "surface_id": "env:VIBESYNC_LETTA_CODE_SHIM_URL",
-      "kind": "config",
-      "owner": "src/index.ts / boot.ts / provider",
-      "consumers": "boot, dispatcher",
-      "tests": "-",
-      "classification": "normative",
-      "kotlin_fate": "migrate",
-      "notes": "shim base (also LETTA_CODE_SHIM_URL)"
-    },
-    {
       "surface_id": "env:VIBESYNC_LETTA_CODE_PARENT_AGENT_ID",
       "kind": "config",
       "owner": "src/index.ts / boot.ts / provider",
@@ -924,16 +884,6 @@
       "notes": "PM parent for role-agent spawn"
     },
     {
-      "surface_id": "env:VIBESYNC_LETTA_CODE_PASSWORD",
-      "kind": "config",
-      "owner": "src/index.ts / boot.ts / provider",
-      "consumers": "boot, dispatcher",
-      "tests": "-",
-      "classification": "normative",
-      "kotlin_fate": "migrate",
-      "notes": "shim auth"
-    },
-    {
       "surface_id": "env:VIBESYNC_ORCHESTRATION_PROVIDER",
       "kind": "config",
       "owner": "src/index.ts / boot.ts / provider",
@@ -941,7 +891,7 @@
       "tests": "-",
       "classification": "normative",
       "kotlin_fate": "migrate",
-      "notes": "must=letta-code-subagent"
+      "notes": "must be unset or letta-code-iroh (vibesync-9lzk.29)"
     },
     {
       "surface_id": "env:VIBESYNC_ORCHESTRATION_TOKEN",
@@ -982,16 +932,6 @@
       "classification": "normative",
       "kotlin_fate": "migrate",
       "notes": "role agent model"
-    },
-    {
-      "surface_id": "env:VIBESYNC_WORK_ACTIVITY_REPORT",
-      "kind": "config",
-      "owner": "src/index.ts / boot.ts / provider",
-      "consumers": "boot, dispatcher",
-      "tests": "-",
-      "classification": "normative",
-      "kotlin_fate": "migrate",
-      "notes": "mobile active-subagent bar (ryhc)"
     },
     {
       "surface_id": "env:VIBESYNC_API_BASE_URL",
@@ -1121,7 +1061,7 @@
       "tests": "-",
       "classification": "compatibility-only",
       "kotlin_fate": "evaluate",
-      "notes": "Presence noted; If-Match handling incomplete \u2014 classify as partial."
+      "notes": "Presence noted; If-Match handling incomplete — classify as partial."
     },
     {
       "surface_id": "drift audit / teammate reconcile",
@@ -1141,7 +1081,7 @@
       "tests": "-",
       "classification": "normative",
       "kotlin_fate": "port",
-      "notes": "Mobile active-subagent bar consumes work-activity (ryhc) + molecule events."
+      "notes": "Mobile reads molecule events (the shim work-activity feed was removed, vibesync-9lzk.29)."
     },
     {
       "surface_id": "VibeSync URL / discovery issue",
@@ -1152,26 +1092,6 @@
       "classification": "compatibility-only",
       "kotlin_fate": "design",
       "notes": "Per-project letta_base_url is dialed directly; no service discovery. Ephemeral shim ports (jxri-devj collision) + Dolt SIGKILL-on-restart (jxri-nl0l) make the URL unstable. Needs a discovery/handshake contract (lcp-desktop loopback handshake is the desktop analog)."
-    },
-    {
-      "surface_id": "legacy provider_kind=letta-teams rows",
-      "kind": "migration_debt",
-      "owner": "projects table",
-      "consumers": "dispatcher resolver",
-      "tests": "provider-routing.test",
-      "classification": "deprecated",
-      "kotlin_fate": "delete",
-      "notes": "Non-executable; resolver falls back to letta-code-subagent with a warn. jxri.21 cleans up."
-    },
-    {
-      "surface_id": "vibesync-2hgr: true ~240000 turn-abort source",
-      "kind": "migration_debt",
-      "owner": "letta-code-subagent-provider.ts SSE read path",
-      "consumers": "dispatcher",
-      "tests": "letta-code-subagent-provider.test",
-      "classification": "missing",
-      "kotlin_fate": "design",
-      "notes": "OPEN: env=900000 and onboard-feature sets no per-step timeout, yet aborts at ~4m0s with sse_read_error. NOT VIBESYNC_TURN_TIMEOUT_MS; NOT Bun fetch default (probed >6min no-abort with keepalive). True source unproven \u2014 must log effectiveTimeout at provider.ts:501 on a real dispatch."
     }
   ],
   "summary": {

@@ -18,6 +18,15 @@ import {
   type BootSchedulerOptions,
 } from '../../../../src/engine/scheduler/boot-scheduler.js';
 import { InMemoryDoltClient, inMemoryBeads } from '../../../_fixtures/in-memory-dolt-client.js';
+import { IrohConnection } from '../../../../src/engine/runtime/iroh/connection.js';
+
+/** These tests never dispatch a turn; a dial would mean a real Iroh host. */
+function neverDialIroh(): IrohConnection {
+  return new IrohConnection({
+    dial: async () => { throw new Error('test must not dial Iroh'); },
+    peerName: 'scheduler-test', sleep: async () => undefined, backoff: { initialMs: 1, capMs: 2, maxAttempts: 1 },
+  });
+}
 
 const TICK = 'daemon/scheduler.tick';
 const STATUS_CHANGED = 'beads/issue.status_changed';
@@ -96,17 +105,16 @@ function schedulerConfig(over: Partial<BootSchedulerOptions['config']> = {}): Bo
 }
 
 const POOL = [
-  { agentId: 'agent-a', role: 'role-one', lettaBaseUrl: 'http://shim' },
-  { agentId: 'agent-b', role: 'role-two', lettaBaseUrl: 'http://shim' },
+  { agentId: 'agent-a', role: 'role-one' },
+  { agentId: 'agent-b', role: 'role-two' },
 ];
 
 async function boot(opts: Partial<BootSchedulerOptions> & { bd: BootSchedulerOptions['bd'] }): Promise<OrchestrationHandle> {
-  process.env['VIBESYNC_WORK_ACTIVITY_REPORT'] = '0';
-  process.env['VIBESYNC_ORCHESTRATION_PROVIDER'] = 'letta-code-subagent';
-  process.env['VIBESYNC_LETTA_CODE_SHIM_URL'] = 'http://shim:8291';
+  process.env['VIBESYNC_ORCHESTRATION_PROVIDER'] = 'letta-code-iroh';
   process.env['VIBESYNC_LETTA_CODE_PARENT_AGENT_ID'] = 'agent-parent';
   return bootOrchestrationPlane({
     ...inMemoryBeads(),
+    irohConnectionFactory: neverDialIroh,
     persistEvents: false,
     runDriftAuditOnBoot: false,
     scheduler: {

@@ -5,12 +5,11 @@ formulas, molecules, runtime providers, event bus, the scheduler's causal
 witness for liveness, role
 packs, and layering invariants live in this repository.
 
-The active runtime path for spawned Gastown role sessions is the letta-code
-local backend through `LettaCodeSubagentProvider` in
-`src/orchestration/runtime/letta-code-subagent-provider.ts`. The older
-Teams-backed provider and dependency have been removed; stale
-`provider_kind='letta-teams'` rows are treated as removed configuration and
-fall back to the boot-level local backend where safe.
+Gastown role sessions run on persistent role agents over the Iroh wrapper,
+through `IrohWrapperProvider` (`src/engine/runtime/iroh-wrapper-provider.ts`,
+provider kind `letta-code-iroh`), the only runtime provider. The shim
+provider and the Teams-backed provider were removed (vibesync-9lzk.29); a
+routing row naming a removed kind fails loudly instead of falling back.
 
 ## Architecture shape
 
@@ -21,10 +20,10 @@ fall back to the boot-level local backend where safe.
 │   causal liveness witness · role packs · layering invariants       │
 │                                                                   │
 │   …………… RuntimeProvider interface ……………                          │
-│   ┌───────────────────────────┬─────────────────┬───────────┐     │
-│   │ LettaCodeSubagentProvider │ LettaPMAgent    │ Future    │     │
-│   │ (spawned Gastown roles)   │ Provider        │ providers │     │
-│   └───────────────────────────┴─────────────────┴───────────┘     │
+│   ┌───────────────────────────────────────────────────────┐     │
+│   │ IrohWrapperProvider (letta-code-iroh)                 │     │
+│   │ steps go directly to persistent role agents           │     │
+│   └───────────────────────────────────────────────────────┘     │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -65,9 +64,9 @@ emits bus events for dashboards and trace APIs.
 - Do not add new domain persistence outside Beads/Dolt.
 - Do not bypass the event bus for cross-layer visibility.
 - Do not put role names or behavior in core TypeScript.
-- Do not add alternate paths to `@letta-ai/letta-code-sdk`; extend
-  `LettaCodeSubagentProvider` instead.
-- Do not reintroduce Teams-backed runtime integrations.
+- Do not add a second route to the Letta runtime; transport goes through
+  the Iroh wrapper.
+- Do not reintroduce the shim or Teams-backed runtime integrations.
 
 ## References
 

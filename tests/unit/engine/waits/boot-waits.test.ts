@@ -8,6 +8,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bootOrchestrationPlane, type OrchestrationHandle } from '../../../../src/engine/boot.js';
 import type { BootWaitsOptions } from '../../../../src/engine/waits/index.js';
 import { InMemoryDoltClient, inMemoryBeads } from '../../../_fixtures/in-memory-dolt-client.js';
+import { IrohConnection } from '../../../../src/engine/runtime/iroh/connection.js';
+
+/** These tests never dispatch a turn; a dial would mean a real Iroh host. */
+function neverDialIroh(): IrohConnection {
+  return new IrohConnection({
+    dial: async () => { throw new Error('test must not dial Iroh'); },
+    peerName: 'waits-test', sleep: async () => undefined, backoff: { initialMs: 1, capMs: 2, maxAttempts: 1 },
+  });
+}
 
 function fakeBd() {
   const calls: string[][] = [];
@@ -15,12 +24,11 @@ function fakeBd() {
 }
 
 async function boot(waits: BootWaitsOptions | undefined): Promise<OrchestrationHandle> {
-  process.env['VIBESYNC_WORK_ACTIVITY_REPORT'] = '0';
-  process.env['VIBESYNC_ORCHESTRATION_PROVIDER'] = 'letta-code-subagent';
-  process.env['VIBESYNC_LETTA_CODE_SHIM_URL'] = 'http://shim:8291';
+  process.env['VIBESYNC_ORCHESTRATION_PROVIDER'] = 'letta-code-iroh';
   process.env['VIBESYNC_LETTA_CODE_PARENT_AGENT_ID'] = 'agent-parent';
   return bootOrchestrationPlane({
     ...inMemoryBeads(),
+    irohConnectionFactory: neverDialIroh,
     persistEvents: false,
     runDriftAuditOnBoot: false,
     ...(waits ? { waits } : {}),

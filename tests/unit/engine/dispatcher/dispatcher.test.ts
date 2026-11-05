@@ -8,7 +8,7 @@ import type { Formula } from '../../../../src/engine/formula/index.js';
 import { FormulaDispatchError, FormulaDispatcher } from '../../../../src/engine/dispatcher/index.js';
 import { MoleculeWalker, newMoleculeStepId } from '../../../../src/engine/molecule/index.js';
 import type { Pack } from '../../../../src/engine/packs/index.js';
-import type { SessionEvent, SessionSpec } from '../../../../src/engine/runtime/index.js';
+import type { RuntimeProvider, SessionEvent, SessionSpec } from '../../../../src/engine/runtime/index.js';
 import { STEP_OUTCOME_INSTRUCTIONS } from '../../../../src/engine/dispatcher/step-outcome.js';
 import { newFakeProvider } from '../../../_fixtures/fake-provider.js';
 import { newDriven } from '../../../_fixtures/step-driver.js';
@@ -614,216 +614,22 @@ describe('FormulaDispatcher', () => {
     });
   });
 
-  describe('persistent role-agent bootstrap (vibesync-mcz Phase D)', () => {
-    /**
-     * A recording RoleAgentBootstrapperLike that returns a fixed
-     * agentId. Lets us assert both that the dispatcher called it
-     * with the right args, and how many times.
-     */
-    function recordingBootstrapper(agentId: string = 'agent-reviewer-vibesync-1') {
-      const calls: Array<{
-        projectIdentifier: string;
-        role: string;
-        packDir: string;
-        lettaBaseUrl: string;
-        storageDir: string;
-      }> = [];
-      return {
-        calls,
-        bootstrapper: {
-          async ensureRoleAgent(args: {
-            projectIdentifier: string;
-            role: string;
-            packDir: string;
-            lettaBaseUrl: string;
-            storageDir: string;
-          }) {
-            calls.push(args);
-            return { agentId };
-          },
+  describe('step conversation id (vibesync-jni4, vibesync-9lzk.29)', () => {
+    it('records the conversation id the provider reports, and passes none in', async () => {
+      const store = new InMemoryDoltClient();
+      const base = newFakeProvider({ kind: 'fake', script: scriptByRole({ worker: 'ok' }) });
+      // The Iroh provider creates the conversation on the host and reports it.
+      const provider: RuntimeProvider = {
+        ...base,
+        async prompt(handle, content) {
+          const result = await base.prompt(handle, content);
+          return { ...result, conversationId: 'local-conv-host-7' };
         },
       };
-    }
-
-    function deterministicConvGen(): { calls: number; gen: { next(): string } } {
-      const state = { calls: 0, gen: { next: (): string => '' } };
-      state.gen.next = () => {
-        state.calls += 1;
-        return `conv-test-${state.calls}`;
-      };
-      return state;
-    }
-
-    it('skips bootstrap and conversation_id when no context resolver is wired (compat)', async () => {
-      const store = new InMemoryDoltClient();
-      const provider = newFakeProvider({ kind: 'fake', script: scriptByRole({ worker: 'ok' }) });
-      const eventBus = new EventBus({ noPersist: true });
       const dispatcher = newDriven(store, { idPrefix: 'mol',
         provider,
         walker: new MoleculeWalker(store),
-        eventBus,
-      });
-      await dispatcher.run({
-        formula: singleStepFormula(),
-        pack: singleStepPack(),
-        input: 'go',
-        projectIdentifier: 'vibesync',
-      });
-      const spec = provider.recorder.starts[0]!;
-      expect((spec.extra as Record<string, unknown>)['agentId']).toBeUndefined();
-      expect((spec.extra as Record<string, unknown>)['conversationId']).toBeUndefined();
-    });
-
-    it('skips bootstrap when context resolver returns null', async () => {
-      const store = new InMemoryDoltClient();
-      const provider = newFakeProvider({ kind: 'fake', script: scriptByRole({ worker: 'ok' }) });
-      const eventBus = new EventBus({ noPersist: true });
-      const { calls, bootstrapper } = recordingBootstrapper();
-      const dispatcher = newDriven(store, { idPrefix: 'mol',
-        provider,
-        walker: new MoleculeWalker(store),
-        eventBus,
-        roleAgentContextResolver: { resolve: () => null },
-      });
-      await dispatcher.run({
-        formula: singleStepFormula(),
-        pack: singleStepPack(),
-        input: 'go',
-        projectIdentifier: 'vibesync',
-      });
-      // Bootstrapper never consulted (resolver returned null).
-      expect(calls).toHaveLength(0);
-      void bootstrapper; // suppress unused warning
-      const spec = provider.recorder.starts[0]!;
-      expect((spec.extra as Record<string, unknown>)['agentId']).toBeUndefined();
-      expect((spec.extra as Record<string, unknown>)['conversationId']).toBeUndefined();
-    });
-
-    it('skips bootstrap when projectIdentifier is absent', async () => {
-      const store = new InMemoryDoltClient();
-      const provider = newFakeProvider({ kind: 'fake', script: scriptByRole({ worker: 'ok' }) });
-      const eventBus = new EventBus({ noPersist: true });
-      const { calls, bootstrapper } = recordingBootstrapper();
-      const dispatcher = newDriven(store, { idPrefix: 'mol',
-        provider,
-        walker: new MoleculeWalker(store),
-        eventBus,
-        roleAgentContextResolver: {
-          resolve: () => ({
-            bootstrapper,
-            packDir: '/packs/gastown',
-            lettaBaseUrl: 'http://shim:8291',
-            storageDir: '/storage',
-          }),
-        },
-      });
-      await dispatcher.run({
-        formula: singleStepFormula(),
-        pack: singleStepPack(),
-        input: 'go',
-        // No projectIdentifier — bootstrap must NOT fire.
-      });
-      expect(calls).toHaveLength(0);
-    });
-
-    it('calls ensureRoleAgent per step and threads extra.agentId + extra.conversationId', async () => {
-      const store = new InMemoryDoltClient();
-      const provider = newFakeProvider({ kind: 'fake', script: scriptByRole({ worker: 'ok' }) });
-      const eventBus = new EventBus({ noPersist: true });
-      const { calls, bootstrapper } = recordingBootstrapper('agent-worker-vibesync');
-      const { gen } = deterministicConvGen();
-      const dispatcher = newDriven(store, { idPrefix: 'mol',
-        provider,
-        walker: new MoleculeWalker(store),
-        eventBus,
-        conversationIdGenerator: gen,
-        roleAgentContextResolver: {
-          resolve: () => ({
-            bootstrapper,
-            packDir: '/packs/gastown',
-            lettaBaseUrl: 'http://shim:8291',
-            storageDir: '/storage',
-          }),
-        },
-      });
-      await dispatcher.run({
-        formula: singleStepFormula(),
-        pack: singleStepPack(),
-        input: 'go',
-        projectIdentifier: 'vibesync',
-      });
-      expect(calls).toEqual([
-        {
-          projectIdentifier: 'vibesync',
-          role: 'worker',
-          packDir: '/packs/gastown',
-          lettaBaseUrl: 'http://shim:8291',
-          storageDir: '/storage',
-        },
-      ]);
-      const spec = provider.recorder.starts[0]!;
-      const extra = spec.extra as Record<string, unknown>;
-      expect(extra['agentId']).toBe('agent-worker-vibesync');
-      expect(extra['conversationId']).toBe('conv-test-1');
-    });
-
-    it('mints a fresh conversation_id per step (multi-step formula)', async () => {
-      const store = new InMemoryDoltClient();
-      const provider = newFakeProvider({
-        kind: 'fake',
-        script: scriptByRole({ reviewer: 'r-ok', coder: 'c-ok', tester: 't-ok' }),
-      });
-      const eventBus = new EventBus({ noPersist: true });
-      const { calls, bootstrapper } = recordingBootstrapper('agent-stub');
-      const { gen } = deterministicConvGen();
-      const dispatcher = newDriven(store, { idPrefix: 'mol',
-        provider,
-        walker: new MoleculeWalker(store),
-        eventBus,
-        conversationIdGenerator: gen,
-        roleAgentContextResolver: {
-          resolve: () => ({
-            bootstrapper,
-            packDir: '/packs/gastown',
-            lettaBaseUrl: 'http://shim:8291',
-            storageDir: '/storage',
-          }),
-        },
-      });
-      await dispatcher.run({
-        formula: codeReviewFormula(),
-        pack: newPack(),
-        input: 'go',
-        projectIdentifier: 'vibesync',
-      });
-      // Three steps → three bootstrap calls (one per step).
-      expect(calls.map((c) => c.role)).toEqual(['reviewer', 'coder', 'tester']);
-      // Three distinct conversation_ids — one per step.
-      const conversationIds = provider.recorder.starts.map(
-        (s) => (s.extra as Record<string, unknown>)['conversationId'],
-      );
-      expect(conversationIds).toEqual(['conv-test-1', 'conv-test-2', 'conv-test-3']);
-    });
-
-    it('persists conversation_id on the step bead via recordStepTask', async () => {
-      const store = new InMemoryDoltClient();
-      const provider = newFakeProvider({ kind: 'fake', script: scriptByRole({ worker: 'ok' }) });
-      const eventBus = new EventBus({ noPersist: true });
-      const { bootstrapper } = recordingBootstrapper();
-      const { gen } = deterministicConvGen();
-      const dispatcher = newDriven(store, { idPrefix: 'mol',
-        provider,
-        walker: new MoleculeWalker(store),
-        eventBus,
-        conversationIdGenerator: gen,
-        roleAgentContextResolver: {
-          resolve: () => ({
-            bootstrapper,
-            packDir: '/packs/gastown',
-            lettaBaseUrl: 'http://shim:8291',
-            storageDir: '/storage',
-          }),
-        },
+        eventBus: new EventBus({ noPersist: true }),
       });
       const result = await dispatcher.run({
         formula: singleStepFormula(),
@@ -831,114 +637,13 @@ describe('FormulaDispatcher', () => {
         input: 'go',
         projectIdentifier: 'vibesync',
       });
-
-      // Walk the molecule's step beads and find the conversation_id.
+      const extra = base.recorder.starts[0]!.extra as Record<string, unknown>;
+      expect(extra['conversationId']).toBeUndefined();
+      expect(extra['agentId']).toBeUndefined();
       const view = await new MoleculeWalker(store).load(result.moleculeId);
-      const stepBead = view!.steps[0]!;
-      const exec = stepBead.metadata['exec'] as Record<string, unknown>;
-      expect(exec['conversation_id']).toBe('conv-test-1');
-      // task_id still recorded (no regression on f5g).
+      const exec = view!.steps[0]!.metadata['exec'] as Record<string, unknown>;
+      expect(exec['conversation_id']).toBe('local-conv-host-7');
       expect(exec['task_id']).toBeTruthy();
-    });
-
-    it('fails fast when the bootstrapper throws', async () => {
-      const store = new InMemoryDoltClient();
-      const provider = newFakeProvider({ kind: 'fake', script: scriptByRole({ worker: 'ok' }) });
-      const eventBus = new EventBus({ noPersist: true });
-      const failingBootstrapper = {
-        async ensureRoleAgent() {
-          throw new Error('persona md missing');
-        },
-      };
-      const dispatcher = newDriven(store, { idPrefix: 'mol',
-        provider,
-        walker: new MoleculeWalker(store),
-        eventBus,
-        roleAgentContextResolver: {
-          resolve: () => ({
-            bootstrapper: failingBootstrapper,
-            packDir: '/packs/gastown',
-            lettaBaseUrl: 'http://shim:8291',
-            storageDir: '/storage',
-          }),
-        },
-      });
-      let captured: unknown;
-      try {
-        await dispatcher.run({
-          formula: singleStepFormula(),
-          pack: singleStepPack(),
-          input: 'go',
-          projectIdentifier: 'vibesync',
-        });
-      } catch (err) {
-        captured = err;
-      }
-      // Wrapped in FormulaDispatchError with cause = original error.
-      expect(captured).toBeInstanceOf(Error);
-      expect((captured as Error).message).toMatch(/step "worker" failed/);
-      expect(((captured as { cause?: Error }).cause)?.message).toMatch(/persona md missing/);
-      // Provider was NOT started — bootstrap failure is pre-flight.
-      expect(provider.recorder.starts).toHaveLength(0);
-    });
-
-    it('emits dispatcher/step.role_agent_bootstrapped on the bootstrap path', async () => {
-      const store = new InMemoryDoltClient();
-      const provider = newFakeProvider({ kind: 'fake', script: scriptByRole({ worker: 'ok' }) });
-      const eventBus = new EventBus({ noPersist: true });
-      const events: Event[] = [];
-      eventBus.subscribe((event) => events.push(event));
-      const { bootstrapper } = recordingBootstrapper('agent-emitted');
-      const dispatcher = newDriven(store, { idPrefix: 'mol',
-        provider,
-        walker: new MoleculeWalker(store),
-        eventBus,
-        roleAgentContextResolver: {
-          resolve: () => ({
-            bootstrapper,
-            packDir: '/packs/gastown',
-            lettaBaseUrl: 'http://shim:8291',
-            storageDir: '/storage',
-          }),
-        },
-      });
-      await dispatcher.run({
-        formula: singleStepFormula(),
-        pack: singleStepPack(),
-        input: 'go',
-        projectIdentifier: 'vibesync',
-      });
-      const bootstrapped = events.find((e) => e.kind === 'dispatcher/step.role_agent_bootstrapped');
-      expect(bootstrapped).toBeDefined();
-      expect(bootstrapped?.payload?.agentId).toBe('agent-emitted');
-      expect(bootstrapped?.payload?.projectIdentifier).toBe('vibesync');
-      expect(bootstrapped?.payload?.role).toBe('worker');
-    });
-
-    it('resolveRoleAgentContext returns null when no projectIdentifier on the input', async () => {
-      const store = new InMemoryDoltClient();
-      const provider = newFakeProvider({ kind: 'fake' });
-      const eventBus = new EventBus({ noPersist: true });
-      const { bootstrapper } = recordingBootstrapper();
-      const dispatcher = newDriven(store, { idPrefix: 'mol',
-        provider,
-        walker: new MoleculeWalker(store),
-        eventBus,
-        roleAgentContextResolver: {
-          resolve: () => ({
-            bootstrapper,
-            packDir: '/packs/gastown',
-            lettaBaseUrl: 'http://shim:8291',
-            storageDir: '/storage',
-          }),
-        },
-      });
-      const result = await dispatcher.resolveRoleAgentContext({
-        formula: singleStepFormula(),
-        pack: singleStepPack(),
-        input: 'go',
-      });
-      expect(result).toBeNull();
     });
   });
 });

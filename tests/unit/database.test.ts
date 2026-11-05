@@ -58,14 +58,15 @@ describe('registry database', () => {
     raw.close();
 
     expect(tables).toEqual(['project_role_agents', 'projects']);
-    for (const retired of ['huly_id', 'huly_sync_cursor', 'vibe_id', 'issue_count', 'letta_folder_id', 'bookstack_book_slug', 'mcp_enabled', 'description_hash', 'beads_mirror_synced_at']) {
+    // vibesync-9lzk.29 adds the shim-only routing columns to the retired set.
+    for (const retired of ['huly_id', 'huly_sync_cursor', 'vibe_id', 'issue_count', 'letta_folder_id', 'bookstack_book_slug', 'mcp_enabled', 'description_hash', 'beads_mirror_synced_at', 'letta_base_url', 'pack_dir', 'storage_dir']) {
       expect(columns, retired).not.toContain(retired);
     }
     expect(db.getProject('vibesync')).toMatchObject({
       identifier: 'vibesync', filesystem_path: '/opt/stacks/vibesync', letta_agent_id: 'agent-pm',
-      provider_kind: 'letta-code-iroh', pack_dir: 'packs/gastown', beads_remote_status: 'provisioned', beads_prefix: 'vibesync',
+      provider_kind: 'letta-code-iroh', beads_remote_status: 'provisioned', beads_prefix: 'vibesync',
     });
-    expect(db.getProjectProviderRouting('vibesync')).toMatchObject({ providerKind: 'letta-code-iroh', parentAgentId: 'agent-pm', packDir: 'packs/gastown' });
+    expect(db.getProjectProviderRouting('vibesync')).toEqual({ providerKind: 'letta-code-iroh', parentAgentId: 'agent-pm' });
     expect(db.getRoleAgent('vibesync', 'coder')).toMatchObject({ agentId: 'agent-coder' });
   });
 

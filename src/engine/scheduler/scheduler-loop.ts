@@ -81,8 +81,7 @@ export interface CandidateMetadataSource {
 
 /**
  * The dispatch executor — the ONLY place tokens are spent, and it is injected.
- * Production wires this to the existing Letta executor (FormulaDispatcher /
- * LettaCodeSubagentProvider). Resolves on successful dispatch, rejects on
+ * Production wires this to FormulaDispatcher over the Iroh provider. Resolves on successful dispatch, rejects on
  * failure (the loop turns a rejection into a dispatch_failures increment).
  */
 export interface DispatchExecutor {

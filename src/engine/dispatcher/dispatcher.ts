@@ -1,5 +1,4 @@
 import type { EventBus } from '../events/index.js';
-import { randomUUID } from 'node:crypto';
 
 import type { Formula } from '../formula/index.js';
 import type { MoleculeWalker } from '../molecule/index.js';
@@ -49,13 +48,11 @@ export interface DispatchInput {
   readonly input: string;
   readonly motivatingBeadId?: string;
   /**
-   * Per-project routing key (vibesync-f5g / vibesync-8hk). When set,
-   * the dispatcher consults its ProviderResolver to pick the right
-   * RuntimeProvider for this run (e.g. LettaCodeSubagentProvider for
-   * local-backend projects). When omitted,
-   * the dispatcher uses the default provider supplied at construction
-   * time — preserving backwards-compatibility with every existing
-   * caller / test that pre-dates the routing path.
+   * Per-project routing key (vibesync-f5g / vibesync-8hk). When set, the
+   * dispatcher consults its ProviderResolver to pick the RuntimeProvider for
+   * this run and resolves the step's role agent and project memory for this
+   * project. When omitted, the default provider supplied at construction runs
+   * the molecule.
    */
   readonly projectIdentifier?: string;
   /**
@@ -72,75 +69,14 @@ export interface DispatchInput {
 /**
  * Routes a dispatch to the right RuntimeProvider based on the project
  * identifier. Implementations look up the per-project routing row
- * (provider_kind, letta_base_url) and either return a cached provider
- * or construct a project-scoped one. See ProjectLettaRepository.
+ * (provider_kind, PM parent agent id). See ProjectLettaRepository.
  *
- * The resolver MAY return null to fall back to the dispatcher's
- * default provider — useful when the routing row exists but has no
- * override.
+ * Returns null when the project has no override: the dispatcher then uses its
+ * default provider. Throws for a row it must not run (a removed provider
+ * kind); the run then fails before any molecule is cooked.
  */
 export interface ProviderResolver {
   resolve(input: DispatchInput): Promise<RuntimeProvider | null> | RuntimeProvider | null;
-}
-
-/**
- * vibesync-mcz Phase D — per-(project, role) persistent subagent
- * bootstrap hook the dispatcher invokes before starting each step.
- *
- * Returning a non-null agentId opts the step into the persistent path
- * (LettaCodeSubagentProvider dispatches via Agent.agent_id, persona
- * NOT inlined). Returning null falls back to today's inline-persona
- * path — useful for projects that haven't been bootstrapped yet, or
- * tests that want the old behavior.
- *
- * Throwing fails the dispatch fast (current attempt rejects; the
- * step's retry policy still applies if configured). The bead is
- * deliberate: a missing persona / unreachable shim at bootstrap time
- * is a configuration error, not a transient runtime degradation, and
- * silently inlining persona would obscure it.
- */
-export interface RoleAgentBootstrapperLike {
-  ensureRoleAgent(args: {
-    readonly projectIdentifier: string;
-    readonly role: string;
-    readonly packDir: string;
-    readonly lettaBaseUrl: string;
-    readonly storageDir: string;
-  }): Promise<{ readonly agentId: string }>;
-}
-
-/**
- * Resolves the role-agent bootstrap context for a given dispatch.
- * Returning null means "no persistent-subagent bootstrap for this
- * dispatch" — the dispatcher then skips the bootstrap call and the
- * provider falls back to the inline-persona path. Returning a
- * context wires the bootstrapper for every step of this molecule.
- *
- * Exists as a seam so boot can derive packDir/lettaBaseUrl/storageDir
- * from the same per-project routing row the provider resolver uses,
- * without the dispatcher having to know about projects/packs/shims.
- */
-export interface RoleAgentBootstrapContextResolver {
-  resolve(input: DispatchInput): Promise<{
-    readonly bootstrapper: RoleAgentBootstrapperLike;
-    readonly packDir: string;
-    readonly lettaBaseUrl: string;
-    readonly storageDir: string;
-  } | null> | {
-    readonly bootstrapper: RoleAgentBootstrapperLike;
-    readonly packDir: string;
-    readonly lettaBaseUrl: string;
-    readonly storageDir: string;
-  } | null;
-}
-
-/**
- * Mint a fresh per-step conversation id. Default is uuid-based so
- * collisions are impossible in practice; tests inject a counter to
- * get deterministic ids.
- */
-export interface ConversationIdGenerator {
-  next(): string;
 }
 
 export interface DispatchResult {
@@ -176,17 +112,6 @@ export interface FormulaDispatcherOptions {
    */
   readonly providerResolver?: ProviderResolver;
   /**
-   * vibesync-mcz Phase D — optional persistent-subagent bootstrap
-   * context resolver. When supplied AND the resolver returns a
-   * non-null context for this dispatch, the dispatcher calls
-   * `bootstrapper.ensureRoleAgent` before each step's
-   * `provider.start()`, threading the resulting agentId through
-   * `extra.agentId` so the provider dispatches against the
-   * persistent role agent (Phase C path). Failures fail the
-   * dispatch fast — same posture as a missing pack role.
-   */
-  readonly roleAgentContextResolver?: RoleAgentBootstrapContextResolver;
-  /**
    * Confirms a formula's declared delivery (`delivers = "pull_request"`)
    * before the molecule may complete (vibesync-9lzk.21). Required whenever a
    * formula declares one: a declared delivery with no verifier fails the run.
@@ -197,13 +122,6 @@ export interface FormulaDispatcherOptions {
    * before each step (vibesync-9lzk.25). Absent = no memory section.
    */
   readonly projectMemory?: ProjectMemorySource;
-  /**
-   * vibesync-mcz Phase D — injectable conversation-id generator.
-   * Defaults to a uuid-based generator. Tests inject a counter for
-   * deterministic ids; resume code paths re-use stored ids and never
-   * call into this generator.
-   */
-  readonly conversationIdGenerator?: ConversationIdGenerator;
   /**
    * Called (never throws) right after a molecule is cooked and registered, so
    * the step loop can pick up its first ready steps promptly instead of waiting
@@ -222,12 +140,6 @@ interface MoleculeRun {
   readonly input: DispatchInput;
   readonly moleculeId: string;
   readonly provider: RuntimeProvider;
-  readonly roleAgentContext: {
-    readonly bootstrapper: RoleAgentBootstrapperLike;
-    readonly packDir: string;
-    readonly lettaBaseUrl: string;
-    readonly storageDir: string;
-  } | null;
   readonly startedAt: number;
   readonly outputs: Record<string, string>;
   readonly rolesByName: ReadonlyMap<string, RoleConfig>;
@@ -273,10 +185,8 @@ export class FormulaDispatcher implements ReadyStepRunner {
   private readonly maxParallelSteps: number;
   private readonly maxConcurrentMolecules: number;
   private readonly providerResolver: ProviderResolver | null;
-  private readonly roleAgentContextResolver: RoleAgentBootstrapContextResolver | null;
   private readonly deliveryVerifier: DeliveryVerifier | null;
   private readonly projectMemory: ProjectMemorySource | null;
-  private readonly conversationIdGenerator: ConversationIdGenerator;
   private readonly onMoleculeCooked: ((moleculeId: string) => void) | null;
   private readonly moleculeQueue: QueuedMoleculeRun[] = [];
   private readonly live = new Map<string, MoleculeRun>();
@@ -290,11 +200,8 @@ export class FormulaDispatcher implements ReadyStepRunner {
     this.maxParallelSteps = normalizeMaxParallelSteps(opts.maxParallelSteps);
     this.maxConcurrentMolecules = normalizeMaxConcurrentMolecules(opts.maxConcurrentMolecules);
     this.providerResolver = opts.providerResolver ?? null;
-    this.roleAgentContextResolver = opts.roleAgentContextResolver ?? null;
     this.deliveryVerifier = opts.deliveryVerifier ?? null;
     this.projectMemory = opts.projectMemory ?? null;
-    this.conversationIdGenerator =
-      opts.conversationIdGenerator ?? createDefaultConversationIdGenerator();
     this.onMoleculeCooked = opts.onMoleculeCooked ?? null;
   }
 
@@ -319,25 +226,6 @@ export class FormulaDispatcher implements ReadyStepRunner {
     if (!this.providerResolver || !input.projectIdentifier) return this.defaultProvider;
     const resolved = await this.providerResolver.resolve(input);
     return resolved ?? this.defaultProvider;
-  }
-
-  /**
-   * Resolve the persistent-subagent bootstrap context for a dispatch
-   * (vibesync-mcz Phase D). Returns null when no resolver is wired
-   * or the resolver opts out for this dispatch — in which case every
-   * step falls through to the inline-persona path.
-   *
-   * Exposed for tests; production code goes through run().
-   */
-  async resolveRoleAgentContext(input: DispatchInput): Promise<{
-    readonly bootstrapper: RoleAgentBootstrapperLike;
-    readonly packDir: string;
-    readonly lettaBaseUrl: string;
-    readonly storageDir: string;
-  } | null> {
-    if (!this.roleAgentContextResolver || !input.projectIdentifier) return null;
-    const resolved = await this.roleAgentContextResolver.resolve(input);
-    return resolved ?? null;
   }
 
   async run(input: DispatchInput): Promise<DispatchResult> {
@@ -374,7 +262,6 @@ export class FormulaDispatcher implements ReadyStepRunner {
   private async cookAndAwait(input: DispatchInput): Promise<DispatchResult> {
     const startedAt = Date.now();
     const provider = await this.resolveProvider(input);
-    const roleAgentContext = await this.resolveRoleAgentContext(input);
     const view = await this.walker.dispatch({
       prefix: this.idPrefix,
       formulaName: input.formula.name,
@@ -383,7 +270,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
       ...(input.formula.delivers ? { delivers: input.formula.delivers } : {}),
       steps: input.formula.steps,
     });
-    return this.registerAndAwait({ input, view, provider, roleAgentContext, startedAt, outputs: {}, announce: true });
+    return this.registerAndAwait({ input, view, provider, startedAt, outputs: {}, announce: true });
   }
 
   /**
@@ -398,9 +285,8 @@ export class FormulaDispatcher implements ReadyStepRunner {
     if (!view) throw new FormulaDispatchError(`FormulaDispatcher: molecule ${moleculeId} not found`, moleculeId);
     if (view.root.status === 'closed') throw new FormulaDispatchError(`FormulaDispatcher: molecule ${moleculeId} is already closed`, moleculeId);
     const provider = await this.resolveProvider(input);
-    const roleAgentContext = await this.resolveRoleAgentContext(input);
     return this.registerAndAwait({
-      input, view, provider, roleAgentContext, startedAt: Date.now(),
+      input, view, provider, startedAt: Date.now(),
       outputs: outputsFromClosedSteps(view.steps), announce: false,
     });
   }
@@ -409,19 +295,17 @@ export class FormulaDispatcher implements ReadyStepRunner {
     readonly input: DispatchInput;
     readonly view: { readonly rootId: string };
     readonly provider: RuntimeProvider;
-    readonly roleAgentContext: MoleculeRun['roleAgentContext'];
     readonly startedAt: number;
     readonly outputs: Record<string, string>;
     readonly announce: boolean;
   }): Promise<DispatchResult> {
-    const { input, provider, roleAgentContext, startedAt } = args;
+    const { input, provider, startedAt } = args;
     const moleculeId = args.view.rootId;
     const done = new Promise<DispatchResult>((resolve, reject) => {
       this.live.set(moleculeId, {
         input,
         moleculeId,
         provider,
-        roleAgentContext,
         startedAt,
         outputs: args.outputs,
         rolesByName: new Map(input.pack.roles.map((role) => [role.name, role])),
@@ -487,7 +371,6 @@ export class FormulaDispatcher implements ReadyStepRunner {
         outputs: run.outputs,
         rolesByName: run.rolesByName,
         provider: run.provider,
-        roleAgentContext: run.roleAgentContext,
       });
     } catch (error) {
       if (!run.failed) {
@@ -816,12 +699,6 @@ export class FormulaDispatcher implements ReadyStepRunner {
     readonly outputs: Record<string, string>;
     readonly rolesByName: ReadonlyMap<string, RoleConfig>;
     readonly provider: RuntimeProvider;
-    readonly roleAgentContext: {
-      readonly bootstrapper: RoleAgentBootstrapperLike;
-      readonly packDir: string;
-      readonly lettaBaseUrl: string;
-      readonly storageDir: string;
-    } | null;
   }): Promise<void> {
     const stepName = readStepName(args.step);
     const stepSpec = args.input.formula.steps.find((candidate) => candidate.name === stepName);
@@ -873,7 +750,6 @@ export class FormulaDispatcher implements ReadyStepRunner {
         infraRetries: state.infraRetries,
         provider: args.provider,
         ...(args.input.projectIdentifier ? { projectIdentifier: args.input.projectIdentifier } : {}),
-        roleAgentContext: args.roleAgentContext,
         ...(stepSpec.turnTimeoutMs !== undefined ? { turnTimeoutMs: stepSpec.turnTimeoutMs } : {}),
       });
     } catch (error) {
@@ -996,12 +872,6 @@ export class FormulaDispatcher implements ReadyStepRunner {
     readonly infraRetries: number;
     readonly provider: RuntimeProvider;
     readonly projectIdentifier?: string;
-    readonly roleAgentContext: {
-      readonly bootstrapper: RoleAgentBootstrapperLike;
-      readonly packDir: string;
-      readonly lettaBaseUrl: string;
-      readonly storageDir: string;
-    } | null;
     readonly turnTimeoutMs?: number;
   }): Promise<{ readonly text: string; readonly eventCount: number }> {
     this.emit('dispatcher/step.started', args.moleculeId, args.stepId, {
@@ -1010,40 +880,6 @@ export class FormulaDispatcher implements ReadyStepRunner {
       stepId: args.stepId,
       attempt: args.attempt,
     });
-
-    // vibesync-mcz Phase D: bootstrap the persistent role agent (if a
-    // context resolver is wired AND we know the project). Failures
-    // here are fail-fast — same posture as a missing pack role. The
-    // resulting agentId rides through extra.agentId, where the
-    // LettaCodeSubagentProvider (Phase C) picks it up and dispatches
-    // via Agent.agent_id with no persona inlining. Other providers
-    // ignore the extra field entirely.
-    let bootstrappedAgentId: string | null = null;
-    if (args.roleAgentContext && args.projectIdentifier) {
-      const bootstrapResult = await args.roleAgentContext.bootstrapper.ensureRoleAgent({
-        projectIdentifier: args.projectIdentifier,
-        role: args.role,
-        packDir: args.roleAgentContext.packDir,
-        lettaBaseUrl: args.roleAgentContext.lettaBaseUrl,
-        storageDir: args.roleAgentContext.storageDir,
-      });
-      bootstrappedAgentId = bootstrapResult.agentId;
-      this.emit('dispatcher/step.role_agent_bootstrapped', args.moleculeId, args.stepId, {
-        stepName: args.stepName,
-        role: args.role,
-        stepId: args.stepId,
-        agentId: bootstrappedAgentId,
-        projectIdentifier: args.projectIdentifier,
-      });
-    }
-
-    // vibesync-mcz Phase D: per-step conversation_id so concurrent
-    // dispatches of the same role on the same project don't corrupt
-    // each other's context. Persisted on the step bead so resume can
-    // re-attach to the same conversation on the persistent agent.
-    const conversationId = bootstrappedAgentId
-      ? this.conversationIdGenerator.next()
-      : null;
 
     let handle: Awaited<ReturnType<RuntimeProvider['start']>> | null = null;
     let eventCount = 0;
@@ -1068,24 +904,15 @@ export class FormulaDispatcher implements ReadyStepRunner {
           ...(args.roleConfig.memoryBlocksPolicy?.mode === 'replace' ? { memoryBlockSeedMode: 'replace' } : {}),
           ...(args.roleConfig.tools && args.roleConfig.tools.length > 0 ? { tools: [...args.roleConfig.tools] } : {}),
           ...(args.projectIdentifier ? { projectIdentifier: args.projectIdentifier } : {}),
-          ...(bootstrappedAgentId ? { agentId: bootstrappedAgentId } : {}),
-          ...(conversationId ? { conversationId } : {}),
           ...(args.turnTimeoutMs !== undefined ? { turnTimeoutMs: args.turnTimeoutMs } : {}),
         },
       });
       const promptResult = await args.provider.prompt(handle, [{ type: 'text', text: args.rendered }]);
-      // vibesync-mcz Phase D/F: persist execution metadata whenever
-      // we have anything meaningful to persist — a taskId (f5g
-      // resume contract) OR a conversationId (mcz per-dispatch
-      // isolation contract). Earlier revisions gated this entirely
-      // on taskId, which silently dropped conversationId for
-      // providers that report taskId asynchronously via SSE rather
-      // than synchronously on prompt() (the LettaCodeSubagentProvider
-      // case). Persist what we have; absent fields are simply not
-      // written.
-      // vibesync-jni4: a provider that creates the conversation itself reports the
-      // real host-side id; it wins over the id minted above (which never exists there).
-      const traceConversationId = promptResult.conversationId ?? conversationId;
+      // Persist execution metadata whenever there is any: a taskId (resume
+      // contract) or a conversationId. Absent fields are not written.
+      // vibesync-jni4: the provider creates the conversation on the host and
+      // reports its real id; that is the id the trace records.
+      const traceConversationId = promptResult.conversationId;
       if (promptResult.taskId || traceConversationId) {
         await this.walker.recordStepTask(args.stepId, {
           ...(promptResult.taskId ? { taskId: promptResult.taskId } : {}),
@@ -1114,7 +941,6 @@ export class FormulaDispatcher implements ReadyStepRunner {
           sessionId: handle.id,
           ...(promptResult.taskId ? { taskId: promptResult.taskId } : {}),
           ...(traceConversationId ? { conversationId: traceConversationId } : {}),
-          ...(bootstrappedAgentId ? { agentId: bootstrappedAgentId } : {}),
           ...(args.projectIdentifier ? { projectIdentifier: args.projectIdentifier } : {}),
         });
         if (event.kind === 'message-delta') {
@@ -1424,15 +1250,3 @@ function stringifyError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/**
- * Default conversation-id generator. Uses crypto.randomUUID for
- * collision-free ids. Tests inject a deterministic counter via
- * FormulaDispatcherOptions.conversationIdGenerator.
- */
-function createDefaultConversationIdGenerator(): ConversationIdGenerator {
-  return {
-    next(): string {
-      return `conv-${randomUUID()}`;
-    },
-  };
-}

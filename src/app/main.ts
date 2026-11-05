@@ -12,7 +12,7 @@ import { getConfigSummary, loadConfig } from './config';
 import { createRegistry, type Registry } from './registry/registry';
 import { createDoltHubProvisioningService } from './registry/dolthub-provisioning.js';
 import { logger } from './logger';
-import { bootOrchestrationPlane, releaseDoltAfterFailedBoot, type OrchestrationHandle } from '../engine/boot.js';
+import { assertProviderKind, bootOrchestrationPlane, releaseDoltAfterFailedBoot, UnsupportedProviderError, type OrchestrationHandle } from '../engine/boot.js';
 import { createBdProjectMemorySource } from '../engine/dispatcher/index.js';
 import { BdVersionTooOldError, probeBdVersion } from '../engine/bd-version.js';
 import { createCliRunner } from '../engine/scheduler/bd-adapters.js';
@@ -105,11 +105,10 @@ async function bootEngine(db: Registry): Promise<OrchestrationHandle | null> {
     logger.info('Orchestration plane disabled (ENABLE_ORCHESTRATION is not true)');
     return null;
   }
-  const { RoleAgentBootstrapper } = await import('./letta/RoleAgentBootstrapper.js');
-  const roleAgentBootstrapper = new RoleAgentBootstrapper({
-    repo: { getRoleAgent: db.getRoleAgent.bind(db), upsertRoleAgent: db.upsertRoleAgent.bind(db) },
-    defaultModel: process.env['VIBESYNC_ROLE_AGENT_MODEL'] ?? 'lmstudio/MiniMax-M3',
-  });
+  // Configuration first, before any I/O: a provider that does not exist must
+  // stop the service, not be retried as if Dolt were still starting
+  // (vibesync-9lzk.29). Throws UnsupportedProviderError to main()'s fatal handler.
+  assertProviderKind();
 
   for (let attempt = 1; attempt <= MAX_BOOT_ATTEMPTS; attempt += 1) {
     let dolt: DoltClient | undefined;
@@ -122,7 +121,7 @@ async function bootEngine(db: Registry): Promise<OrchestrationHandle | null> {
           config: config.scheduler,
           logger,
           listPoolMembers: (projectIdentifier) =>
-            db.listRoleAgents(projectIdentifier).map((row) => ({ agentId: row.agentId, role: row.roleName, lettaBaseUrl: row.lettaBaseUrl })),
+            db.listRoleAgents(projectIdentifier).map((row) => ({ agentId: row.agentId, role: row.roleName })),
           pmWake: { lookupAgentId: registryPmAgentLookup(db) },
           bd: projectCli(db, 'bd', 'vibesync-scheduler'),
           gh: projectCli(db, 'gh', 'vibesync-scheduler'),
@@ -137,7 +136,6 @@ async function bootEngine(db: Registry): Promise<OrchestrationHandle | null> {
         }),
         providerRouting: {
           store: { getProjectProviderRouting: db.getProjectProviderRouting.bind(db) },
-          roleAgentBootstrapper,
           roleAgentLookup: { getRoleAgent: db.getRoleAgent.bind(db) },
         },
       });
@@ -147,6 +145,10 @@ async function bootEngine(db: Registry): Promise<OrchestrationHandle | null> {
       await releaseDoltAfterFailedBoot(dolt, false, {
         onCleanupError: (cleanupError) => logger.warn({ err: cleanupError, attempt }, 'Failed to close Dolt pool after boot failure'),
       });
+      // A provider that does not exist is a configuration error: retrying
+      // cannot fix it and starting without orchestration would hide it, so it
+      // reaches main()'s fatal handler and the service exits (vibesync-9lzk.29).
+      if (error instanceof UnsupportedProviderError) throw error;
       if (error instanceof BdVersionTooOldError) {
         logger.error({ err: error, bdVersionFound: error.found, bdVersionRequired: error.minimum }, 'Orchestration plane NOT started: bd is older than the required minimum');
         return null;

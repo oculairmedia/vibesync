@@ -16,19 +16,7 @@ export type {
 } from './provider.js';
 
 
-export {
-  LettaCodeSubagentProvider,
-  createDefaultPersonaLoader,
-  buildPuppetMessage,
-  parseSseFrame,
-  translateShimEvent,
-  bunNoFetchTimeout,
-} from './letta-code-subagent-provider.js';
-export type {
-  LettaCodeSubagentProviderOptions,
-  PersonaLoader,
-  AgentIdResolver,
-} from './letta-code-subagent-provider.js';
+export type { AgentIdResolver } from './dispatch-helpers.js';
 
 export { IrohWrapperProvider, IROH_PROVIDER_KIND } from './iroh-wrapper-provider.js';
 export type { IrohWrapperProviderOptions } from './iroh-wrapper-provider.js';

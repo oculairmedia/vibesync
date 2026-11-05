@@ -33,8 +33,10 @@ export type PackScope = 'project' | 'agent' | 'global';
 
 /**
  * One core-memory block carried by a role. Mirrors letta's
- * `Block` shape (label + value, optional limit) so the seeder can
- * forward into `@letta-ai/letta-client` without translation.
+ * `Block` shape (label + value, optional limit). Note: nothing provisions
+ * these onto role agents today. The Iroh provider ignores them, and the
+ * removed bootstrapper never applied them either; a role agent's memory is
+ * set up outside vibesync.
  */
 export interface MemoryBlock {
   readonly label: string;

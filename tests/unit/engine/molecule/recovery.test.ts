@@ -113,7 +113,6 @@ describe('boot retires interrupted molecules before anything can dispatch', () =
   afterEach(async () => { for (const h of handles.splice(0)) await h.shutdown(); });
 
   it('an orphaned running molecule is closed at boot, its steps are never run, and the motivating bead is told', async () => {
-    process.env['VIBESYNC_WORK_ACTIVITY_REPORT'] = '0';
     const store = new InMemoryDoltClient();
     await store.insertMoleculeRoot({ id: 'work-1', formulaName: 'n/a', title: 'motivating work bead' });
     const m = await cookRunning(store, 'work-1');
@@ -134,7 +133,6 @@ describe('boot retires interrupted molecules before anything can dispatch', () =
   });
 
   it(`leaves no open molecule root after boot (${INTERRUPTED_EVENT})`, async () => {
-    process.env['VIBESYNC_WORK_ACTIVITY_REPORT'] = '0';
     const store = new InMemoryDoltClient();
     await cookRunning(store);
     const provider = newFakeProvider({ kind: 'fake' });

@@ -3,14 +3,9 @@
  *
  * Mirrors Gas City's `runtime.Provider` interface (internal/runtime/) so
  * higher layers (formulas, molecules, dispatch) don't need to know which
- * agent runtime backs a session. Today the primary implementation is:
- *
- *   - LettaCodeSubagentProvider — drives the letta-code local backend
- *     for spawned Gastown role sessions (mayor / coder / reviewer /
- *     refinery / tester).
- *
- * The persistent PM-agent path remains a separate Letta integration above
- * this seam; spawned role sessions route through the local backend.
+ * agent runtime backs a session. The only implementation is
+ * IrohWrapperProvider (`letta-code-iroh`), which sends each step directly to
+ * the persistent role agent over the Iroh wrapper (vibesync-9lzk.29).
  *
  * Future implementations will plug in alongside without changing this
  * interface:
@@ -121,7 +116,7 @@ export type SessionEvent =
  * Letta-specific service that the provider's implementation calls.
  */
 export interface RuntimeProvider {
-  /** Provider identifier (e.g. "letta-code-subagent", "letta-pm-agent", "acp"). */
+  /** Provider identifier (e.g. "letta-code-iroh"). */
   readonly kind: string;
 
   /**
