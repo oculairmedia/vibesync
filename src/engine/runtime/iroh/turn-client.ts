@@ -183,99 +183,72 @@ export async function runTurn(conn: IrohConnection, req: TurnRequest, opts: RunT
   const deadline = Date.now() + o.turnTimeoutMs;
   await conn.connect();
   const conversationId = req.conversationId ?? (await createConversation(conn, req.agentId));
+  const ctx: TurnContext = { conn, req, conversationId, o, deadline };
 
   let redials = 0;
   for (;;) {
     let outcome: Outcome;
     try {
-      outcome = await attempt(conn, req, conversationId, o, deadline, redials > 0);
+      outcome = await attempt(ctx, redials > 0);
     } catch (err) {
       if (!isRetryable(err)) throw err;
       outcome = { kind: 'disconnect' };
     }
-    if (outcome.kind === 'disconnect') {
-      redials += 1;
-      if (redials > o.maxRedials) {
-        throw new IrohConnectionError(`turn abandoned after ${o.maxRedials} redials`);
-      }
-      o.onProgress?.({ kind: 'redial' });
-      await conn.connect(); // bounded exponential backoff inside; auth/config errors surface here
-      continue;
+    if (outcome.kind !== 'disconnect') return finish(ctx, outcome);
+    redials += 1;
+    if (redials > o.maxRedials) {
+      throw new IrohConnectionError(`turn abandoned after ${o.maxRedials} redials`);
     }
-    return finish(conn, conversationId, req.clientMessageId, outcome, o);
+    o.onProgress?.({ kind: 'redial' });
+    await conn.connect(); // bounded exponential backoff inside; auth/config errors surface here
   }
 }
 
-async function attempt(
-  conn: IrohConnection,
-  req: TurnRequest,
-  conversationId: string,
-  o: Required<Omit<RunTurnOptions, 'ignoreTurnIds' | 'onProgress' | 'signal'>> & RunTurnOptions,
-  deadline: number,
-  redialed: boolean,
-): Promise<Outcome> {
-  // Mutable holder: the frame listener runs in a closure, so plain `let`s would
-  // be narrowed to their initial value by the control-flow analysis below.
-  const st = {
-    terminal: null as Frame | null,
+type ResolvedOptions = Required<Omit<RunTurnOptions, 'ignoreTurnIds' | 'onProgress' | 'signal'>> & RunTurnOptions;
+
+/** Everything one turn needs, bundled so the helpers below take one argument. */
+interface TurnContext {
+  readonly conn: IrohConnection;
+  readonly req: TurnRequest;
+  readonly conversationId: string;
+  readonly o: ResolvedOptions;
+  readonly deadline: number;
+}
+
+/**
+ * Turn state the frame listener writes and the wait loop reads. A mutable
+ * holder: the listener runs in a closure, so plain `let`s would be narrowed to
+ * their initial value by the control-flow analysis of the loop.
+ */
+interface TurnState {
+  terminal: Frame | null;
+  pendingApprovals: number;
+  idleWithApproval: boolean;
+  /** Loop is idle (waiting, no active runs). Tracked on its own so frame order does not matter. */
+  loopIdle: boolean;
+  sawActivity: boolean;
+  disconnected: boolean;
+  wake: (() => void) | null;
+}
+
+type Reconciliation = { text: string; runId: string | null };
+
+async function attempt(ctx: TurnContext, redialed: boolean): Promise<Outcome> {
+  const { conn, req, conversationId, o } = ctx;
+  const st: TurnState = {
+    terminal: null,
     pendingApprovals: 0,
     idleWithApproval: false,
-    /** Loop is idle (waiting, no active runs). Tracked on its own so frame order does not matter. */
     loopIdle: false,
     sawActivity: false,
     disconnected: false,
-    wake: null as (() => void) | null,
+    wake: null,
   };
   const ping = (): void => st.wake?.();
 
   const unFrame = conn.onFrame((f) => {
     if (frameConversation(f) !== conversationId) return;
-    switch (f['type']) {
-      case 'stream_delta': {
-        st.sawActivity = true;
-        const d = asRecord(f['delta']);
-        const kind = str(d?.['message_type']);
-        if (kind === 'assistant_message' || kind === 'reasoning_message') {
-          const t = contentText(d?.['content']);
-          if (t) o.onProgress?.({ kind: 'delta', text: t });
-        } else if (kind === 'tool_call_message') {
-          const tc = asRecord(d?.['tool_call']);
-          o.onProgress?.({ kind: 'tool-call', tool: str(tc?.['name']) ?? str(d?.['tool_name']) ?? 'unknown', args: tc?.['arguments'] ?? null });
-        }
-        break;
-      }
-      case 'pending_approvals': {
-        const list = f['approvals'];
-        st.pendingApprovals = Array.isArray(list) ? list.length : 0;
-        // Either frame may arrive first (CodeRabbit #55): idle + pending = stalled on approval.
-        st.idleWithApproval = st.loopIdle && st.pendingApprovals > 0;
-        break;
-      }
-      case 'update_loop_status': {
-        const ls = asRecord(f['loop_status']);
-        const status = str(ls?.['status']);
-        const active = Array.isArray(ls?.['active_run_ids']) ? (ls?.['active_run_ids'] as unknown[]).length : 0;
-        if (status !== 'WAITING_ON_INPUT' && status !== 'WAITING_ON_APPROVAL') {
-          st.sawActivity = true;
-          st.loopIdle = false;
-        } else {
-          st.loopIdle = active === 0;
-        }
-        st.idleWithApproval = st.loopIdle && st.pendingApprovals > 0;
-        break;
-      }
-      case 'turn_finished': {
-        const tid = str(f['turn_id']);
-        if (tid && o.ignoreTurnIds?.has(tid)) break;
-        // Unknown reasons are not terminal (provider reasons such as tool_use can
-        // arrive mid-turn): keep reading, bounded by the turn timeout.
-        if (boundaryOf(str(f['stop_reason'])) === 'continuing') break;
-        st.terminal = f;
-        break;
-      }
-      default:
-        break;
-    }
+    applyFrame(st, f, o);
     ping();
   });
   const onAbort = (): void => ping();
@@ -294,53 +267,8 @@ async function attempt(
         frame: { type: 'turn_finished', stop_reason: 'error', error: submitted.error, __input_rejected: true },
       };
     }
-    const accepted = { disposition: submitted.disposition };
-    o.onProgress?.({ kind: 'accepted', ...(accepted.disposition ? { disposition: accepted.disposition } : {}) });
-
-    // Wait for the authoritative end of the turn.
-    let nextReconcile = redialed ? Date.now() + o.replayWaitMs : Number.POSITIVE_INFINITY;
-    let approvalSince: number | null = null;
-    let prevRec: { text: string; runId: string | null } | null = null;
-    for (;;) {
-      if (st.terminal) return { kind: 'terminal', frame: st.terminal };
-      if (o.signal?.aborted) return { kind: 'aborted' };
-      if (st.disconnected) return { kind: 'disconnect' };
-      const now = Date.now();
-      if (now >= deadline) return { kind: 'timeout' };
-      if (st.idleWithApproval) {
-        approvalSince ??= now;
-        if (now - approvalSince >= o.approvalGraceMs) return { kind: 'approval_stuck' };
-      } else {
-        approvalSince = null;
-      }
-      // Reconcile only when the turn shows no sign of life after the redial: a
-      // live turn replays/continues its frames, a dead one (wrapper restarted,
-      // parking lost) stays silent.
-      if (now >= nextReconcile && st.sawActivity) nextReconcile = now + o.reconcileIntervalMs;
-      if (now >= nextReconcile) {
-        const rec = await tryReconcile(conn, req, conversationId, o);
-        // Two identical polls one interval apart: a mid-turn assistant message
-        // (e.g. text before a tool call) changes or is followed by more frames.
-        if (rec && prevRec && rec.text === prevRec.text && rec.runId === prevRec.runId) {
-          return { kind: 'reconciled', ...rec };
-        }
-        prevRec = rec;
-        nextReconcile = Date.now() + o.reconcileIntervalMs;
-        continue;
-      }
-      let sleepMs = deadline - now;
-      if (approvalSince !== null) sleepMs = Math.min(sleepMs, Math.max(1, o.approvalGraceMs - (now - approvalSince)));
-      if (nextReconcile !== Number.POSITIVE_INFINITY) sleepMs = Math.min(sleepMs, Math.max(1, nextReconcile - now));
-      await new Promise<void>((resolve) => {
-        const t = setTimeout(done, sleepMs);
-        function done(): void {
-          clearTimeout(t);
-          st.wake = null;
-          resolve();
-        }
-        st.wake = done;
-      });
-    }
+    o.onProgress?.({ kind: 'accepted', ...(submitted.disposition ? { disposition: submitted.disposition } : {}) });
+    return await waitForTurnEnd(ctx, st, redialed);
   } finally {
     unFrame();
     unDisc();
@@ -348,34 +276,163 @@ async function attempt(
   }
 }
 
-async function finish(
-  conn: IrohConnection,
-  conversationId: string,
-  clientMessageId: string,
-  outcome: Exclude<Outcome, { kind: 'disconnect' }>,
-  o: Required<Omit<RunTurnOptions, 'ignoreTurnIds' | 'onProgress' | 'signal'>> & RunTurnOptions,
-): Promise<TurnResult> {
-  const base = { conversationId, usage: null as Record<string, unknown> | null, reconciled: false };
-  if (outcome.kind === 'timeout') {
-    return { ...base, stopReason: null, boundary: 'failed', failureReason: 'turn_timeout', error: `turn did not finish within ${o.turnTimeoutMs}ms`, turnId: null, runId: null, finalText: '' };
+/** Fold one frame for this conversation into the turn state. */
+function applyFrame(st: TurnState, f: Frame, o: ResolvedOptions): void {
+  switch (f['type']) {
+    case 'stream_delta':
+      onStreamDelta(st, f, o);
+      break;
+    case 'pending_approvals':
+      onPendingApprovals(st, f);
+      break;
+    case 'update_loop_status':
+      onLoopStatus(st, f);
+      break;
+    case 'turn_finished':
+      onTurnFinished(st, f, o);
+      break;
+    default:
+      break;
   }
-  if (outcome.kind === 'aborted') {
-    return { ...base, stopReason: null, boundary: 'cancelled', failureReason: 'cancelled', error: 'session stopped before the turn finished', turnId: null, runId: null, finalText: '' };
-  }
-  if (outcome.kind === 'approval_stuck') {
-    return { ...base, stopReason: REQUIRES_APPROVAL, boundary: 'failed', failureReason: 'requires_approval', error: 'runtime idle with a pending approval; no approver for unattended steps', turnId: null, runId: null, finalText: '' };
-  }
-  if (outcome.kind === 'reconciled') {
-    return { ...base, stopReason: 'end_turn', boundary: 'completed', failureReason: null, error: null, turnId: null, runId: outcome.runId, finalText: outcome.text, reconciled: true };
-  }
+}
 
-  const f = outcome.frame;
+function onStreamDelta(st: TurnState, f: Frame, o: ResolvedOptions): void {
+  st.sawActivity = true;
+  const d = asRecord(f['delta']);
+  const kind = str(d?.['message_type']);
+  if (kind === 'assistant_message' || kind === 'reasoning_message') {
+    const t = contentText(d?.['content']);
+    if (t) o.onProgress?.({ kind: 'delta', text: t });
+  } else if (kind === 'tool_call_message') {
+    const tc = asRecord(d?.['tool_call']);
+    o.onProgress?.({ kind: 'tool-call', tool: str(tc?.['name']) ?? str(d?.['tool_name']) ?? 'unknown', args: tc?.['arguments'] ?? null });
+  }
+}
+
+function onPendingApprovals(st: TurnState, f: Frame): void {
+  const list = f['approvals'];
+  st.pendingApprovals = Array.isArray(list) ? list.length : 0;
+  // Either frame may arrive first (CodeRabbit #55): idle + pending = stalled on approval.
+  st.idleWithApproval = st.loopIdle && st.pendingApprovals > 0;
+}
+
+function onLoopStatus(st: TurnState, f: Frame): void {
+  const ls = asRecord(f['loop_status']);
+  const status = str(ls?.['status']);
+  const active = Array.isArray(ls?.['active_run_ids']) ? (ls?.['active_run_ids'] as unknown[]).length : 0;
+  if (status !== 'WAITING_ON_INPUT' && status !== 'WAITING_ON_APPROVAL') {
+    st.sawActivity = true;
+    st.loopIdle = false;
+  } else {
+    st.loopIdle = active === 0;
+  }
+  st.idleWithApproval = st.loopIdle && st.pendingApprovals > 0;
+}
+
+function onTurnFinished(st: TurnState, f: Frame, o: ResolvedOptions): void {
+  const tid = str(f['turn_id']);
+  if (tid && o.ignoreTurnIds?.has(tid)) return;
+  // Unknown reasons are not terminal (provider reasons such as tool_use can
+  // arrive mid-turn): keep reading, bounded by the turn timeout.
+  if (boundaryOf(str(f['stop_reason'])) === 'continuing') return;
+  st.terminal = f;
+}
+
+/** Wait for the authoritative end of the turn. */
+async function waitForTurnEnd(ctx: TurnContext, st: TurnState, redialed: boolean): Promise<Outcome> {
+  const { o, deadline } = ctx;
+  let nextReconcile = redialed ? Date.now() + o.replayWaitMs : Number.POSITIVE_INFINITY;
+  let approvalSince: number | null = null;
+  let prevRec: Reconciliation | null = null;
+  for (;;) {
+    const ended = endedOutcome(st, o.signal);
+    if (ended) return ended;
+    const now = Date.now();
+    if (now >= deadline) return { kind: 'timeout' };
+    approvalSince = st.idleWithApproval ? (approvalSince ?? now) : null;
+    if (approvalSince !== null && now - approvalSince >= o.approvalGraceMs) return { kind: 'approval_stuck' };
+    // Reconcile only when the turn shows no sign of life after the redial: a
+    // live turn replays/continues its frames, a dead one (wrapper restarted,
+    // parking lost) stays silent.
+    if (now >= nextReconcile && st.sawActivity) nextReconcile = now + o.reconcileIntervalMs;
+    if (now >= nextReconcile) {
+      const rec = await tryReconcile(ctx.conn, ctx.req, ctx.conversationId, o);
+      // Two identical polls one interval apart: a mid-turn assistant message
+      // (e.g. text before a tool call) changes or is followed by more frames.
+      if (sameReconciliation(rec, prevRec)) return { kind: 'reconciled', ...rec };
+      prevRec = rec;
+      nextReconcile = Date.now() + o.reconcileIntervalMs;
+      continue;
+    }
+    const approvalWakeAt = approvalSince === null ? Number.POSITIVE_INFINITY : approvalSince + o.approvalGraceMs;
+    await sleepUntilWoken(st, sleepBudgetMs(now, deadline, [approvalWakeAt, nextReconcile]));
+  }
+}
+
+/** The turn ended by itself: a terminal frame, an abort, or a dropped link. */
+function endedOutcome(st: TurnState, signal: AbortSignal | undefined): Outcome | null {
+  if (st.terminal) return { kind: 'terminal', frame: st.terminal };
+  if (signal?.aborted) return { kind: 'aborted' };
+  if (st.disconnected) return { kind: 'disconnect' };
+  return null;
+}
+
+function sameReconciliation(rec: Reconciliation | null, prev: Reconciliation | null): rec is Reconciliation {
+  return rec !== null && prev !== null && rec.text === prev.text && rec.runId === prev.runId;
+}
+
+/** Sleep until the deadline or the earliest wake-up point (each at least 1 ms away). */
+function sleepBudgetMs(now: number, deadline: number, wakeAts: readonly number[]): number {
+  return wakeAts.filter(Number.isFinite).reduce((ms, at) => Math.min(ms, Math.max(1, at - now)), deadline - now);
+}
+
+/** Sleep for `ms`, or less if a frame, an abort or a disconnect wakes the loop. */
+function sleepUntilWoken(st: TurnState, ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const t = setTimeout(done, ms);
+    function done(): void {
+      clearTimeout(t);
+      st.wake = null;
+      resolve();
+    }
+    st.wake = done;
+  });
+}
+
+type ResultBase = { conversationId: string; usage: Record<string, unknown> | null; reconciled: boolean };
+
+async function finish(ctx: TurnContext, outcome: Exclude<Outcome, { kind: 'disconnect' }>): Promise<TurnResult> {
+  const base: ResultBase = { conversationId: ctx.conversationId, usage: null, reconciled: false };
+  if (outcome.kind === 'terminal') return finishFromFrame(ctx, base, outcome.frame);
+  return finishWithoutFrame(base, outcome, ctx.o.turnTimeoutMs);
+}
+
+/** Outcomes the client decided without a terminal frame from the runtime. */
+function finishWithoutFrame(
+  base: ResultBase,
+  outcome: Exclude<Outcome, { kind: 'disconnect' } | { kind: 'terminal' }>,
+  turnTimeoutMs: number,
+): TurnResult {
+  switch (outcome.kind) {
+    case 'timeout':
+      return { ...base, stopReason: null, boundary: 'failed', failureReason: 'turn_timeout', error: `turn did not finish within ${turnTimeoutMs}ms`, turnId: null, runId: null, finalText: '' };
+    case 'aborted':
+      return { ...base, stopReason: null, boundary: 'cancelled', failureReason: 'cancelled', error: 'session stopped before the turn finished', turnId: null, runId: null, finalText: '' };
+    case 'approval_stuck':
+      return { ...base, stopReason: REQUIRES_APPROVAL, boundary: 'failed', failureReason: 'requires_approval', error: 'runtime idle with a pending approval; no approver for unattended steps', turnId: null, runId: null, finalText: '' };
+    case 'reconciled':
+      return { ...base, stopReason: 'end_turn', boundary: 'completed', failureReason: null, error: null, turnId: null, runId: outcome.runId, finalText: outcome.text, reconciled: true };
+  }
+}
+
+/** The runtime's own terminal frame decides the result. */
+async function finishFromFrame(ctx: TurnContext, base: ResultBase, f: Frame): Promise<TurnResult> {
   if (f['__input_rejected'] === true) {
     return { ...base, stopReason: 'error', boundary: 'failed', failureReason: 'input_rejected', error: str(f['error']), turnId: null, runId: null, finalText: '' };
   }
   const stopReason = str(f['stop_reason']);
   const turnId = str(f['turn_id']);
-  if (turnId) o.ignoreTurnIds?.add(turnId);
+  if (turnId) ctx.o.ignoreTurnIds?.add(turnId);
   const runId = str(f['run_id']);
   const usage = asRecord(f['usage']);
   const error = str(f['error']);
@@ -389,8 +446,8 @@ async function finish(
   if (b === 'cancelled') {
     return { ...base, usage, stopReason, boundary: 'cancelled', failureReason: 'cancelled', error, turnId, runId, finalText: '' };
   }
-  const messages = await listMessages(conn, conversationId, o.messageListLimit);
-  const finalText = lastAssistantText(messages, runId, clientMessageId);
+  const messages = await listMessages(ctx.conn, ctx.conversationId, ctx.o.messageListLimit);
+  const finalText = lastAssistantText(messages, runId, ctx.req.clientMessageId);
   return { ...base, usage, stopReason, boundary: 'completed', failureReason: null, error: null, turnId, runId, finalText };
 }
 
