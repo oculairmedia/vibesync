@@ -54,7 +54,7 @@ function deps(over: Partial<SchedulerDaemonDeps> = {}): { d: SchedulerDaemonDeps
       async metadataFor() { return { priority: 2, unblockCount: 0, files: [] }; },
     },
     contextStore: makeContextStore(),
-    poolMembers: [{ agentId: 'a0', role: 'coder', lettaBaseUrl: 'http://x' }], // pool size 1
+    poolMembers: [{ agentId: 'a0', role: 'coder' }], // pool size 1
     github: {
       async fetchFacts() { return facts; },
       async merge(_repo, prNumber) { state.merged.push(prNumber); return `sha-${prNumber}`; },

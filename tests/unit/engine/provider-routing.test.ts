@@ -2,13 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildProviderResolver,
+  StaleProviderRoutingError,
   wrapWithParentAgentId,
   type ProjectProviderRoutingStore,
 } from '../../../src/engine/boot.js';
 import type {
   ContentBlock,
+  IrohWrapperProvider,
   PromptResult,
-  PersonaLoader,
   RuntimeProvider,
   SessionEvent,
   SessionHandle,
@@ -17,43 +18,49 @@ import type {
 import type { DispatchInput } from '../../../src/engine/dispatcher/index.js';
 
 /**
- * Unit tests for the per-project routing wiring (vibesync-f5g / vibesync-8hk):
+ * Per-project routing (vibesync-f5g / vibesync-8hk, vibesync-9lzk.29).
  *
- *   buildProviderResolver — looks up projects.provider_kind /
- *     projects.letta_base_url and returns either null (use default) or
- *     a project-scoped RuntimeProvider.
+ *   buildProviderResolver: reads projects.provider_kind and returns null
+ *     (use the default provider) or the shared Iroh provider wrapped with
+ *     the project's PM parent agent id. letta-code-iroh is the only kind:
+ *     any other stored value throws StaleProviderRoutingError, never a
+ *     silent fallback.
  *
- *   wrapWithParentAgentId — façade that injects extra.parentAgentId
- *     into every start() call before delegating.
- *
- * Real router/provider integration is exercised in the dispatcher
- * tests (per-project provider routing describe block); this file
- * pins the resolver behavior in isolation.
+ *   wrapWithParentAgentId: injects extra.parentAgentId into start().
  */
 
 function fakeStore(routings: Record<string, {
-  readonly providerKind?: string | null;
-  readonly lettaBaseUrl?: string | null;
+  readonly providerKind: string | null;
   readonly parentAgentId?: string | null;
 } | null>): ProjectProviderRoutingStore {
   return {
     getProjectProviderRouting(projectIdentifier) {
       const v = routings[projectIdentifier];
-      if (v === undefined) return null;
-      return v as { readonly providerKind: string | null; readonly lettaBaseUrl: string | null; readonly parentAgentId?: string | null };
+      return v === undefined ? null : v;
     },
   };
 }
 
-function fakePersonaLoader(): PersonaLoader {
-  return { async load(role) { return `# ${role}\nyou are ${role}`; } };
+/** A stand-in Iroh provider: the resolver only wraps it, never dials. */
+function fakeIroh(): { readonly provider: IrohWrapperProvider; readonly specs: SessionSpec[] } {
+  const specs: SessionSpec[] = [];
+  const provider = {
+    kind: 'letta-code-iroh',
+    async start(spec: SessionSpec): Promise<SessionHandle> {
+      specs.push(spec);
+      return { id: 'iroh:1', providerKind: 'letta-code-iroh' };
+    },
+    async stop(): Promise<void> {},
+    async prompt(): Promise<PromptResult> { return {}; },
+    async nudge(): Promise<void> {},
+    async *observe(): AsyncIterable<SessionEvent> { /* no events */ },
+  } as unknown as IrohWrapperProvider;
+  return { provider, specs };
 }
 
 function inputFor(projectIdentifier: string | undefined): DispatchInput {
   return {
     formula: { name: 'noop', description: '', whenToUse: '', steps: [] },
-    // The pack value is only consumed by the dispatcher's runStep path,
-    // not by the resolver — a placeholder is fine here.
     pack: { manifest: { name: 'gastown', version: '0' }, root: '/', scope: 'global', roles: [], formulas: [] },
     input: '',
     ...(projectIdentifier ? { projectIdentifier } : {}),
@@ -62,112 +69,83 @@ function inputFor(projectIdentifier: string | undefined): DispatchInput {
 
 describe('buildProviderResolver', () => {
   it('returns null when the dispatch has no projectIdentifier', async () => {
-    const resolver = buildProviderResolver({
-      store: fakeStore({}),
-      personaLoader: fakePersonaLoader(),
-    });
+    const resolver = buildProviderResolver({ store: fakeStore({}) });
     expect(await resolver.resolve(inputFor(undefined))).toBeNull();
   });
 
   it('returns null when the project has no routing row', async () => {
-    const resolver = buildProviderResolver({
-      store: fakeStore({}),
-      personaLoader: fakePersonaLoader(),
-    });
+    const resolver = buildProviderResolver({ store: fakeStore({}) });
     expect(await resolver.resolve(inputFor('unknown'))).toBeNull();
   });
 
   it('returns null when the row exists but provider_kind is unset (use default)', async () => {
-    const resolver = buildProviderResolver({
-      store: fakeStore({ 'vibesync': { providerKind: null, lettaBaseUrl: null } }),
-      personaLoader: fakePersonaLoader(),
-    });
+    const resolver = buildProviderResolver({ store: fakeStore({ vibesync: { providerKind: null } }) });
     expect(await resolver.resolve(inputFor('vibesync'))).toBeNull();
   });
 
-  it('returns null for removed provider_kind=letta-teams rows', async () => {
+  it('routes letta-code-iroh to the shared Iroh provider with the project PM as parent', async () => {
+    const iroh = fakeIroh();
     const resolver = buildProviderResolver({
-      store: fakeStore({ 'legacy': { providerKind: 'letta-teams', lettaBaseUrl: null } }),
-      personaLoader: fakePersonaLoader(),
-    });
-    expect(await resolver.resolve(inputFor('legacy'))).toBeNull();
-  });
-
-  it('returns a LettaCodeSubagentProvider for provider_kind=letta-code-subagent', async () => {
-    const resolver = buildProviderResolver({
-      store: fakeStore({
-        'vibesync': { providerKind: 'letta-code-subagent', lettaBaseUrl: 'http://localhost:8291', parentAgentId: 'agent-pm' },
-      }),
-      personaLoader: fakePersonaLoader(),
+      store: fakeStore({ vibesync: { providerKind: 'letta-code-iroh', parentAgentId: 'agent-pm' } }),
+      irohProvider: () => iroh.provider,
     });
     const provider = await resolver.resolve(inputFor('vibesync'));
-    expect(provider).not.toBeNull();
-    expect(provider!.kind).toBe('letta-code-subagent');
+    expect(provider?.kind).toBe('letta-code-iroh');
+    await provider!.start({ role: 'coder' });
+    expect(iroh.specs[0]?.extra?.['parentAgentId']).toBe('agent-pm');
   });
 
-  it('falls back to default when letta_base_url is missing for a subagent row', async () => {
+  it('builds the shared Iroh provider once across projects and resolves', async () => {
+    let built = 0;
+    const iroh = fakeIroh();
     const resolver = buildProviderResolver({
       store: fakeStore({
-        'vibesync': { providerKind: 'letta-code-subagent', lettaBaseUrl: null, parentAgentId: 'agent-pm' },
+        a: { providerKind: 'letta-code-iroh', parentAgentId: 'agent-pm-a' },
+        b: { providerKind: 'letta-code-iroh', parentAgentId: 'agent-pm-b' },
       }),
-      personaLoader: fakePersonaLoader(),
+      irohProvider: () => { built += 1; return iroh.provider; },
     });
-    expect(await resolver.resolve(inputFor('vibesync'))).toBeNull();
+    await resolver.resolve(inputFor('a'));
+    await resolver.resolve(inputFor('b'));
+    await resolver.resolve(inputFor('a'));
+    expect(built).toBe(1);
   });
 
-  it('uses the legacy parentAgentIds map when the routing row has no parent id', async () => {
+  it('uses the static parentAgentIds map when the routing row has no parent id', async () => {
+    const iroh = fakeIroh();
     const resolver = buildProviderResolver({
-      store: fakeStore({
-        'vibesync': { providerKind: 'letta-code-subagent', lettaBaseUrl: 'http://localhost:8291' },
-      }),
-      personaLoader: fakePersonaLoader(),
+      store: fakeStore({ vibesync: { providerKind: 'letta-code-iroh' } }),
       parentAgentIds: { vibesync: 'agent-pm' },
+      irohProvider: () => iroh.provider,
     });
     const provider = await resolver.resolve(inputFor('vibesync'));
-    expect(provider).not.toBeNull();
-    expect(provider!.kind).toBe('letta-code-subagent');
+    await provider!.start({ role: 'coder' });
+    expect(iroh.specs[0]?.extra?.['parentAgentId']).toBe('agent-pm');
   });
 
-  it('falls back to default when no parent agent id is wired for the project', async () => {
+  it('uses the default provider when an Iroh row has no parent agent id', async () => {
     const resolver = buildProviderResolver({
-      store: fakeStore({
-        'vibesync': { providerKind: 'letta-code-subagent', lettaBaseUrl: 'http://localhost:8291' },
-      }),
-      personaLoader: fakePersonaLoader(),
-      // parentAgentIds intentionally omitted.
+      store: fakeStore({ vibesync: { providerKind: 'letta-code-iroh' } }),
+      irohProvider: () => fakeIroh().provider,
     });
     expect(await resolver.resolve(inputFor('vibesync'))).toBeNull();
   });
 
-  it('falls back to default for unknown provider_kind values', async () => {
-    const resolver = buildProviderResolver({
-      store: fakeStore({
-        'experimental': { providerKind: 'mystery-runtime', lettaBaseUrl: 'http://localhost:9999' },
-      }),
-      personaLoader: fakePersonaLoader(),
+  // vibesync-9lzk.29: the production registry still held these rows
+  // (letta-mobile, letta-code-parallel -> letta-code-subagent at the dead
+  // :8291 shim). They must fail loudly, naming the project and the kind.
+  for (const staleKind of ['letta-code-subagent', 'letta-teams', 'mystery-runtime']) {
+    it(`a stale provider_kind='${staleKind}' row throws instead of falling back`, async () => {
+      const resolver = buildProviderResolver({
+        store: fakeStore({ 'letta-mobile': { providerKind: staleKind, parentAgentId: 'agent-pm' } }),
+        irohProvider: () => fakeIroh().provider,
+      });
+      expect(() => resolver.resolve(inputFor('letta-mobile'))).toThrow(StaleProviderRoutingError);
+      expect(() => resolver.resolve(inputFor('letta-mobile'))).toThrow(
+        `project letta-mobile routes to provider_kind='${staleKind}', which was removed`,
+      );
     });
-    expect(await resolver.resolve(inputFor('experimental'))).toBeNull();
-  });
-
-  it('caches the per-shim provider across consecutive resolves', async () => {
-    const resolver = buildProviderResolver({
-      store: fakeStore({
-        'vibesync': { providerKind: 'letta-code-subagent', lettaBaseUrl: 'http://localhost:8291', parentAgentId: 'agent-pm' },
-      }),
-      personaLoader: fakePersonaLoader(),
-    });
-    const first = await resolver.resolve(inputFor('vibesync'));
-    const second = await resolver.resolve(inputFor('vibesync'));
-    expect(first).not.toBeNull();
-    expect(second).not.toBeNull();
-    // Both façades wrap the same cached underlying provider; the wrapper
-    // identity differs but both point to the same logical kind. We verify
-    // identity isn't created fresh each call by reaching into the cache
-    // via a third dispatch — re-resolving stays stable in count.
-    const third = await resolver.resolve(inputFor('vibesync'));
-    expect(third).not.toBeNull();
-    expect(third!.kind).toBe('letta-code-subagent');
-  });
+  }
 });
 
 describe('wrapWithParentAgentId', () => {

@@ -56,8 +56,8 @@ import {
   readNumberExtra,
   readStringExtra,
   resolveDefaultTurnTimeout,
-} from './subagent-dispatch.js';
-import type { AgentIdResolver } from './subagent-dispatch.js';
+} from './dispatch-helpers.js';
+import type { AgentIdResolver } from './dispatch-helpers.js';
 
 export const IROH_PROVIDER_KIND = 'letta-code-iroh';
 

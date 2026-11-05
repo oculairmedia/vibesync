@@ -13,11 +13,9 @@ import type { RunLivenessProbe } from '../src/engine/scheduler/witness.js';
 import { loadPack } from '../src/engine/packs/index.js';
 import { createRegistry } from '../src/app/registry/registry.js';
 import { resolveFromAppRoot } from '../src/app/runtimePaths.js';
-import { RoleAgentBootstrapper } from '../src/app/letta/RoleAgentBootstrapper.js';
 
 const beadId = mustEnv('VIBESYNC_DOGFOOD_BEAD_ID');
 const agentId = process.env['VIBESYNC_DOGFOOD_AGENT_ID'] ?? 'agent-a9db7a7a';
-const lettaBaseUrl = process.env['VIBESYNC_DOGFOOD_LETTA_BASE_URL'] ?? process.env['LETTA_CODE_SHIM_URL'] ?? 'http://localhost:8291';
 const formulaName = process.env['VIBESYNC_DOGFOOD_FORMULA'] ?? 'dogfood-rig-smoke';
 const projectIdentifier = process.env['VIBESYNC_DOGFOOD_PROJECT'] ?? 'vibesync';
 const dryRunMerge = process.env['VIBESYNC_DOGFOOD_DRY_RUN_MERGE'] !== '0';
@@ -32,10 +30,6 @@ const log = {
 const dbPath = process.env['VIBESYNC_DB_PATH'] ?? resolveFromAppRoot('logs', 'sync-state.db');
 const db = createRegistry(dbPath);
 const dolt = await DoltClient.connect({}, { ...defaultDoltBootDeps, log(level, obj, msg) { log[level](obj, msg); } });
-const roleAgentBootstrapper = new RoleAgentBootstrapper({
-  repo: { getRoleAgent: db.getRoleAgent.bind(db), upsertRoleAgent: db.upsertRoleAgent.bind(db) },
-  defaultModel: process.env['VIBESYNC_DOGFOOD_MODEL'] ?? 'lmstudio/MiniMax-M3',
-});
 const orchestration = await bootOrchestrationPlane({
   dolt,
   providerRouting: {
@@ -43,19 +37,10 @@ const orchestration = await bootOrchestrationPlane({
       getProjectProviderRouting(identifier) {
         const row = db.getProjectProviderRouting(identifier);
         if (identifier !== projectIdentifier) return row;
-        return {
-          ...row,
-          providerKind: row?.providerKind ?? 'letta-code-subagent',
-          lettaBaseUrl,
-          parentAgentId: agentId,
-          packDir: row?.packDir ?? 'packs/gastown',
-          storageDir: row?.storageDir ?? '/root/.letta/lc-local-backend',
-        };
+        return { providerKind: row?.providerKind ?? 'letta-code-iroh', parentAgentId: agentId };
       },
     },
-    roleAgentBootstrapper,
-    packDirsByProject: { [projectIdentifier]: 'packs/gastown' },
-    storageDirsByProject: { [projectIdentifier]: '/root/.letta/lc-local-backend' },
+    roleAgentLookup: { getRoleAgent: db.getRoleAgent.bind(db) },
   },
 });
 
@@ -79,7 +64,7 @@ const formulaResolver: FormulaResolver = {
     return { formula, pack, projectIdentifier, input };
   },
 };
-const poolMembers: PoolMemberIdentity[] = [{ agentId, role: 'pm', lettaBaseUrl }];
+const poolMembers: PoolMemberIdentity[] = [{ agentId, role: 'pm' }];
 const github: GitHubPort = dryRunMerge ? dryRunGitHub() : realGitHub();
 const livenessProbe: RunLivenessProbe = { async probe() { return 'alive'; } };
 const escalation = {

@@ -9,7 +9,6 @@ function members(n: number): PoolMemberIdentity[] {
   return Array.from({ length: n }, (_, i) => ({
     agentId: `agent-${i}`,
     role: 'coder',
-    lettaBaseUrl: 'http://localhost:8291',
   }));
 }
 

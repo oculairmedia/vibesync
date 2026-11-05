@@ -44,7 +44,7 @@ function setup(opts: { poolSize: number; readyBeads: string[] }) {
     formulaResolver: { async resolve(id: string) { return { formula: { name: 'onboard' } as never, pack: { name: 'gastown' } as never, projectIdentifier: 'vibesync', input: id }; } },
     readyBeads: { async readyWorkBeadIds() { return new Set(opts.readyBeads); }, async metadataFor() { return { priority: 2, unblockCount: 0, files: [] }; } },
     contextStore: memoryContexts(),
-    poolMembers: Array.from({ length: opts.poolSize }, (_, i) => ({ agentId: `a${i}`, role: 'coder', lettaBaseUrl: 'http://x' })),
+    poolMembers: Array.from({ length: opts.poolSize }, (_, i) => ({ agentId: `a${i}`, role: 'coder' })),
     github: { async fetchFacts() { throw new Error('unused'); }, async merge() { throw new Error('unused'); } },
     allowedRepos: [],
     requiredCheckNames: () => [],

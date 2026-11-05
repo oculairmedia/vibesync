@@ -158,7 +158,6 @@ describe.skipIf(!RUN_ISOLATED_BEADS)('steps are beads (real bd, isolated repo)',
   });
 
   it('end to end on real bd: a formula run through boot completes all three steps; bd sees every step and the root closed', async () => {
-    process.env['VIBESYNC_WORK_ACTIVITY_REPORT'] = '0';
     const packRoot = mkdtempSync(join(tmpdir(), 'efee-e2e-'));
     mkdirSync(join(packRoot, 'prompts'));
     writeFileSync(join(packRoot, 'prompts', 'p.md'), 'Do ${input}');
@@ -199,7 +198,6 @@ describe.skipIf(!RUN_ISOLATED_BEADS)('restart recovery on real bd (vibesync-9lzk
         { name: 'b', role: 'w', promptTemplate: 'p', dependsOn: ['a'] },
       ] });
       await h.store.markStepRunning(newMoleculeStepId(view.rootId, 'a'));
-      process.env['VIBESYNC_WORK_ACTIVITY_REPORT'] = '0';
       const provider = newFakeProvider({ kind: 'fake' });
       const handle = await bootOrchestrationPlane({
         dolt: h.client, bd: async (args) => h.bd(...args), provider, persistEvents: false, runDriftAuditOnBoot: false,

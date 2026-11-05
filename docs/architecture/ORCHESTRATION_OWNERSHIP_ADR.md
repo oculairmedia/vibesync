@@ -1,5 +1,14 @@
 <!-- VIBESYNC:adr:START -->
 
+> **Superseded in part (2026-11-05, vibesync-9lzk.29).** This record's
+> references to `LettaCodeSubagentProvider`, the admin shim (:8291),
+> `VIBESYNC_LETTA_CODE_SHIM_URL`, `WorkActivityReporter`, role-agent bootstrap
+> via `@letta-ai/letta-code-sdk` and `provider_kind='letta-teams'` describe code
+> that was deleted. `IrohWrapperProvider` (`letta-code-iroh`) is now the only
+> runtime provider, and a routing row naming a removed kind fails loudly. The
+> ownership decisions below otherwise stand. Kept unedited as the decision
+> record.
+
 # ADR-0001 — VibeSync Orchestration Ownership & Kotlin Migration Boundary
 
 | Field           | Value                                                                                                                                                              |

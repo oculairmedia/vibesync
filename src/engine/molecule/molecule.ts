@@ -52,8 +52,7 @@ export interface StepSpec {
    * set, overrides the provider's default turnTimeoutMs for this
    * specific step. Use for steps that legitimately run long (e.g.
    * coder/implementer refactors). When omitted, the provider uses
-   * its configured default (10min for LettaCodeSubagentProvider,
-   * or VIBESYNC_TURN_TIMEOUT_MS env var if set).
+   * its configured default (VIBESYNC_TURN_TIMEOUT_MS, else 10 min).
    */
   readonly turnTimeoutMs?: number;
 }
@@ -116,12 +115,9 @@ export interface MoleculeStore {
   recordStepTask(stepId: string, task: {
     /**
      * Provider-opaque task id for restart re-attachment (f5g).
-     * Optional because providers that surface their task id
-     * asynchronously via the SSE stream (e.g. LettaCodeSubagentProvider)
-     * may not have it synchronously available at prompt() return
-     * time; for those, the dispatcher persists conversation_id
-     * alone and the resume path falls back to conversation
-     * re-attachment.
+     * Optional because a provider may not have a task id at prompt()
+     * return time; the dispatcher then persists conversation_id alone
+     * and the resume path falls back to conversation re-attachment.
      */
     readonly taskId?: string;
     readonly providerKind: string;

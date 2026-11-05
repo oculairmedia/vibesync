@@ -37,8 +37,6 @@ export interface PoolMemberIdentity {
   readonly agentId: string;
   /** The role this persistent agent fills (project_role_agents.role_name). */
   readonly role: string;
-  /** Shim base url for this agent (project_role_agents.letta_base_url). */
-  readonly lettaBaseUrl: string;
 }
 
 /** An ephemeral session attached to a slot while it is WORKING. */

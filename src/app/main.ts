@@ -105,11 +105,6 @@ async function bootEngine(db: Registry): Promise<OrchestrationHandle | null> {
     logger.info('Orchestration plane disabled (ENABLE_ORCHESTRATION is not true)');
     return null;
   }
-  const { RoleAgentBootstrapper } = await import('./letta/RoleAgentBootstrapper.js');
-  const roleAgentBootstrapper = new RoleAgentBootstrapper({
-    repo: { getRoleAgent: db.getRoleAgent.bind(db), upsertRoleAgent: db.upsertRoleAgent.bind(db) },
-    defaultModel: process.env['VIBESYNC_ROLE_AGENT_MODEL'] ?? 'lmstudio/MiniMax-M3',
-  });
 
   for (let attempt = 1; attempt <= MAX_BOOT_ATTEMPTS; attempt += 1) {
     let dolt: DoltClient | undefined;
@@ -122,7 +117,7 @@ async function bootEngine(db: Registry): Promise<OrchestrationHandle | null> {
           config: config.scheduler,
           logger,
           listPoolMembers: (projectIdentifier) =>
-            db.listRoleAgents(projectIdentifier).map((row) => ({ agentId: row.agentId, role: row.roleName, lettaBaseUrl: row.lettaBaseUrl })),
+            db.listRoleAgents(projectIdentifier).map((row) => ({ agentId: row.agentId, role: row.roleName })),
           pmWake: { lookupAgentId: registryPmAgentLookup(db) },
           bd: projectCli(db, 'bd', 'vibesync-scheduler'),
           gh: projectCli(db, 'gh', 'vibesync-scheduler'),
@@ -137,7 +132,6 @@ async function bootEngine(db: Registry): Promise<OrchestrationHandle | null> {
         }),
         providerRouting: {
           store: { getProjectProviderRouting: db.getProjectProviderRouting.bind(db) },
-          roleAgentBootstrapper,
           roleAgentLookup: { getRoleAgent: db.getRoleAgent.bind(db) },
         },
       });

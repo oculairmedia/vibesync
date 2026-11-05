@@ -159,7 +159,7 @@ describe('PropulsionExecutor end-to-end with SchedulerLoop + AgentPool (vibesync
     const { AgentPool, SchedulerLoop } = await import('../../../../src/engine/scheduler/index.js');
     // Build the same fakes the 63zx.3 loop uses.
     const { InMemory } = await buildLoopHarness();
-    const pool = new AgentPool({ members: [{ agentId: 'a0', role: 'coder', lettaBaseUrl: 'x' }] }); // size 1
+    const pool = new AgentPool({ members: [{ agentId: 'a0', role: 'coder' }] }); // size 1
 
     const executed: string[] = [];
     // slotIdFor: on dispatch, allocate a slot for the work bead and remember it.

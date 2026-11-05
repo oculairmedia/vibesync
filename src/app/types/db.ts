@@ -11,10 +11,7 @@ export interface ProjectRow {
   created_at: number;
   updated_at: number;
   letta_agent_id: string | null;
-  letta_base_url: string | null;
   provider_kind: string | null;
-  pack_dir: string | null;
-  storage_dir: string | null;
   beads_prefix: string | null;
   beads_remote_owner: string | null;
   beads_remote_repo: string | null;

@@ -19,10 +19,9 @@ const PROJECT_COLUMNS: ReadonlyArray<readonly [string, string]> = [
   ['created_at', 'INTEGER'],
   ['updated_at', 'INTEGER'],
   ['letta_agent_id', 'TEXT'],
-  ['letta_base_url', 'TEXT'],
+  // vibesync-9lzk.29: letta_base_url, pack_dir and storage_dir fed only the
+  // removed shim provider; runMigrations drops them from existing databases.
   ['provider_kind', 'TEXT'],
-  ['pack_dir', 'TEXT'],
-  ['storage_dir', 'TEXT'],
   ['beads_prefix', 'TEXT'],
   ['beads_remote_owner', 'TEXT'],
   ['beads_remote_repo', 'TEXT'],

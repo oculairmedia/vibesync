@@ -135,11 +135,9 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  async function boot(fake: FakeIrohWrapper, over: { intervalMs?: number; bd?: typeof bd; provider?: string; pmWake?: Partial<NonNullable<BootSchedulerOptions['config']['pmWake']>>; connections?: IrohConnection[]; inboxAdapter?: InboxMessageAdapter; wakeSink?: import('../../../../src/engine/pm-wake/waker.js').PmWakeSink; listPoolMembers?: () => readonly { agentId: string; role: string; lettaBaseUrl: string }[] } = {}) {
-    process.env['VIBESYNC_WORK_ACTIVITY_REPORT'] = '0';
-    process.env['VIBESYNC_ORCHESTRATION_PROVIDER'] = over.provider ?? 'letta-code-iroh';
+  async function boot(fake: FakeIrohWrapper, over: { intervalMs?: number; bd?: typeof bd; pmWake?: Partial<NonNullable<BootSchedulerOptions['config']['pmWake']>>; connections?: IrohConnection[]; inboxAdapter?: InboxMessageAdapter; wakeSink?: import('../../../../src/engine/pm-wake/waker.js').PmWakeSink; listPoolMembers?: () => readonly { agentId: string; role: string }[] } = {}) {
+    process.env['VIBESYNC_ORCHESTRATION_PROVIDER'] = 'letta-code-iroh';
     process.env['VIBESYNC_LETTA_CODE_PARENT_AGENT_ID'] = PM;
-    process.env['VIBESYNC_LETTA_CODE_SHIM_URL'] = 'http://shim:8291';
     const handle = await bootOrchestrationPlane({
       ...inMemoryBeads(),
       persistEvents: false,
@@ -152,8 +150,8 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
       scheduler: {
         config: { ...schedulerConfig({ statePath: path.join(dir, 'pm-wake-state.json'), ...over.pmWake }), ...(over.intervalMs ? { intervalMs: over.intervalMs } : {}) },
         listPoolMembers: () => over.listPoolMembers?.() ?? [
-          { agentId: 'agent-a', role: 'role-one', lettaBaseUrl: 'http://shim' },
-          { agentId: 'agent-b', role: 'role-two', lettaBaseUrl: 'http://shim' },
+          { agentId: 'agent-a', role: 'role-one' },
+          { agentId: 'agent-b', role: 'role-two' },
         ],
         bd: over.bd ?? bd,
         appRoot: process.cwd(),
@@ -378,7 +376,8 @@ process.stdin.on('end', () => {
 
   it('disabled inbox wakes never dial the formula transport', async () => {
     const fake = new FakeIrohWrapper({ scope: [PM] });
-    await boot(fake, { provider: 'letta-code-subagent', pmWake: { enabled: false } });
+    // The Iroh connection is lazy: with wakes off and no work, nothing dials.
+    await boot(fake, { pmWake: { enabled: false } });
     await vi.advanceTimersByTimeAsync(9 * HOUR);
     expect(fake.dials).toBe(0);
   });

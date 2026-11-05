@@ -38,7 +38,6 @@
   "license": "MIT",
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^8.5.0",
-    "@letta-ai/letta-code-sdk": "^0.1.14",
     "@number0/iroh": "1.2.0",
     "better-sqlite3": "^12.4.6",
     "chalk": "^5.6.2",

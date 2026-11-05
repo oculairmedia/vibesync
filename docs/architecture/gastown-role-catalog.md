@@ -60,8 +60,8 @@ causal witness events — not a role.
 **Translation per Gas City:** An operating mode (scalable session
 config), not a hard type.
 
-**Maps to VibeSync:** Use `LettaCodeSubagentProvider` sessions for
-ephemeral worker conversations. Polecats are short-lived runtime
+**Maps to VibeSync:** Use per-step conversations on the role agent
+(`IrohWrapperProvider`) for ephemeral worker sessions. Polecats are short-lived runtime
 sessions dispatched through the same provider chokepoint as other
 Gastown role work, not a separate provider.
 

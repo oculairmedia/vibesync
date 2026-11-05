@@ -62,8 +62,8 @@ export interface DispatchRunResult {
 
 /**
  * Runs the actual dispatch by REUSING the existing path. Production wires this
- * to FormulaDispatcher.run (which spawns the LettaCodeSubagentProvider agent
- * with the work on its hook and runs it immediately). Injected so the executor
+ * to FormulaDispatcher.run (which runs the work on the role agent over the
+ * Iroh provider immediately). Injected so the executor
  * stays pure and testable and does not import the dispatcher directly.
  */
 export interface DispatchRunner {

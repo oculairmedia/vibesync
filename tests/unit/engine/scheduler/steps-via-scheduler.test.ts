@@ -64,7 +64,7 @@ function script(spec: SessionSpec): AsyncIterable<SessionEvent> {
   })();
 }
 
-const POOL = [{ agentId: 'agent-a', role: 'r', lettaBaseUrl: 'http://shim' }];
+const POOL = [{ agentId: 'agent-a', role: 'r' }];
 
 /** Fake `bd` for the work-bead side of the daemon; step readiness never goes through it. */
 function fakeBd() {
@@ -92,7 +92,6 @@ function schedulerOptions(bd: ReturnType<typeof fakeBd>): BootSchedulerOptions {
 
 const handles: OrchestrationHandle[] = [];
 async function boot(extra: Partial<Parameters<typeof bootOrchestrationPlane>[0]> = {}) {
-  process.env['VIBESYNC_WORK_ACTIVITY_REPORT'] = '0';
   const store = new InMemoryDoltClient();
   const provider = newFakeProvider({ kind: 'fake', script });
   const handle = await bootOrchestrationPlane({

@@ -77,9 +77,6 @@ export class Registry {
   }
 
   getProjectProviderRouting(id: string) { return this.projects!.letta.getProjectProviderRouting(id); }
-  setProjectProviderRouting(id: string, routing: { lettaBaseUrl: string | null; providerKind: string | null }): boolean {
-    return this.projects!.letta.setProjectProviderRouting(id, routing);
-  }
   setProjectLettaAgent(identifier: string, info: { agentId: string }) { return this.projects!.letta.setProjectLettaAgent(identifier, info); }
 
   getRoleAgent(projectIdentifier: string, roleName: string) { return this.projects!.roleAgents.getRoleAgent(projectIdentifier, roleName); }

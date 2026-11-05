@@ -124,7 +124,7 @@ function harness(opts: {
       async metadataFor(id: string) { return { priority: priority.get(id) ?? 2, unblockCount: 0, files: [] }; },
     },
     contextStore: store,
-    poolMembers: Array.from({ length: opts.poolSize ?? 1 }, (_, i) => ({ agentId: `a${i}`, role: 'coder', lettaBaseUrl: 'http://x' })),
+    poolMembers: Array.from({ length: opts.poolSize ?? 1 }, (_, i) => ({ agentId: `a${i}`, role: 'coder' })),
     github: {
       async fetchFacts() { return { requiredChecks: { ci: 'SUCCESS' }, mergeable: 'MERGEABLE', deletedFiles: 0, behindBase: false }; },
       async merge() { return 'sha'; },

@@ -129,7 +129,7 @@ function harness(opts: { beads: string[]; poolSize: number; store?: ReturnType<t
       async metadataFor() { return { priority: 2, unblockCount: 0, files: [] }; },
     },
     contextStore: store,
-    poolMembers: Array.from({ length: opts.poolSize }, (_, i) => ({ agentId: `a${i}`, role: 'coder', lettaBaseUrl: 'http://x' })),
+    poolMembers: Array.from({ length: opts.poolSize }, (_, i) => ({ agentId: `a${i}`, role: 'coder' })),
     github: {
       async fetchFacts() { return facts; },
       async merge(_repo, prNumber) { merged.push(prNumber); return `sha-${prNumber}`; },

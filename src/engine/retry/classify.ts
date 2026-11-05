@@ -1,8 +1,7 @@
 /**
  * Infra vs agent failure, classified from STRUCTURED signals only: the
- * runtime's error-event `code` (iroh-wrapper-provider.ts / letta-code-subagent-
- * provider.ts) plus whether the agent had produced any output. Never from the
- * free-text message.
+ * runtime's error-event `code` (iroh-wrapper-provider.ts) plus whether the
+ * agent had produced any output. Never from the free-text message.
  *
  *   code                                              kind
  *   ------------------------------------------------  ---------------------------------

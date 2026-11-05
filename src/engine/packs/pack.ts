@@ -34,7 +34,7 @@ export type PackScope = 'project' | 'agent' | 'global';
 /**
  * One core-memory block carried by a role. Mirrors letta's
  * `Block` shape (label + value, optional limit) so the seeder can
- * forward into `@letta-ai/letta-client` without translation.
+ * forward to the role agent without translation.
  */
 export interface MemoryBlock {
   readonly label: string;

@@ -5,7 +5,6 @@ import { bootOrchestrationPlane, releaseDoltAfterFailedBoot } from '../../../src
 import { InMemoryDoltClient, inMemoryBeads } from '../../_fixtures/in-memory-dolt-client.js';
 import { FakeIrohWrapper } from '../../_fixtures/fake-iroh-wrapper.js';
 import { IrohConnection } from '../../../src/engine/runtime/iroh/connection.js';
-import { WorkActivityReporter } from '../../../src/engine/events/index.js';
 
 describe('bootOrchestrationPlane', () => {
   it('rejects identity mismatch before schema checks or runtime startup', async () => {
@@ -53,14 +52,11 @@ describe('bootOrchestrationPlane', () => {
   });
 
   it('returns a wired orchestration handle', async () => {
-    // vibesync-ryhc: the work-activity reporter wires an extra bus subscriber
-    // when a shim URL is present in the environment (true on CI runners).
-    // Disable it explicitly — this test asserts the BASELINE wiring.
-    process.env['VIBESYNC_WORK_ACTIVITY_REPORT'] = '0';
     const handle = await bootForTest();
 
     expect(handle.dispatcher).toBeDefined();
-    expect(handle.provider.kind).toBe('letta-code-subagent');
+    // vibesync-9lzk.29: Iroh is the only provider, so it is the default.
+    expect(handle.provider.kind).toBe('letta-code-iroh');
     // One subscriber wired by default: the writeback hook (vibesync-0xo).
     // Detaches on shutdown — see the assertion after shutdown below.
     expect(handle.bus.subscriberCount()).toBe(1);
@@ -78,9 +74,14 @@ describe('bootOrchestrationPlane', () => {
     expect(handle.bus.subscriberCount()).toBe(0);
   });
 
-  it('rejects the removed letta-teams provider kind', async () => {
-    await expect(bootForTest({ VIBESYNC_ORCHESTRATION_PROVIDER: 'letta-teams' })).rejects.toThrow('Letta Teams was removed');
-  });
+  // vibesync-9lzk.29: the removed providers are configuration errors at boot.
+  for (const removed of ['letta-code-subagent', 'letta-teams', 'bogus']) {
+    it(`rejects VIBESYNC_ORCHESTRATION_PROVIDER=${removed} at boot`, async () => {
+      await expect(bootForTest({ VIBESYNC_ORCHESTRATION_PROVIDER: removed })).rejects.toThrow(
+        `Unsupported orchestration provider "${removed}": letta-code-iroh is the only provider`,
+      );
+    });
+  }
 
   it('boots with provider routing even when the global default parent env is absent', async () => {
     const handle = await bootForTest(
@@ -88,21 +89,15 @@ describe('bootOrchestrationPlane', () => {
       {
         providerRouting: {
           store: {
-            getProjectProviderRouting(projectIdentifier) {
-              if (projectIdentifier !== 'vibesync') return null;
-              return {
-                lettaBaseUrl: 'http://shim:8291',
-                providerKind: 'letta-code-subagent',
-                parentAgentId: 'agent-project-parent',
-              };
-            },
+            getProjectProviderRouting: (id) => (id === 'vibesync' ? { providerKind: 'letta-code-iroh', parentAgentId: 'agent-project-parent' } : null),
           },
         },
       },
     );
-
-    expect(handle.provider.kind).toBe('letta-code-subagent');
-
+    // No env parent: the default provider is a fail-at-start stand-in, and
+    // routed projects still dispatch.
+    expect(handle.provider.kind).toBe('letta-code-iroh');
+    await expect(handle.provider.start({ role: 'r' })).rejects.toThrow('requires VIBESYNC_LETTA_CODE_PARENT_AGENT_ID');
     await handle.shutdown();
   });
 
@@ -111,10 +106,10 @@ describe('bootOrchestrationPlane', () => {
     const irohFactory = (fake: FakeIrohWrapper) => () =>
       new IrohConnection({ dial: fake.dial, peerName: 'boot-test', sleep: async () => undefined, backoff: { initialMs: 1, capMs: 2, maxAttempts: 2 } });
 
-    it('VIBESYNC_ORCHESTRATION_PROVIDER=letta-code-iroh boots an Iroh provider (no shim URL needed), nothing dialed at boot', async () => {
+    it('an explicit VIBESYNC_ORCHESTRATION_PROVIDER=letta-code-iroh boots an Iroh provider, nothing dialed at boot', async () => {
       const fake = new FakeIrohWrapper();
       const handle = await bootForTest(
-        { VIBESYNC_ORCHESTRATION_PROVIDER: 'letta-code-iroh', VIBESYNC_LETTA_CODE_SHIM_URL: '' },
+        { VIBESYNC_ORCHESTRATION_PROVIDER: 'letta-code-iroh' },
         { irohConnectionFactory: irohFactory(fake) },
       );
       expect(handle.provider.kind).toBe('letta-code-iroh');
@@ -140,32 +135,6 @@ describe('bootOrchestrationPlane', () => {
       await handle.shutdown();
     });
 
-    it('does NOT construct the WorkActivityReporter (it targets the retired shim) even if a shim URL is set', async () => {
-      const start = vi.spyOn(WorkActivityReporter.prototype, 'start');
-      try {
-        const handle = await bootForTest(
-          { VIBESYNC_ORCHESTRATION_PROVIDER: 'letta-code-iroh', VIBESYNC_LETTA_CODE_SHIM_URL: 'http://127.0.0.1:8291', VIBESYNC_WORK_ACTIVITY_REPORT: '1' },
-          { irohConnectionFactory: irohFactory(new FakeIrohWrapper()) },
-        );
-        expect(start).not.toHaveBeenCalled();
-        await handle.shutdown();
-      } finally {
-        start.mockRestore();
-      }
-    });
-
-    it('letta-code-subagent still constructs the reporter when the shim URL is set (default unchanged)', async () => {
-      const start = vi.spyOn(WorkActivityReporter.prototype, 'start').mockImplementation(() => undefined);
-      try {
-        const handle = await bootForTest({ VIBESYNC_WORK_ACTIVITY_REPORT: '1' });
-        expect(handle.provider.kind).toBe('letta-code-subagent');
-        expect(start).toHaveBeenCalledTimes(1);
-        await handle.shutdown();
-      } finally {
-        start.mockRestore();
-      }
-    });
-
     it('fails loudly at boot when the parent agent id is missing and no routing exists', async () => {
       await expect(
         bootForTest({ VIBESYNC_ORCHESTRATION_PROVIDER: 'letta-code-iroh', VIBESYNC_LETTA_CODE_PARENT_AGENT_ID: '' }, { irohConnectionFactory: irohFactory(new FakeIrohWrapper()) }),
@@ -181,7 +150,7 @@ describe('bootOrchestrationPlane', () => {
           irohConnectionFactory: irohFactory(fake),
           providerRouting: {
             store: {
-              getProjectProviderRouting: (id) => (id === 'p1' ? { lettaBaseUrl: null, providerKind: 'letta-code-iroh', parentAgentId: 'agent-project-parent' } : null),
+              getProjectProviderRouting: (id) => (id === 'p1' ? { providerKind: 'letta-code-iroh', parentAgentId: 'agent-project-parent' } : null),
             },
             roleAgentLookup: {
               getRoleAgent: (project, role) => {
@@ -211,44 +180,34 @@ describe('bootOrchestrationPlane', () => {
       await handle.shutdown();
     });
 
-    it('still rejects unknown provider kinds', async () => {
-      await expect(bootForTest({ VIBESYNC_ORCHESTRATION_PROVIDER: 'bogus' })).rejects.toThrow('Unsupported orchestration provider');
+    // vibesync-9lzk.29: production still held letta-code-subagent rows for
+    // letta-mobile and letta-code-parallel (the dead :8291 shim). Through the
+    // real dispatcher, such a run must fail before any molecule is cooked,
+    // naming the stale row, never silently running on the default provider.
+    it('a stale letta-code-subagent routing row fails the run loudly and cooks no molecule', async () => {
+      const fake = new FakeIrohWrapper({ scope: ['agent-parent'] });
+      const handle = await bootForTest(
+        {},
+        {
+          irohConnectionFactory: irohFactory(fake),
+          providerRouting: {
+            store: {
+              getProjectProviderRouting: (id) => (id === 'letta-mobile' ? { providerKind: 'letta-code-subagent', parentAgentId: 'agent-pm' } : null),
+            },
+          },
+        },
+      );
+      const formula = { name: 'f', description: '', whenToUse: '', steps: [{ name: 's', role: 'r', promptTemplate: 'p.md' }] };
+      const pack = { manifest: { name: 'p', version: '1' }, root: '/', scope: 'global' as const, roles: [{ name: 'r', memoryBlocks: [] }], formulas: [] };
+      await expect(handle.dispatcher.run({ formula, pack, input: 'go', projectIdentifier: 'letta-mobile' })).rejects.toThrow(
+        "project letta-mobile routes to provider_kind='letta-code-subagent', which was removed",
+      );
+      expect(await handle.walker.listMolecules({ limit: 10 })).toEqual([]);
+      expect(fake.dials).toBe(0);
+      await handle.shutdown();
     });
   });
 
-  it('wires roleAgentBootstrapper when all deps are present', async () => {
-    const fakeBootstrapper = {
-      async ensureRoleAgent() {
-        return { agentId: 'agent-test-role' } as never;
-      },
-    };
-    const handle = await bootForTest(
-      {},
-      {
-        providerRouting: {
-          store: {
-            getProjectProviderRouting(projectIdentifier) {
-              if (projectIdentifier !== 'test-project') return null;
-              return {
-                lettaBaseUrl: 'http://shim:8291',
-                providerKind: 'letta-code-subagent',
-                parentAgentId: 'agent-project-parent',
-              };
-            },
-          },
-          roleAgentBootstrapper: fakeBootstrapper,
-          packDirsByProject: { 'test-project': '/packs/test' },
-          storageDirsByProject: { 'test-project': '/storage/test' },
-        },
-      },
-    );
-
-    expect(handle.dispatcher).toBeDefined();
-    // The dispatcher should have a roleAgentContextResolver wired
-    expect((handle.dispatcher as never as { roleAgentContextResolver?: unknown }).roleAgentContextResolver).toBeDefined();
-
-    await handle.shutdown();
-  });
 });
 
 async function bootForTest(
@@ -258,17 +217,12 @@ async function bootForTest(
   const previousApiKey = process.env.LETTA_API_KEY;
   const previousPassword = process.env.LETTA_PASSWORD;
   const previousProvider = process.env.VIBESYNC_ORCHESTRATION_PROVIDER;
-  const previousShim = process.env.VIBESYNC_LETTA_CODE_SHIM_URL;
   const previousParent = process.env.VIBESYNC_LETTA_CODE_PARENT_AGENT_ID;
-  const previousReport = process.env.VIBESYNC_WORK_ACTIVITY_REPORT;
   process.env.LETTA_API_KEY = 'test-key';
   delete process.env.LETTA_PASSWORD;
   delete process.env.VIBESYNC_ORCHESTRATION_PROVIDER;
-  delete process.env.VIBESYNC_LETTA_CODE_SHIM_URL;
   delete process.env.VIBESYNC_LETTA_CODE_PARENT_AGENT_ID;
   Object.assign(process.env, {
-    VIBESYNC_ORCHESTRATION_PROVIDER: 'letta-code-subagent',
-    VIBESYNC_LETTA_CODE_SHIM_URL: 'http://shim:8291',
     VIBESYNC_LETTA_CODE_PARENT_AGENT_ID: 'agent-parent',
     ...env,
   });
@@ -277,6 +231,8 @@ async function bootForTest(
       ...inMemoryBeads(),
       persistEvents: false,
       runDriftAuditOnBoot: false,
+      // Never dial a real Iroh host from a unit test.
+      irohConnectionFactory: () => new IrohConnection({ dial: new FakeIrohWrapper().dial, peerName: 'boot-test', sleep: async () => undefined, backoff: { initialMs: 1, capMs: 2, maxAttempts: 2 } }),
       ...opts,
     });
   } finally {
@@ -286,11 +242,7 @@ async function bootForTest(
     else process.env.LETTA_PASSWORD = previousPassword;
     if (previousProvider === undefined) delete process.env.VIBESYNC_ORCHESTRATION_PROVIDER;
     else process.env.VIBESYNC_ORCHESTRATION_PROVIDER = previousProvider;
-    if (previousShim === undefined) delete process.env.VIBESYNC_LETTA_CODE_SHIM_URL;
-    else process.env.VIBESYNC_LETTA_CODE_SHIM_URL = previousShim;
     if (previousParent === undefined) delete process.env.VIBESYNC_LETTA_CODE_PARENT_AGENT_ID;
     else process.env.VIBESYNC_LETTA_CODE_PARENT_AGENT_ID = previousParent;
-    if (previousReport === undefined) delete process.env.VIBESYNC_WORK_ACTIVITY_REPORT;
-    else process.env.VIBESYNC_WORK_ACTIVITY_REPORT = previousReport;
   }
 }

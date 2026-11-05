@@ -12,7 +12,7 @@ import {
 } from '../../../../src/engine/scheduler/witness.js';
 import type { PoolSlotView } from '../../../../src/engine/scheduler/agent-pool.js';
 
-const IDENT = { agentId: 'a0', role: 'coder', lettaBaseUrl: 'http://x' };
+const IDENT = { agentId: 'a0', role: 'coder' };
 
 function workingView(slotId: string, workBeadId: string, allocatedAt = new Date('2026-07-18T00:00:00Z')): PoolSlotView {
   return { slotId, identity: IDENT, state: 'working', session: { workBeadId, allocatedAt } };
