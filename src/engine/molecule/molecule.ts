@@ -114,10 +114,11 @@ export interface MoleculeStore {
   markStepRunning(stepId: string): Promise<void>;
   recordStepTask(stepId: string, task: {
     /**
-     * Provider-opaque task id for restart re-attachment (f5g).
-     * Optional because a provider may not have a task id at prompt()
-     * return time; the dispatcher then persists conversation_id alone
-     * and the resume path falls back to conversation re-attachment.
+     * Provider-opaque task id for restart re-attachment (f5g). Optional:
+     * the Iroh provider reports only a conversation id, so its steps carry
+     * no task id. `FormulaDispatcher.resume` needs a task id and fails a
+     * running step without one; on restart, boot instead closes interrupted
+     * molecules and the scheduler re-runs the work (vibesync-9lzk.9).
      */
     readonly taskId?: string;
     readonly providerKind: string;

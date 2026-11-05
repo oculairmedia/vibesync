@@ -406,14 +406,26 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
 }
 
 /**
- * vibesync-9lzk.29: Iroh is the only runtime provider. The variable may be
- * unset or `letta-code-iroh`; any other value (the removed admin-shim and
- * Teams providers) is a configuration error, reported at boot.
+ * VIBESYNC_ORCHESTRATION_PROVIDER names a provider that does not exist. A
+ * configuration error, not a transient one: retrying cannot fix it, so the
+ * service must exit instead of starting with orchestration off.
  */
-function assertProviderKind(): void {
+export class UnsupportedProviderError extends Error {
+  constructor(readonly providerKind: string) {
+    super(`Unsupported orchestration provider "${providerKind}": ${IROH_PROVIDER_KIND} is the only provider. Unset VIBESYNC_ORCHESTRATION_PROVIDER or set it to ${IROH_PROVIDER_KIND}.`);
+    this.name = 'UnsupportedProviderError';
+  }
+}
+
+/**
+ * vibesync-9lzk.29: Iroh is the only runtime provider. The variable must be
+ * unset or exactly `letta-code-iroh`; anything else (the removed admin-shim and
+ * Teams providers, or an empty value) throws UnsupportedProviderError.
+ */
+export function assertProviderKind(): void {
   const providerKind = process.env['VIBESYNC_ORCHESTRATION_PROVIDER'];
   if (providerKind !== undefined && providerKind !== IROH_PROVIDER_KIND) {
-    throw new Error(`Unsupported orchestration provider "${providerKind}": ${IROH_PROVIDER_KIND} is the only provider. Unset VIBESYNC_ORCHESTRATION_PROVIDER or set it to ${IROH_PROVIDER_KIND}.`);
+    throw new UnsupportedProviderError(providerKind);
   }
 }
 
