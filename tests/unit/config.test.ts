@@ -95,6 +95,10 @@ describe('config', () => {
         process.env[key] = '30000junk';
         expect(() => loadConfig(), key).toThrow('Config validation failed');
       }
+      process.env.VIBESYNC_SCHEDULER_INTERVAL_MS = '30000';
+      process.env.VIBESYNC_SCHEDULER_POOL_SIZE = '1';
+      process.env.VIBESYNC_SCHEDULER_BATCH_SIZE = '1';
+      expect(loadConfig().scheduler).toMatchObject({ intervalMs: 30000, poolSize: 1, batchSize: 1 });
       process.env.VIBESYNC_SCHEDULER_INTERVAL_MS = '45000';
       process.env.VIBESYNC_SCHEDULER_POOL_SIZE = '3';
       process.env.VIBESYNC_SCHEDULER_BATCH_SIZE = '2';

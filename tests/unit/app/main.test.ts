@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { parseShutdownGraceMs } from '../../../src/app/main.js';
+import { parseShutdownGraceMs } from '../../../src/app/shutdown-grace.js';
 
 describe('parseShutdownGraceMs', () => {
   it('accepts a non-negative integer', () => {
