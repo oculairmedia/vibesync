@@ -21,13 +21,34 @@ export VIBESYNC_DB_PATH="$WORK/registry.db"
 export VIBESYNC_PORT_SWEEP_INTERVAL_MS=0
 export LOG_LEVEL="${LOG_LEVEL:-info}"
 
+# Something else answering on this port would make a broken boot look healthy.
+if curl -fsS --max-time 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+  echo "boot-check: FAIL - port $PORT already serves /health before launch; pick a free BOOT_CHECK_PORT" >&2
+  exit 1
+fi
+
 bun src/index.ts >"$LOG" 2>&1 &
 PID=$!
 cleanup() { kill "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true; rm -rf "$WORK"; }
 trap cleanup EXIT
 
 for ((i = 1; i <= BUDGET_S; i++)); do
-  if curl -fsS "http://127.0.0.1:$PORT/health" >"$WORK/health.json" 2>/dev/null; then
+  # --max-time: a server that accepts but never answers must not hang the loop.
+  if curl -fsS --max-time 3 "http://127.0.0.1:$PORT/health" >"$WORK/health.json" 2>/dev/null; then
+    # The answer must come from the process we started, not from a server
+    # that grabbed the port after the pre-launch check.
+    if ! kill -0 "$PID" 2>/dev/null; then
+      echo "boot-check: FAIL - /health answered but the launched process is gone" >&2
+      tail -40 "$LOG" >&2
+      exit 1
+    fi
+    # Matches both log formats: pino JSON ("msg":"API server running") and
+    # pino-pretty text ("INFO: ... API server running").
+    if ! grep -q 'API server running' "$LOG"; then
+      echo "boot-check: FAIL - /health answered but the launched process never logged 'API server running'" >&2
+      tail -40 "$LOG" >&2
+      exit 1
+    fi
     echo "boot-check: /health answered after ${i}s: $(cat "$WORK/health.json")"
     exit 0
   fi
