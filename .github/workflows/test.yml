@@ -29,6 +29,25 @@ jobs:
       - name: Type check (tsc --noEmit)
         run: npm run type-check
 
+  # vibesync-9lzk.28: boot the REAL entry point (bun src/index.ts, what
+  # vibesync.service runs) and require /health to answer. Unit tests never
+  # start the process: PR #84 passed typecheck, 981 tests and CI while its
+  # main.ts change meant the service would start and do nothing.
+  boot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        # Same install as the typecheck job (see there for why scripts are skipped).
+        run: |
+          bun install --frozen-lockfile --ignore-scripts
+          npm rebuild better-sqlite3
+      - name: Boot check (bun src/index.ts answers /health)
+        run: scripts/ci/boot-check.sh 60
+
   test:
     runs-on: ubuntu-latest
 
