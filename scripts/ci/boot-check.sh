@@ -32,7 +32,11 @@ PID=$!
 cleanup() { kill "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true; rm -rf "$WORK"; }
 trap cleanup EXIT
 
-for ((i = 1; i <= BUDGET_S; i++)); do
+# A wall-clock deadline, not an attempt count: stalled probes take up to
+# --max-time each, so counting iterations would let the check overrun.
+START=$SECONDS
+while (( SECONDS - START < BUDGET_S )); do
+  i=$(( SECONDS - START ))
   # --max-time: a server that accepts but never answers must not hang the loop.
   if curl -fsS --max-time 3 "http://127.0.0.1:$PORT/health" >"$WORK/health.json" 2>/dev/null; then
     # The answer must come from the process we started, not from a server
