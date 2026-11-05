@@ -19,6 +19,9 @@ export const STEP_OUTCOME_INSTRUCTIONS = [
   'If you cannot complete this step (missing input, unsafe state, unclear request,',
   'or anything that should stop the steps after you), say why, then end your reply',
   `with exactly one final line: ${BLOCKED_MARKER} - <one-line reason>`,
+  'Before using that line because a command failed, rerun the failing check by itself',
+  'from your work worktree (not /); confirm it is an environment failure, not your command,',
+  'and quote the proving command and its output in your reason.',
   'Do not write that line if you completed the step.',
 ].join('\n');
 
