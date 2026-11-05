@@ -93,6 +93,10 @@ export class FakeIrohWrapper {
   readonly received: F[] = [];
   readonly violations: string[] = [];
   turnsExecuted = 0;
+  /** Conversations a turn was aborted on (real host: abort_message ends the running turn). */
+  readonly aborted: string[] = [];
+  /** Answer abort_message with success:false and this error (e.g. a host that refuses). */
+  rejectAbort: string | null = null;
 
   private convCounter = 0;
   private readonly runtimes = new Set<string>();
@@ -272,6 +276,8 @@ export class FakeIrohWrapper {
       }
       case 'input':
         return this.onInput(l, f);
+      case 'abort_message':
+        return this.onAbort(l, f);
       default:
         return this.reply(l, { type: 'error', request_id: rid, error: `unknown frame ${String(f['type'])}` });
     }
@@ -346,6 +352,28 @@ export class FakeIrohWrapper {
       return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: true, result: { messages: out } });
     }
     return this.reply(l, { type: 'admin_rpc_response', request_id: rid, success: false, error: `method not found: ${String(method)}` });
+  }
+
+  /**
+   * Real host contract (letta-mobile IrohNodeConnection.handleAbort): request_id
+   * is required; the answer is abort_message_response { request_id, runtime,
+   * aborted, success, error? }. An aborted turn ends with turn_finished
+   * stop_reason "cancelled".
+   */
+  private onAbort(l: { control: Queue; dead: boolean }, f: F): void {
+    const rid = f['request_id'];
+    const rt = (f['runtime'] ?? {}) as F;
+    if (typeof rid !== 'string') {
+      return this.reply(l, { type: 'abort_message_response', success: false, error: 'request_id is required' });
+    }
+    if (this.rejectAbort) {
+      return this.reply(l, { type: 'abort_message_response', request_id: rid, runtime: rt, aborted: false, success: false, error: this.rejectAbort });
+    }
+    const conv = String(rt['conversation_id']);
+    this.aborted.push(conv);
+    this.reply(l, { type: 'abort_message_response', request_id: rid, runtime: rt, aborted: true, success: true });
+    const terminal = { type: 'turn_finished', runtime: rt, conversation_id: conv, stop_reason: 'cancelled', turn_id: `turn-abort-${conv}` };
+    for (const lk of this.links) if (!lk.dead && lk.authed) for (const c of encodeFrameParts(JSON.stringify(terminal))) lk.stream.push(c);
   }
 
   private onInput(l: { control: Queue; dead: boolean }, f: F): void {
