@@ -34,16 +34,23 @@ passes:
   reviewer". Neither the reviewer nor the coder can waive a gate; only the task
   can.
 - A grep gate that must "return nothing" fails if it prints any line.
-- If a gate cannot run (missing tool, build error), the result is
-  INCONCLUSIVE, never PASS.
+- A gate passes when its command exits 0. Many tools print nothing on success
+  (`tsc --noEmit` prints nothing): silence plus exit code 0 is a pass, not a
+  missing result. Check `echo $?`, or chain with `&&`.
+- INCONCLUSIVE is only for a gate that genuinely cannot run (missing tool,
+  build error). "I have not run it yet" is not inconclusive: run it. Never
+  block on a gate you could have executed.
 - Report numbers read from the tool's own output (for vitest, the JSON
-  report), not estimated.
+  report), not estimated. In vitest's JSON report skipped tests are
+  `numPendingTests`; there is no `numSkippedTests`.
 - Run every gate yourself, including mutation gates ("this test must fail
   without the change"). A gate the coder or reviewer says already passed is
   not a gate you ran: rerun it. "Reported as passing in the handoff" is never a
   result. Do a mutation by copying the file aside, making the change, running
   the test, and restoring the copy byte for byte (never `git stash`: this repo
   has unrelated stashes). Report what you changed and what the test did.
+  A mutation gate you did not perform is a gate you must perform now, not a
+  reason to block.
 - A FAIL or INCONCLUSIVE result must stop the run: after your report, end your
   reply with the exact final line `STEP OUTCOME: BLOCKED - <which gate failed>`.
 
