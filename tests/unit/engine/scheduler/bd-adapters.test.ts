@@ -139,6 +139,22 @@ describe('GhCliGitHubPort', () => {
     expect(calls.at(-1)).toEqual(expect.arrayContaining(['pr', 'merge', '--match-head-commit', 'abc123']));
     await expect(port.merge('o/r', 99)).rejects.toThrow('no verified head sha');
   });
+
+  it('fails closed on malformed deleted-file counts and accepts zero or positive counts', async () => {
+    let deletedCount = 'not-a-count';
+    const port = new GhCliGitHubPort(async (args) => {
+      if (args[0] === 'pr' && args[1] === 'view') {
+        return JSON.stringify({ mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', headRefOid: 'abc', statusCheckRollup: [] });
+      }
+      return `${deletedCount}\n`;
+    }, ['o/r']);
+
+    await expect(port.fetchFacts('o/r', 17, [])).rejects.toThrow('o/r#17');
+    deletedCount = '0';
+    await expect(port.fetchFacts('o/r', 17, [])).resolves.toMatchObject({ deletedFiles: 0 });
+    deletedCount = '3';
+    await expect(port.fetchFacts('o/r', 17, [])).resolves.toMatchObject({ deletedFiles: 3 });
+  });
 });
 
 // vibesync-5c8y: the side-effect boundary refuses repos outside the allowlist

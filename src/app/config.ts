@@ -45,13 +45,13 @@ export function loadConfig(): AppConfig {
       // vibesync-z2ws: SchedulerDaemon activation. OFF unless explicitly enabled.
       enabled: process.env.VIBESYNC_SCHEDULER_ENABLED === 'true',
       projectIdentifier: process.env.VIBESYNC_SCHEDULER_PROJECT || '',
-      intervalMs: parseInt(process.env.VIBESYNC_SCHEDULER_INTERVAL_MS || '30000', 10),
+      intervalMs: parseStrictInt(process.env.VIBESYNC_SCHEDULER_INTERVAL_MS, 30000),
       // vibesync-p489: min spacing between event-triggered ticks.
       eventDebounceMs: parseStrictInt(process.env.VIBESYNC_SCHEDULER_EVENT_DEBOUNCE_MS, 5000),
       // vibesync-izn3: wall-clock budget for a started run; 0 = no deadline.
       runDeadlineMs: parseStrictInt(process.env.VIBESYNC_SCHEDULER_RUN_DEADLINE_MS, 3_600_000),
-      poolSize: parseInt(process.env.VIBESYNC_SCHEDULER_POOL_SIZE || '1', 10),
-      batchSize: parseInt(process.env.VIBESYNC_SCHEDULER_BATCH_SIZE || '1', 10),
+      poolSize: parseStrictInt(process.env.VIBESYNC_SCHEDULER_POOL_SIZE, 1),
+      batchSize: parseStrictInt(process.env.VIBESYNC_SCHEDULER_BATCH_SIZE, 1),
       paused: process.env.VIBESYNC_SCHEDULER_PAUSED === 'true',
       readyLabel: process.env.VIBESYNC_SCHEDULER_READY_LABEL ?? 'scheduler:eligible',
       formula: process.env.VIBESYNC_SCHEDULER_FORMULA || 'onboard-feature',

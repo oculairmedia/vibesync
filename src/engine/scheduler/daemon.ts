@@ -583,6 +583,7 @@ export class SchedulerDaemon {
     const ready = await this.deps.readyBeads.readyWorkBeadIds();
     this.lastReadyIds = ready;
     for (const workBeadId of ready) {
+      if (this.stopping) break;
       const resolved = await this.deps.formulaResolver.resolve(workBeadId);
       if (!resolved) continue;
       await this.sling.scheduleBead({

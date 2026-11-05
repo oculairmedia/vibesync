@@ -85,6 +85,26 @@ describe('config', () => {
       });
     });
 
+    it('scheduler integer settings reject trailing junk but accept valid integers', () => {
+      const keys = [
+        'VIBESYNC_SCHEDULER_INTERVAL_MS',
+        'VIBESYNC_SCHEDULER_POOL_SIZE',
+        'VIBESYNC_SCHEDULER_BATCH_SIZE',
+      ];
+      for (const key of keys) {
+        process.env[key] = '30000junk';
+        expect(() => loadConfig(), key).toThrow('Config validation failed');
+      }
+      process.env.VIBESYNC_SCHEDULER_INTERVAL_MS = '30000';
+      process.env.VIBESYNC_SCHEDULER_POOL_SIZE = '1';
+      process.env.VIBESYNC_SCHEDULER_BATCH_SIZE = '1';
+      expect(loadConfig().scheduler).toMatchObject({ intervalMs: 30000, poolSize: 1, batchSize: 1 });
+      process.env.VIBESYNC_SCHEDULER_INTERVAL_MS = '45000';
+      process.env.VIBESYNC_SCHEDULER_POOL_SIZE = '3';
+      process.env.VIBESYNC_SCHEDULER_BATCH_SIZE = '2';
+      expect(loadConfig().scheduler).toMatchObject({ intervalMs: 45000, poolSize: 3, batchSize: 2 });
+    });
+
     it('VIBESYNC_SCHEDULER_EVENT_DEBOUNCE_MS maps through; the WHOLE string must be a non-negative integer (vibesync-p489)', () => {
       process.env.VIBESYNC_SCHEDULER_EVENT_DEBOUNCE_MS = '2500';
       expect(loadConfig().scheduler.eventDebounceMs).toBe(2500);

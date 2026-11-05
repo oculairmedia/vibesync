@@ -20,11 +20,15 @@ import { registryPmAgentLookup } from '../engine/pm-wake/waker.js';
 import { DoltClient, defaultDoltBootDeps } from '../engine/store/index.js';
 import { ProjectRegistry } from './registry/project-registry';
 import { resolveFromAppRoot } from './runtimePaths';
+import { parseShutdownGraceMs } from './shutdown-grace.js';
 import type { DoltHubProvisionerApi } from './types/api.js';
 
 const config = loadConfig();
 const DB_PATH = process.env.VIBESYNC_DB_PATH || resolveFromAppRoot('logs', 'sync-state.db');
-const SHUTDOWN_GRACE_MS = Number.parseInt(process.env['VIBESYNC_SHUTDOWN_GRACE_MS'] ?? '20000', 10);
+
+const SHUTDOWN_GRACE_MS = parseShutdownGraceMs(process.env['VIBESYNC_SHUTDOWN_GRACE_MS'], (variable, value) => {
+  logger.warn({ variable, value }, 'Invalid shutdown grace period; using default');
+});
 const MAX_BOOT_ATTEMPTS = Number.parseInt(process.env['ORCHESTRATION_BOOT_ATTEMPTS'] ?? '5', 10);
 
 function openRegistry(): Registry {
