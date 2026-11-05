@@ -9,7 +9,7 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   detectConflict,
   isEmbeddedBeadsProject,
@@ -290,7 +290,9 @@ describe('isEmbeddedBeadsProject', () => {
       const beadsPath = join(projectPath, '.beads');
       mkdirSync(join(beadsPath, 'embeddeddolt'), { recursive: true });
       writeFileSync(join(beadsPath, 'metadata.json'), JSON.stringify({ database: 'beads.db' }));
-      expect(isEmbeddedBeadsProject(projectPath)).toBe(true);
+      const onError = vi.fn();
+      expect(isEmbeddedBeadsProject(projectPath, onError)).toBe(true);
+      expect(onError).not.toHaveBeenCalled();
     } finally {
       rmSync(projectPath, { recursive: true, force: true });
     }
@@ -302,7 +304,9 @@ describe('isEmbeddedBeadsProject', () => {
       const beadsPath = join(projectPath, '.beads');
       mkdirSync(join(beadsPath, 'embeddeddolt'), { recursive: true });
       writeFileSync(join(beadsPath, 'metadata.json'), JSON.stringify({ dolt_mode: 'server' }));
-      expect(isEmbeddedBeadsProject(projectPath)).toBe(false);
+      const onError = vi.fn();
+      expect(isEmbeddedBeadsProject(projectPath, onError)).toBe(false);
+      expect(onError).not.toHaveBeenCalled();
     } finally {
       rmSync(projectPath, { recursive: true, force: true });
     }
@@ -311,7 +315,25 @@ describe('isEmbeddedBeadsProject', () => {
   it('does not classify projects without .beads as embedded', () => {
     const projectPath = mkdtempSync(join(tmpdir(), 'port-sweeper-'));
     try {
-      expect(isEmbeddedBeadsProject(projectPath)).toBe(false);
+      const onError = vi.fn();
+      expect(isEmbeddedBeadsProject(projectPath, onError)).toBe(false);
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      rmSync(projectPath, { recursive: true, force: true });
+    }
+  });
+
+  it('reports invalid metadata while treating the project as not embedded', () => {
+    const projectPath = mkdtempSync(join(tmpdir(), 'port-sweeper-'));
+    try {
+      const beadsPath = join(projectPath, '.beads');
+      mkdirSync(join(beadsPath, 'embeddeddolt'), { recursive: true });
+      writeFileSync(join(beadsPath, 'metadata.json'), '{ invalid json');
+      const onError = vi.fn();
+
+      expect(isEmbeddedBeadsProject(projectPath, onError)).toBe(false);
+      expect(onError).toHaveBeenCalledOnce();
+      expect(onError).toHaveBeenCalledWith(projectPath, expect.any(SyntaxError));
     } finally {
       rmSync(projectPath, { recursive: true, force: true });
     }

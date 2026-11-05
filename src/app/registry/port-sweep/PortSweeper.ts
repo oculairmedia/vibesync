@@ -133,14 +133,18 @@ export function readBeadsPortFromDisk(projectPath: string): number | null {
   }
 }
 
-export function isEmbeddedBeadsProject(projectPath: string): boolean {
+export function isEmbeddedBeadsProject(
+  projectPath: string,
+  onError?: (projectPath: string, error: unknown) => void,
+): boolean {
   const beadsPath = join(projectPath, '.beads');
   try {
     if (!existsSync(join(beadsPath, 'embeddeddolt'))) return false;
     const metadata: unknown = JSON.parse(readFileSync(join(beadsPath, 'metadata.json'), 'utf8'));
     if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata)) return false;
     return (metadata as { dolt_mode?: unknown }).dolt_mode !== 'server';
-  } catch {
+  } catch (error) {
+    onError?.(projectPath, error);
     return false;
   }
 }
@@ -196,7 +200,11 @@ async function defaultRunBd(
 
 export const defaultDeps: PortSweeperDeps = {
   readPort: readBeadsPortFromDisk,
-  isEmbedded: isEmbeddedBeadsProject,
+  isEmbedded: (projectPath) =>
+    isEmbeddedBeadsProject(projectPath, (failedPath, error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`Unable to read Beads metadata for ${failedPath}: ${message}`);
+    }),
   listeningPorts: listeningPortsFromSs,
   portOwnerCwd: portOwnerCwdFromProc,
   runBd: defaultRunBd,
