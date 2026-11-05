@@ -190,10 +190,38 @@ export class IrohWrapperProvider implements RuntimeProvider {
     const state = this.sessions.get(h.id);
     if (!state) return;
     state.stopped = true;
-    // The turn itself keeps running on the host (parked there); we only stop waiting.
     state.abort.abort();
     wakeAll(state);
     this.sessions.delete(h.id);
+    // vibesync-9lzk.36: stop the turn on the host too. Without this a cancelled
+    // or timed-out step keeps running (round 7: the mayor carried on for 30 min
+    // after its molecule was cancelled). Only a session that sent a prompt has
+    // a turn to end.
+    if (state.conversationId && state.promptCount > 0) await this.abortHostTurn(state);
+  }
+
+  /**
+   * Ask the host to end the step's running turn (`abort_message`). Never throws:
+   * stopping must still complete locally. A refused or failed abort is logged,
+   * since the turn may still be running on the host.
+   */
+  private async abortHostTurn(state: SessionState): Promise<void> {
+    const conversationId = state.conversationId!;
+    try {
+      await this.conn.connect();
+      const reply = await this.conn.request({
+        type: 'abort_message',
+        runtime: { agent_id: state.agentId, conversation_id: conversationId },
+      });
+      if (reply['success'] === true && reply['aborted'] === true) {
+        this.log(`iroh step turn aborted on the host (conv=${conversationId})`);
+      } else {
+        const why = typeof reply['error'] === 'string' && reply['error'] ? reply['error'] : `aborted=${String(reply['aborted'])}`;
+        this.log(`iroh step turn NOT confirmed aborted on the host (conv=${conversationId}): ${why}; it may still be running`);
+      }
+    } catch (err) {
+      this.log(`iroh step turn abort failed (conv=${conversationId}): ${errorMessage(err)}; it may still be running`);
+    }
   }
 
   async prompt(handle: SessionHandle, content: readonly ContentBlock[]): Promise<PromptResult> {

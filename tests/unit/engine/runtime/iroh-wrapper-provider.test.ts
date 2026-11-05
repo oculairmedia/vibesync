@@ -191,6 +191,59 @@ describe('IrohWrapperProvider', () => {
     expect(seen.at(-1)?.kind).toBe('stopped');
   });
 
+  // ───────────────────────── vibesync-9lzk.36: stop ends the host turn ─────────────────────────
+
+  describe('stop() ends the step turn on the host (vibesync-9lzk.36)', () => {
+    const stalled = (fake: FakeIrohWrapper): void => {
+      fake.script = { deltas: [], stallWith: [{ type: 'update_loop_status', loop_status: { status: 'PROCESSING_API_RESPONSE', active_run_ids: ['r'] } }] };
+    };
+
+    it('stopping a step mid-turn sends abort_message for that step\'s conversation, and the host ends the turn', async () => {
+      const fake = new FakeIrohWrapper({ scope: SCOPE });
+      stalled(fake);
+      const logs: string[] = [];
+      const p = mk(fake, { log: (m: string) => logs.push(m) });
+      const h = await p.start(baseSpec());
+      await p.prompt(h, [{ type: 'text', text: 'x' }]);
+      const obs = (async () => { for await (const _ of p.observe(h)) { /* drain */ } })();
+      await new Promise((r) => setTimeout(r, 30));
+      await p.stop(h);
+      await obs;
+      const aborts = fake.received.filter((f) => f['type'] === 'abort_message');
+      expect(aborts).toHaveLength(1);
+      const conv = String((aborts[0]!['runtime'] as Record<string, unknown>)['conversation_id']);
+      expect(aborts[0]!['runtime']).toMatchObject({ agent_id: ROLE_AGENT, conversation_id: conv });
+      expect(typeof aborts[0]!['request_id']).toBe('string');
+      expect(fake.aborted).toEqual([conv]);
+      expect(logs.some((m) => m.includes('aborted on the host'))).toBe(true);
+    });
+
+    it('a refused abort is logged loudly but stopping still completes', async () => {
+      const fake = new FakeIrohWrapper({ scope: SCOPE });
+      stalled(fake);
+      fake.rejectAbort = 'no active run';
+      const logs: string[] = [];
+      const p = mk(fake, { log: (m: string) => logs.push(m) });
+      const h = await p.start(baseSpec());
+      await p.prompt(h, [{ type: 'text', text: 'x' }]);
+      const seen: SessionEvent[] = [];
+      const obs = (async () => { for await (const e of p.observe(h)) seen.push(e); })();
+      await new Promise((r) => setTimeout(r, 30));
+      await expect(p.stop(h)).resolves.toBeUndefined();
+      await obs;
+      expect(seen.at(-1)?.kind).toBe('stopped');
+      expect(logs.some((m) => m.includes('NOT confirmed aborted') && m.includes('no active run'))).toBe(true);
+    });
+
+    it('a session that never sent a prompt has no turn to abort: no abort_message', async () => {
+      const fake = new FakeIrohWrapper({ scope: SCOPE });
+      const p = mk(fake);
+      const h = await p.start(baseSpec());
+      await p.stop(h);
+      expect(fake.received.filter((f) => f['type'] === 'abort_message')).toHaveLength(0);
+    });
+  });
+
   // ───────────────────────── vibesync-jni4: direct role dispatch ─────────────────────────
 
   describe('direct dispatch to the role agent (vibesync-jni4)', () => {
