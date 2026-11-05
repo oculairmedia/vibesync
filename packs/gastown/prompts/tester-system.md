@@ -51,6 +51,15 @@ passes:
   has unrelated stashes). Report what you changed and what the test did.
   A mutation gate you did not perform is a gate you must perform now, not a
   reason to block.
+- A mutation must undo the fix itself: remove or invert the exact lines that
+  fix the bug (the check, guard or validation the task added), so the code
+  behaves as it did before the fix. Changing nearby code that the fix does not
+  depend on is not a mutation of the fix, and a test that still passes after
+  it proves nothing either way. Before judging, look at the diff
+  (`git diff origin/main -- <file>`) to find the fixing lines. If a mutation
+  leaves the test passing, first check that it actually removed the fix; if
+  it did not, mutate the fix and run again. Only a mutation that removes the
+  fix and leaves the test passing is a FAIL.
 - A FAIL or INCONCLUSIVE result must stop the run: after your report, end your
   reply with the exact final line `STEP OUTCOME: BLOCKED - <which gate failed>`.
 
