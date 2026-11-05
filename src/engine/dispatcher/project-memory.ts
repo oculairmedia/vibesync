@@ -7,10 +7,14 @@
  * before each step and renders them into the prompt with an instruction to
  * write new ones back, so each run starts from what the last ones learned.
  *
- * Memory improves a step; it must never stop one. A read failure yields no
- * memory section and the step runs as before.
+ * Memory improves a step; it must never stop one. A read failure is reported
+ * (event `dispatcher/project-memory.read_failed`) and the step runs without
+ * memory: fail open, never fail silent.
  */
 import { parseJsonOutput, type CommandRunner } from '../beads/cli.js';
+
+/** Emitted when a step's project memory could not be read; the step runs without it. */
+export const PROJECT_MEMORY_READ_FAILED_EVENT = 'dispatcher/project-memory.read_failed';
 
 /** Only keys with this prefix are injected: codebase knowledge, not session notes. */
 export const PROJECT_MEMORY_PREFIX = 'codebase-';
@@ -36,18 +40,17 @@ export function createBdProjectMemorySource(bdFor: ProjectBdResolver): ProjectMe
       if (!projectIdentifier) return new Map();
       const bd = bdFor(projectIdentifier);
       if (!bd) return new Map();
-      try {
-        // parseJsonOutput tolerates warnings bd prints before its JSON.
-        const parsed = parseJsonOutput(await bd(['memories', '--json']), 'bd memories');
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return new Map();
-        const out = new Map<string, string>();
-        for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-          if (key.startsWith(PROJECT_MEMORY_PREFIX) && typeof value === 'string' && value.trim().length > 0) out.set(key, value.trim());
-        }
-        return new Map([...out.entries()].sort(([a], [b]) => a.localeCompare(b)));
-      } catch {
-        return new Map();
+      // Errors propagate: the dispatcher reports them and runs the step
+      // without memory. parseJsonOutput tolerates warnings bd prints first.
+      const parsed = parseJsonOutput(await bd(['memories', '--json']), 'bd memories');
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('bd memories: expected a JSON object of key -> content');
       }
+      const out = new Map<string, string>();
+      for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+        if (key.startsWith(PROJECT_MEMORY_PREFIX) && typeof value === 'string' && value.trim().length > 0) out.set(key, value.trim());
+      }
+      return new Map([...out.entries()].sort(([a], [b]) => a.localeCompare(b)));
     },
   };
 }

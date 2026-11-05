@@ -10,8 +10,8 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { createBdProjectMemorySource, PROJECT_MEMORY_PREFIX, renderProjectMemory } from '../../../../src/engine/dispatcher/index.js';
-import { EventBus } from '../../../../src/engine/events/index.js';
+import { createBdProjectMemorySource, PROJECT_MEMORY_PREFIX, PROJECT_MEMORY_READ_FAILED_EVENT, renderProjectMemory } from '../../../../src/engine/dispatcher/index.js';
+import { EventBus, type Event } from '../../../../src/engine/events/index.js';
 import type { Formula } from '../../../../src/engine/formula/index.js';
 import { MoleculeWalker } from '../../../../src/engine/molecule/index.js';
 import type { Pack } from '../../../../src/engine/packs/index.js';
@@ -105,16 +105,22 @@ describe('project memory in step prompts (vibesync-9lzk.25)', () => {
     expect(bd.calls.filter((c) => c[0] === 'memories')).toHaveLength(2);
   });
 
-  it('a memory read failure never stops a step: the step runs without the memory list', async () => {
+  it('a bd failure never stops a step, and is reported (fail open, not fail silent)', async () => {
     const store = new InMemoryDoltClient();
     const provider = newFakeProvider({ kind: 'fake', script: () => reply('done') });
+    const bus = new EventBus({ noPersist: true });
+    const events: Event[] = [];
+    bus.subscribe((e) => events.push(e));
     const failing = () => async () => { throw new Error('bd: Dolt server unreachable'); };
     const dispatcher = newDriven(store, {
-      idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }),
+      idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: bus,
       projectMemory: createBdProjectMemorySource(failing),
     });
     await expect(dispatcher.run({ formula: twoSteps, pack: pack(), input: 'go', projectIdentifier: 'vibesync' })).resolves.toBeDefined();
     for (const text of promptTexts(provider)) expect(text).toContain('No codebase notes yet.');
+    const failures = events.filter((e) => e.kind === PROJECT_MEMORY_READ_FAILED_EVENT);
+    expect(failures).toHaveLength(2); // one per step
+    expect(failures[0]?.payload).toMatchObject({ projectIdentifier: 'vibesync', stepName: 'coder', error: 'bd: Dolt server unreachable' });
   });
 
   it('REVIEW: a step for ANOTHER project gets that project\'s memories, never vibesync\'s', async () => {
@@ -141,15 +147,35 @@ describe('project memory in step prompts (vibesync-9lzk.25)', () => {
     expect(bd.calls).toHaveLength(0);
   });
 
-  it('REVIEW: an injected memory source that REJECTS never stops the step', async () => {
+  it('REVIEW: an injected memory source that REJECTS never stops the step, and the warning fires', async () => {
     const store = new InMemoryDoltClient();
     const provider = newFakeProvider({ kind: 'fake', script: () => reply('done') });
+    const bus = new EventBus({ noPersist: true });
+    const events: Event[] = [];
+    bus.subscribe((e) => events.push(e));
     const dispatcher = newDriven(store, {
-      idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }),
+      idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: bus,
       projectMemory: { read: async () => { throw new Error('memory backend down'); } },
     });
-    await expect(dispatcher.run({ formula: twoSteps, pack: pack(), input: 'go', projectIdentifier: 'vibesync' })).resolves.toBeDefined();
+    const result = await dispatcher.run({ formula: twoSteps, pack: pack(), input: 'go', projectIdentifier: 'vibesync' });
     expect(provider.recorder.starts.map((s) => s.role)).toEqual(['coder', 'reviewer']);
+    const failure = events.find((e) => e.kind === PROJECT_MEMORY_READ_FAILED_EVENT);
+    expect(failure).toMatchObject({ layer: 'dispatcher', molecule_id: result.moleculeId, payload: { projectIdentifier: 'vibesync', error: 'memory backend down' } });
+    expect(typeof failure?.task_id).toBe('string');
+  });
+
+  it('a successful read emits no failure event', async () => {
+    const store = new InMemoryDoltClient();
+    const provider = newFakeProvider({ kind: 'fake', script: () => reply('done') });
+    const bus = new EventBus({ noPersist: true });
+    const events: Event[] = [];
+    bus.subscribe((e) => events.push(e));
+    const dispatcher = newDriven(store, {
+      idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: bus,
+      projectMemory: createBdProjectMemorySource(() => fakeBd({ 'codebase-a': 'fine' })),
+    });
+    await dispatcher.run({ formula: twoSteps, pack: pack(), input: 'go', projectIdentifier: 'vibesync' });
+    expect(events.some((e) => e.kind === PROJECT_MEMORY_READ_FAILED_EVENT)).toBe(false);
   });
 
   it('no project memory configured -> prompts are unchanged (no memory section)', async () => {
@@ -180,6 +206,11 @@ describe('renderProjectMemory', () => {
     expect(text).toContain('codebase-b-short: fits');
     expect(text).not.toContain('codebase-a-huge');
     expect(text).toContain('(1 more not shown');
+  });
+
+  it('the source surfaces bd failures and non-object output as errors (the dispatcher reports them)', async () => {
+    await expect(createBdProjectMemorySource(() => async () => { throw new Error('bd exploded'); }).read('vibesync')).rejects.toThrow('bd exploded');
+    await expect(createBdProjectMemorySource(() => async () => '[]').read('vibesync')).rejects.toThrow('expected a JSON object');
   });
 
   it('ignores non-codebase keys and blank values from bd', async () => {
