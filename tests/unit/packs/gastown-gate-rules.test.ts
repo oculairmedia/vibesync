@@ -25,6 +25,12 @@ describe('gastown tester prompt', () => {
     expect(tester).toContain('not a\n  reason to block');
   });
 
+  it('a mutation must undo the fix itself, not nearby code (round 4 retry)', () => {
+    expect(tester).toContain('A mutation must undo the fix itself');
+    expect(tester).toContain('git diff origin/main -- <file>');
+    expect(tester).toContain('Only a mutation that removes the\n  fix and leaves the test passing is a FAIL');
+  });
+
   it('cannot waive a gate and stops the run on failure (trial 1)', () => {
     expect(tester).toContain('Neither the reviewer nor the coder can waive a gate');
     expect(tester).toContain('STEP OUTCOME: BLOCKED - <which gate failed>');
