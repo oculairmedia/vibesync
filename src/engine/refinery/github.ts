@@ -51,7 +51,11 @@ export class GhCliGitHubPort implements GitHubPort {
       'api', `repos/${repo}/pulls/${prNumber}/files`, '--paginate',
       '--jq', '[.[] | select(.status == "removed")] | length',
     ]);
-    const deletedFiles = removedOut.split(/\s+/).filter(Boolean).reduce((n, tok) => n + (Number.parseInt(tok, 10) || 0), 0);
+    const deletedFileTokens = removedOut.split(/\s+/).filter(Boolean);
+    if (deletedFileTokens.some((token) => !/^\d+$/.test(token))) {
+      throw new Error(`invalid deleted-files count for ${repo}#${prNumber}: ${JSON.stringify(removedOut)}`);
+    }
+    const deletedFiles = deletedFileTokens.reduce((n, token) => n + Number(token), 0);
 
     const requiredChecks: Record<string, string> = {};
     const rollup = Array.isArray(view['statusCheckRollup']) ? (view['statusCheckRollup'] as Row[]) : [];

@@ -4,6 +4,7 @@
  * and HTTP surface its consumers use. Canonical work state lives in Beads/Dolt.
  */
 import 'dotenv/config';
+import { pathToFileURL } from 'node:url';
 
 import { createApiServer } from './http/server';
 import { portSweepScope, sweepAll as sweepBeadsPorts } from './registry/port-sweep/PortSweeper.js';
@@ -24,7 +25,19 @@ import type { DoltHubProvisionerApi } from './types/api.js';
 
 const config = loadConfig();
 const DB_PATH = process.env.VIBESYNC_DB_PATH || resolveFromAppRoot('logs', 'sync-state.db');
-const SHUTDOWN_GRACE_MS = Number.parseInt(process.env['VIBESYNC_SHUTDOWN_GRACE_MS'] ?? '20000', 10);
+export function parseShutdownGraceMs(raw: string | undefined, warn: (variable: string, value: string) => void): number {
+  if (raw === undefined) return 20000;
+  if (/^\d+$/.test(raw)) {
+    const value = Number(raw);
+    if (Number.isSafeInteger(value)) return value;
+  }
+  warn('VIBESYNC_SHUTDOWN_GRACE_MS', raw);
+  return 20000;
+}
+
+const SHUTDOWN_GRACE_MS = parseShutdownGraceMs(process.env['VIBESYNC_SHUTDOWN_GRACE_MS'], (variable, value) => {
+  logger.warn({ variable, value }, 'Invalid shutdown grace period; using default');
+});
 const MAX_BOOT_ATTEMPTS = Number.parseInt(process.env['ORCHESTRATION_BOOT_ATTEMPTS'] ?? '5', 10);
 
 function openRegistry(): Registry {
@@ -200,7 +213,9 @@ async function main(): Promise<void> {
   createApiServer({ db, projectRegistry, doltHubProvisioner, orchestration });
 }
 
-main().catch((error: unknown) => {
-  logger.fatal({ err: error }, 'Fatal error, exiting');
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error: unknown) => {
+    logger.fatal({ err: error }, 'Fatal error, exiting');
+    process.exit(1);
+  });
+}

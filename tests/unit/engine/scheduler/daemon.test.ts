@@ -167,6 +167,46 @@ describe('SchedulerDaemon end-to-end (vibesync-63zx integration)', () => {
     await p;
     expect(reports).toEqual([1]);
   });
+
+  it('stop() during scheduleReady prevents scheduling remaining ready beads', async () => {
+    let startedResolve!: () => void;
+    let continueResolve!: () => void;
+    const started = new Promise<void>((resolve) => { startedResolve = resolve; });
+    const continueScheduling = new Promise<void>((resolve) => { continueResolve = resolve; });
+    const scheduled: string[] = [];
+    const contextStore: SlingContextStore = {
+      async createSlingContext(input) {
+        scheduled.push(input.tracksWorkBeadId);
+        return `ctx-${input.tracksWorkBeadId}`;
+      },
+      async listOpenSlingContexts() { return []; },
+      async closeSlingContext() {},
+    };
+    const { d } = deps({
+      formulaResolver: {
+        async resolve(workBeadId) {
+          if (workBeadId === 'w1') {
+            startedResolve();
+            await continueScheduling;
+          }
+          return { formula: { name: 'onboard' } as never, pack: { name: 'gastown' } as never, projectIdentifier: 'vibesync', input: workBeadId };
+        },
+      },
+      contextStore,
+      readyBeads: {
+        async readyWorkBeadIds() { return new Set(['w1', 'w2']); },
+        async metadataFor() { return { priority: 2, unblockCount: 0, files: [] }; },
+      },
+    });
+    const daemon = new SchedulerDaemon(d);
+
+    const tick = daemon.tick();
+    await started;
+    const stopping = daemon.stop();
+    continueResolve();
+    await Promise.all([tick, stopping]);
+    expect(scheduled).toEqual(['w1']);
+  });
 });
 
 // vibesync-5c8y: agent output must not be able to steer the refinery at an arbitrary repo.
