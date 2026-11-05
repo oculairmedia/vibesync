@@ -18,6 +18,13 @@ describe('gastown tester prompt', () => {
     expect(tester).toContain('"Reported as passing in the handoff" is never a');
     expect(tester).toContain('never `git stash`');
   });
+  it('treats exit code 0 as a pass and runs a gate rather than calling it inconclusive (round 4)', () => {
+    expect(tester).toContain('silence plus exit code 0 is a pass');
+    expect(tester).toContain('"I have not run it yet" is not inconclusive: run it');
+    expect(tester).toContain('`numPendingTests`');
+    expect(tester).toContain('not a\n  reason to block');
+  });
+
   it('cannot waive a gate and stops the run on failure (trial 1)', () => {
     expect(tester).toContain('Neither the reviewer nor the coder can waive a gate');
     expect(tester).toContain('STEP OUTCOME: BLOCKED - <which gate failed>');
