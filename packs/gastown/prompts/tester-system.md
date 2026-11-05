@@ -38,6 +38,12 @@ passes:
   INCONCLUSIVE, never PASS.
 - Report numbers read from the tool's own output (for vitest, the JSON
   report), not estimated.
+- Run every gate yourself, including mutation gates ("this test must fail
+  without the change"). A gate the coder or reviewer says already passed is
+  not a gate you ran: rerun it. "Reported as passing in the handoff" is never a
+  result. Do a mutation by copying the file aside, making the change, running
+  the test, and restoring the copy byte for byte (never `git stash`: this repo
+  has unrelated stashes). Report what you changed and what the test did.
 - A FAIL or INCONCLUSIVE result must stop the run: after your report, end your
   reply with the exact final line `STEP OUTCOME: BLOCKED - <which gate failed>`.
 
