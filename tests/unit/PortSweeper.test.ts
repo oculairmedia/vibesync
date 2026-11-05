@@ -323,6 +323,18 @@ describe('isEmbeddedBeadsProject', () => {
     }
   });
 
+  it('treats an embedded project with no metadata.json as not embedded, silently (a normal state, not an error)', () => {
+    const projectPath = mkdtempSync(join(tmpdir(), 'port-sweeper-'));
+    try {
+      mkdirSync(join(projectPath, '.beads', 'embeddeddolt'), { recursive: true });
+      const onError = vi.fn();
+      expect(isEmbeddedBeadsProject(projectPath, onError)).toBe(false);
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      rmSync(projectPath, { recursive: true, force: true });
+    }
+  });
+
   it('reports invalid metadata while treating the project as not embedded', () => {
     const projectPath = mkdtempSync(join(tmpdir(), 'port-sweeper-'));
     try {

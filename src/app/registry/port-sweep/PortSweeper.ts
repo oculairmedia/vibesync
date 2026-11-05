@@ -140,6 +140,9 @@ export function isEmbeddedBeadsProject(
   const beadsPath = join(projectPath, '.beads');
   try {
     if (!existsSync(join(beadsPath, 'embeddeddolt'))) return false;
+    // No metadata file is a normal state for some embedded projects, not a
+    // failure: report only a file that exists but cannot be read or parsed.
+    if (!existsSync(join(beadsPath, 'metadata.json'))) return false;
     const metadata: unknown = JSON.parse(readFileSync(join(beadsPath, 'metadata.json'), 'utf8'));
     if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata)) return false;
     return (metadata as { dolt_mode?: unknown }).dolt_mode !== 'server';
