@@ -10,7 +10,7 @@
  * Memory improves a step; it must never stop one. A read failure yields no
  * memory section and the step runs as before.
  */
-import type { CommandRunner } from '../beads/cli.js';
+import { parseJsonOutput, type CommandRunner } from '../beads/cli.js';
 
 /** Only keys with this prefix are injected: codebase knowledge, not session notes. */
 export const PROJECT_MEMORY_PREFIX = 'codebase-';
@@ -19,16 +19,26 @@ export const PROJECT_MEMORY_PREFIX = 'codebase-';
 const MAX_MEMORY_CHARS = 8_000;
 
 export interface ProjectMemorySource {
-  /** Current `codebase-*` memories, key -> content. Empty on any failure. */
-  read(): Promise<ReadonlyMap<string, string>>;
+  /**
+   * Current `codebase-*` memories of `projectIdentifier`, key -> content.
+   * Memories never cross projects: no or unknown project = empty.
+   */
+  read(projectIdentifier: string | undefined): Promise<ReadonlyMap<string, string>>;
 }
 
-/** Reads `bd memories --json` (a JSON object of key -> content) through the project's bd. */
-export function createBdProjectMemorySource(bd: CommandRunner): ProjectMemorySource {
+/** The project's bd, run in its checkout, or null when the project cannot be resolved. */
+export type ProjectBdResolver = (projectIdentifier: string) => CommandRunner | null;
+
+/** Reads `bd memories --json` (a JSON object of key -> content) through the step project's bd. */
+export function createBdProjectMemorySource(bdFor: ProjectBdResolver): ProjectMemorySource {
   return {
-    async read() {
+    async read(projectIdentifier) {
+      if (!projectIdentifier) return new Map();
+      const bd = bdFor(projectIdentifier);
+      if (!bd) return new Map();
       try {
-        const parsed = JSON.parse(await bd(['memories', '--json'])) as unknown;
+        // parseJsonOutput tolerates warnings bd prints before its JSON.
+        const parsed = parseJsonOutput(await bd(['memories', '--json']), 'bd memories');
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return new Map();
         const out = new Map<string, string>();
         for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
@@ -57,7 +67,9 @@ export function renderProjectMemory(memories: ReadonlyMap<string, string>): stri
     let shown = 0;
     for (const [key, value] of memories) {
       const entry = `- ${key}: ${value}`;
-      if (used + entry.length > MAX_MEMORY_CHARS) break;
+      // Skip what does not fit and keep going: one long entry must not hide
+      // every shorter one after it.
+      if (used + entry.length > MAX_MEMORY_CHARS) continue;
       lines.push(entry);
       used += entry.length;
       shown += 1;

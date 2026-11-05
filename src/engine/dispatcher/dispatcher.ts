@@ -648,6 +648,15 @@ export class FormulaDispatcher implements ReadyStepRunner {
     throw new FormulaDispatchError(`FormulaDispatcher: ${reason}`, moleculeId);
   }
 
+  /** Memory improves a step and must never stop one: any read failure is no memory. */
+  private async readProjectMemory(projectIdentifier: string | undefined): Promise<ReadonlyMap<string, string>> {
+    try {
+      return await this.projectMemory!.read(projectIdentifier);
+    } catch {
+      return new Map();
+    }
+  }
+
   private acquireMoleculeSlot(input: DispatchInput): Promise<void> {
     if (this.activeMolecules < this.maxConcurrentMolecules) {
       this.activeMolecules++;
@@ -830,7 +839,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
         step_id: args.step.id,
         attempt: state.attempt,
       },
-    }) + (this.projectMemory ? renderProjectMemory(await this.projectMemory.read()) : '') + STEP_OUTCOME_INSTRUCTIONS;
+    }) + (this.projectMemory ? renderProjectMemory(await this.readProjectMemory(args.input.projectIdentifier)) : '') + STEP_OUTCOME_INSTRUCTIONS;
 
     let failure: { readonly signal: FailureSignal; readonly error: unknown; readonly failureClass: string | null } | null = null;
     // Only the AGENT TURN is retryable. Anything after it succeeded (reading the

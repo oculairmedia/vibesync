@@ -1,5 +1,4 @@
 import {
-  createBdProjectMemorySource,
   createGhDeliveryVerifier,
   ghRepositoryTarget,
   type ProjectMemorySource,
@@ -98,7 +97,11 @@ export interface BootOrchestrationPlaneOptions {
    * `gh` CLI (the scheduler's gh runner when supplied, else `gh` on PATH).
    */
   readonly deliveryVerifier?: DeliveryVerifier;
-  /** Codebase memories injected into step prompts (vibesync-9lzk.25). Defaults to the project's `bd memories`. */
+  /**
+   * Codebase memories injected into step prompts (vibesync-9lzk.25), keyed by
+   * the step's project. Supplied by the app, which can resolve a project's
+   * checkout; absent = no memory section.
+   */
   readonly projectMemory?: ProjectMemorySource;
   /**
    * Durable wait-on-beads watcher (vibesync-9g24, invariant 4). Absent or
@@ -321,9 +324,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     ...(maxConcurrentMolecules === undefined ? {} : { maxConcurrentMolecules }),
     ...(providerResolver ? { providerResolver } : {}),
     ...(roleAgentContextResolver ? { roleAgentContextResolver } : {}),
-    projectMemory: opts.projectMemory ?? createBdProjectMemorySource(
-      opts.bd ?? createCliRunner({ binary: 'bd', cwd: opts.dolt.beadsRoot, env: { BEADS_DIR: `${opts.dolt.beadsRoot}/.beads` } }),
-    ),
+    ...(opts.projectMemory ? { projectMemory: opts.projectMemory } : {}),
     deliveryVerifier: opts.deliveryVerifier ?? (() => {
       // The scheduler's gh runs in the project checkout, so `gh repo view`
       // names the repository a run's PR must live in.

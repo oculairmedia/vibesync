@@ -68,9 +68,9 @@ describe('project memory in step prompts (vibesync-9lzk.25)', () => {
     const provider = newFakeProvider({ kind: 'fake', script: () => reply('done') });
     const dispatcher = newDriven(store, {
       idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }),
-      projectMemory: createBdProjectMemorySource(bd),
+      projectMemory: createBdProjectMemorySource((p) => (p === 'vibesync' ? bd : null)),
     });
-    await dispatcher.run({ formula: twoSteps, pack: pack(), input: 'go' });
+    await dispatcher.run({ formula: twoSteps, pack: pack(), input: 'go', projectIdentifier: 'vibesync' });
 
     const prompts = promptTexts(provider);
     expect(prompts).toHaveLength(2);
@@ -95,9 +95,9 @@ describe('project memory in step prompts (vibesync-9lzk.25)', () => {
     });
     const dispatcher = newDriven(store, {
       idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }),
-      projectMemory: createBdProjectMemorySource(bd),
+      projectMemory: createBdProjectMemorySource((p) => (p === 'vibesync' ? bd : null)),
     });
-    await dispatcher.run({ formula: twoSteps, pack: pack(), input: 'go' });
+    await dispatcher.run({ formula: twoSteps, pack: pack(), input: 'go', projectIdentifier: 'vibesync' });
 
     const [coderPrompt, reviewerPrompt] = promptTexts(provider);
     expect(coderPrompt).not.toContain('written by the coder step');
@@ -108,20 +108,55 @@ describe('project memory in step prompts (vibesync-9lzk.25)', () => {
   it('a memory read failure never stops a step: the step runs without the memory list', async () => {
     const store = new InMemoryDoltClient();
     const provider = newFakeProvider({ kind: 'fake', script: () => reply('done') });
-    const failing = async () => { throw new Error('bd: Dolt server unreachable'); };
+    const failing = () => async () => { throw new Error('bd: Dolt server unreachable'); };
     const dispatcher = newDriven(store, {
       idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }),
       projectMemory: createBdProjectMemorySource(failing),
     });
-    await expect(dispatcher.run({ formula: twoSteps, pack: pack(), input: 'go' })).resolves.toBeDefined();
+    await expect(dispatcher.run({ formula: twoSteps, pack: pack(), input: 'go', projectIdentifier: 'vibesync' })).resolves.toBeDefined();
     for (const text of promptTexts(provider)) expect(text).toContain('No codebase notes yet.');
+  });
+
+  it('REVIEW: a step for ANOTHER project gets that project\'s memories, never vibesync\'s', async () => {
+    const vibesyncBd = fakeBd({ 'codebase-vibesync-only': 'vibesync fact' });
+    const otherBd = fakeBd({ 'codebase-other-only': 'other project fact' });
+    const store = new InMemoryDoltClient();
+    const provider = newFakeProvider({ kind: 'fake', script: () => reply('done') });
+    const dispatcher = newDriven(store, {
+      idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }),
+      projectMemory: createBdProjectMemorySource((p) => ({ vibesync: vibesyncBd, other: otherBd } as Record<string, typeof vibesyncBd>)[p] ?? null),
+    });
+    await dispatcher.run({ formula: twoSteps, pack: pack(), input: 'go', projectIdentifier: 'other' });
+    for (const text of promptTexts(provider)) {
+      expect(text).toContain('codebase-other-only: other project fact');
+      expect(text).not.toContain('vibesync fact');
+    }
+  });
+
+  it('REVIEW: a step with no project, or an unknown one, gets no memories at all', async () => {
+    const bd = fakeBd({ 'codebase-x': 'must not leak' });
+    const src = createBdProjectMemorySource((p) => (p === 'vibesync' ? bd : null));
+    expect((await src.read(undefined)).size).toBe(0);
+    expect((await src.read('nope')).size).toBe(0);
+    expect(bd.calls).toHaveLength(0);
+  });
+
+  it('REVIEW: an injected memory source that REJECTS never stops the step', async () => {
+    const store = new InMemoryDoltClient();
+    const provider = newFakeProvider({ kind: 'fake', script: () => reply('done') });
+    const dispatcher = newDriven(store, {
+      idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }),
+      projectMemory: { read: async () => { throw new Error('memory backend down'); } },
+    });
+    await expect(dispatcher.run({ formula: twoSteps, pack: pack(), input: 'go', projectIdentifier: 'vibesync' })).resolves.toBeDefined();
+    expect(provider.recorder.starts.map((s) => s.role)).toEqual(['coder', 'reviewer']);
   });
 
   it('no project memory configured -> prompts are unchanged (no memory section)', async () => {
     const store = new InMemoryDoltClient();
     const provider = newFakeProvider({ kind: 'fake', script: () => reply('done') });
     const dispatcher = newDriven(store, { idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }) });
-    await dispatcher.run({ formula: twoSteps, pack: pack(), input: 'go' });
+    await dispatcher.run({ formula: twoSteps, pack: pack(), input: 'go', projectIdentifier: 'vibesync' });
     for (const text of promptTexts(provider)) expect(text).not.toContain('What this project has learned');
   });
 });
@@ -135,8 +170,20 @@ describe('renderProjectMemory', () => {
     expect(text).toContain(`(${60 - shown} more not shown`);
   });
 
+  it('REVIEW: tolerates text bd prints before its JSON (a warning line)', async () => {
+    const bd = async () => 'Warning: /opt/stacks/vibesync/.beads has permissions 0755 (recommended: 0700)\n{"codebase-a": "still read"}\n';
+    expect([...(await createBdProjectMemorySource(() => bd).read('vibesync')).entries()]).toEqual([['codebase-a', 'still read']]);
+  });
+
+  it('REVIEW: one oversized memory does not hide the shorter ones after it', () => {
+    const text = renderProjectMemory(new Map([['codebase-a-huge', 'x'.repeat(9_000)], ['codebase-b-short', 'fits']]));
+    expect(text).toContain('codebase-b-short: fits');
+    expect(text).not.toContain('codebase-a-huge');
+    expect(text).toContain('(1 more not shown');
+  });
+
   it('ignores non-codebase keys and blank values from bd', async () => {
-    const src = createBdProjectMemorySource(fakeBd({ 'codebase-a': 'kept', 'codebase-b': '   ', other: 'dropped' }));
-    expect([...(await src.read()).entries()]).toEqual([['codebase-a', 'kept']]);
+    const src = createBdProjectMemorySource(() => fakeBd({ 'codebase-a': 'kept', 'codebase-b': '   ', other: 'dropped' }));
+    expect([...(await src.read('vibesync')).entries()]).toEqual([['codebase-a', 'kept']]);
   });
 });

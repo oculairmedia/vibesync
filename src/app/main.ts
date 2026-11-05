@@ -13,6 +13,7 @@ import { createRegistry, type Registry } from './registry/registry';
 import { createDoltHubProvisioningService } from './registry/dolthub-provisioning.js';
 import { logger } from './logger';
 import { bootOrchestrationPlane, releaseDoltAfterFailedBoot, type OrchestrationHandle } from '../engine/boot.js';
+import { createBdProjectMemorySource } from '../engine/dispatcher/index.js';
 import { BdVersionTooOldError, probeBdVersion } from '../engine/bd-version.js';
 import { createCliRunner } from '../engine/scheduler/bd-adapters.js';
 import { registryPmAgentLookup } from '../engine/pm-wake/waker.js';
@@ -123,6 +124,13 @@ async function bootEngine(db: Registry): Promise<OrchestrationHandle | null> {
           gh: projectCli(db, 'gh', 'vibesync-scheduler'),
         },
         waits: { config: config.waits, logger, bd: projectCli(db, 'bd', 'vibesync-waits') },
+        // vibesync-9lzk.25: each step reads ITS project's codebase memories,
+        // through that project's own checkout; memories never cross projects.
+        projectMemory: createBdProjectMemorySource((projectIdentifier) => {
+          const fsPath = db.getProject(projectIdentifier)?.filesystem_path;
+          if (!fsPath) return null;
+          return createCliRunner({ binary: 'bd', cwd: fsPath, env: { BEADS_DIR: `${fsPath}/.beads`, BEADS_ACTOR: 'vibesync-memory' } });
+        }),
         providerRouting: {
           store: { getProjectProviderRouting: db.getProjectProviderRouting.bind(db) },
           roleAgentBootstrapper,
