@@ -1,6 +1,7 @@
 import {
   createGhDeliveryVerifier,
   ghRepositoryTarget,
+  type ProjectMemorySource,
   type DeliveryVerifier,
   FormulaDispatcher,
   installWritebackHook,
@@ -96,6 +97,12 @@ export interface BootOrchestrationPlaneOptions {
    * `gh` CLI (the scheduler's gh runner when supplied, else `gh` on PATH).
    */
   readonly deliveryVerifier?: DeliveryVerifier;
+  /**
+   * Codebase memories injected into step prompts (vibesync-9lzk.25), keyed by
+   * the step's project. Supplied by the app, which can resolve a project's
+   * checkout; absent = no memory section.
+   */
+  readonly projectMemory?: ProjectMemorySource;
   /**
    * Durable wait-on-beads watcher (vibesync-9g24, invariant 4). Absent or
    * `config.enabled === false` => nothing is constructed: no watcher, no timer,
@@ -317,6 +324,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     ...(maxConcurrentMolecules === undefined ? {} : { maxConcurrentMolecules }),
     ...(providerResolver ? { providerResolver } : {}),
     ...(roleAgentContextResolver ? { roleAgentContextResolver } : {}),
+    ...(opts.projectMemory ? { projectMemory: opts.projectMemory } : {}),
     deliveryVerifier: opts.deliveryVerifier ?? (() => {
       // The scheduler's gh runs in the project checkout, so `gh repo view`
       // names the repository a run's PR must live in.
