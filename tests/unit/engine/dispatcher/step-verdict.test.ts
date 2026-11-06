@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 
 import { BLOCKED_MARKER } from '../../../../src/engine/dispatcher/step-outcome.js';
 import { FormulaDispatchError, createTypeSafeJudge, TypeSafeRequestError, type StepReplyJudge } from '../../../../src/engine/dispatcher/index.js';
-import { decideStepVerdict, reconcileWithMarker } from '../../../../src/engine/verdict/index.js';
+import { decideStepVerdict, reconcileWithMarker, summarizeReplyForReason } from '../../../../src/engine/verdict/index.js';
 import { EventBus, type Event } from '../../../../src/engine/events/index.js';
 import type { Formula } from '../../../../src/engine/formula/index.js';
 import { MoleculeWalker } from '../../../../src/engine/molecule/index.js';
@@ -25,6 +25,7 @@ const ROUND10_REVIEW = readFileSync(join(process.cwd(), 'tests/_fixtures/round10
 /** Round 4's real reviewer reply: LGTM-with-nits, one [suggest]. */
 const ROUND4_NIT_REVIEW = readFileSync(join(process.cwd(), 'tests/_fixtures/round4-reviewer-nit-reply.txt'), 'utf8');
 const T6D3_BLOCKED_TESTER = readFileSync(join(process.cwd(), 'tests/_fixtures/t6d3-tester-pass-but-typecheck-blocked.txt'), 'utf8');
+const LONG_T6D3_BLOCKED_TESTER = `${T6D3_BLOCKED_TESTER.replace(/\*\*TypeScript check:[\s\S]*$/, '')}${'Passing test output: all assertions passed.\n'.repeat(300)}${T6D3_BLOCKED_TESTER.match(/\*\*TypeScript check:[\s\S]*$/)?.[0] ?? ''}`;
 const ROUND3_UNRERUN_TESTER = readFileSync(join(process.cwd(), 'tests/_fixtures/round3-tester-pass-mutation-not-rerun.txt'), 'utf8');
 const ROUND8_REVIEWER = readFileSync(join(process.cwd(), 'tests/_fixtures/round8-reviewer-lgtm-gates-left-to-tester.txt'), 'utf8');
 const ROUND10_CLEAN_TESTER = readFileSync(join(process.cwd(), 'tests/_fixtures/round10-tester-clean-pass.txt'), 'utf8');
@@ -117,6 +118,23 @@ describe('step verdicts from the decision model (vibesync-9lzk.39)', () => {
     expect(failureReason).toContain('TypeScript check');
   });
 
+  it('caps a long verdict reason but retains an unrun check from late in the reply', async () => {
+    const summary = summarizeReplyForReason(LONG_T6D3_BLOCKED_TESTER);
+    expect(summary.length).toBeLessThanOrEqual(4000);
+    expect(summary).toContain('was blocked by the missing `@number0/iroh` module');
+    expect(summary).toContain('[... reply truncated ...]');
+
+    const h = harness([ROUND4_NIT_REVIEW], LONG_T6D3_BLOCKED_TESTER, {
+      async judge() { return { answers: { ...clean, reports_unverified_check: 0.98 }, model: 'fake', inputTokens: 1 }; },
+    });
+    const thrown = await h.dispatcher.run({ formula: looping, pack: pack(), input: 'go', motivatingBeadId: 'w' }).catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(FormulaDispatchError);
+    const tester = await h.store.getBead(`${(thrown as FormulaDispatchError).moleculeId}-tester`);
+    const failureReason = String((tester?.metadata?.['exec'] as Record<string, unknown>)['error_trace']);
+    expect(failureReason).toContain('was blocked by the missing `@number0/iroh` module');
+    expect(failureReason.length).toBeLessThanOrEqual(4500);
+  });
+
   it('final tester reports of unrun required checks fail closed; reviewer mentions are ignored', async () => {
     for (const tester of [T6D3_BLOCKED_TESTER, ROUND3_UNRERUN_TESTER]) {
       const h = harness([ROUND4_NIT_REVIEW], tester);
@@ -159,6 +177,65 @@ describe('step verdicts from the decision model (vibesync-9lzk.39)', () => {
 });
 
 describe('decision table', () => {
+  it('leaves short replies unchanged', () => {
+    for (const fixture of [T6D3_BLOCKED_TESTER, ROUND3_UNRERUN_TESTER, ROUND8_REVIEWER, ROUND10_CLEAN_TESTER]) {
+      expect(summarizeReplyForReason(fixture)).toBe(fixture);
+    }
+  });
+  it('respects small limits and retains late check lines in order when possible', () => {
+    const marker = '[... reply truncated ...]';
+    expect(summarizeReplyForReason('a'.repeat(20), 10)).toHaveLength(10);
+    expect(summarizeReplyForReason('a'.repeat(20), 0)).toBe('');
+    expect(summarizeReplyForReason('a'.repeat(20), 1)).toHaveLength(1);
+
+    const first = 'Typecheck was blocked.\n';
+    const second = 'Mutation test was not rerun.\n';
+    const reply = `${'opening line\n'.repeat(200)}${first}${'x'.repeat(200)}\n${second}`;
+    const summary = summarizeReplyForReason(reply, 100);
+    expect(summary.length).toBeLessThanOrEqual(100);
+    expect(summary.indexOf(first)).toBeGreaterThanOrEqual(0);
+    expect(summary.indexOf(second)).toBeGreaterThan(summary.indexOf(first));
+    expect(summary).toContain(marker);
+
+    const longFirst = 'Typecheck was blocked: details.\n';
+    const longSecond = 'Mutation test was not rerun: details.\n';
+    const checksOverBudget = summarizeReplyForReason(`${longFirst}${longSecond}`, 60);
+    expect(checksOverBudget.length).toBeLessThanOrEqual(60);
+    expect(checksOverBudget).toContain(longFirst);
+    expect(checksOverBudget).not.toContain(longSecond);
+    expect(checksOverBudget).toContain(marker);
+
+    const oversizedOpening = summarizeReplyForReason(`${'z'.repeat(200)}\n${first}`, 60);
+    expect(oversizedOpening.length).toBeLessThanOrEqual(60);
+    expect(oversizedOpening).toContain(first);
+    expect(oversizedOpening).toContain(marker);
+  });
+  it('places the truncation marker on a separate line when a retained check has no newline', () => {
+    const summary = summarizeReplyForReason(`${'opening\n'.repeat(800)}Typecheck blocked`, 80);
+    expect(summary.length).toBeLessThanOrEqual(80);
+    expect(summary).toContain('\nTypecheck blocked\n[... reply truncated ...]\n');
+  });
+  it('keeps retained check lines intact at exact marker budgets', () => {
+    const checkLine = 'Typecheck blocked';
+    const reply = `${'x'.repeat(100)}\n${checkLine}`;
+    for (const budget of [42, 43, 44]) {
+      const summary = summarizeReplyForReason(reply, budget);
+      expect(summary.length).toBeLessThanOrEqual(budget);
+      expect(summary).toContain('[... reply truncated ...]');
+      expect(summary).toMatch(/(?:^|\n)\[\.\.\. reply truncated \.\.\.\]\n?$/);
+      if (budget === 42) {
+        expect(summary).not.toContain('Typecheck');
+      } else {
+        expect(summary).toContain(checkLine);
+        expect(summary).toMatch(new RegExp(`(?:^|\\n)${checkLine}\\n\\[\\.\\.\\. reply truncated \.\.\.\\]`));
+      }
+    }
+
+    const terminated = summarizeReplyForReason(`${reply}\n`, 43);
+    expect(terminated.length).toBeLessThanOrEqual(43);
+    expect(terminated).toContain(checkLine);
+    expect(terminated).toMatch(new RegExp(`(?:^|\\n)${checkLine}\\n\\[\\.\\.\\. reply truncated \.\.\.\\]`));
+  });
   it('maps the probability bands to verdicts, with the band between failing closed', () => {
     expect(decideStepVerdict({ ...clean, asks_change: 0.98, reports_all_gates_passed: 0.5 }, 's', { finalStep: false }).kind).toBe('changes_requested');
     expect(decideStepVerdict(clean, 's', { finalStep: true }).kind).toBe('approve');
