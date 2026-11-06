@@ -7,6 +7,7 @@ import {
   DoltHubProvisioningService,
   normalizeDoltHubRepoName,
 } from '../../src/app/registry/dolthub-provisioning.js';
+import { defaultDeps as defaultPortSweeperDeps } from '../../src/app/registry/port-sweep/PortSweeper.js';
 
 interface TestProjectRecord {
   identifier: string;
@@ -259,6 +260,25 @@ describe('DoltHubProvisioningService', () => {
       { identifier: 'TARGET', filesystem_path: target },
       { identifier: 'OTHER', filesystem_path: other },
     ]);
+    service = new DoltHubProvisioningService({
+      config: {
+        enabled: true,
+        dryRun: false,
+        apiUrl: 'https://www.dolthub.com/api/v1alpha1',
+        apiToken: 'secret-api-token',
+        owner: 'oulair',
+        defaultVisibility: 'private',
+        remoteName: 'origin',
+      },
+      db,
+      logger: { error: vi.fn() },
+      fetchImpl,
+      commandRunner,
+      portSweeperDeps: {
+        ...defaultPortSweeperDeps,
+        listeningPorts: () => new Set(),
+      },
+    });
 
     const result = await service.provisionProject({
       identifier: 'TARGET',

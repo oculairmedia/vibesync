@@ -106,10 +106,10 @@ describe('ESLint baseline gate', () => {
     const testFiles = readdirSync(path.join(repoRoot, 'tests'), { recursive: true })
       .filter((file): file is string => typeof file === 'string' && file.endsWith('.test.ts'));
     const unsafeWrites: string[] = [];
-    const rootSrcVariables = new Set<string>();
     for (const relativeFile of testFiles) {
       const filePath = path.join(repoRoot, 'tests', relativeFile);
       const source = readFileSync(filePath, 'utf8');
+      const rootSrcVariables = new Set<string>();
       const rootSrcPath = /(?:const|let|var)\s+(\w+)\s*=\s*path\.(?:join|resolve)\(\s*repoRoot\s*,\s*['"`]src\//g;
       for (const match of source.matchAll(rootSrcPath)) {
         if (match[1]) rootSrcVariables.add(match[1]);
