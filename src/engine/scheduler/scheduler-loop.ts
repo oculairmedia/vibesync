@@ -40,6 +40,18 @@ import { CIRCUIT_BREAKER_THRESHOLD, type SlingContextRecord } from './sling-cont
 import type { DispatchCandidate, DispatchPlan } from './plan-dispatch.js';
 import { planDispatch } from './plan-dispatch.js';
 
+/**
+ * vibesync-9lzk.43: a run that stopped on purpose to wait for a person (a step
+ * blocked, a verdict failed closed, the review loop ran out of rounds). The
+ * loop closes its context as `escalated` instead of retrying it.
+ */
+export class EscalatedRunError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EscalatedRunError';
+  }
+}
+
 /** Scheduler configuration (scheduler.md capacity management). */
 export interface SchedulerConfig {
   /** Concurrency cap = pool size. The loop never dispatches beyond it. */
@@ -116,7 +128,7 @@ export interface SchedulerContextStore {
   /** Open sling contexts (SCHEDULED). Same as SlingContextManager.queryPending. */
   queryPending(): Promise<SlingContextRecord[]>;
   /** Close a context (dispatched | circuit-broken). */
-  closeContext(contextId: string, reason: 'dispatched' | 'circuit-broken'): Promise<void>;
+  closeContext(contextId: string, reason: 'dispatched' | 'circuit-broken' | 'escalated'): Promise<void>;
   /**
    * Record a failed dispatch attempt: increment dispatch_failures and store
    * last_failure on the CONTEXT bead (never the work bead). Returns the new
@@ -380,6 +392,16 @@ export class SchedulerLoop {
         this.deps.logger?.info?.(
           { workBeadId: candidate.workBeadId, contextId: candidate.contextId },
           'scheduler: run settled — context closed (dispatched)',
+        );
+      } else if (error instanceof EscalatedRunError) {
+        // vibesync-9lzk.43: the run stopped to wait for a person. Close the
+        // context terminal so the bead is not dispatched again until someone
+        // re-labels it; this is not a dispatch failure and does not count
+        // toward the circuit breaker.
+        await this.deps.contextStore.closeContext(candidate.contextId, 'escalated');
+        this.deps.logger?.warn?.(
+          { workBeadId: candidate.workBeadId, contextId: candidate.contextId, error: errMessage(error) },
+          'scheduler: run escalated — context closed, not retried',
         );
       } else {
         this.settledFailed.push(candidate.workBeadId);

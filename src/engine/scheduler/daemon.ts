@@ -22,6 +22,7 @@
  */
 
 import type { FormulaDispatcher, DispatchInput } from '../dispatcher/dispatcher.js';
+import { FormulaEscalationError } from '../dispatcher/dispatcher.js';
 import { AgentPool, type PoolMemberIdentity } from './agent-pool.js';
 import { SchedulerLoop, type SchedulerConfig, type TickResult } from './scheduler-loop.js';
 import { SlingContextManager, type SlingContextStore } from './sling-context.js';
@@ -420,7 +421,7 @@ export class SchedulerDaemon {
             'daemon: run failed',
           );
         }
-        settledByDispatcher({ runId: '', output: '', ok: false, error: msg(err) });
+        settledByDispatcher({ runId: '', output: '', ok: false, error: msg(err), ...(err instanceof FormulaEscalationError ? { escalated: true } : {}) });
       },
     );
 

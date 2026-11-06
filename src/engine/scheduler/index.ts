@@ -42,6 +42,7 @@ export type {
   SkipReason,
 } from './plan-dispatch.js';
 
+export { EscalatedRunError } from './scheduler-loop.js';
 export { SchedulerLoop } from './scheduler-loop.js';
 export type {
   SchedulerConfig,

@@ -15,6 +15,7 @@ import {
   type SchedulerDaemonDeps,
 } from '../../../../src/engine/scheduler/daemon.js';
 import type { FormulaDispatcher } from '../../../../src/engine/dispatcher/dispatcher.js';
+import { FormulaEscalationError } from '../../../../src/engine/dispatcher/dispatcher.js';
 import {
   tryParseParams,
   type SlingContextStore,
@@ -273,6 +274,38 @@ describe('SchedulerDaemon — dispatch off the tick (vibesync-q50w)', () => {
       expect(wfCtx.every((r) => !r.open)).toBe(true);
       expect(wfCtx.map((r) => r.reason)).toContain('circuit-broken');
       expect(h.store.rows.find((r) => r.tracks === 'wc')?.reason).toBe('dispatched');
+      await sleep(10);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  it('5b. (vibesync-9lzk.43) an ESCALATED run is not retried: its context closes as escalated, no 2nd run, not circuit-broken', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => { unhandled.push(e); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const h = track(harness({ beads: ['we', 'wi'], poolSize: 2 }));
+      await tickReturns(h.daemon);
+      expect(h.runs.map((r) => r.beadId).sort()).toEqual(['we', 'wi']);
+      // Round 13: the review loop ran 3 rounds and escalated. The dispatcher's error for that:
+      h.runsFor('we')[0]!.reject(new FormulaEscalationError('FormulaDispatcher: step "reviewer" escalated: review loop exhausted after 3 rounds; escalated', 'mol-we-1'));
+      // A plain infra failure on the other bead is still retried.
+      h.runsFor('wi')[0]!.reject(new Error('provider down'));
+      await vi.waitFor(async () => {
+        await tickReturns(h.daemon);
+        expect(h.runsFor('wi')).toHaveLength(2);
+      }, { timeout: 1500 });
+      for (let i = 0; i < 4; i += 1) {
+        await tickReturns(h.daemon);
+        await sleep(10);
+      }
+      expect(h.runsFor('we')).toHaveLength(1);
+      const weCtx = h.store.rows.filter((r) => r.tracks === 'we');
+      expect(weCtx.every((r) => !r.open)).toBe(true);
+      expect(weCtx.map((r) => r.reason)).toEqual(['escalated']);
+      h.runsFor('wi')[1]!.resolve('done');
       await sleep(10);
       expect(unhandled).toEqual([]);
     } finally {

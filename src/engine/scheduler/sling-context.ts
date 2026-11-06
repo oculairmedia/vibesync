@@ -29,7 +29,7 @@ export const SLING_CONTEXT_LABEL = 'vibesync:sling-context';
 export const SLING_CONTEXT_VERSION = 1 as const;
 
 /** Reasons a sling context may be closed. Maps to the state machine terminals. */
-export type SlingCloseReason = 'dispatched' | 'circuit-broken' | 'cleared';
+export type SlingCloseReason = 'dispatched' | 'circuit-broken' | 'cleared' | 'escalated';
 
 /** Circuit-breaker threshold: consecutive dispatch failures that trip a close. */
 export const CIRCUIT_BREAKER_THRESHOLD = 3;

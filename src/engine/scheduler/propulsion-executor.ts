@@ -33,7 +33,7 @@
  */
 
 import type { DispatchCandidate } from './plan-dispatch.js';
-import type { DispatchExecutor, DispatchRunHandle } from './scheduler-loop.js';
+import { EscalatedRunError, type DispatchExecutor, type DispatchRunHandle } from './scheduler-loop.js';
 
 /** How a dispatched run ended. */
 export type PropulsionOutcome = 'completed' | 'blocked' | 'failed';
@@ -58,7 +58,14 @@ export interface DispatchRunResult {
   readonly ok: boolean;
   /** Error message when ok === false. */
   readonly error?: string;
+  /**
+   * vibesync-9lzk.43: the run stopped on purpose to wait for a person (a step
+   * blocked, a verdict failed closed, the review loop ran out of rounds). Not
+   * retryable: the scheduler records it and leaves the bead alone.
+   */
+  readonly escalated?: boolean;
 }
+
 
 /**
  * Runs the actual dispatch by REUSING the existing path. Production wires this
@@ -259,8 +266,10 @@ export class PropulsionExecutor implements DispatchExecutor {
     }
 
     if (outcome === 'failed') {
-      // Slot already freed above. Reject so the loop counts the failure.
-      throw new Error(result.error ?? `dispatch failed for ${candidate.workBeadId}`);
+      // Slot already freed above. Reject so the loop counts the failure; an
+      // escalation is its own error so the loop does not retry it.
+      const message = result.error ?? `dispatch failed for ${candidate.workBeadId}`;
+      throw result.escalated ? new EscalatedRunError(message) : new Error(message);
     }
   }
 
