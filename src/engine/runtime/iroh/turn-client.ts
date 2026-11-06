@@ -51,6 +51,7 @@ export interface TurnProgress {
 
 export interface RunTurnOptions {
   readonly mode?: string;
+  readonly cwd?: string;
   readonly turnTimeoutMs?: number;
   readonly approvalGraceMs?: number;
   readonly replayWaitMs?: number;
@@ -151,6 +152,7 @@ export async function submitInput(
   conn: IrohConnection,
   req: { readonly agentId: string; readonly conversationId: string; readonly text: string; readonly clientMessageId: string },
   mode: string = DEFAULTS.mode,
+  cwd?: string,
 ): Promise<InputSubmission> {
   if (!req.clientMessageId) throw new Error('submitInput: clientMessageId is required (stable per prompt)');
   const rs = await conn.request({
@@ -158,6 +160,7 @@ export async function submitInput(
     agent_id: req.agentId,
     conversation_id: req.conversationId,
     mode,
+    ...(cwd !== undefined ? { cwd } : {}),
   });
   if (rs['success'] !== true) throw refusalFrom('runtime_start', rs['error'] ?? 'runtime_start failed');
 
@@ -204,7 +207,7 @@ export async function runTurn(conn: IrohConnection, req: TurnRequest, opts: RunT
   }
 }
 
-type ResolvedOptions = Required<Omit<RunTurnOptions, 'ignoreTurnIds' | 'onProgress' | 'signal'>> & RunTurnOptions;
+type ResolvedOptions = Required<Omit<RunTurnOptions, 'ignoreTurnIds' | 'onProgress' | 'signal' | 'cwd'>> & RunTurnOptions;
 
 /** Everything one turn needs, bundled so the helpers below take one argument. */
 interface TurnContext {
@@ -260,7 +263,7 @@ async function attempt(ctx: TurnContext, redialed: boolean): Promise<Outcome> {
 
   try {
     await conn.connect();
-    const submitted = await submitInput(conn, { agentId: req.agentId, conversationId, text: req.text, clientMessageId: req.clientMessageId }, o.mode);
+    const submitted = await submitInput(conn, { agentId: req.agentId, conversationId, text: req.text, clientMessageId: req.clientMessageId }, o.mode, o.cwd);
     if ('error' in submitted) {
       return {
         kind: 'terminal',

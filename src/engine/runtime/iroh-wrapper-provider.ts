@@ -90,6 +90,7 @@ interface SessionState {
   /** The role agent every call of this session targets. */
   readonly agentId: string;
   readonly stepTimeoutMs: number | null;
+  readonly workdir: string | null;
   readonly moleculeId: string | null;
   readonly motivatingBeadId: string | null;
   readonly stepName: string | null;
@@ -163,6 +164,7 @@ export class IrohWrapperProvider implements RuntimeProvider {
       role: spec.role,
       agentId,
       stepTimeoutMs: readNumberExtra(spec, 'turnTimeoutMs') ?? null,
+      workdir: readStringExtra(spec, 'workdir') ?? null,
       moleculeId: readStringExtra(spec, 'moleculeId') ?? null,
       motivatingBeadId: readStringExtra(spec, 'motivatingBeadId') ?? null,
       stepName: readStringExtra(spec, 'stepName') ?? null,
@@ -332,6 +334,7 @@ export class IrohWrapperProvider implements RuntimeProvider {
         ...this.turnOptions,
         mode: this.runtimeMode,
         turnTimeoutMs: state.stepTimeoutMs ?? this.turnTimeoutMs,
+        ...(state.workdir !== null ? { cwd: state.workdir } : {}),
         signal: state.abort.signal,
         ignoreTurnIds: state.seenTurnIds,
         onProgress: (p) => {

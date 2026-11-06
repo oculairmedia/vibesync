@@ -126,6 +126,32 @@ describe('BdFormulaResolver / BdLivenessProbe', () => {
     expect(warnings).toHaveLength(2);
   });
 
+  it('resolves only absolute non-empty workdir metadata and warns once per bead', async () => {
+    const valid = new BdFormulaResolver({
+      bd: async () => JSON.stringify([{ id: 'w', status: 'open', metadata: { workdir: '/opt/stacks/x' } }]),
+      pack, formulaName: 'f1', projectIdentifier: 'p',
+    });
+    expect(await valid.resolve('w')).toMatchObject({ workdir: '/opt/stacks/x' });
+
+    for (const value of [null, '', 'relative/path', 42]) {
+      const warnings: unknown[] = [];
+      const resolver = new BdFormulaResolver({
+        bd: async () => JSON.stringify([{ id: 'w', status: 'open', metadata: { workdir: value } }]),
+        pack, formulaName: 'f1', projectIdentifier: 'p', logger: { warn: (...args: unknown[]) => warnings.push(args) },
+      });
+      expect(await resolver.resolve('w')).not.toHaveProperty('workdir');
+      expect(await resolver.resolve('w')).not.toHaveProperty('workdir');
+      expect(warnings).toHaveLength(1);
+    }
+    const noMetadataWarnings: unknown[] = [];
+    const silentNoMetadata = new BdFormulaResolver({
+      bd: async () => JSON.stringify([{ id: 'w', status: 'open', metadata: null }]),
+      pack, formulaName: 'f1', projectIdentifier: 'p', logger: { warn: (...args: unknown[]) => noMetadataWarnings.push(args) },
+    });
+    expect(await silentNoMetadata.resolve('w')).not.toHaveProperty('workdir');
+    expect(noMetadataWarnings).toHaveLength(0);
+  });
+
   it('liveness: closed bead => bead-closed, open => alive, bd failure => throws (witness leaves slot alone)', async () => {
     const slot = { slotId: 's', workBeadId: 'w', allocatedAt: new Date() };
     expect(await new BdLivenessProbe(async () => JSON.stringify([{ status: 'closed' }])).probe(slot)).toBe('bead-closed');
