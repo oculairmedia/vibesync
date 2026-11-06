@@ -76,7 +76,6 @@ jobs:
 
       - name: Run linter
         run: npm run lint --if-present
-        continue-on-error: true
 
       - name: Install pinned bd for isolated integration suites
         if: matrix.node-version == '20.x'
