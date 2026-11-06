@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { BLOCKED_MARKER } from '../../../../src/engine/dispatcher/step-outcome.js';
-import { FormulaDispatchError } from '../../../../src/engine/dispatcher/index.js';
+import { FormulaDispatchError, FormulaEscalationError } from '../../../../src/engine/dispatcher/index.js';
 import { EventBus, type Event } from '../../../../src/engine/events/index.js';
 import { loadFormulasFromFile, parseFormulasFromToml, type Formula } from '../../../../src/engine/formula/index.js';
 import { MoleculeWalker, newMoleculeStepId } from '../../../../src/engine/molecule/index.js';
@@ -108,6 +108,17 @@ describe('bounded review loop (vibesync-9lzk.24)', () => {
     const reviewer = await h.store.getBead(newMoleculeStepId((thrown as FormulaDispatchError).moleculeId, 'reviewer'));
     expect(String((reviewer?.metadata?.['exec'] as Record<string, unknown>)['error_trace'])).toContain('review loop exhausted after 3 rounds; escalated');
     expect(h.events.some((e) => e.kind === 'dispatcher/formula.failed')).toBe(true);
+    // vibesync-9lzk.43: the scheduler must be able to see this was an escalation, not a retryable failure.
+    expect(thrown).toBeInstanceOf(FormulaEscalationError);
+  });
+
+  it('(vibesync-9lzk.43) a plain step failure is NOT an escalation', async () => {
+    const store = new InMemoryDoltClient();
+    const provider = newFakeProvider({ kind: 'fake', script: (spec: SessionSpec) => (spec.role === 'coder' ? (async function* () { yield { kind: 'started', ts: new Date().toISOString() } as SessionEvent; throw new Error('provider exploded'); })() : reply('ok')) });
+    const dispatcher = newDriven(store, { idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }) });
+    const thrown = await dispatcher.run({ formula: looping(), pack: pack(), input: 'go', motivatingBeadId: 'work-1' }).catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(FormulaDispatchError);
+    expect(thrown).not.toBeInstanceOf(FormulaEscalationError);
   });
 
   it('a formula without loops_back_to still fails on the first block (unchanged)', async () => {

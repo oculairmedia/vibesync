@@ -1,4 +1,4 @@
-export { FormulaCancellationConflictError, FormulaDispatchError, FormulaDispatcher } from './dispatcher.js';
+export { FormulaCancellationConflictError, FormulaDispatchError, FormulaDispatcher, FormulaEscalationError } from './dispatcher.js';
 export type {
   CancelResult,
   DispatchInput,

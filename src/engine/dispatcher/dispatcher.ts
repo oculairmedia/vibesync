@@ -186,6 +186,19 @@ export class FormulaDispatchError extends Error {
   }
 }
 
+/**
+ * vibesync-9lzk.43: a run that stopped on purpose, waiting for a person: a
+ * step reported itself blocked, a verdict failed closed, or the review loop
+ * ran out of rounds. Retrying it would restart work a reviewer rejected, so
+ * the scheduler must not treat it as a retryable dispatch failure.
+ */
+export class FormulaEscalationError extends FormulaDispatchError {
+  constructor(message: string, moleculeId: string, options: { readonly cause?: unknown } = {}) {
+    super(message, moleculeId, options);
+    this.name = 'FormulaEscalationError';
+  }
+}
+
 export class FormulaCancellationConflictError extends FormulaDispatchError {
   constructor(message: string, moleculeId: string) {
     super(message, moleculeId);
@@ -1021,6 +1034,9 @@ export class FormulaDispatcher implements ReadyStepRunner {
       args.outputs[stepName] = softFailMarker(stepName, trace);
       return;
     }
+    if (failure.error instanceof StepBlockedError) {
+      throw new FormulaEscalationError(`FormulaDispatcher: step "${stepName}" escalated: ${failure.error.reason}`, args.moleculeId, { cause: failure.error });
+    }
     throw new FormulaDispatchError(`FormulaDispatcher: step "${stepName}" failed`, args.moleculeId, { cause: failure.error });
   }
 
@@ -1223,6 +1239,9 @@ export class FormulaDispatcher implements ReadyStepRunner {
         resumed: true,
         ...(retryOutcome ? { retryOutcome } : {}),
       });
+      if (error instanceof StepBlockedError) {
+        throw new FormulaEscalationError(`FormulaDispatcher: resumed step "${stepName}" escalated: ${error.reason}`, args.moleculeId, { cause: error });
+      }
       throw new FormulaDispatchError(`FormulaDispatcher: resumed step "${stepName}" failed`, args.moleculeId, { cause: error });
     } finally {
       if (handle) await this.provider.stop(handle);
