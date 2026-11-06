@@ -14,7 +14,8 @@ export function summarizeReplyForReason(reply: string, maxChars = 4000): string 
   // The marker is useful when it fits; for tiny limits its prefix is enough to
   // signal truncation while ensuring the result always stays within the cap.
   const truncation = marker.slice(0, limit);
-  const budget = Math.max(0, limit - truncation.length);
+  // Reserve a separator even when the selected reply lines don't end in one.
+  const budget = Math.max(0, limit - truncation.length - 1);
   const selectedChecks = new Set<number>();
   let used = 0;
 
@@ -42,12 +43,7 @@ export function summarizeReplyForReason(reply: string, maxChars = 4000): string 
     }
   }
 
-  let body = output.join('');
-  let suffix = truncation;
-  if (body.length > 0 && !body.endsWith('\n') && !suffix.startsWith('\n')) {
-    // Keep the truncation marker on its own line without exceeding the cap.
-    if (body.length + suffix.length < limit) suffix = `\n${suffix}`;
-    else body = body.slice(0, Math.max(0, body.length - 1));
-  }
-  return `${body}${suffix}`.slice(0, limit);
+  const body = output.join('');
+  const separator = body.length > 0 && !body.endsWith('\n') && !truncation.startsWith('\n') ? '\n' : '';
+  return `${body}${separator}${truncation}`.slice(0, limit);
 }

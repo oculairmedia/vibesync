@@ -215,6 +215,20 @@ describe('decision table', () => {
     expect(summary.length).toBeLessThanOrEqual(80);
     expect(summary).toContain('\nTypecheck blocked\n[... reply truncated ...]\n');
   });
+  it('keeps retained check lines intact at exact marker budgets', () => {
+    const checkLine = 'Typecheck blocked';
+    const reply = `${'x'.repeat(100)}\n${checkLine}`;
+    for (const budget of [42, 43, 44]) {
+      const summary = summarizeReplyForReason(reply, budget);
+      expect(summary.length).toBeLessThanOrEqual(budget);
+      expect(summary).toContain('[... reply truncated ...]');
+      expect(summary).toMatch(/(?:^|\n)\[\.\.\. reply truncated \.\.\.\]\n?$/);
+      expect(summary.includes(checkLine) || !summary.includes('Typecheck')).toBe(true);
+      if (summary.includes(checkLine)) {
+        expect(summary).toMatch(new RegExp(`(?:^|\\n)${checkLine}\\n`));
+      }
+    }
+  });
   it('maps the probability bands to verdicts, with the band between failing closed', () => {
     expect(decideStepVerdict({ ...clean, asks_change: 0.98, reports_all_gates_passed: 0.5 }, 's', { finalStep: false }).kind).toBe('changes_requested');
     expect(decideStepVerdict(clean, 's', { finalStep: true }).kind).toBe('approve');
