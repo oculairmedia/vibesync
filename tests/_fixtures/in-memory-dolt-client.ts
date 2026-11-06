@@ -152,6 +152,18 @@ export class InMemoryDoltClient {
     });
   }
 
+  async reopenStepForRound(stepId: string, args: { readonly round: number; readonly note: string }): Promise<void> {
+    const row = this.requireBead(stepId);
+    const exec = (row.metadata['exec'] ?? {}) as Record<string, unknown>;
+    const { output_payload: _o, task_id: _t, session_id: _s, error_trace: _e, ...keep } = exec;
+    const { 'gc.retry_outcome': _ro, failure_class: _fc, ...rest } = row.metadata;
+    this.updateBead(stepId, {
+      status: 'open',
+      closed_at: null,
+      metadata: { ...rest, exec: { ...keep, attempts: 1, round_note: args.note }, 'gc.retry_attempt': 1, 'gc.infra_retries': 0, 'gc.review_round': args.round },
+    });
+  }
+
   async reopenStepForRetry(
     stepId: string,
     args: { readonly attempt: number; readonly infraRetries: number; readonly failureClass: string | null; readonly errorTrace: string },

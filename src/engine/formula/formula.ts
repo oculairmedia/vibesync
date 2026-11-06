@@ -133,6 +133,9 @@ function parseFormulaBody(name: string, body: Record<string, unknown>): Formula 
     }
     const step = parseStep(name, idx, stepRaw, seenNames);
     steps.push(step);
+    if (step.loopsBackTo !== undefined && !seenNames.has(step.loopsBackTo)) {
+      throw new Error(`formula "${name}": step "${step.name}".loops_back_to names "${step.loopsBackTo}", which is not an earlier step`);
+    }
     seenNames.add(step.name);
   }
   return { name, description, whenToUse, ...(deliversRaw !== undefined ? { delivers: deliversRaw as FormulaDelivery } : {}), steps };
@@ -188,6 +191,16 @@ function parseStep(
   if (planOnlyRaw !== undefined && typeof planOnlyRaw !== 'boolean') {
     throw new Error(`formula "${formulaName}": step "${name}".plan_only must be true or false`);
   }
+  const loopsBackTo = raw['loops_back_to'];
+  if (loopsBackTo !== undefined && (typeof loopsBackTo !== 'string' || loopsBackTo.length === 0)) {
+    throw new Error(`formula "${formulaName}": step "${name}".loops_back_to must be a step name`);
+  }
+  const maxRounds = raw['max_rounds'] !== undefined
+    ? readNonNegativeInteger(raw['max_rounds'], undefined as never, `formula "${formulaName}": step "${name}".max_rounds`)
+    : undefined;
+  if (maxRounds !== undefined && (loopsBackTo === undefined || maxRounds < 1)) {
+    throw new Error(`formula "${formulaName}": step "${name}".max_rounds needs loops_back_to and must be >= 1`);
+  }
   const spec: StepSpec = {
     name,
     role,
@@ -199,6 +212,7 @@ function parseStep(
     ...(retry !== undefined ? { retry } : {}),
     ...(turnTimeoutMs !== undefined ? { turnTimeoutMs } : {}),
     ...(planOnlyRaw === true ? { planOnly: true } : {}),
+    ...(typeof loopsBackTo === 'string' ? { loopsBackTo, maxRounds: maxRounds ?? 3 } : {}),
   };
   return spec;
 }

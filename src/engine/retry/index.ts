@@ -9,6 +9,8 @@ export {
   decideRetry,
   readFailureClass,
   readRetryState,
+  readReviewRound,
+  REVIEW_ROUND_KEY,
   resolveRetryPolicy,
 } from './policy.js';
 export type {

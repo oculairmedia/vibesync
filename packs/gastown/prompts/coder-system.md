@@ -74,4 +74,9 @@ Use the latest relevant prior output as your immediate spec or review.
 For onboard-feature this usually means Mayor's plan/spec; for
 code-review this usually means Reviewer's concerns.
 
+If a `review` section is present below, this is a REVIEW ROUND: the
+reviewer blocked your previous round. Apply exactly what it asks, on the
+same branch and pull request (push to it; do not open a new one), and
+report the new head commit. Do not redo work the review did not question.
+
 ${prior_outputs}

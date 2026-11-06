@@ -14,7 +14,7 @@
  * Measured on bd 1.3.2: ~190 ms per update, ~500 ms per step create. A formula
  * step is an LLM turn of minutes, so this is well under 1% of a run.
  */
-import { INFRA_RETRIES_KEY, LAST_FAILURE_CLASS_KEY, RETRY_ATTEMPT_KEY, RETRY_OUTCOME_KEY, FAILURE_CLASS_KEY } from '../retry/policy.js';
+import { INFRA_RETRIES_KEY, LAST_FAILURE_CLASS_KEY, RETRY_ATTEMPT_KEY, RETRY_OUTCOME_KEY, REVIEW_ROUND_KEY, FAILURE_CLASS_KEY } from '../retry/policy.js';
 import type { MoleculeOutcome } from '../molecule/molecule.js';
 import type { BeadRow } from '../store/index.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -144,6 +144,27 @@ export class BdMoleculeWriter {
     // `--metadata` merges top-level keys, so a removed key must be unset explicitly.
     if (FAILURE_CLASS_KEY in bead.metadata) {
       await this.bd(['update', stepId, '--unset-metadata', FAILURE_CLASS_KEY, '--actor', ACTOR]);
+    }
+  }
+
+  async reopenStepForRound(stepId: string, args: { readonly round: number; readonly note: string }): Promise<void> {
+    const bead = await this.require(stepId);
+    const exec = execOf(bead);
+    // A round starts clean: the previous round's output, task and outcome
+    // belong to that round, and the retry counters start over.
+    const { output_payload: _output, task_id: _task, session_id: _session, error_trace: _trace, ...keep } = exec;
+    const metadata: Record<string, unknown> = {
+      ...bead.metadata,
+      exec: { ...keep, attempts: 1, round_note: args.note },
+      [RETRY_ATTEMPT_KEY]: 1,
+      [INFRA_RETRIES_KEY]: 0,
+      [REVIEW_ROUND_KEY]: args.round,
+    };
+    delete metadata[RETRY_OUTCOME_KEY];
+    delete metadata[FAILURE_CLASS_KEY];
+    await withMetadataFile(metadata, (ref) => this.bd(['update', stepId, '--status', 'open', '--metadata', ref, '--actor', ACTOR]));
+    if (RETRY_OUTCOME_KEY in bead.metadata) {
+      await this.bd(['update', stepId, '--unset-metadata', RETRY_OUTCOME_KEY, '--actor', ACTOR]);
     }
   }
 
