@@ -24,14 +24,24 @@ import { InMemoryDoltClient } from '../../../_fixtures/in-memory-dolt-client.js'
 const ROUND10_REVIEW = readFileSync(join(process.cwd(), 'tests/_fixtures/round10-reviewer-reply.txt'), 'utf8');
 /** Round 4's real reviewer reply: LGTM-with-nits, one [suggest]. */
 const ROUND4_NIT_REVIEW = readFileSync(join(process.cwd(), 'tests/_fixtures/round4-reviewer-nit-reply.txt'), 'utf8');
+const T6D3_BLOCKED_TESTER = readFileSync(join(process.cwd(), 'tests/_fixtures/t6d3-tester-pass-but-typecheck-blocked.txt'), 'utf8');
+const ROUND3_UNRERUN_TESTER = readFileSync(join(process.cwd(), 'tests/_fixtures/round3-tester-pass-mutation-not-rerun.txt'), 'utf8');
+const ROUND8_REVIEWER = readFileSync(join(process.cwd(), 'tests/_fixtures/round8-reviewer-lgtm-gates-left-to-tester.txt'), 'utf8');
+const ROUND10_CLEAN_TESTER = readFileSync(join(process.cwd(), 'tests/_fixtures/round10-tester-clean-pass.txt'), 'utf8');
 
 /** Jev's actual answers for those replies (probe 2026-11-06, tuned criteria). */
-const JEV: Record<string, { asks_change: number; blocks_only_on_pending_ci: number; reports_all_gates_passed: number }> = {
-  [ROUND10_REVIEW]: { asks_change: 0.98, blocks_only_on_pending_ci: 0.01, reports_all_gates_passed: 0.55 },
-  [ROUND4_NIT_REVIEW]: { asks_change: 0.05, blocks_only_on_pending_ci: 0.01, reports_all_gates_passed: 0.72 },
-  'PASS: all gates green': { asks_change: 0.02, blocks_only_on_pending_ci: 0.05, reports_all_gates_passed: 0.9 },
-  'CHANGES-REQUESTED: test (20.x) is still pending; nothing failed': { asks_change: 0.94, blocks_only_on_pending_ci: 0.97, reports_all_gates_passed: 0.1 },
-  'Result: PASS but the typecheck was blocked by a missing module': { asks_change: 0.61, blocks_only_on_pending_ci: 0.02, reports_all_gates_passed: 0.04 },
+type ScriptedAnswers = { asks_change: number; blocks_only_on_pending_ci: number; reports_all_gates_passed: number; reports_unverified_check: number };
+const clean: ScriptedAnswers = { asks_change: 0.02, blocks_only_on_pending_ci: 0.05, reports_all_gates_passed: 0.9, reports_unverified_check: 0.02 };
+const JEV: Record<string, ScriptedAnswers> = {
+  [ROUND10_REVIEW]: { asks_change: 0.98, blocks_only_on_pending_ci: 0.01, reports_all_gates_passed: 0.55, reports_unverified_check: 0.02 },
+  [ROUND4_NIT_REVIEW]: { asks_change: 0.05, blocks_only_on_pending_ci: 0.01, reports_all_gates_passed: 0.72, reports_unverified_check: 0.02 },
+  'PASS: all gates green': clean,
+  [ROUND10_CLEAN_TESTER]: clean,
+  [ROUND8_REVIEWER]: { asks_change: 0.02, blocks_only_on_pending_ci: 0.01, reports_all_gates_passed: 0.9, reports_unverified_check: 0.86 },
+  [T6D3_BLOCKED_TESTER]: { asks_change: 0.02, blocks_only_on_pending_ci: 0.02, reports_all_gates_passed: 0.04, reports_unverified_check: 0.98 },
+  [ROUND3_UNRERUN_TESTER]: { asks_change: 0.02, blocks_only_on_pending_ci: 0.01, reports_all_gates_passed: 0.04, reports_unverified_check: 0.94 },
+  'CHANGES-REQUESTED: test (20.x) is still pending; nothing failed': { asks_change: 0.94, blocks_only_on_pending_ci: 0.97, reports_all_gates_passed: 0.1, reports_unverified_check: 0.02 },
+  'Result: PASS but the typecheck was blocked by a missing module': { asks_change: 0.61, blocks_only_on_pending_ci: 0.02, reports_all_gates_passed: 0.04, reports_unverified_check: 0.98 },
 };
 const fakeJudge: StepReplyJudge = {
   async judge({ reply }) {
@@ -97,12 +107,30 @@ describe('step verdicts from the decision model (vibesync-9lzk.39)', () => {
   });
 
   it('an unsettled reading (the t6d3 case: PASS but a required check never ran) FAILS CLOSED, never completes', async () => {
-    const h = harness([ROUND4_NIT_REVIEW], 'Result: PASS but the typecheck was blocked by a missing module');
+    const h = harness([ROUND4_NIT_REVIEW], T6D3_BLOCKED_TESTER);
     const thrown = await h.dispatcher.run({ formula: looping, pack: pack(), input: 'go', motivatingBeadId: 'w' }).catch((e: unknown) => e);
     expect(thrown).toBeInstanceOf(FormulaDispatchError);
     expect(h.events.find((e) => e.kind === 'dispatcher/step.verdict' && e.payload?.['stepName'] === 'tester')?.payload).toMatchObject({ verdict: 'unsettled' });
     const tester = await h.store.getBead(`${(thrown as FormulaDispatchError).moleculeId}-tester`);
     expect(String((tester?.metadata?.['exec'] as Record<string, unknown>)['error_trace'])).toContain('verdict unsettled (fail closed)');
+  });
+
+  it('final tester reports of unrun required checks fail closed; reviewer mentions are ignored', async () => {
+    for (const tester of [T6D3_BLOCKED_TESTER, ROUND3_UNRERUN_TESTER]) {
+      const h = harness([ROUND4_NIT_REVIEW], tester);
+      const thrown = await h.dispatcher.run({ formula: looping, pack: pack(), input: 'go', motivatingBeadId: 'w' }).catch((e: unknown) => e);
+      expect(thrown).toBeInstanceOf(FormulaDispatchError);
+      expect(h.events.find((e) => e.kind === 'dispatcher/step.verdict' && e.payload?.['stepName'] === 'tester')?.payload).toMatchObject({ verdict: 'unsettled' });
+    }
+    const reviewer = harness([ROUND8_REVIEWER, ROUND4_NIT_REVIEW]);
+    await expect(reviewer.dispatcher.run({ formula: looping, pack: pack(), input: 'go', motivatingBeadId: 'w' })).resolves.toBeDefined();
+    expect(reviewer.events.find((e) => e.kind === 'dispatcher/step.verdict')?.payload).toMatchObject({ stepName: 'reviewer', verdict: 'approve' });
+  });
+
+  it('the clean final tester reply approves despite mentioning completed checks', async () => {
+    const h = harness([ROUND4_NIT_REVIEW], ROUND10_CLEAN_TESTER);
+    await expect(h.dispatcher.run({ formula: looping, pack: pack(), input: 'go', motivatingBeadId: 'w' })).resolves.toBeDefined();
+    expect(h.events.find((e) => e.kind === 'dispatcher/step.verdict' && e.payload?.['stepName'] === 'tester')?.payload).toMatchObject({ verdict: 'approve' });
   });
 
   it('a judge failure is an error that fails the step, never a silent approval', async () => {
@@ -125,11 +153,13 @@ describe('step verdicts from the decision model (vibesync-9lzk.39)', () => {
 
 describe('decision table', () => {
   it('maps the probability bands to verdicts, with the band between failing closed', () => {
-    expect(decideStepVerdict({ asks_change: 0.98, blocks_only_on_pending_ci: 0.01, reports_all_gates_passed: 0.5 }, 's').kind).toBe('changes_requested');
-    expect(decideStepVerdict({ asks_change: 0.05, blocks_only_on_pending_ci: 0.01, reports_all_gates_passed: 0.9 }, 's').kind).toBe('approve');
-    expect(decideStepVerdict({ asks_change: 0.94, blocks_only_on_pending_ci: 0.97, reports_all_gates_passed: 0.1 }, 's').kind).toBe('await_ci');
-    expect(decideStepVerdict({ asks_change: 0.61, blocks_only_on_pending_ci: 0.02, reports_all_gates_passed: 0.04 }, 's').kind).toBe('unsettled');
-    expect(decideStepVerdict({ asks_change: 0.3, blocks_only_on_pending_ci: 0.0, reports_all_gates_passed: 0.9 }, 's').kind).toBe('unsettled');
+    expect(decideStepVerdict({ ...clean, asks_change: 0.98, reports_all_gates_passed: 0.5 }, 's', { finalStep: false }).kind).toBe('changes_requested');
+    expect(decideStepVerdict(clean, 's', { finalStep: true }).kind).toBe('approve');
+    expect(decideStepVerdict({ ...clean, asks_change: 0.94, blocks_only_on_pending_ci: 0.97, reports_all_gates_passed: 0.1 }, 's', { finalStep: false }).kind).toBe('await_ci');
+    expect(decideStepVerdict({ ...clean, asks_change: 0.61, blocks_only_on_pending_ci: 0.02, reports_all_gates_passed: 0.04 }, 's', { finalStep: false }).kind).toBe('unsettled');
+    expect(decideStepVerdict({ ...clean, asks_change: 0.3 }, 's', { finalStep: false }).kind).toBe('unsettled');
+    expect(decideStepVerdict({ ...clean, reports_unverified_check: 0.98 }, 'typecheck blocked', { finalStep: true })).toMatchObject({ kind: 'unsettled', reason: expect.stringContaining('typecheck blocked') });
+    expect(decideStepVerdict({ ...clean, reports_unverified_check: 0.98 }, 'reviewer', { finalStep: false }).kind).toBe('approve');
   });
   it('a marker line that contradicts an approval is unsettled, never an override either way', () => {
     expect(reconcileWithMarker({ kind: 'approve' }, 'the test cannot fail').kind).toBe('unsettled');
@@ -141,9 +171,9 @@ describe('decision table', () => {
 describe('TypeSafe client', () => {
   it('sends the questions with the state and reads noul answers; a non-OK response is an error', async () => {
     const calls: { url: string; body: unknown }[] = [];
-    const ok = createTypeSafeJudge({ apiKey: 'k', fetch: (async (url: string, init: RequestInit) => { calls.push({ url, body: JSON.parse(String(init.body)) }); return new Response(JSON.stringify({ model: 'jev-1.14.0', answers: { asks_change: { noul: 0.9 }, blocks_only_on_pending_ci: { noul: 0.1 }, reports_all_gates_passed: { noul: 0.2 } }, usage: { input_tokens: 123 } }), { status: 200 }); }) as typeof fetch });
+    const ok = createTypeSafeJudge({ apiKey: 'k', fetch: (async (url: string, init: RequestInit) => { calls.push({ url, body: JSON.parse(String(init.body)) }); return new Response(JSON.stringify({ model: 'jev-1.14.0', answers: { asks_change: { noul: 0.9 }, blocks_only_on_pending_ci: { noul: 0.1 }, reports_all_gates_passed: { noul: 0.2 }, reports_unverified_check: { noul: 0.3 } }, usage: { input_tokens: 123 } }), { status: 200 }); }) as typeof fetch });
     const r = await ok.judge({ role: 'reviewer', reply: 'x' });
-    expect(r).toEqual({ answers: { asks_change: 0.9, blocks_only_on_pending_ci: 0.1, reports_all_gates_passed: 0.2 }, model: 'jev-1.14.0', inputTokens: 123 });
+    expect(r).toEqual({ answers: { asks_change: 0.9, blocks_only_on_pending_ci: 0.1, reports_all_gates_passed: 0.2, reports_unverified_check: 0.3 }, model: 'jev-1.14.0', inputTokens: 123 });
     expect(calls[0]?.url).toBe('https://api.typesafe.ai/v1/systemone');
     expect((calls[0]?.body as { state: unknown }).state).toEqual({ role: 'reviewer', reply: 'x' });
     const bad = createTypeSafeJudge({ apiKey: 'k', fetch: (async () => new Response('nope', { status: 401 })) as typeof fetch });

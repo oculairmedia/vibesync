@@ -1,0 +1,10 @@
+**Result:** PASS
+
+**Suite:** All required local gates passed; PR #103 required checks are green.
+
+**Detail:**
+- `npm run type-check` and `node node_modules/typescript/bin/tsc --noEmit -p tests/tsconfig.json` — passed.
+- `scripts/ci/boot-check.sh 60` — passed.
+- Runtime mutation test — the provider test failed when `cwd` forwarding was removed; source restoration was byte-identical.
+- Full suite — 904 passed, 0 failed, 47 pending.
+- PR #103 is open with the required title. `typecheck`, `test (20.x)`, `test (18.x)`, and `boot` passed.

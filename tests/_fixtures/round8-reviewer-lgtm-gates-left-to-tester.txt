@@ -1,0 +1,8 @@
+**Checked:**
+- `src/engine/dispatcher/step-outcome.ts:16` adds short, shared instructions to rerun the failed check independently from the worktree, confirm an environment failure, and quote the proving command and output. Existing lines, `BLOCKED_MARKER`, and `parseBlockedOutcome` remain unchanged.
+- `src/engine/dispatcher/dispatcher.ts:731` appends the shared block to rendered prompts. No individual role prompt files changed.
+- `tests/unit/engine/dispatcher/blocked-outcome.test.ts:159` adds rendered-prompt assertions for both instructions; existing assertions remain intact.
+- `/tmp/engine-trial8-full.json` records 882 passed, 0 failed, and 47 pending. Handoff reports both local type checks, boot, and successful mutation validation with byte-for-byte restoration; tests were not rerun in this reviewer role.
+- Clean worktree at committed `07d2920`; open [PR #98](https://github.com/oculairmedia/vibesync/pull/98) has the requested title and matching head. Required checks `typecheck`, `test (20.x)`, and `boot` are completed successfully.
+
+**Verdict:** LGTM

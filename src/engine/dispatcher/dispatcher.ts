@@ -512,7 +512,8 @@ export class FormulaDispatcher implements ReadyStepRunner {
     if (!this.stepJudge || !judges) return marker;
     const judged = await this.stepJudge.judge({ role: args.stepSpec.role, reply: args.output });
     const summary = marker ?? firstLine(args.output);
-    const verdict: StepVerdict = reconcileWithMarker(decideStepVerdict(judged.answers, summary), marker);
+    const finalStep = steps[steps.length - 1]?.name === args.stepName;
+    const verdict: StepVerdict = reconcileWithMarker(decideStepVerdict(judged.answers, summary, { finalStep }), marker);
     this.emit('dispatcher/step.verdict', args.moleculeId, args.step.id, {
       stepName: args.stepName, role: args.stepSpec.role, stepId: args.step.id,
       verdict: verdict.kind, answers: judged.answers, model: judged.model, inputTokens: judged.inputTokens, marker: marker !== null,

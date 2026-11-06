@@ -1,0 +1,9 @@
+**Result:** PASS (targeted unit suite)
+
+**Command:** `bunx vitest run tests/unit/orchestration/scheduler/iroh-pm-wake-sink.test.ts`
+
+**Summary:** 18 tests passed, 0 failed.
+
+**TypeScript check:** `bunx tsc -p tsconfig.json --noEmit` was blocked by the missing `@number0/iroh` module at `src/orchestration/runtime/iroh/native-dialer.ts:104`.
+
+**PR:** https://github.com/oculairmedia/vibesync/pull/64

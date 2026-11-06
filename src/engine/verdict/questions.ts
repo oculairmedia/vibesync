@@ -48,6 +48,14 @@ export const STEP_REPLY_QUESTIONS = {
       false: 'the reply reports a failed check, or says some required check was not run, could not run, or is unverified',
     },
   },
+  reports_unverified_check: {
+    type: 'noul',
+    instructions: 'Does `reply` say that a check it was required to run could not run, was blocked, was skipped, or was left unverified?',
+    criteria: {
+      true: 'the reply names a check (a typecheck, a test run, a build, a mutation) that did not run to a result: it was blocked, failed to start, was skipped, or is described as unverified',
+      false: 'every check the reply mentions ran and gave a result, or the reply mentions no unrun check',
+    },
+  },
 } as const satisfies Record<string, NoulQuestion>;
 
 export type StepReplyQuestionId = keyof typeof STEP_REPLY_QUESTIONS;
