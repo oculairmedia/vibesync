@@ -174,6 +174,7 @@ export function startSchedulerDaemon(opts: StartOptions): SchedulerHandle {
     pack,
     formulaName: config.formula,
     projectIdentifier: config.projectIdentifier,
+    ...(logger ? { logger } : {}),
   });
   const github = selectGitHubPort(opts);
 

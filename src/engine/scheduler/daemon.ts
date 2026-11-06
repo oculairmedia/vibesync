@@ -80,6 +80,7 @@ export interface FormulaResolver {
     readonly pack: DispatchInput['pack'];
     readonly projectIdentifier: string;
     readonly input: string;
+    readonly stepTimeoutMs?: number;
   } | null>;
 }
 
@@ -358,6 +359,7 @@ export class SchedulerDaemon {
       input: resolved.input,
       motivatingBeadId: candidate.workBeadId,
       projectIdentifier: resolved.projectIdentifier,
+      ...(resolved.stepTimeoutMs !== undefined ? { stepTimeoutMs: resolved.stepTimeoutMs } : {}),
       onStarted: (id) => { moleculeId = id; },
     });
 
