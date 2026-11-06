@@ -266,6 +266,18 @@ describe('sweepAll', () => {
     expect(calls.length).toBe(4); // 2 projects × (set port + start)
   });
 
+  it('does not repair conflicts outside the explicit repairable set', async () => {
+    const runBd = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    const report = await sweepAll([projectA, projectB], makeDeps({
+      readPort: () => 3308,
+      runBd,
+    }), { apply: true, only: new Set(['a']), canRepair: () => false });
+    expect(report.conflicts.map((conflict) => conflict.project.identifier)).toEqual(['a']);
+    expect(report.repairs).toHaveLength(0);
+    expect(report.deferred).toEqual(['a']);
+    expect(runBd).not.toHaveBeenCalled();
+  });
+
   it('only honors the `only` filter', async () => {
     const report = await sweepAll(
       [projectA, projectB],

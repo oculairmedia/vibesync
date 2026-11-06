@@ -108,6 +108,7 @@ export interface SweepReport {
   readonly scanned: number;
   readonly conflicts: readonly PortConflict[];
   readonly repairs: readonly RepairResult[];
+  readonly deferred: readonly string[];
   readonly skipped: readonly { identifier: string; reason: string }[];
 }
 
@@ -117,6 +118,8 @@ export interface SweepOptions extends RepairOptions {
   readonly only?: ReadonlySet<string>;
   readonly portStart?: number;
   readonly portEnd?: number;
+  /** Called before each repair to exclude projects currently in backoff. */
+  readonly canRepair?: (project: SweeperProject) => boolean;
 }
 
 /* --------------------------------------------------------------------- *
@@ -383,6 +386,7 @@ export async function sweepAll(
 ): Promise<SweepReport> {
   const conflicts: PortConflict[] = [];
   const repairs: RepairResult[] = [];
+  const deferred: string[] = [];
   const skipped: { identifier: string; reason: string }[] = [];
 
   const selected = opts.only
@@ -402,7 +406,9 @@ export async function sweepAll(
     if (!conflict) continue;
     conflicts.push(conflict);
 
-    if (opts.apply) {
+    if (opts.apply && !(opts.canRepair?.(project) ?? true)) {
+      deferred.push(project.identifier);
+    } else if (opts.apply) {
       const newPort = pickFreePort(
         registry,
         deps,
@@ -414,5 +420,5 @@ export async function sweepAll(
     }
   }
 
-  return { scanned: selected.length, conflicts, repairs, skipped };
+  return { scanned: selected.length, conflicts, repairs, deferred, skipped };
 }

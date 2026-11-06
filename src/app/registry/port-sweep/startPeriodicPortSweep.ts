@@ -18,6 +18,7 @@
 import { sweepAll, type SweepReport, type SweeperProject } from './PortSweeper.js';
 
 export const DEFAULT_PORT_SWEEP_INTERVAL_MS = 120_000;
+const MAX_REPAIR_BACKOFF_MS = 30 * 60_000;
 
 export interface PeriodicSweepLogger {
   info?: (ctx: Record<string, unknown>, msg: string) => void;
@@ -56,16 +57,33 @@ export function startPeriodicPortSweep(deps: PeriodicSweepDeps): PeriodicSweepHa
   const clearIntervalFn = deps.clearInterval ?? clearInterval;
 
   let stopped = false;
+  const failures = new Map<string, { count: number; retryAt: number }>();
 
   async function runSweep(): Promise<SweepReport> {
     const registry = deps.listProjects();
     const only = deps.repairable?.();
-    const report = await sweepAll(registry, undefined, { apply: true, ...(only ? { only } : {}) });
+    const now = Date.now();
+    const report = await sweepAll(registry, undefined, {
+      apply: true,
+      ...(only ? { only } : {}),
+      canRepair: (project) => (failures.get(project.identifier)?.retryAt ?? 0) <= now,
+    });
+    for (const repair of report.repairs) {
+      if (repair.ok) {
+        failures.delete(repair.project.identifier);
+      } else {
+        const count = (failures.get(repair.project.identifier)?.count ?? 0) + 1;
+        const delay = Math.min(deps.intervalMs ?? DEFAULT_PORT_SWEEP_INTERVAL_MS, MAX_REPAIR_BACKOFF_MS)
+          * 2 ** Math.min(count - 1, 10);
+        failures.set(repair.project.identifier, { count, retryAt: now + Math.min(delay, MAX_REPAIR_BACKOFF_MS) });
+      }
+    }
     if (report.conflicts.length > 0) {
       deps.logger.warn?.(
         {
           scanned: report.scanned,
           conflicts: report.conflicts.length,
+          deferred: report.deferred.length,
           repaired: report.repairs.filter((r) => r.ok).length,
           failed: report.repairs.filter((r) => !r.ok).length,
           details: report.conflicts.map((c) => ({

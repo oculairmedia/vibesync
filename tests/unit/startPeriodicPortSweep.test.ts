@@ -11,6 +11,7 @@ import {
   startPeriodicPortSweep,
   type PeriodicSweepLogger,
 } from '../../src/app/registry/port-sweep/startPeriodicPortSweep.js';
+import * as portSweeper from '../../src/app/registry/port-sweep/PortSweeper.js';
 
 describe('startPeriodicPortSweep', () => {
   it('returns a handle with stop() that clears the interval', () => {
@@ -112,6 +113,43 @@ describe('startPeriodicPortSweep', () => {
       expect(sweepCalls.length).toBe(callsBeforeFurtherAdvance);
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('backs off a project after repeated repair failures', async () => {
+    const canRepairPredicates: ((project: { identifier: string; filesystem_path: string | null }) => boolean)[] = [];
+    const sweepSpy = vi.spyOn(portSweeper, 'sweepAll').mockImplementation(async (_registry, _deps, options) => {
+      const project = { identifier: 'failing', filesystem_path: '/failing' };
+      const canRepair = options?.canRepair ?? (() => true);
+      const eligible = canRepair(project);
+      canRepairPredicates.push(() => eligible);
+      const repairs = eligible
+        ? [{ ok: false, project, oldPort: 32000, newPort: 32001, error: 'embedded mode' }]
+        : [];
+      return {
+        scanned: 1,
+        conflicts: [{ kind: 'wrong-owner', project, currentPort: 32000, conflictsWith: [], detail: 'test' }],
+        repairs,
+        deferred: eligible ? [] : ['failing'],
+        skipped: [],
+      };
+    });
+    const handle = startPeriodicPortSweep({
+      listProjects: () => [{ identifier: 'failing', filesystem_path: '/failing' }],
+      logger: {},
+      intervalMs: 1000,
+      setInterval: () => null,
+      clearInterval: () => undefined,
+    });
+    try {
+      await handle.runOnce();
+      await handle.runOnce();
+      expect(sweepSpy).toHaveBeenCalledTimes(2);
+      expect(canRepairPredicates).toHaveLength(2);
+      expect(canRepairPredicates.map((canRepair) => canRepair({ identifier: 'failing', filesystem_path: '/failing' }))).toEqual([true, false]);
+    } finally {
+      handle.stop();
+      sweepSpy.mockRestore();
     }
   });
 });
