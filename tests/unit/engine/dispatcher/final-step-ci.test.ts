@@ -33,6 +33,10 @@ const REAL = {
   m9loPassIntegrationPending: { asks_change: 0.3, blocks_only_on_pending_ci: 0.75, reports_all_gates_passed: 0.14, reports_unverified_check: 0.57 },
   // v16a 17:24Z: clean PASS, all checks done.
   v16aCleanPass: { asks_change: 0.02, blocks_only_on_pending_ci: 0.05, reports_all_gates_passed: 0.5, reports_unverified_check: 0.04 },
+  // devj 20:46Z: "PASS ... integration-bd is in progress; not waited on, per instructions" -> wrongly escalated.
+  devjPassIntegrationNotWaited: { asks_change: 0.06, blocks_only_on_pending_ci: 0.59, reports_all_gates_passed: 0.5, reports_unverified_check: 0.81 },
+  // round 3: "PASS ... I did not rerun the required mutation" (a LOCAL check) -> must still fail closed.
+  round3MutationNotRerun: { asks_change: 0.03, blocks_only_on_pending_ci: 0.06, reports_all_gates_passed: 0.07, reports_unverified_check: 0.94 },
   // t6d3 fixture: PASS but the local typecheck was blocked (a check CI does not cover) -> must still fail closed.
   t6d3TypecheckBlocked: { asks_change: 0.61, blocks_only_on_pending_ci: 0.02, reports_all_gates_passed: 0.04, reports_unverified_check: 0.98 },
 };
@@ -109,6 +113,19 @@ describe('final step CI from the PR checks (vibesync-9lzk.46)', () => {
     const h = harness(REAL.m9loPassIntegrationPending, reader);
     await expect(run(h)).resolves.toBeDefined();
     expect(asked.flat()).not.toContain('integration-bd');
+  });
+
+  it('REGRESSION (devj 20:46Z): "PASS, integration-bd not waited on" is settled from the fast checks, not escalated', async () => {
+    const reader = scriptedReader([all('pass')]);
+    await expect(run(harness(REAL.devjPassIntegrationNotWaited, reader))).resolves.toBeDefined();
+    expect(reader.reads).toBe(1);
+  });
+
+  it('an approving reply that reports an unrun LOCAL check (round 3: mutation not rerun) still fails closed', async () => {
+    const reader = scriptedReader([all('pass')]);
+    const thrown = await run(harness(REAL.round3MutationNotRerun, reader)).catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(FormulaEscalationError);
+    expect(reader.reads).toBe(0);
   });
 
   it('a check that FAILS is a change request, never an approval', async () => {

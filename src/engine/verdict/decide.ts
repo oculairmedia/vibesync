@@ -46,6 +46,14 @@ export function decideStepVerdict(answers: StepReplyAnswers, summary: string, op
   if (options.finalStep && read(answers.blocks_only_on_pending_ci) === 'yes') {
     return { kind: 'check_ci', from: 'pending', reason: `the final-step reply waits on CI (blocks_only_on_pending_ci=${answers.blocks_only_on_pending_ci.toFixed(2)})` };
   }
+  // vibesync-9lzk.46 follow-up: an APPROVING final reply that mentions CI at
+  // all (the waits-on-CI reading is not a clear no) is settled from the checks
+  // too, e.g. "PASS; integration-bd is still running, not waited on". A reply
+  // that approves while reporting an unrun LOCAL check (waits-on-CI is a clear
+  // no) still falls through to the unverified rule below: CI cannot vouch for it.
+  if (options.finalStep && read(answers.asks_change) === 'no' && read(answers.blocks_only_on_pending_ci) !== 'no') {
+    return { kind: 'check_ci', from: 'pending', reason: `the final-step reply approves and mentions CI (blocks_only_on_pending_ci=${answers.blocks_only_on_pending_ci.toFixed(2)})` };
+  }
   if (options.finalStep && read(answers.reports_unverified_check) === 'yes') {
     return { kind: 'unsettled', reason: `the final-step reply reports a required check was not verified (reports_unverified_check=${answers.reports_unverified_check.toFixed(2)}): ${summary}` };
   }
