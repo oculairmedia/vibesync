@@ -86,6 +86,21 @@ describe('FormulaDispatcher', () => {
     expect(provider.recorder.starts.map((start) => (start.extra as Record<string, unknown>)['turnTimeoutMs'])).toEqual([1_800_000, 9_000]);
   });
 
+  it('passes the dispatch workdir to every step session', async () => {
+    const formula: Formula = {
+      name: 'workdir', description: '', whenToUse: '',
+      steps: [
+        { name: 'alpha', role: 'alpha', promptTemplate: 'prompts/alpha.md', waitFor: 'completion' },
+        { name: 'beta', role: 'beta', promptTemplate: 'prompts/beta.md', waitFor: 'completion' },
+      ],
+    };
+    const { dispatcher, provider } = newHarness({ script: scriptByRole({ alpha: 'a', beta: 'b' }) });
+
+    await dispatcher.run({ formula, pack: newPack({ roles: ['alpha', 'beta'], prompts: { 'prompts/alpha.md': 'A', 'prompts/beta.md': 'B' } }), input: 'go', workdir: '/opt/stacks/x' });
+
+    expect(provider.recorder.starts.map((start) => (start.extra as Record<string, unknown>)['workdir'])).toEqual(['/opt/stacks/x', '/opt/stacks/x']);
+  });
+
   // vibesync-u32z: the motivating bead must be carried on the completion event
   // so the writeback hook can resolve it directly from the event, not only by
   // re-reading the persisted molecule_root. On main the formula.completed

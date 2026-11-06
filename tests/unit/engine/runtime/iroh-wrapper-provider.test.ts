@@ -63,6 +63,17 @@ describe('IrohWrapperProvider', () => {
     expect(fake.violations).toEqual([]);
   });
 
+  it('passes a configured workdir as runtime_start cwd and omits cwd when unset', async () => {
+    const fake = new FakeIrohWrapper({ scope: SCOPE });
+    const p = mk(fake);
+    await runStep(p, baseSpec({ workdir: '/opt/stacks/x' }), 'with cwd');
+    await runStep(p, baseSpec(), 'without cwd');
+
+    const starts = fake.received.filter((frame) => frame['type'] === 'runtime_start');
+    expect(starts[0]).toMatchObject({ cwd: '/opt/stacks/x' });
+    expect(starts[1]).not.toHaveProperty('cwd');
+  });
+
   it('(CodeRabbit #55) two concurrent observers both wake on a live event (one notify slot loses a wakeup)', async () => {
     const p = mk(new FakeIrohWrapper({ scope: SCOPE }));
     const handle = await p.start(baseSpec());

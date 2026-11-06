@@ -58,6 +58,8 @@ export interface DispatchInput {
   readonly projectIdentifier?: string;
   /** Default turn timeout for every step; explicit formula-step timeouts win. */
   readonly stepTimeoutMs?: number;
+  /** Absolute directory in which the runtime starts each step session. */
+  readonly workdir?: string;
   /**
    * Called once, synchronously, as soon as the molecule exists (right after
    * the walker created it, BEFORE the first step runs) with its id
@@ -847,6 +849,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
         ...((stepSpec.turnTimeoutMs ?? args.input.stepTimeoutMs) !== undefined
           ? { turnTimeoutMs: stepSpec.turnTimeoutMs ?? args.input.stepTimeoutMs }
           : {}),
+        ...(args.input.workdir !== undefined ? { workdir: args.input.workdir } : {}),
       });
     } catch (error) {
       const bead = await this.walker.readStep(args.step.id).catch(() => null);
@@ -987,6 +990,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     readonly provider: RuntimeProvider;
     readonly projectIdentifier?: string;
     readonly turnTimeoutMs?: number;
+    readonly workdir?: string;
   }): Promise<{ readonly text: string; readonly eventCount: number }> {
     this.emit('dispatcher/step.started', args.moleculeId, args.stepId, {
       stepName: args.stepName,
@@ -1019,6 +1023,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
           ...(args.roleConfig.tools && args.roleConfig.tools.length > 0 ? { tools: [...args.roleConfig.tools] } : {}),
           ...(args.projectIdentifier ? { projectIdentifier: args.projectIdentifier } : {}),
           ...(args.turnTimeoutMs !== undefined ? { turnTimeoutMs: args.turnTimeoutMs } : {}),
+          ...(args.workdir !== undefined ? { workdir: args.workdir } : {}),
         },
       });
       const promptResult = await args.provider.prompt(handle, [{ type: 'text', text: args.rendered }]);

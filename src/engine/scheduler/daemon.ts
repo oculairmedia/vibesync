@@ -81,6 +81,7 @@ export interface FormulaResolver {
     readonly projectIdentifier: string;
     readonly input: string;
     readonly stepTimeoutMs?: number;
+    readonly workdir?: string;
   } | null>;
 }
 
@@ -360,6 +361,7 @@ export class SchedulerDaemon {
       motivatingBeadId: candidate.workBeadId,
       projectIdentifier: resolved.projectIdentifier,
       ...(resolved.stepTimeoutMs !== undefined ? { stepTimeoutMs: resolved.stepTimeoutMs } : {}),
+      ...(resolved.workdir !== undefined ? { workdir: resolved.workdir } : {}),
       onStarted: (id) => { moleculeId = id; },
     });
 

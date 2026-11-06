@@ -171,6 +171,7 @@ export interface BdFormulaResolverOptions {
 export class BdFormulaResolver implements FormulaResolver {
   private readonly formula: Pack['formulas'][number];
   private readonly warnedInvalidStepTimeoutBeadIds = new Set<string>();
+  private readonly warnedInvalidWorkdirBeadIds = new Set<string>();
 
   constructor(private readonly opts: BdFormulaResolverOptions) {
     const formula = opts.pack.formulas.find((f) => f.name === opts.formulaName);
@@ -196,9 +197,19 @@ export class BdFormulaResolver implements FormulaResolver {
     const stepTimeoutMs = typeof rawStepTimeoutMs === 'number' && Number.isInteger(rawStepTimeoutMs) && rawStepTimeoutMs > 0
       ? rawStepTimeoutMs
       : undefined;
+    const rawWorkdir = typeof metadata === 'object' && metadata !== null && !Array.isArray(metadata)
+      ? (metadata as Row)['workdir']
+      : undefined;
+    const workdir = typeof rawWorkdir === 'string' && rawWorkdir.length > 0 && rawWorkdir.startsWith('/')
+      ? rawWorkdir
+      : undefined;
     if (rawStepTimeoutMs !== undefined && stepTimeoutMs === undefined && !this.warnedInvalidStepTimeoutBeadIds.has(workBeadId)) {
       this.warnedInvalidStepTimeoutBeadIds.add(workBeadId);
       this.opts.logger?.warn?.({ workBeadId, stepTimeoutMs: rawStepTimeoutMs }, 'Ignoring invalid step_timeout_ms metadata');
+    }
+    if (rawWorkdir !== undefined && workdir === undefined && !this.warnedInvalidWorkdirBeadIds.has(workBeadId)) {
+      this.warnedInvalidWorkdirBeadIds.add(workBeadId);
+      this.opts.logger?.warn?.({ workBeadId, workdir: rawWorkdir }, 'Ignoring invalid workdir metadata');
     }
     return {
       formula: this.formula,
@@ -206,6 +217,7 @@ export class BdFormulaResolver implements FormulaResolver {
       projectIdentifier: this.opts.projectIdentifier,
       input: `Bead ${workBeadId}: ${title}${description ? `\n\n${description}` : ''}`,
       ...(stepTimeoutMs !== undefined ? { stepTimeoutMs } : {}),
+      ...(workdir !== undefined ? { workdir } : {}),
     };
   }
 }
