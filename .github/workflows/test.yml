@@ -77,36 +77,6 @@ jobs:
       - name: Run linter
         run: npm run lint --if-present
 
-      - name: Install pinned bd for isolated integration suites
-        if: matrix.node-version == '20.x'
-        run: |
-          set -euo pipefail
-          archive=beads_1.3.2_linux_amd64.tar.gz
-          curl -fsSLO "https://github.com/gastownhall/beads/releases/download/v1.3.2/$archive"
-          echo "c6ea3281f6ff82628351b2d0967c9eb85862c8a0ec0ebc24e63e645c8b02462e  $archive" | sha256sum --check
-          mkdir -p "$RUNNER_TEMP/bd"
-          tar -xzf "$archive" -C "$RUNNER_TEMP/bd"
-          bd_binary="$(find "$RUNNER_TEMP/bd" -type f -name bd -print -quit)"
-          test -n "$bd_binary"
-          chmod +x "$bd_binary"
-          "$bd_binary" version
-          echo "VIBESYNC_BD_BINARY=$bd_binary" >> "$GITHUB_ENV"
-
-      - name: Install pinned Dolt for isolated integration suites
-        if: matrix.node-version == '20.x'
-        run: |
-          set -euo pipefail
-          archive=dolt-linux-amd64.tar.gz
-          curl -fsSLO "https://github.com/dolthub/dolt/releases/download/v2.7.2/$archive"
-          echo "72825a65d96bf0a0967ec408ad43bc21afc9b1c899b84cb84344a35f567fb11f  $archive" | sha256sum --check
-          mkdir -p "$RUNNER_TEMP/dolt"
-          tar -xzf "$archive" -C "$RUNNER_TEMP/dolt"
-          dolt_binary="$(find "$RUNNER_TEMP/dolt" -type f -name dolt -print -quit)"
-          test -n "$dolt_binary"
-          chmod +x "$dolt_binary"
-          "$dolt_binary" version
-          echo "$(dirname "$dolt_binary")" >> "$GITHUB_PATH"
-
       # One test run per job. On 20.x that run also collects coverage; it used
       # to run the full suite twice more (test:coverage, then the threshold
       # step re-ran test:coverage), ~140 s each. The gate is the same suite.
@@ -116,10 +86,6 @@ jobs:
 
       - name: Run tests with coverage
         if: matrix.node-version == '20.x'
-        env:
-          VIBESYNC_TEST_BD: ${{ env.VIBESYNC_BD_BINARY }}
-          VIBESYNC_TEST_BD_WAKES: ${{ env.VIBESYNC_BD_BINARY }}
-          VIBESYNC_TEST_BD_WAITS: ${{ env.VIBESYNC_BD_BINARY }}
         run: bun run build:openapi && bunx vitest run --coverage
 
       - name: Upload coverage to Codecov
@@ -147,3 +113,61 @@ jobs:
             coverage/
             html/
           retention-days: 30
+
+  # The bd-backed integration suites (vibesync-yhs0) run in their own job so the
+  # required `test (20.x)` job stays fast: these suites wait out real bd lease
+  # and claim timers and took the 20.x job from ~2 to ~24 minutes. Same pinned,
+  # checksum-verified bd and Dolt; only the real-bd suites run here.
+  integration-bd:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: |
+          bun install --frozen-lockfile --ignore-scripts
+          npm rebuild better-sqlite3
+
+      - name: Install pinned bd for isolated integration suites
+        run: |
+          set -euo pipefail
+          archive=beads_1.3.2_linux_amd64.tar.gz
+          curl -fsSLO "https://github.com/gastownhall/beads/releases/download/v1.3.2/$archive"
+          echo "c6ea3281f6ff82628351b2d0967c9eb85862c8a0ec0ebc24e63e645c8b02462e  $archive" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/bd"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/bd"
+          bd_binary="$(find "$RUNNER_TEMP/bd" -type f -name bd -print -quit)"
+          test -n "$bd_binary"
+          chmod +x "$bd_binary"
+          "$bd_binary" version
+          echo "VIBESYNC_BD_BINARY=$bd_binary" >> "$GITHUB_ENV"
+
+      - name: Install pinned Dolt for isolated integration suites
+        run: |
+          set -euo pipefail
+          archive=dolt-linux-amd64.tar.gz
+          curl -fsSLO "https://github.com/dolthub/dolt/releases/download/v2.7.2/$archive"
+          echo "72825a65d96bf0a0967ec408ad43bc21afc9b1c899b84cb84344a35f567fb11f  $archive" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/dolt"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/dolt"
+          dolt_binary="$(find "$RUNNER_TEMP/dolt" -type f -name dolt -print -quit)"
+          test -n "$dolt_binary"
+          chmod +x "$dolt_binary"
+          "$dolt_binary" version
+          echo "$(dirname "$dolt_binary")" >> "$GITHUB_PATH"
+
+      - name: Run bd-backed integration suites
+        env:
+          VIBESYNC_TEST_BD: ${{ env.VIBESYNC_BD_BINARY }}
+          VIBESYNC_TEST_BD_WAKES: ${{ env.VIBESYNC_BD_BINARY }}
+          VIBESYNC_TEST_BD_WAITS: ${{ env.VIBESYNC_BD_BINARY }}
+        run: bun run build:openapi && bunx vitest run tests/integration
