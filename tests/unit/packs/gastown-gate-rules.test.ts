@@ -61,3 +61,9 @@ describe('gastown coder prompt', () => {
     expect(coder).toContain('work bead id');
   });
 });
+
+describe('gastown mayor prompt', () => {
+  it('uses the engine-rendered ordered formula role list', () => {
+    expect(prompt('mayor')).toContain('The roles in this formula, in order: ${roles}');
+  });
+});

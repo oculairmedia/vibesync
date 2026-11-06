@@ -930,7 +930,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
       packRoot: args.input.pack.root,
       template: stepSpec.promptTemplate,
       context: {
-        ...renderContext(args.input.input, args.outputs),
+        ...renderContext(args.input.input, args.outputs, args.input.formula.steps),
         step_id: args.step.id,
         attempt: state.attempt,
       },
@@ -1372,10 +1372,11 @@ function sessionEventPayload(event: SessionEvent): Readonly<Record<string, unkno
   }
 }
 
-function renderContext(input: string, outputs: Readonly<Record<string, string>>): Readonly<Record<string, string | number | boolean>> {
+function renderContext(input: string, outputs: Readonly<Record<string, string>>, steps: readonly StepSpec[]): Readonly<Record<string, string | number | boolean>> {
   const context: Record<string, string> = {
     input,
     prior_outputs: formatPriorOutputs(outputs),
+    roles: steps.map((step) => step.role).join(', '),
   };
   for (const [stepName, output] of Object.entries(outputs)) {
     context[`prior_${stepName}`] = output;

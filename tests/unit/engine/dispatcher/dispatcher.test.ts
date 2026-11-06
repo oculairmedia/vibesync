@@ -179,6 +179,35 @@ describe('FormulaDispatcher', () => {
     expect(reviewerPrompt?.type === 'text' ? reviewerPrompt.text : '').toContain('## coder\ncoder patch summary');
   });
 
+  it('renders ordered formula roles for the mayor when the input names none', async () => {
+    const formula: Formula = {
+      name: 'onboard-feature',
+      description: '',
+      whenToUse: '',
+      steps: [
+        { name: 'mayor', role: 'mayor', promptTemplate: 'prompts/mayor.md', waitFor: 'completion' },
+        { name: 'coder', role: 'coder', promptTemplate: 'prompts/coder.md', dependsOn: ['mayor'], waitFor: 'completion' },
+        { name: 'reviewer', role: 'reviewer', promptTemplate: 'prompts/reviewer.md', dependsOn: ['coder'], waitFor: 'completion' },
+        { name: 'tester', role: 'tester', promptTemplate: 'prompts/tester.md', dependsOn: ['reviewer'], waitFor: 'completion' },
+      ],
+    };
+    const pack = newPack({
+      roles: ['mayor', 'coder', 'reviewer', 'tester'],
+      prompts: {
+        'prompts/mayor.md': 'Roles in order: ${roles}\nTask: ${input}',
+        'prompts/coder.md': 'Coder',
+        'prompts/reviewer.md': 'Reviewer',
+        'prompts/tester.md': 'Tester',
+      },
+    });
+    const { dispatcher, provider } = newHarness({ script: scriptByRole({ mayor: 'plan' }) });
+
+    await dispatcher.run({ formula, pack, input: 'Build a feature with no role names in this request.' });
+
+    const mayorPrompt = provider.recorder.prompts[0]?.content[0];
+    expect(mayorPrompt?.type === 'text' ? mayorPrompt.text : '').toContain('Roles in order: mayor, coder, reviewer, tester');
+  });
+
   it('fails the current step and does not start successors when the provider emits an error', async () => {
     const { dispatcher, store, provider } = newHarness({
       script: (spec) => eventScript(spec.role === 'reviewer' ? [{ kind: 'error', message: 'review exploded' }] : []),
