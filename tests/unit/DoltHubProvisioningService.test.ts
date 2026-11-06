@@ -88,6 +88,11 @@ describe('DoltHubProvisioningService', () => {
       logger: { error: vi.fn() },
       fetchImpl,
       commandRunner,
+      // vibesync-9lzk.51: hermetic. The default probe reads the HOST's listening
+      // ports (ss), so this test failed on any machine already using 32000-32001
+      // (the PM host) while passing on CI. Pretend nothing is listening, and
+      // keep the sweep's other defaults (real file reads in the temp projects).
+      portSweeperDeps: { ...defaultPortSweeperDeps, listeningPorts: () => new Set<number>(), portOwnerCwd: () => null },
     });
   });
 
