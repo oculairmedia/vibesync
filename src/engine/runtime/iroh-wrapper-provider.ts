@@ -99,6 +99,8 @@ interface SessionState {
   readonly attempt: number | null;
   /** Infra failures this step already absorbed (vibesync-ynmp): they do not bump `attempt`, so they must still change the client message id. */
   readonly infraRetries: number;
+  /** vibesync-9lzk.41: the step's review round (1 = first run); part of the client message id. */
+  readonly reviewRound: number;
   readonly abort: AbortController;
   readonly seenTurnIds: Set<string>;
   conversationId: string | null;
@@ -175,6 +177,7 @@ export class IrohWrapperProvider implements RuntimeProvider {
       ),
       attempt: typeof attempt === 'number' && Number.isFinite(attempt) ? attempt : null,
       infraRetries: readNumberExtra(spec, 'infraRetries') ?? 0,
+      reviewRound: readNumberExtra(spec, 'reviewRound') ?? 1,
       abort: new AbortController(),
       seenTurnIds: new Set(),
       conversationId: null,
@@ -395,7 +398,11 @@ function clientMessageIdFor(state: SessionState, handleId: string): string {
   if (state.moleculeId && state.stepName) {
     const attempt = `${state.attempt ?? 1}${state.infraRetries > 0 ? `r${state.infraRetries}` : ''}`;
     const seq = state.promptCount > 1 ? `:p${state.promptCount}` : '';
-    return `vibesync:${state.moleculeId}:${state.stepName}:a${attempt}${seq}`;
+    // vibesync-9lzk.41: a review round reopens the step with fresh attempt
+    // counters; without the round in the id, round 2 repeats round 1's id and
+    // the host drops it as a duplicate. Round 1 keeps the old shape.
+    const round = state.reviewRound > 1 ? `:r${state.reviewRound}` : '';
+    return `vibesync:${state.moleculeId}:${state.stepName}${round}:a${attempt}${seq}`;
   }
   return `vibesync:${handleId}:${state.promptCount}:${randomUUID()}`;
 }

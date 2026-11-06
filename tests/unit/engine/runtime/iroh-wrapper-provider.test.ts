@@ -255,6 +255,42 @@ describe('IrohWrapperProvider', () => {
     });
   });
 
+  // ───────────────────────── vibesync-9lzk.41: review rounds get their own message id ─────────────────────────
+
+  describe('a review round sends a prompt the host has not seen (vibesync-9lzk.41)', () => {
+    it('REGRESSION (round 12): round 2 of a step gets a reply; it is not dropped as round 1\'s duplicate', async () => {
+      const fake = new FakeIrohWrapper({ scope: SCOPE });
+      const p = mk(fake);
+      // Round 1 of the coder step, then the loop reopens it: fresh attempt counter, review round 2.
+      const r1 = await runStep(p, baseSpec({ stepName: 'coder', attempt: 1 }), 'round 1 task');
+      expect(r1.some((e) => e.kind === 'message-delta')).toBe(true);
+      const r2 = await runStep(p, baseSpec({ stepName: 'coder', attempt: 1, reviewRound: 2 }), 'round 2: apply the review');
+      expect(fake.duplicatesIgnored).toEqual([]);
+      expect(r2.some((e) => e.kind === 'message-delta')).toBe(true);
+      const ids = fake.received.filter((f) => f['type'] === 'input').map((f) => (((f['payload'] as Record<string, unknown>)['messages'] as Record<string, unknown>[])[0]!)['client_message_id']);
+      expect(ids).toEqual(['vibesync:mol-1:coder:a1', 'vibesync:mol-1:coder:r2:a1']);
+    });
+
+    it('round 1 keeps the existing id shape (redial dedupe of a normal step is unchanged)', async () => {
+      const fake = new FakeIrohWrapper({ scope: SCOPE });
+      const p = mk(fake);
+      await runStep(p, baseSpec({ stepName: 'coder', attempt: 1, reviewRound: 1 }), 'x');
+      const id = (((fake.received.find((f) => f['type'] === 'input')!['payload'] as Record<string, unknown>)['messages'] as Record<string, unknown>[])[0]!)['client_message_id'];
+      expect(id).toBe('vibesync:mol-1:coder:a1');
+    });
+
+    it('the fake host drops a repeated client_message_id in a NEW conversation, like the real host', async () => {
+      const fake = new FakeIrohWrapper({ scope: SCOPE });
+      const p = mk(fake);
+      await runStep(p, baseSpec({ stepName: 'coder', attempt: 1 }), 'first');
+      const second = runStep(p, baseSpec({ stepName: 'coder', attempt: 1 }), 'same id, new conversation');
+      // No turn runs for the duplicate: the step waits until its turn timeout.
+      const outcome = await Promise.race([second.then(() => 'finished'), new Promise((r) => setTimeout(() => r('still waiting'), 300))]);
+      expect(outcome).toBe('still waiting');
+      expect(fake.duplicatesIgnored).toHaveLength(1);
+    });
+  });
+
   // ───────────────────────── vibesync-jni4: direct role dispatch ─────────────────────────
 
   describe('direct dispatch to the role agent (vibesync-jni4)', () => {

@@ -115,6 +115,9 @@ export class FakeIrohWrapper {
   private readonly messages = new Map<string, F[]>();
   private readonly parked = new Map<string, F[]>();
   private readonly seenCmids = new Set<string>();
+  private readonly seenCmidConvs = new Set<string>();
+  /** Inputs the host dropped as already-handled ids in another conversation (no turn ran). */
+  readonly duplicatesIgnored: { conversationId: string; clientMessageId: string }[] = [];
   private links: Array<{ stream: Queue; control: Queue; authed: boolean; dead: boolean }> = [];
   private eventSeq = 0;
   private lastCmidByConv = new Map<string, string>();
@@ -400,7 +403,15 @@ export class FakeIrohWrapper {
     }
     if (this.rejectInput) return reject(this.rejectInput);
 
-    if (this.seenCmids.has(`${conv}/${cmid}`)) {
+    // Real host: clientMessageDedupe.markHandled(clientMsgId) keys on the id ALONE,
+    // across conversations (letta-mobile IrohNodeConnection). A repeated id in a
+    // NEW conversation is ignored too, and no turn runs (vibesync-9lzk.41).
+    if (this.seenCmids.has(cmid) && !this.seenCmidConvs.has(`${conv}/${cmid}`)) {
+      this.duplicatesIgnored.push({ conversationId: conv, clientMessageId: cmid });
+      this.reply(l, { type: 'input_accepted', request_id: rid, runtime: rt, accepted: true, disposition: 'started' });
+      return;
+    }
+    if (this.seenCmidConvs.has(`${conv}/${cmid}`)) {
       // dedupe: ack as already-known; replay parked frames incl. the terminal.
       this.reply(l, { type: 'input_accepted', request_id: rid, runtime: rt, accepted: true, disposition: 'started' });
       if (this.replay) {
@@ -408,7 +419,8 @@ export class FakeIrohWrapper {
       }
       return;
     }
-    this.seenCmids.add(`${conv}/${cmid}`);
+    this.seenCmids.add(cmid);
+    this.seenCmidConvs.add(`${conv}/${cmid}`);
     this.lastCmidByConv.set(conv, cmid);
     this.parked.set(conv, []);
     const text = ((f['payload'] as F)['messages'] as F[])[0]!['content'];
