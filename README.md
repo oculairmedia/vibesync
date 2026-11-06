@@ -11,14 +11,6 @@ small local SQLite registry for project metadata and role-agent bindings; this
 registry is not a mirror of Beads work. The service also exposes an HTTP API for
 health, formulas, molecules, and project registry operations.
 
-**Legacy context:** Huly issue synchronization and Temporal-based scheduling
-are retired and are not part of the current orchestration path. References to
-them in historical architecture documents, migrations, or compatibility
-surfaces describe legacy behavior only. The active work tracker is Beads, and
-the active agent transport is Iroh. The engine currently runs in TypeScript on
-Bun; embedding it in Meridian is an intended future direction, not the current
-deployment model.
-
 ## Prerequisites
 
 - Bun 1.2.10 or newer, Git, Beads 1.3.2 or newer, and Dolt.
