@@ -155,6 +155,16 @@ describe('blocked step outcome (vibesync-zvcm)', () => {
       expect(text).toContain(STEP_OUTCOME_INSTRUCTIONS.trim());
     }
   });
+
+  it('every rendered step prompt requires re-checking command failures and quoting proof', async () => {
+    const h = harness(() => reply('ok'));
+    await h.dispatcher.run({ formula, pack: pack(), input: 'go' });
+    for (const p of h.provider.recorder.prompts) {
+      const text = p.content.map((c) => ('text' in c ? c.text : '')).join('');
+      expect(text).toContain('Before using that line because a command failed, rerun the failing check by itself');
+      expect(text).toContain('quote the proving command and its output in your reason.');
+    }
+  });
 });
 
 describe('parseBlockedOutcome', () => {
