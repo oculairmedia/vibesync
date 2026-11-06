@@ -30,6 +30,10 @@ export interface RecoveryStore {
   markMoleculeRootStatus(rootId: string, status: 'closed', outcome: 'interrupted'): Promise<void>;
 }
 
+export interface RecoverableStepResumer {
+  resume(moleculeId: string): Promise<unknown>;
+}
+
 export interface RecoveryEmitter {
   (moleculeId: string, payload: Readonly<Record<string, unknown>>): void;
 }
@@ -49,13 +53,21 @@ const MAX_ROOTS = 500;
  * One molecule failing to close is reported, not fatal: boot continues and the
  * remaining molecules are still retired.
  */
-export async function recoverInterruptedMolecules(store: RecoveryStore, emit: RecoveryEmitter): Promise<RecoveryReport> {
+export async function recoverInterruptedMolecules(
+  store: RecoveryStore,
+  emit: RecoveryEmitter,
+  resumer?: RecoverableStepResumer,
+): Promise<RecoveryReport> {
   const roots = await store.listMoleculeRoots({ statuses: OPEN_STATUSES, limit: MAX_ROOTS });
   const interrupted: string[] = [];
   const failed: Array<{ moleculeId: string; error: string }> = [];
   for (const root of roots) {
     try {
       const steps = await unfinishedSteps(store, root.id);
+      if (resumer && steps.some(isResumableIrohStep)) {
+        await resumer.resume(root.id);
+        continue;
+      }
       // bd refuses to close a step that is still blocked by an open step
       // ("cannot close blocked issue: B is blocked by [A]"), so close in
       // dependency order: every step after the steps it waits on.
@@ -74,6 +86,14 @@ export async function recoverInterruptedMolecules(store: RecoveryStore, emit: Re
     }
   }
   return { interrupted, failed };
+}
+
+function isResumableIrohStep(step: BeadRow): boolean {
+  const exec = step.metadata['exec'];
+  if (typeof exec !== 'object' || exec === null) return false;
+  const fields = exec as Record<string, unknown>;
+  return step.status === 'in_progress' && fields['provider_kind'] === 'letta-code-iroh'
+    && typeof fields['conversation_id'] === 'string' && fields['conversation_id'].length > 0;
 }
 
 /** Every child step that is not closed (ready, blocked, or in progress). */

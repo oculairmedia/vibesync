@@ -323,7 +323,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   // the work itself is dispatched again. Decision: close and re-run, do not
   // resume (Emmanuel, 2026-11-04).
   const recovered = await recoverInterruptedMolecules(beads, (moleculeId, payload) =>
-    bus.emit({ layer: 'dispatcher', kind: INTERRUPTED_EVENT, molecule_id: moleculeId, payload }));
+    bus.emit({ layer: 'dispatcher', kind: INTERRUPTED_EVENT, molecule_id: moleculeId, payload }), dispatcher);
   if (recovered.interrupted.length > 0 || recovered.failed.length > 0) {
     // eslint-disable-next-line no-console
     console.warn('[orchestration:recovery] interrupted molecules retired', { interrupted: recovered.interrupted, failed: recovered.failed });

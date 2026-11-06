@@ -209,6 +209,33 @@ describe('turn-client against a wrapper that enforces the real preconditions', (
     expect(r.finalText).toBe('RECONCILED-ANSWER');
   });
 
+  it('cold resume reconciles from message.list even without a replayed terminal frame', async () => {
+    vi.useFakeTimers();
+    const fake = new FakeIrohWrapper();
+    fake.script = { deltas: [], stopReason: 'end_turn', finalText: 'COLD-RESUME-ANSWER' };
+    conn = mk(fake);
+    await conn.connect();
+    const conv = await createConversation(conn, AGENT);
+    fake.dropAfterAccept = 'restart';
+    const first = runTurn(conn, { agentId: AGENT, conversationId: conv, text: 'original work', clientMessageId: 'cm-cold' }, {
+      replayWaitMs: 10, reconcileIntervalMs: 10, turnTimeoutMs: 1_000,
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    expect((await first).boundary).toBe('completed');
+    const restartedConn = mk(fake);
+    conn = restartedConn;
+    const resumed = runTurn(restartedConn, { agentId: AGENT, conversationId: conv, text: 'original work', clientMessageId: 'cm-cold' }, {
+      replayWaitMs: 10, reconcileIntervalMs: 10, turnTimeoutMs: 1_000,
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    const result = await resumed;
+    expect(result.boundary).toBe('completed');
+    expect(result.reconciled).toBe(true);
+    expect(result.finalText).toBe('COLD-RESUME-ANSWER');
+    expect(fake.inputsFor('cm-cold')).toHaveLength(3);
+    expect(fake.turnsExecuted).toBe(1);
+  });
+
   it('forbidden agent -> refusal, NOT retried', async () => {
     const fake = new FakeIrohWrapper({ scope: ['agent-other'] });
     conn = mk(fake);

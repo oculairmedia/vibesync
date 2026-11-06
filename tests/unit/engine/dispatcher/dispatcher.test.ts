@@ -9,6 +9,7 @@ import { FormulaDispatchError, FormulaDispatcher } from '../../../../src/engine/
 import { MoleculeWalker, newMoleculeStepId } from '../../../../src/engine/molecule/index.js';
 import type { Pack } from '../../../../src/engine/packs/index.js';
 import type { RuntimeProvider, SessionEvent, SessionSpec } from '../../../../src/engine/runtime/index.js';
+import { IROH_PROVIDER_KIND } from '../../../../src/engine/runtime/index.js';
 import { STEP_OUTCOME_INSTRUCTIONS } from '../../../../src/engine/dispatcher/step-outcome.js';
 import { newFakeProvider } from '../../../_fixtures/fake-provider.js';
 import { newDriven } from '../../../_fixtures/step-driver.js';
@@ -414,6 +415,35 @@ describe('FormulaDispatcher', () => {
     expect((await store.getBead(stepId))?.metadata).toMatchObject({
       exec: { error_trace: expect.stringContaining('has no metadata.exec.task_id') },
     });
+  });
+
+  it('resumes an Iroh step without task_id using its persisted conversation and stable message id', async () => {
+    const { dispatcher, store, provider } = newHarness({ script: (spec) => eventScript([
+      { kind: 'message-delta', text: `recovered ${String(spec.extra?.['resumeClientMessageId'] ?? '')}` },
+    ]) });
+    const walker = new MoleculeWalker(store);
+    const view = await walker.dispatch({
+      prefix: 'mol', formulaName: 'code-review', title: '[formula:code-review] Code review',
+      steps: [{ name: 'reviewer', role: 'reviewer' }],
+    });
+    const stepId = newMoleculeStepId(view.rootId, 'reviewer');
+    await walker.startStep(stepId);
+    await walker.recordStepTask(stepId, {
+      providerKind: IROH_PROVIDER_KIND,
+      sessionId: `${IROH_PROVIDER_KIND}:agent-role:reviewer:1`,
+      conversationId: 'conv-persisted',
+      inputPayload: { prompt: 'exact interrupted prompt' },
+    });
+
+    const result = await dispatcher.resume(view.rootId);
+    const expectedId = `vibesync:${view.rootId}:reviewer:a1`;
+    expect(result.outputs.reviewer).toBe(`recovered ${expectedId}`);
+    expect(provider.recorder.starts[0]?.extra).toMatchObject({
+      resumeConversationId: 'conv-persisted',
+      resumeClientMessageId: expectedId,
+      providerKind: IROH_PROVIDER_KIND,
+    });
+    expect(provider.recorder.prompts[0]?.content).toEqual([{ type: 'text', text: 'exact interrupted prompt' }]);
   });
 
   it('cancels running steps, stops persisted sessions, and emits cancellation events', async () => {

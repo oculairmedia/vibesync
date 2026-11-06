@@ -12,6 +12,7 @@ interface RootInsert {
   readonly title: string;
   readonly motivatingBeadId?: string;
   readonly delivers?: string;
+  readonly projectIdentifier?: string;
   readonly metadata?: Record<string, unknown>;
 }
 
@@ -57,6 +58,7 @@ export class InMemoryDoltClient {
         formula: args.formulaName,
         ...(args.motivatingBeadId ? { motivating_bead: args.motivatingBeadId } : {}),
         ...(args.delivers ? { delivers: args.delivers } : {}),
+        ...(args.projectIdentifier ? { project_identifier: args.projectIdentifier } : {}),
       },
     };
     this.beads.set(
@@ -133,6 +135,7 @@ export class InMemoryDoltClient {
     readonly providerKind: string;
     readonly sessionId: string;
     readonly conversationId?: string;
+    readonly inputPayload?: unknown;
   }): Promise<void> {
     const row = this.requireBead(stepId);
     this.updateBead(stepId, {
@@ -141,6 +144,7 @@ export class InMemoryDoltClient {
         provider_kind: task.providerKind,
         session_id: task.sessionId,
         ...(task.conversationId ? { conversation_id: task.conversationId } : {}),
+        ...(task.inputPayload !== undefined ? { input_payload: task.inputPayload } : {}),
       }),
     });
   }

@@ -114,6 +114,8 @@ export interface MoleculeStore {
     readonly motivatingBeadId?: string;
     /** Persisted so resume() can still enforce the formula's delivery (vibesync-9lzk.21). */
     readonly delivers?: string;
+    /** Persisted so a resumed provider can recover project-scoped agent routing. */
+    readonly projectIdentifier?: string;
   }): Promise<void>;
   insertMoleculeStep(args: {
     readonly id: string;
@@ -121,6 +123,7 @@ export interface MoleculeStore {
     readonly stepName: string;
     readonly title: string;
     readonly dependsOnStepIds?: readonly string[];
+    readonly inputPayload?: unknown;
   }): Promise<void>;
   findReadyStepsForMolecule(rootId: string): Promise<readonly BeadRow[]>;
   findRunningStepsForMolecule(rootId: string): Promise<readonly BeadRow[]>;
@@ -128,23 +131,16 @@ export interface MoleculeStore {
   listMoleculeRoots(opts?: { statuses?: readonly string[]; limit?: number }): Promise<readonly BeadRow[]>;
   markStepRunning(stepId: string): Promise<void>;
   recordStepTask(stepId: string, task: {
-    /**
-     * Provider-opaque task id for restart re-attachment (f5g). Optional:
-     * the Iroh provider reports only a conversation id, so its steps carry
-     * no task id. `FormulaDispatcher.resume` needs a task id and fails a
-     * running step without one; on restart, boot instead closes interrupted
-     * molecules and the scheduler re-runs the work (vibesync-9lzk.9).
-     */
+    /** Provider-opaque task id for restart re-attachment (f5g). */
     readonly taskId?: string;
     readonly providerKind: string;
     readonly sessionId: string;
     /**
-     * Optional persistent-subagent conversation id (vibesync-mcz
-     * Phase D). When present, persisted as metadata.exec.conversation_id
-     * alongside task_id so a future resume can re-attach to the
-     * same conversation on the persistent role agent.
+     * Optional Iroh role-agent conversation id. The dispatcher combines it
+     * with the stable step identity to replay the original client message.
      */
     readonly conversationId?: string;
+    readonly inputPayload?: unknown;
   }): Promise<void>;
   recordStepAttempt(stepId: string, attempt: number): Promise<void>;
   /** vibesync-ynmp: reopen a failed try so the bead graph re-offers the step; the counters live on the bead. */
@@ -297,6 +293,8 @@ export class MoleculeWalker {
     readonly title: string;
     readonly motivatingBeadId?: string;
     readonly delivers?: string;
+    readonly projectIdentifier?: string;
+    readonly inputPayload?: unknown;
     readonly steps: readonly StepSpec[];
   }): Promise<MoleculeView> {
     const rootId = newMoleculeRootId(args.prefix);
@@ -306,6 +304,7 @@ export class MoleculeWalker {
       title: args.title,
       ...(args.motivatingBeadId ? { motivatingBeadId: args.motivatingBeadId } : {}),
       ...(args.delivers ? { delivers: args.delivers } : {}),
+      ...(args.projectIdentifier ? { projectIdentifier: args.projectIdentifier } : {}),
     });
     // Insert steps in declared order so depends_on references already exist.
     const stepIdByName = new Map<string, string>();
@@ -327,6 +326,7 @@ export class MoleculeWalker {
         stepName: step.name,
         title: `[formula:${args.formulaName}/step:${step.name}] ${step.role}`,
         dependsOnStepIds: dependsOnIds,
+        ...(args.inputPayload !== undefined ? { inputPayload: args.inputPayload } : {}),
       });
     }
     const loaded = await this.load(rootId);
@@ -352,6 +352,7 @@ export class MoleculeWalker {
     readonly providerKind: string;
     readonly sessionId: string;
     readonly conversationId?: string;
+    readonly inputPayload?: unknown;
   }): Promise<void> {
     await this.store.recordStepTask(stepId, task);
   }

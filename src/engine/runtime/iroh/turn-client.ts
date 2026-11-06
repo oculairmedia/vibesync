@@ -271,7 +271,7 @@ async function attempt(ctx: TurnContext, redialed: boolean): Promise<Outcome> {
       };
     }
     o.onProgress?.({ kind: 'accepted', ...(submitted.disposition ? { disposition: submitted.disposition } : {}) });
-    return await waitForTurnEnd(ctx, st, redialed);
+    return await waitForTurnEnd(ctx, st, redialed || req.conversationId !== null);
   } finally {
     unFrame();
     unDisc();
