@@ -100,7 +100,7 @@ export class BdSlingContextStore implements SlingContextStore {
     ]);
     const ids = new Set<string>();
     for (const row of asRows(parseJsonOutput(out, 'bd list (closed sling contexts)'), 'bd list (closed sling contexts)')) {
-      if (row['close_reason'] === 'cleared') continue;
+      if (typeof row['close_reason'] === 'string' && row['close_reason'].toLowerCase().startsWith('cleared')) continue;
       const params = tryParseParams(String(row['description'] ?? ''));
       if (params) ids.add(params.work_bead_id);
     }
@@ -118,10 +118,12 @@ export interface BdReadyBeadSourceOptions {
   readonly readyLabel: string;
   /** Work beads to exclude (already dispatched / circuit-broken). */
   readonly excludeWorkBeadIds: () => Promise<ReadonlySet<string>>;
+  readonly logger?: Pick<DaemonLogger, 'info'>;
 }
 
 export class BdReadyBeadSource implements ReadyBeadSource {
   private lastReady = new Map<string, Row>();
+  private readonly loggedExcludedWorkBeadIds = new Set<string>();
 
   constructor(private readonly opts: BdReadyBeadSourceOptions) {}
 
@@ -137,7 +139,15 @@ export class BdReadyBeadSource implements ReadyBeadSource {
     const next = new Map<string, Row>();
     for (const row of rows) {
       const id = String(row['id'] ?? '');
-      if (id && !excluded.has(id)) next.set(id, row);
+      if (!id) continue;
+      if (excluded.has(id)) {
+        if (!this.loggedExcludedWorkBeadIds.has(id)) {
+          this.loggedExcludedWorkBeadIds.add(id);
+          this.opts.logger?.info?.({ workBeadId: id, reason: 'terminal-sling-context' }, 'scheduler: ready bead excluded');
+        }
+        continue;
+      }
+      next.set(id, row);
     }
     this.lastReady = next;
     return new Set(next.keys());

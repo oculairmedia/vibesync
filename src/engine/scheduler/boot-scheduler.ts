@@ -168,6 +168,7 @@ export function startSchedulerDaemon(opts: StartOptions): SchedulerHandle {
     bd: opts.bd,
     readyLabel: config.readyLabel,
     excludeWorkBeadIds: () => contextStore.listTerminalWorkBeadIds(),
+    ...(logger ? { logger } : {}),
   });
   const formulaResolver = new BdFormulaResolver({
     bd: opts.bd,
