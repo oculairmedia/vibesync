@@ -71,12 +71,12 @@ describe('ESLint baseline gate', () => {
       writeFileSync(path.join(temporaryDir, 'package.json'), '{"type":"module"}\n');
       mkdirSync(path.dirname(extraFile), { recursive: true });
       mkdirSync(path.join(temporaryDir, 'src/app'), { recursive: true });
-      writeFileSync(path.join(temporaryDir, 'src/app/main.js'), 'export {};\n');
-      writeFileSync(path.join(temporaryDir, 'src/engine/runtime/same-layer.js'), "import './support.js';\n");
-      writeFileSync(path.join(temporaryDir, 'src/engine/runtime/support.js'), 'export {};\n');
+      writeFileSync(path.join(temporaryDir, 'src/app/main.ts'), 'export {};\n');
+      writeFileSync(path.join(temporaryDir, 'src/engine/runtime/same-layer.ts'), "import './support.js';\n");
+      writeFileSync(path.join(temporaryDir, 'src/engine/runtime/support.ts'), 'export {};\n');
       const baseline = JSON.parse(readFileSync(path.join(repoRoot, 'eslint-baseline.json'), 'utf8')) as Record<string, number>;
       baseline['src/engine/runtime/layer-regression.lint.ts:no-restricted-imports'] = 0;
-      baseline['src/engine/runtime/same-layer.js:no-restricted-imports'] = 0;
+      baseline['src/engine/runtime/same-layer.ts:no-restricted-imports'] = 0;
       writeFileSync(path.join(temporaryDir, 'eslint-baseline.json'), JSON.stringify(baseline));
       writeFileSync(extraFile, "import '../../app/main.js';\n");
       const checkPath = path.join(temporaryDir, 'check.mjs');
@@ -91,7 +91,7 @@ describe('ESLint baseline gate', () => {
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('ESLint introduced');
       expect(result.stderr).toContain('no-restricted-imports');
-      const sameLayer = spawnSync(process.execPath, ['node_modules/eslint/bin/eslint.js', 'src/engine/runtime/same-layer.js', '--format', 'json'], {
+      const sameLayer = spawnSync(process.execPath, ['node_modules/eslint/bin/eslint.js', 'src/engine/runtime/same-layer.ts', '--format', 'json'], {
         cwd: temporaryDir,
         encoding: 'utf8',
       });
@@ -106,12 +106,21 @@ describe('ESLint baseline gate', () => {
     const testFiles = readdirSync(path.join(repoRoot, 'tests'), { recursive: true })
       .filter((file): file is string => typeof file === 'string' && file.endsWith('.test.ts'));
     const unsafeWrites: string[] = [];
-    const writeCalls = /\b(?:writeFileSync|mkdirSync|cpSync)\s*\(([\s\S]*?)\)/g;
+    const rootSrcVariables = new Set<string>();
     for (const relativeFile of testFiles) {
       const filePath = path.join(repoRoot, 'tests', relativeFile);
       const source = readFileSync(filePath, 'utf8');
+      const rootSrcPath = /(?:const|let|var)\s+(\w+)\s*=\s*path\.(?:join|resolve)\(\s*repoRoot\s*,\s*['"`]src\//g;
+      for (const match of source.matchAll(rootSrcPath)) {
+        if (match[1]) rootSrcVariables.add(match[1]);
+      }
+      const writeCalls = /\b(?:writeFileSync|mkdirSync|cpSync)\s*\(([^;]*?)\);/g;
       for (const match of source.matchAll(writeCalls)) {
-        if (/repoRoot[\s\S]*?['"`]src\//.test(match[1] ?? '')) unsafeWrites.push(path.relative(repoRoot, filePath));
+        const args = match[1] ?? '';
+        if (/(?:repoRoot[\s\S]*?['"`]src\/|path\.(?:join|resolve)\(\s*repoRoot\s*,\s*['"`]src\/)/.test(args)
+          || [...rootSrcVariables].some((variable) => new RegExp(`\\b${variable}\\b`).test(args))) {
+          unsafeWrites.push(path.relative(repoRoot, filePath));
+        }
       }
     }
     expect(unsafeWrites).toEqual([]);
