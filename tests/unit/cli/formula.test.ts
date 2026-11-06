@@ -12,6 +12,7 @@ interface RecordedRequest {
 let server: http.Server;
 let baseUrl = '';
 let requests: RecordedRequest[] = [];
+let uiServer: http.Server;
 
 beforeEach(async () => {
   requests = [];
@@ -55,10 +56,25 @@ beforeEach(async () => {
       return;
     }
 
+    if (req.url === '/health') {
+      sendJson(res, 200, { status: 'ok' });
+      return;
+    }
+    if (req.url === '/api/registry/projects') {
+      sendJson(res, 200, { total: 2, projects: [] });
+      return;
+    }
+
     sendJson(res, 404, { error: 'not found' });
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
+  uiServer = http.createServer((_req, res) => {
+    res.writeHead(200);
+    res.end('ok');
+  });
+  uiServer.listen(3110, '127.0.0.1');
+  await once(uiServer, 'listening');
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('server did not bind to a TCP port');
   baseUrl = `http://127.0.0.1:${address.port}`;
@@ -66,7 +82,8 @@ beforeEach(async () => {
 
 afterEach(async () => {
   server.close();
-  await once(server, 'close');
+  uiServer.close();
+  await Promise.all([once(server, 'close'), once(uiServer, 'close')]);
 });
 
 describe('vibesync formula CLI', () => {
@@ -94,6 +111,20 @@ describe('vibesync formula CLI', () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('reviewer');
     expect(result.stdout).toContain('LGTM');
+  });
+
+  it('checks current system health without requesting Temporal', async () => {
+    const result = await runCli(['status', '--json']);
+
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stdout)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ component: 'API Server' }),
+      expect.objectContaining({ component: 'Registry' }),
+      expect.objectContaining({ component: 'UI Proxy' }),
+      expect.objectContaining({ component: 'External URL' }),
+    ]));
+    expect(result.stdout).not.toContain('Temporal');
+    expect(requests.map((request) => request.url)).toEqual(['/health', '/api/registry/projects']);
   });
 
   it('resumes a molecule', async () => {
