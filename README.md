@@ -1,83 +1,104 @@
 # Vibesync
 
-The molecule orchestration engine for Beads-backed projects.
+Vibesync runs Beads-backed orchestration formulas for projects. Formula packs
+(`packs/gastown/`) define bounded multi-step work; each run cooks into a root
+bead and dependent step beads. The scheduler finds eligible work, dispatches
+steps to project role agents through the Letta Iroh wrapper, and records
+outcomes and durable wait/retry state in Beads.
 
-Formulas (in `packs/gastown/`) cook into a molecule: a root bead plus one bead
-per step, joined by dependency edges. A scheduler picks up ready work, runs each
-step on that project's role agent over the Iroh wrapper, and writes the outcome
-back to the bead that motivated the run. Retries, durable waits, run deadlines
-and liveness checks all keep their state in Beads.
+Beads/Dolt is the source of truth for issue and molecule state. Vibesync keeps a
+small local SQLite registry for project metadata and role-agent bindings; this
+registry is not a mirror of Beads work. The service also exposes an HTTP API for
+health, formulas, molecules, and project registry operations.
 
-**Beads/Dolt is the source of truth.** Vibesync's own SQLite database is a small
-registry of projects (path, PM agent, provider routing, pack and storage
-directories, Beads remote status) and role-agent bindings. It mirrors no issue
-or molecule state.
+## Prerequisites
 
-The engine runs in TypeScript on Bun today. The intended end state is a module
-inside the embedded Meridian runtime.
+- Bun 1.2.10 or newer, Git, Beads 1.3.2 or newer, and Dolt.
+- For agent execution: a reachable Iroh wrapper, a paired peer identity, and
+  role-agent bindings for the project.
+- For the documented systemd deployment: Linux with systemd and a staged
+  release worktree.
 
-## Run
+## Run locally
 
-Prerequisites: Bun, Git, Beads **1.3.2 or newer**, Dolt. Agent execution also
-needs a running Iroh wrapper, a paired peer identity and role-agent bindings.
+Install dependencies and the native SQLite binding, then run the type check,
+tests, and service:
 
 ```bash
 bun install --frozen-lockfile --ignore-scripts
 npm rebuild better-sqlite3
 bun run type-check
-bun test            # or: bun run test
+bun run test
 bun run start
 ```
 
-## Configuration
+The scheduler is disabled by default. Set `ENABLE_ORCHESTRATION=true` to enable
+the orchestration API and `VIBESYNC_SCHEDULER_ENABLED=true` to start the
+scheduler. At minimum, set `VIBESYNC_SCHEDULER_PROJECT` to a project registered
+in Vibesync. Supply `VIBESYNC_IROH_*` connection settings and project
+role-agent bindings before dispatching work. See `src/app/config.ts`,
+`src/app/configSchema.ts`, and `src/engine/runtime/iroh/native-dialer.ts` for
+configuration names, defaults, and validation.
 
-Configuration is loaded by `src/app/config.ts` and validated by `src/app/configSchema.ts`.
+Example scheduler settings:
 
 ```bash
 ENABLE_ORCHESTRATION=true
 VIBESYNC_ORCHESTRATION_PROVIDER=letta-code-iroh
 VIBESYNC_SCHEDULER_ENABLED=true
-VIBESYNC_SCHEDULER_PROJECT=vibesync
+VIBESYNC_SCHEDULER_PROJECT=my-project
 VIBESYNC_SCHEDULER_READY_LABEL=scheduler:eligible
 VIBESYNC_SCHEDULER_AUTO_MERGE=false
-# PM wakes (off by default; 'inbox' needs the explicit sender settings below)
-VIBESYNC_PM_WAKE_ENABLED=true
-VIBESYNC_PM_WAKE_SINK=inbox
-VIBESYNC_PM_WAKE_CLI_EXECUTABLE=/path/to/release/bin/meridian-iroh-wrapper
-VIBESYNC_PM_WAKE_CLI_SENDER=<service agent id>
-VIBESYNC_PM_WAKE_CLI_IDENTITIES=/path/to/identities
-VIBESYNC_PM_WAKE_CLI_ADDRESS_STORE=/path/to/host-addresses
-VIBESYNC_PM_WAKE_CLI_CONTRACT_VERIFIED=false
 ```
 
-The Iroh connection is configured with the `VIBESYNC_IROH_*` settings in
-`src/engine/runtime/iroh/native-dialer.ts`.
+Auto-merge remains off unless explicitly enabled. Enabling it also requires
+configured required checks and an allowed repository list. PM wakes and durable
+wait reconciliation are separate opt-in settings; see `src/app/config.ts` for
+their defaults and options.
 
-## How work runs
+## Schedule work
 
-1. Create a bounded bead with acceptance criteria.
-2. Label it `scheduler:eligible` when it is ready: `bd update <id> --add-label scheduler:eligible`.
-3. The scheduler cooks the configured formula and dispatches ready steps to role
-   agents; outputs feed dependent steps.
-4. The outcome is written back to the bead. Review the resulting PR; auto-merge
-   stays off unless explicitly configured.
+1. Create a Bead with bounded scope and acceptance criteria in the configured
+   project.
+2. Add the configured ready label (default `scheduler:eligible`) when it is
+   ready, for example: `bd update <id> --add-label scheduler:eligible`.
+3. The scheduler uses the configured formula (default `onboard-feature` from
+   `packs/gastown/`) and dispatches ready steps to the project's role agents.
+4. Check the resulting Beads state and pull request. Auto-merge is opt-in and
+   should only be enabled with required checks and allowed repositories set.
 
-Molecule step readiness is molecule-scoped (`bd ready --mol <id>`).
+Step readiness is scoped to its molecule (`bd ready --mol <id>`). The scheduler
+polls periodically and can also react to Beads events; pool size, batch size,
+poll interval, formula, pack directory, and other controls are configured with
+`VIBESYNC_SCHEDULER_*` variables. Scheduler and orchestration defaults are
+defined in `src/app/config.ts`.
 
 ## HTTP API
 
 - `GET /health`
 - `GET /formulas`, `POST /formulas/:name/run`
 - `GET /molecules`, `GET /molecules/:id`, `GET /molecules/:id/trace`,
-  `GET /molecules/:id/events` (SSE), `POST /molecules/:id/resume`, `DELETE /molecules/:id`
-- Project registry (used by letta-mobile through the Iroh wrapper):
-  `GET /api/projects`, `GET /api/projects/:id`, `GET /api/projects/:id/beads-remote`,
-  `POST /api/projects/:id/beads-remote/provision`, `POST /api/registry/projects`,
-  `GET|PATCH|DELETE /api/registry/projects/:id`
+  `GET /molecules/:id/events` (SSE), `POST /molecules/:id/resume`,
+  `DELETE /molecules/:id`
+- Project registry: `GET /api/projects`, `GET /api/projects/:id`,
+  `GET /api/projects/:id/beads-remote`,
+  `POST /api/projects/:id/beads-remote/provision`,
+  `POST /api/registry/projects`, `GET|PATCH|DELETE /api/registry/projects/:id`
 - `GET /openapi.json`, `GET /docs`
 
-## Deploy
+## Deploy with systemd
 
-`vibesync.service` runs from a staged release worktree. Stage a release, then
-`scripts/deploy/swap.sh <release-dir>`; the script prints the rollback command.
-Unit and drop-in live in `deploy/systemd/`.
+The `vibesync.service` unit runs `bun src/index.ts` from the selected release
+worktree and reads its `.env` file. Stage a Git worktree with dependencies
+installed and a valid `.env`, then run:
+
+```bash
+scripts/deploy/swap.sh <release-dir>
+```
+
+The swap script installs/reloads the unit, points its release drop-in at the
+staged worktree, restarts the service, and prints the previous working
+directory and rollback command. Do not restart while formula runs are
+in-flight. The unit and release drop-in template are in `deploy/systemd/`;
+deployment behavior and prerequisites are defined in
+`scripts/deploy/swap.sh`.

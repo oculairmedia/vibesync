@@ -4,6 +4,7 @@ import {
   ghRepositoryTarget,
   type ShippedWorkProbe,
   type StepReplyJudge,
+  createGhPrChecksReader,
   type ProjectMemorySource,
   type DeliveryVerifier,
   FormulaDispatcher,
@@ -95,6 +96,11 @@ export interface BootOrchestrationPlaneOptions {
   readonly shippedWorkProbe?: ShippedWorkProbe;
   /** vibesync-9lzk.39: step-reply decision model. Absent = marker lines only. */
   readonly stepJudge?: StepReplyJudge;
+  /**
+   * vibesync-9lzk.46: the fast PR checks the final step waits on (the engine's
+   * inner loop). Slow merge gates (integration-bd) are deliberately not here.
+   */
+  readonly stepCiChecks?: readonly string[];
   /**
    * Durable wait-on-beads watcher (vibesync-9g24, invariant 4). Absent or
    * `config.enabled === false` => nothing is constructed: no watcher, no timer,
@@ -202,6 +208,9 @@ export async function releaseDoltAfterFailedBoot(
   }
 }
 
+/** vibesync-9lzk.46: the fast checks a final step waits on; integration-bd gates the merge only. */
+export const DEFAULT_STEP_CI_CHECKS: readonly string[] = ['typecheck', 'test (20.x)', 'boot'];
+
 export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions): Promise<OrchestrationHandle> {
   // vibesync-efee: fail before any side effect when bd is too old for the
   // primitives formula steps depend on.
@@ -282,6 +291,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     deliveryVerifier: opts.deliveryVerifier ?? createGhDeliveryVerifier(projectGh, repositoryTarget),
     shippedWorkProbe: opts.shippedWorkProbe ?? createGhShippedWorkProbe(projectGh, repositoryTarget),
     ...(opts.stepJudge ? { stepJudge: opts.stepJudge } : {}),
+    prChecks: { reader: createGhPrChecksReader(projectGh), names: opts.stepCiChecks ?? DEFAULT_STEP_CI_CHECKS },
   });
 
   steps = new StepDispatcher({

@@ -11,8 +11,8 @@ import { MIN_BD_VERSION_FOR_WAITS } from '../../../src/engine/waits/index.js';
  * Disposable bd repository for the wait tests (vibesync-9g24).
  *
  * Opt-in: set VIBESYNC_TEST_BD_WAITS=/absolute/path/to/bd (>= MIN_BD_VERSION_FOR_WAITS).
- * Separate from isolated-beads.ts on purpose: that helper pins bd 1.2.2 build
- * 7fcf4e16 for the schema-65 fingerprint tests, while waits are verified on 1.3.2.
+ * Separate from isolated-beads.ts because the suites have distinct disposable
+ * repo setup and opt-in gates; both use pinned bd 1.3.2 in CI.
  *
  * Isolation is the same as isolated-beads.ts: an allowlisted env (no inherited
  * BEADS or BD variables, no Git routing), a fresh temp dir with its own

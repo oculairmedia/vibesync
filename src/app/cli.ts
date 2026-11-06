@@ -213,19 +213,6 @@ program
       checks.push(['Registry', chalk.red('FAIL'), (err as Error)?.message || String(err)]);
     }
 
-    // Temporal
-    try {
-      const data = toRecord(await fetchJson('/api/temporal/schedule'));
-      const detail = data.available
-        ? data.active
-          ? 'Schedule active'
-          : 'Available, no active schedule'
-        : 'Not configured';
-      checks.push(['Temporal', chalk.green('OK'), detail]);
-    } catch (err) {
-      checks.push(['Temporal', chalk.red('FAIL'), (err as Error)?.message || String(err)]);
-    }
-
     // UI proxy
     try {
       const r = await probe('http://localhost:3110');

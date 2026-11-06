@@ -39,8 +39,8 @@ export async function provisionIsolatedBeads(shape: SchemaShape = 'fresh') {
   }).trim();
   const bd = (...args: string[]) => run(binary, ['--sandbox', '--dolt-auto-commit=off', ...args]);
   const version = bd('version');
-  // vibesync-efee: the production bd is 1.3.2 (molecule-scoped `bd ready --mol`);
-  // the suite verifies against it. Anything below the minimum is refused.
+  // The integration suite uses the same 1.3.2 release as production.
+  // Anything below the minimum is refused.
   if (!bdVersionSatisfies(version)) {
     throw new Error(`Expected bd >= ${MIN_BD_VERSION}, got ${version}`);
   }
