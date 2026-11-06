@@ -1,6 +1,8 @@
 import {
   createGhDeliveryVerifier,
+  createGhShippedWorkProbe,
   ghRepositoryTarget,
+  type ShippedWorkProbe,
   type ProjectMemorySource,
   type DeliveryVerifier,
   FormulaDispatcher,
@@ -88,6 +90,8 @@ export interface BootOrchestrationPlaneOptions {
    * checkout; absent = no memory section.
    */
   readonly projectMemory?: ProjectMemorySource;
+  /** Plan-only step guard (vibesync-9lzk.37). Defaults to the project's `gh`. */
+  readonly shippedWorkProbe?: ShippedWorkProbe;
   /**
    * Durable wait-on-beads watcher (vibesync-9g24, invariant 4). Absent or
    * `config.enabled === false` => nothing is constructed: no watcher, no timer,
@@ -259,6 +263,10 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   // vibesync-efee: steps are beads; the bead graph decides what is ready and
   // the StepDispatcher offers it to the dispatcher. A cooked molecule wakes it.
   let steps: StepDispatcher | null = null;
+  // The scheduler's gh runs in the project checkout, so `gh repo view` names
+  // the repository a run's PRs live in (delivery check and plan-only guard).
+  const projectGh = opts.scheduler?.gh ?? createCliRunner({ binary: 'gh', cwd: opts.dolt.beadsRoot });
+  const repositoryTarget = ghRepositoryTarget(projectGh);
   const dispatcher = new FormulaDispatcher({
     provider,
     walker,
@@ -268,12 +276,8 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     ...(maxConcurrentMolecules === undefined ? {} : { maxConcurrentMolecules }),
     ...(providerResolver ? { providerResolver } : {}),
     ...(opts.projectMemory ? { projectMemory: opts.projectMemory } : {}),
-    deliveryVerifier: opts.deliveryVerifier ?? (() => {
-      // The scheduler's gh runs in the project checkout, so `gh repo view`
-      // names the repository a run's PR must live in.
-      const gh = opts.scheduler?.gh ?? createCliRunner({ binary: 'gh', cwd: opts.dolt.beadsRoot });
-      return createGhDeliveryVerifier(gh, ghRepositoryTarget(gh));
-    })(),
+    deliveryVerifier: opts.deliveryVerifier ?? createGhDeliveryVerifier(projectGh, repositoryTarget),
+    shippedWorkProbe: opts.shippedWorkProbe ?? createGhShippedWorkProbe(projectGh, repositoryTarget),
   });
 
   steps = new StepDispatcher({

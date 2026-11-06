@@ -7,6 +7,8 @@ when_to_use = "when a bead represents a feature request or backlog item with no 
 role = "mayor"
 prompt_template = "prompts/mayor-system.md"
 wait_for = "completion"
+# vibesync-9lzk.37: the mayor plans; the engine fails its step if it opened the PR itself.
+plan_only = true
 
 [[formula.onboard-feature.steps]]
 role = "coder"

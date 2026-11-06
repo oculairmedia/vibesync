@@ -55,6 +55,13 @@ export interface StepSpec {
    * its configured default (VIBESYNC_TURN_TIMEOUT_MS, else 10 min).
    */
   readonly turnTimeoutMs?: number;
+  /**
+   * The step plans and must not ship work (vibesync-9lzk.37): when it ends,
+   * the dispatcher fails it if a pull request naming the work bead appeared
+   * during the step. TOML `plan_only = true`. Rounds 7 and 8 of the engine
+   * trials: the mayor wrote, committed and opened the PR itself.
+   */
+  readonly planOnly?: boolean;
 }
 
 /**

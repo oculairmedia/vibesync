@@ -7,7 +7,7 @@ import type { Pack, RoleConfig } from '../packs/index.js';
 import type { RuntimeProvider, SessionEvent, SessionHandle } from '../runtime/index.js';
 import type { ReadyStep, ReadyStepRunner, StepRunOutcome } from '../molecule/index.js';
 import { parseBlockedOutcome, STEP_OUTCOME_INSTRUCTIONS } from './step-outcome.js';
-import type { DeliveryVerifier } from './delivery.js';
+import type { DeliveryVerifier, ShippedWorkProbe } from './delivery.js';
 import { PROJECT_MEMORY_READ_FAILED_EVENT, renderProjectMemory, type ProjectMemorySource } from './project-memory.js';
 import { renderTemplate } from './render.js';
 import {
@@ -123,6 +123,11 @@ export interface FormulaDispatcherOptions {
    */
   readonly projectMemory?: ProjectMemorySource;
   /**
+   * Holds plan-only steps to their role (vibesync-9lzk.37): a plan-only step
+   * that opened a PR naming the work bead fails. Absent = not checked.
+   */
+  readonly shippedWorkProbe?: ShippedWorkProbe;
+  /**
    * Called (never throws) right after a molecule is cooked and registered, so
    * the step loop can pick up its first ready steps promptly instead of waiting
    * for its next interval. Boot wires this to `StepDispatcher.kick`.
@@ -187,6 +192,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
   private readonly providerResolver: ProviderResolver | null;
   private readonly deliveryVerifier: DeliveryVerifier | null;
   private readonly projectMemory: ProjectMemorySource | null;
+  private readonly shippedWorkProbe: ShippedWorkProbe | null;
   private readonly onMoleculeCooked: ((moleculeId: string) => void) | null;
   private readonly moleculeQueue: QueuedMoleculeRun[] = [];
   private readonly live = new Map<string, MoleculeRun>();
@@ -202,6 +208,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     this.providerResolver = opts.providerResolver ?? null;
     this.deliveryVerifier = opts.deliveryVerifier ?? null;
     this.projectMemory = opts.projectMemory ?? null;
+    this.shippedWorkProbe = opts.shippedWorkProbe ?? null;
     this.onMoleculeCooked = opts.onMoleculeCooked ?? null;
   }
 
@@ -469,6 +476,28 @@ export class FormulaDispatcher implements ReadyStepRunner {
   }
 
   /**
+   * Why a plan-only step overstepped its role, or null. A step that opened a
+   * PR naming the work bead did the coder's job. A probe failure is reported
+   * as an event and does not fail the step: the check is a guard, and an
+   * unreachable GitHub must not stop planning.
+   */
+  private async planOnlyViolation(
+    bead: string | undefined,
+    since: Date,
+    context: { readonly moleculeId: string; readonly stepId: string },
+  ): Promise<string | null> {
+    if (!this.shippedWorkProbe || !bead) return null;
+    try {
+      const prs = await this.shippedWorkProbe.pullRequestsOpenedSince(bead, since);
+      if (prs.length === 0) return null;
+      return `plan-only step shipped work: it opened ${prs.join(', ')} for ${bead}; planning steps must not edit, commit, push or open pull requests`;
+    } catch (error) {
+      this.emit('dispatcher/plan-only.check_failed', context.moleculeId, context.stepId, { bead, error: stringifyError(error) });
+      return null;
+    }
+  }
+
+  /**
    * Null when the formula declares no delivery or the verifier confirms it;
    * otherwise the reason the run must fail. Verifier errors fail closed.
    */
@@ -719,6 +748,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     // tries resumes at the right attempt.
     const policy = resolveRetryPolicy(stepSpec);
     const state = readRetryState(args.step.metadata);
+    const attemptStartedAt = new Date();
     await this.walker.recordStepAttempt(args.step.id, state.attempt);
     const rendered = renderTemplate({
       packRoot: args.input.pack.root,
@@ -770,7 +800,18 @@ export class FormulaDispatcher implements ReadyStepRunner {
       // vibesync-zvcm: a step that reports itself blocked must stop the formula.
       // Terminal: retrying cannot clear a blocker the agent named.
       const blocker = parseBlockedOutcome(output.text);
-      if (blocker !== null) {
+      const overstepped = blocker === null && declared === null && stepSpec.planOnly
+        ? await this.planOnlyViolation(args.input.motivatingBeadId, attemptStartedAt, { moleculeId: args.moleculeId, stepId: args.step.id })
+        : null;
+      if (overstepped !== null) {
+        // Terminal like a blocked step: the plan was not the work product, and
+        // re-running the planner cannot undo a PR it already opened.
+        failure = {
+          signal: { origin: 'stopped' },
+          error: new StepBlockedError(overstepped),
+          failureClass: null,
+        };
+      } else if (blocker !== null) {
         failure = {
           signal: { origin: 'stopped' },
           error: new StepBlockedError(blocker),

@@ -151,3 +151,28 @@ export function ghRepositoryTarget(gh: GhRunner): () => Promise<DeliveryTarget> 
     return cached;
   };
 }
+
+/**
+ * Pull requests in the project repository that name `bead` (title or branch)
+ * and were opened at or after `since`. Used to hold a plan-only step to its
+ * role (vibesync-9lzk.37): the planner must not open the PR itself.
+ */
+export interface ShippedWorkProbe {
+  pullRequestsOpenedSince(bead: string, since: Date): Promise<readonly string[]>;
+}
+
+export function createGhShippedWorkProbe(gh: GhRunner, target: () => Promise<DeliveryTarget>): ShippedWorkProbe {
+  return {
+    async pullRequestsOpenedSince(bead, since) {
+      const { repository } = await target();
+      const raw = await gh(['pr', 'list', '--repo', repository, '--state', 'all', '--search', bead, '--json', 'url,title,headRefName,createdAt', '--limit', '20']);
+      const prs = JSON.parse(raw) as Array<{ url?: string; title?: string; headRefName?: string; createdAt?: string }>;
+      // gh --search is fuzzy (it matched vibesync-9lzk.31 for "9lzk.34"): keep
+      // only PRs whose title or branch contains the exact bead id.
+      return prs
+        .filter((pr) => [pr.title, pr.headRefName].some((t) => typeof t === 'string' && t.includes(bead)))
+        .filter((pr) => typeof pr.createdAt === 'string' && Date.parse(pr.createdAt) >= since.getTime() - 60_000)
+        .map((pr) => pr.url ?? '');
+    },
+  };
+}

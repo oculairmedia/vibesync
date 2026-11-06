@@ -184,6 +184,10 @@ function parseStep(
   const turnTimeoutMs = raw['turn_timeout_ms'] !== undefined
     ? readNonNegativeInteger(raw['turn_timeout_ms'], undefined as never, `formula "${formulaName}": step "${name}".turn_timeout_ms`)
     : undefined;
+  const planOnlyRaw = raw['plan_only'];
+  if (planOnlyRaw !== undefined && typeof planOnlyRaw !== 'boolean') {
+    throw new Error(`formula "${formulaName}": step "${name}".plan_only must be true or false`);
+  }
   const spec: StepSpec = {
     name,
     role,
@@ -194,6 +198,7 @@ function parseStep(
     retryBackoffMs,
     ...(retry !== undefined ? { retry } : {}),
     ...(turnTimeoutMs !== undefined ? { turnTimeoutMs } : {}),
+    ...(planOnlyRaw === true ? { planOnly: true } : {}),
   };
   return spec;
 }
