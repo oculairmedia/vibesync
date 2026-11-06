@@ -887,6 +887,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
         rendered,
         attempt: state.attempt,
         infraRetries: state.infraRetries,
+        reviewRound: readReviewRound(args.step.metadata),
         provider: args.provider,
         ...(args.input.projectIdentifier ? { projectIdentifier: args.input.projectIdentifier } : {}),
         ...((stepSpec.turnTimeoutMs ?? args.input.stepTimeoutMs) !== undefined
@@ -1033,6 +1034,8 @@ export class FormulaDispatcher implements ReadyStepRunner {
     readonly rendered: string;
     readonly attempt: number;
     readonly infraRetries: number;
+    /** vibesync-9lzk.41: the review round (1 = first run), so the session can make the prompt id unique. */
+    readonly reviewRound: number;
     readonly provider: RuntimeProvider;
     readonly projectIdentifier?: string;
     readonly turnTimeoutMs?: number;
@@ -1062,6 +1065,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
           ...(args.motivatingBeadId ? { motivatingBeadId: args.motivatingBeadId } : {}),
           attempt: args.attempt,
           infraRetries: args.infraRetries,
+          ...(args.reviewRound > 1 ? { reviewRound: args.reviewRound } : {}),
           stepId: args.stepId,
           memfsEnabled: false,
           memoryBlocks: args.roleConfig.memoryBlocks ?? [],
