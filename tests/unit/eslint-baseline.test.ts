@@ -70,7 +70,7 @@ describe('ESLint baseline gate', () => {
       baseline['src/engine/runtime/layer-regression.lint.ts:no-restricted-imports'] = 0;
       baseline['scripts/eslint-baseline-layer.test-helper.mjs:quotes'] = 99;
       writeFileSync(path.join(temporaryDir, 'eslint-baseline.json'), JSON.stringify(baseline));
-      writeFileSync(extraFile, "import '../app/main.js';\n");
+      writeFileSync(extraFile, "import '../../app/main.js';\n");
       const checkScript = readFileSync(path.join(repoRoot, 'scripts/eslint-baseline-check.mjs'), 'utf8')
         .replace("path.join(root, 'eslint-baseline.json')", `path.join(root, ${JSON.stringify(path.join(temporaryDir, 'eslint-baseline.json'))})`)
         .replaceAll("'node_modules/eslint/bin/eslint.js'", JSON.stringify(path.join(repoRoot, 'node_modules/eslint/bin/eslint.js')));

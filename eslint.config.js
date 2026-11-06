@@ -10,11 +10,12 @@ const layerRestrictions = (patterns) => ({
 });
 
 const forbiddenHigherLayers = {
-  model: ['../beads/**', '../runtime/**', '../dispatcher/**', '../scheduler/**', '../app/**'],
-  beads: ['../runtime/**', '../dispatcher/**', '../scheduler/**', '../app/**'],
-  runtime: ['../dispatcher/**', '../scheduler/**', '../app/**'],
-  dispatcher: ['../scheduler/**', '../app/**'],
-  scheduler: ['../app/**'],
+  model: ['../beads/**', '../runtime/**', '../dispatcher/**', '../scheduler/**', '../extensions/**', '../../app/**'],
+  beads: ['../runtime/**', '../dispatcher/**', '../scheduler/**', '../extensions/**', '../../app/**'],
+  runtime: ['../dispatcher/**', '../scheduler/**', '../extensions/**', '../../app/**'],
+  dispatcher: ['../scheduler/**', '../extensions/**', '../../app/**'],
+  scheduler: ['../extensions/**', '../../app/**'],
+  extensions: ['../../app/**'],
 };
 
 const engineLayerRules = Object.entries(forbiddenHigherLayers).map(([layer, patterns]) => ({
@@ -68,12 +69,6 @@ export default [
     files: ['src/**/*.ts', 'tests/**/*.ts', 'scripts/**/*.ts'],
   })),
   ...engineLayerRules,
-  {
-    files: ['src/app/**/*.ts'],
-    rules: {
-      'no-restricted-imports': ['error', layerRestrictions(['../app/**', '../../app/**'])],
-    },
-  },
   {
     // Ignore patterns
     ignores: [
