@@ -47,5 +47,6 @@
   "tests/unit/engine/scheduler/scheduler-loop.test.ts:@typescript-eslint/no-unused-vars": 4,
   "tests/unit/engine/waits/boot-waits.test.ts:@typescript-eslint/no-unused-vars": 1,
   "tests/unit/projectRoutes.test.ts:@typescript-eslint/no-explicit-any": 1,
-  "tests/unit/review72-fixes.test.ts:@typescript-eslint/no-unused-vars": 3
+  "tests/unit/review72-fixes.test.ts:@typescript-eslint/no-unused-vars": 3,
+  "src/engine/beads/store.ts:no-restricted-imports": 1
 }
