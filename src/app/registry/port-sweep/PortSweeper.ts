@@ -35,7 +35,7 @@
  */
 
 import { execFile, execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, readlinkSync } from 'node:fs';
+import { existsSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -79,6 +79,8 @@ export type CommandRunner = (
 export interface PortSweeperDeps {
   /** Read .beads/dolt-server.port. */
   readonly readPort: (projectPath: string) => number | null;
+  /** Persist .beads/dolt-server.port. */
+  readonly writePort: (projectPath: string, port: number) => void;
   /** True when Beads uses embedded Dolt and has no server port to repair. */
   readonly isEmbedded: (projectPath: string) => boolean;
   /** Return the set of TCP ports currently in LISTEN state on this host. */
@@ -134,6 +136,10 @@ export function readBeadsPortFromDisk(projectPath: string): number | null {
   } catch {
     return null;
   }
+}
+
+export function writeBeadsPortToDisk(projectPath: string, port: number): void {
+  writeFileSync(join(projectPath, '.beads', 'dolt-server.port'), `${port}\n`, 'utf8');
 }
 
 export function isEmbeddedBeadsProject(
@@ -206,6 +212,7 @@ async function defaultRunBd(
 
 export const defaultDeps: PortSweeperDeps = {
   readPort: readBeadsPortFromDisk,
+  writePort: writeBeadsPortToDisk,
   isEmbedded: (projectPath) =>
     isEmbeddedBeadsProject(projectPath, (failedPath, error) => {
       const message = error instanceof Error ? error.message : String(error);
@@ -338,7 +345,18 @@ export async function repairProject(
       timeout,
       env,
     });
+    deps.writePort(projectPath, newPort);
     await deps.runBd('bd', ['dolt', 'start'], { cwd: projectPath, timeout, env });
+    const configuredPort = deps.readPort(projectPath);
+    if (configuredPort !== newPort) {
+      return {
+        ok: false,
+        project,
+        oldPort,
+        newPort,
+        error: `configured port verification failed: expected ${newPort}, found ${configuredPort ?? 'none'}`,
+      };
+    }
     return { ok: true, project, oldPort, newPort };
   } catch (error) {
     return {
