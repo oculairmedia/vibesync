@@ -72,7 +72,7 @@ describe('ESLint baseline gate', () => {
       mkdirSync(path.dirname(extraFile), { recursive: true });
       mkdirSync(path.join(temporaryDir, 'src/app'), { recursive: true });
       writeFileSync(path.join(temporaryDir, 'src/app/main.ts'), 'export {};\n');
-      writeFileSync(path.join(temporaryDir, 'src/engine/runtime/same-layer.ts'), "import './support.js';\n");
+      writeFileSync(path.join(temporaryDir, 'src/engine/runtime/same-layer.ts'), "import './support.ts';\n");
       writeFileSync(path.join(temporaryDir, 'src/engine/runtime/support.ts'), 'export {};\n');
       const baseline = JSON.parse(readFileSync(path.join(repoRoot, 'eslint-baseline.json'), 'utf8')) as Record<string, number>;
       baseline['src/engine/runtime/layer-regression.lint.ts:no-restricted-imports'] = 0;
@@ -106,23 +106,42 @@ describe('ESLint baseline gate', () => {
     const testFiles = readdirSync(path.join(repoRoot, 'tests'), { recursive: true })
       .filter((file): file is string => typeof file === 'string' && file.endsWith('.test.ts'));
     const unsafeWrites: string[] = [];
-    for (const relativeFile of testFiles) {
-      const filePath = path.join(repoRoot, 'tests', relativeFile);
-      const source = readFileSync(filePath, 'utf8');
+    const rootSrcPath = /(?:const|let|var)\s+(\w+)\s*=\s*path\.(?:join|resolve)\(\s*repoRoot\s*,\s*['"`]src\//g;
+    const writeCalls = /\b(?:writeFileSync|mkdirSync|cpSync)\s*\(([^;]*?)\);/g;
+    const findUnsafeWrites = (source: string): string[] => {
       const rootSrcVariables = new Set<string>();
-      const rootSrcPath = /(?:const|let|var)\s+(\w+)\s*=\s*path\.(?:join|resolve)\(\s*repoRoot\s*,\s*['"`]src\//g;
       for (const match of source.matchAll(rootSrcPath)) {
         if (match[1]) rootSrcVariables.add(match[1]);
       }
-      const writeCalls = /\b(?:writeFileSync|mkdirSync|cpSync)\s*\(([^;]*?)\);/g;
-      for (const match of source.matchAll(writeCalls)) {
+      return [...source.matchAll(writeCalls)].flatMap((match) => {
         const args = match[1] ?? '';
-        if (/(?:repoRoot[\s\S]*?['"`]src\/|path\.(?:join|resolve)\(\s*repoRoot\s*,\s*['"`]src\/)/.test(args)
-          || [...rootSrcVariables].some((variable) => new RegExp(`\\b${variable}\\b`).test(args))) {
-          unsafeWrites.push(path.relative(repoRoot, filePath));
-        }
+        return /(?:repoRoot[\s\S]*?['"`]src\/|path\.(?:join|resolve)\(\s*repoRoot\s*,\s*['"`]src\/)/.test(args)
+          || [...rootSrcVariables].some((variable) => new RegExp(`\\b${variable}\\b`).test(args))
+          ? [match[0]]
+          : [];
+      });
+    };
+    for (const relativeFile of testFiles) {
+      const filePath = path.join(repoRoot, 'tests', relativeFile);
+      const source = readFileSync(filePath, 'utf8');
+      const withoutFixtureSource = source.replace(/const originalUnsafePattern = `[^`]*`;/, '')
+        .replace(/const safePattern = `[^`]*`;/, '');
+      if (findUnsafeWrites(withoutFixtureSource).length > 0) {
+        unsafeWrites.push(path.relative(repoRoot, filePath));
       }
     }
+    const originalUnsafePattern = `
+      const repoRoot = process.cwd();
+      const extraFile = path.join(repoRoot, 'src/engine/runtime/probe.ts');
+      writeFileSync(extraFile, 'probe');
+    `;
+    const safePattern = `
+      const repoRoot = process.cwd();
+      const extraFile = path.join(tempDir, 'src/engine/runtime/probe.ts');
+      writeFileSync(extraFile, 'probe');
+    `;
+    expect(findUnsafeWrites(originalUnsafePattern)).not.toEqual([]);
+    expect(findUnsafeWrites(safePattern)).toEqual([]);
     expect(unsafeWrites).toEqual([]);
   });
 });
