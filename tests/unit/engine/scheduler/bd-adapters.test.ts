@@ -54,6 +54,27 @@ describe('BdReadyBeadSource', () => {
     expect(bd.calls[0]).not.toContain('--label');
   });
 
+  it('logs each excluded ready bead once and works without a logger', async () => {
+    const logs: unknown[][] = [];
+    const bd = runner(() => JSON.stringify([{ id: 'done' }, { id: 'done-2' }]));
+    const src = new BdReadyBeadSource({
+      bd: bd.run,
+      readyLabel: '',
+      excludeWorkBeadIds: async () => new Set(['done', 'done-2']),
+      logger: { info: (...args: unknown[]) => logs.push(args) },
+    });
+
+    await src.readyWorkBeadIds();
+    await src.readyWorkBeadIds();
+    expect(logs).toEqual([
+      [{ workBeadId: 'done', reason: 'terminal-sling-context' }, 'scheduler: ready bead excluded'],
+      [{ workBeadId: 'done-2', reason: 'terminal-sling-context' }, 'scheduler: ready bead excluded'],
+    ]);
+
+    const silent = new BdReadyBeadSource({ bd: bd.run, readyLabel: '', excludeWorkBeadIds: async () => new Set(['done']) });
+    await expect(silent.readyWorkBeadIds()).resolves.toEqual(new Set(['done-2']));
+  });
+
   it('propagates bd failures (the daemon logs them)', async () => {
     const src = new BdReadyBeadSource({ bd: async () => { throw new Error('boom'); }, readyLabel: '', excludeWorkBeadIds: async () => new Set() });
     await expect(src.readyWorkBeadIds()).rejects.toThrow('boom');
@@ -72,13 +93,17 @@ describe('BdSlingContextStore', () => {
     await expect(new BdSlingContextStore(async () => 'Error: nope happened').createSlingContext({ label: 'L', title: 'T', description: 'D', tracksWorkBeadId: 'w' })).rejects.toThrow('unexpected sling-context id');
   });
 
-  it('lists terminal work beads, ignoring cleared and malformed contexts', async () => {
+  it('lists terminal work beads, ignoring cleared-prefix and malformed contexts', async () => {
     const bd = runner(() => JSON.stringify([
       { id: 'c1', description: params('w1'), close_reason: 'dispatched' },
       { id: 'c2', description: params('w2'), close_reason: 'cleared' },
-      { id: 'c3', description: 'not json', close_reason: 'dispatched' },
+      { id: 'c3', description: params('w3'), close_reason: 'Cleared: manual' },
+      { id: 'c4', description: params('w4'), close_reason: 'cleared by PM' },
+      { id: 'c5', description: params('w5'), close_reason: 'failed' },
+      { id: 'c6', description: params('w6') },
+      { id: 'c7', description: 'not json', close_reason: 'dispatched' },
     ]));
-    expect([...(await new BdSlingContextStore(bd.run).listTerminalWorkBeadIds())]).toEqual(['w1']);
+    expect([...(await new BdSlingContextStore(bd.run).listTerminalWorkBeadIds())].sort()).toEqual(['w1', 'w5', 'w6']);
     expect(bd.calls[0]).toEqual(expect.arrayContaining(['--status', 'closed', '--include-ephemeral']));
   });
 });
