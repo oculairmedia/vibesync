@@ -57,16 +57,16 @@ export function startPeriodicPortSweep(deps: PeriodicSweepDeps): PeriodicSweepHa
   const clearIntervalFn = deps.clearInterval ?? clearInterval;
 
   let stopped = false;
+  let inFlight: Promise<SweepReport> | null = null;
   const failures = new Map<string, { count: number; retryAt: number }>();
 
-  async function runSweep(): Promise<SweepReport> {
+  async function performSweep(): Promise<SweepReport> {
     const registry = deps.listProjects();
     const only = deps.repairable?.();
-    const now = Date.now();
     const report = await sweepAll(registry, undefined, {
       apply: true,
       ...(only ? { only } : {}),
-      canRepair: (project) => (failures.get(project.identifier)?.retryAt ?? 0) <= now,
+      canRepair: (project) => (failures.get(project.identifier)?.retryAt ?? 0) <= Date.now(),
     });
     for (const repair of report.repairs) {
       if (repair.ok) {
@@ -75,7 +75,10 @@ export function startPeriodicPortSweep(deps: PeriodicSweepDeps): PeriodicSweepHa
         const count = (failures.get(repair.project.identifier)?.count ?? 0) + 1;
         const delay = Math.min(deps.intervalMs ?? DEFAULT_PORT_SWEEP_INTERVAL_MS, MAX_REPAIR_BACKOFF_MS)
           * 2 ** Math.min(count - 1, 10);
-        failures.set(repair.project.identifier, { count, retryAt: now + Math.min(delay, MAX_REPAIR_BACKOFF_MS) });
+        failures.set(repair.project.identifier, {
+          count,
+          retryAt: Date.now() + Math.min(delay, MAX_REPAIR_BACKOFF_MS),
+        });
       }
     }
     if (report.conflicts.length > 0) {
@@ -113,6 +116,19 @@ export function startPeriodicPortSweep(deps: PeriodicSweepDeps): PeriodicSweepHa
       );
     }
     return report;
+  }
+
+  function runSweep(): Promise<SweepReport> {
+    if (inFlight) return inFlight;
+    const running = performSweep();
+    inFlight = running;
+    const settled = running.then(() => {
+      if (inFlight === running) inFlight = null;
+    }, () => {
+      if (inFlight === running) inFlight = null;
+    }).catch(() => undefined);
+    void settled;
+    return running;
   }
 
   const handle = setIntervalFn(() => {
