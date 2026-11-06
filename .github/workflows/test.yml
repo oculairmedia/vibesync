@@ -140,7 +140,8 @@ jobs:
       - name: Install dependencies
         run: |
           bun install --frozen-lockfile --ignore-scripts
-          npm rebuild better-sqlite3
+          cd node_modules/better-sqlite3
+          npx prebuild-install || npm run build-release
 
       - name: Install pinned bd for isolated integration suites
         run: |
