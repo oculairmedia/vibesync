@@ -9,7 +9,7 @@ import type { RuntimeProvider, SessionEvent, SessionHandle } from '../runtime/in
 import type { ReadyStep, ReadyStepRunner, StepRunOutcome } from '../molecule/index.js';
 import { parseBlockedOutcome, STEP_OUTCOME_INSTRUCTIONS } from './step-outcome.js';
 import type { DeliveryVerifier, ShippedWorkProbe } from './delivery.js';
-import { decideStepVerdict, reconcileWithMarker, type StepReplyJudge, type StepVerdict } from '../verdict/index.js';
+import { decideStepVerdict, reconcileWithMarker, summarizeReplyForReason, type StepReplyJudge, type StepVerdict } from '../verdict/index.js';
 import { PROJECT_MEMORY_READ_FAILED_EVENT, renderProjectMemory, type ProjectMemorySource } from './project-memory.js';
 import { renderTemplate } from './render.js';
 import {
@@ -511,7 +511,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     const judges = args.stepSpec.loopsBackTo !== undefined || steps[steps.length - 1]?.name === args.stepName;
     if (!this.stepJudge || !judges) return marker;
     const judged = await this.stepJudge.judge({ role: args.stepSpec.role, reply: args.output });
-    const summary = marker ?? args.output;
+    const summary = marker ?? summarizeReplyForReason(args.output);
     const finalStep = steps[steps.length - 1]?.name === args.stepName;
     const verdict: StepVerdict = reconcileWithMarker(decideStepVerdict(judged.answers, summary, { finalStep }), marker);
     this.emit('dispatcher/step.verdict', args.moleculeId, args.step.id, {
