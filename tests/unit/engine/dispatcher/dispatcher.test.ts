@@ -432,6 +432,7 @@ describe('FormulaDispatcher', () => {
       providerKind: IROH_PROVIDER_KIND,
       sessionId: `${IROH_PROVIDER_KIND}:agent-role:reviewer:1`,
       conversationId: 'conv-persisted',
+      inputPayload: { prompt: 'exact interrupted prompt' },
     });
 
     const result = await dispatcher.resume(view.rootId);
@@ -442,6 +443,7 @@ describe('FormulaDispatcher', () => {
       resumeClientMessageId: expectedId,
       providerKind: IROH_PROVIDER_KIND,
     });
+    expect(provider.recorder.prompts[0]?.content).toEqual([{ type: 'text', text: 'exact interrupted prompt' }]);
   });
 
   it('cancels running steps, stops persisted sessions, and emits cancellation events', async () => {

@@ -304,6 +304,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
       ...(input.motivatingBeadId ? { motivatingBeadId: input.motivatingBeadId } : {}),
       ...(input.formula.delivers ? { delivers: input.formula.delivers } : {}),
       ...(input.projectIdentifier ? { projectIdentifier: input.projectIdentifier } : {}),
+      inputPayload: { input: input.input },
       steps: input.formula.steps,
     });
     return this.registerAndAwait({ input, view, provider, startedAt, outputs: {}, announce: true });
@@ -1110,6 +1111,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
           providerKind: handle.providerKind,
           sessionId: handle.id,
           ...(traceConversationId ? { conversationId: traceConversationId } : {}),
+          inputPayload: { prompt: args.rendered },
         });
         this.emit('dispatcher/step.task_recorded', args.moleculeId, promptResult.taskId, {
           stepName: args.stepName,

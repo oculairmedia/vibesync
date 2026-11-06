@@ -123,6 +123,7 @@ export interface MoleculeStore {
     readonly stepName: string;
     readonly title: string;
     readonly dependsOnStepIds?: readonly string[];
+    readonly inputPayload?: unknown;
   }): Promise<void>;
   findReadyStepsForMolecule(rootId: string): Promise<readonly BeadRow[]>;
   findRunningStepsForMolecule(rootId: string): Promise<readonly BeadRow[]>;
@@ -139,6 +140,7 @@ export interface MoleculeStore {
      * with the stable step identity to replay the original client message.
      */
     readonly conversationId?: string;
+    readonly inputPayload?: unknown;
   }): Promise<void>;
   recordStepAttempt(stepId: string, attempt: number): Promise<void>;
   /** vibesync-ynmp: reopen a failed try so the bead graph re-offers the step; the counters live on the bead. */
@@ -292,6 +294,7 @@ export class MoleculeWalker {
     readonly motivatingBeadId?: string;
     readonly delivers?: string;
     readonly projectIdentifier?: string;
+    readonly inputPayload?: unknown;
     readonly steps: readonly StepSpec[];
   }): Promise<MoleculeView> {
     const rootId = newMoleculeRootId(args.prefix);
@@ -323,6 +326,7 @@ export class MoleculeWalker {
         stepName: step.name,
         title: `[formula:${args.formulaName}/step:${step.name}] ${step.role}`,
         dependsOnStepIds: dependsOnIds,
+        ...(args.inputPayload !== undefined ? { inputPayload: args.inputPayload } : {}),
       });
     }
     const loaded = await this.load(rootId);
@@ -348,6 +352,7 @@ export class MoleculeWalker {
     readonly providerKind: string;
     readonly sessionId: string;
     readonly conversationId?: string;
+    readonly inputPayload?: unknown;
   }): Promise<void> {
     await this.store.recordStepTask(stepId, task);
   }

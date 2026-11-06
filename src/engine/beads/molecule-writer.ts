@@ -109,12 +109,14 @@ export class BdMoleculeWriter {
     readonly providerKind: string;
     readonly sessionId: string;
     readonly conversationId?: string;
+    readonly inputPayload?: unknown;
   }): Promise<void> {
     await this.mergeExec(stepId, {
       ...(task.taskId ? { task_id: task.taskId } : {}),
       provider_kind: task.providerKind,
       session_id: task.sessionId,
       ...(task.conversationId ? { conversation_id: task.conversationId } : {}),
+      ...(task.inputPayload !== undefined ? { input_payload: task.inputPayload } : {}),
     });
   }
 

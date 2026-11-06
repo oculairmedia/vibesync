@@ -106,6 +106,25 @@ describe('recoverInterruptedMolecules', () => {
     expect(report.interrupted).toEqual([b.rootId]);
     expect(report.failed).toEqual([{ moleculeId: a.rootId, error: 'bd unavailable' }]);
   });
+
+  it('resumes an interrupted Iroh molecule instead of retiring its running step', async () => {
+    const store = new InMemoryDoltClient();
+    const molecule = await cookRunning(store, 'work-iroh');
+    await store.markStepDone(molecule.id('mayor'), { output: 'plan' });
+    await store.markStepRunning(molecule.id('coder'));
+    await store.markStepDone(molecule.id('tester'), { output: 'not started' });
+    await store.recordStepTask(molecule.id('coder'), {
+      providerKind: 'letta-code-iroh', sessionId: 'session-old', conversationId: 'conv-resume',
+      inputPayload: { prompt: 'continue the coder task' },
+    });
+    const resumed: string[] = [];
+    const report = await recoverInterruptedMolecules(store as never, () => undefined, {
+      resume: async (id) => { resumed.push(id); },
+    });
+    expect(resumed).toEqual([molecule.rootId]);
+    expect(report.interrupted).toEqual([]);
+    expect((await store.getBead(molecule.id('coder')))?.status).toBe('in_progress');
+  });
 });
 
 describe('boot retires interrupted molecules before anything can dispatch', () => {

@@ -158,8 +158,9 @@ describe('FormulaDispatcher + IrohWrapperProvider: direct role dispatch (vibesyn
     expect(fake.received.some((frame) => frame['type'] === 'input')).toBe(true);
     expect(fake.received.filter((frame) => frame['type'] === 'runtime_start').at(-1)?.['conversation_id']).toBe('conv-persisted');
     const input = fake.received.filter((frame) => frame['type'] === 'input').at(-1)!;
-    expect((((input['payload'] as { messages: Array<{ client_message_id: string }> }).messages)[0]!).client_message_id)
-      .toBe(`vibesync:${view.rootId}:reviewer:a1`);
+    const message = ((input['payload'] as { messages: Array<{ client_message_id: string; content: string }> }).messages)[0]!;
+    expect(message.client_message_id).toBe(`vibesync:${view.rootId}:reviewer:a1`);
+    expect(message.content).toBe('');
   });
 
   it('records each role agent\'s own report as the step output, threads it into the next step, and fills the trace fields', async () => {
