@@ -14,3 +14,4 @@ export { candidatePullRequests, createGhDeliveryVerifier, createGhShippedWorkPro
 export type { DeliveryClaim, DeliveryTarget, DeliveryVerdict, DeliveryVerifier, GhRunner, ShippedWorkProbe } from './delivery.js';
 export { createBdProjectMemorySource, PROJECT_MEMORY_PREFIX, PROJECT_MEMORY_READ_FAILED_EVENT, renderProjectMemory } from './project-memory.js';
 export type { ProjectBdResolver, ProjectMemorySource } from './project-memory.js';
+export { createTypeSafeJudge, TypeSafeConfigError, TypeSafeRequestError, type StepReplyJudge, type StepVerdict } from '../verdict/index.js';

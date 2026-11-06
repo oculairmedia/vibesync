@@ -13,7 +13,7 @@ import { createRegistry, type Registry } from './registry/registry';
 import { createDoltHubProvisioningService } from './registry/dolthub-provisioning.js';
 import { logger } from './logger';
 import { assertProviderKind, bootOrchestrationPlane, releaseDoltAfterFailedBoot, UnsupportedProviderError, type OrchestrationHandle } from '../engine/boot.js';
-import { createBdProjectMemorySource } from '../engine/dispatcher/index.js';
+import { createTypeSafeJudge, createBdProjectMemorySource } from '../engine/dispatcher/index.js';
 import { BdVersionTooOldError, probeBdVersion } from '../engine/bd-version.js';
 import { createCliRunner } from '../engine/scheduler/bd-adapters.js';
 import { registryPmAgentLookup } from '../engine/pm-wake/waker.js';
@@ -109,6 +109,9 @@ async function bootEngine(db: Registry): Promise<OrchestrationHandle | null> {
   // stop the service, not be retried as if Dolt were still starting
   // (vibesync-9lzk.29). Throws UnsupportedProviderError to main()'s fatal handler.
   assertProviderKind();
+  const typesafeKey = process.env['TYPESAFE_API_KEY'];
+  const stepJudge = typesafeKey ? createTypeSafeJudge({ apiKey: typesafeKey }) : null;
+  logger.info({ stepJudge: stepJudge ? 'jev' : 'marker-only' }, stepJudge ? 'Step verdicts: Jev decision model' : 'Step verdicts: marker lines only (TYPESAFE_API_KEY not set)');
 
   for (let attempt = 1; attempt <= MAX_BOOT_ATTEMPTS; attempt += 1) {
     let dolt: DoltClient | undefined;
@@ -129,6 +132,9 @@ async function bootEngine(db: Registry): Promise<OrchestrationHandle | null> {
         waits: { config: config.waits, logger, bd: projectCli(db, 'bd', 'vibesync-waits') },
         // vibesync-9lzk.25: each step reads ITS project's codebase memories,
         // through that project's own checkout; memories never cross projects.
+        // vibesync-9lzk.39: reviewing/testing step replies are read by the Jev
+        // decision model when a key is configured; without one, marker lines only.
+        ...(stepJudge ? { stepJudge } : {}),
         projectMemory: createBdProjectMemorySource((projectIdentifier) => {
           const fsPath = db.getProject(projectIdentifier)?.filesystem_path;
           if (!fsPath) return null;

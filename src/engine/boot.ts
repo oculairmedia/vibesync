@@ -3,6 +3,7 @@ import {
   createGhShippedWorkProbe,
   ghRepositoryTarget,
   type ShippedWorkProbe,
+  type StepReplyJudge,
   type ProjectMemorySource,
   type DeliveryVerifier,
   FormulaDispatcher,
@@ -92,6 +93,8 @@ export interface BootOrchestrationPlaneOptions {
   readonly projectMemory?: ProjectMemorySource;
   /** Plan-only step guard (vibesync-9lzk.37). Defaults to the project's `gh`. */
   readonly shippedWorkProbe?: ShippedWorkProbe;
+  /** vibesync-9lzk.39: step-reply decision model. Absent = marker lines only. */
+  readonly stepJudge?: StepReplyJudge;
   /**
    * Durable wait-on-beads watcher (vibesync-9g24, invariant 4). Absent or
    * `config.enabled === false` => nothing is constructed: no watcher, no timer,
@@ -278,6 +281,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     ...(opts.projectMemory ? { projectMemory: opts.projectMemory } : {}),
     deliveryVerifier: opts.deliveryVerifier ?? createGhDeliveryVerifier(projectGh, repositoryTarget),
     shippedWorkProbe: opts.shippedWorkProbe ?? createGhShippedWorkProbe(projectGh, repositoryTarget),
+    ...(opts.stepJudge ? { stepJudge: opts.stepJudge } : {}),
   });
 
   steps = new StepDispatcher({

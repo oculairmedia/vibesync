@@ -9,6 +9,7 @@ import type { RuntimeProvider, SessionEvent, SessionHandle } from '../runtime/in
 import type { ReadyStep, ReadyStepRunner, StepRunOutcome } from '../molecule/index.js';
 import { parseBlockedOutcome, STEP_OUTCOME_INSTRUCTIONS } from './step-outcome.js';
 import type { DeliveryVerifier, ShippedWorkProbe } from './delivery.js';
+import { decideStepVerdict, reconcileWithMarker, type StepReplyJudge, type StepVerdict } from '../verdict/index.js';
 import { PROJECT_MEMORY_READ_FAILED_EVENT, renderProjectMemory, type ProjectMemorySource } from './project-memory.js';
 import { renderTemplate } from './render.js';
 import {
@@ -131,6 +132,11 @@ export interface FormulaDispatcherOptions {
    */
   readonly shippedWorkProbe?: ShippedWorkProbe;
   /**
+   * vibesync-9lzk.39: the decision model that reads a reviewing or testing
+   * step's reply. Absent = marker line only (the pre-Jev behaviour).
+   */
+  readonly stepJudge?: StepReplyJudge;
+  /**
    * Called (never throws) right after a molecule is cooked and registered, so
    * the step loop can pick up its first ready steps promptly instead of waiting
    * for its next interval. Boot wires this to `StepDispatcher.kick`.
@@ -196,6 +202,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
   private readonly deliveryVerifier: DeliveryVerifier | null;
   private readonly projectMemory: ProjectMemorySource | null;
   private readonly shippedWorkProbe: ShippedWorkProbe | null;
+  private readonly stepJudge: StepReplyJudge | null;
   private readonly onMoleculeCooked: ((moleculeId: string) => void) | null;
   private readonly moleculeQueue: QueuedMoleculeRun[] = [];
   private readonly live = new Map<string, MoleculeRun>();
@@ -212,6 +219,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     this.deliveryVerifier = opts.deliveryVerifier ?? null;
     this.projectMemory = opts.projectMemory ?? null;
     this.shippedWorkProbe = opts.shippedWorkProbe ?? null;
+    this.stepJudge = opts.stepJudge ?? null;
     this.onMoleculeCooked = opts.onMoleculeCooked ?? null;
   }
 
@@ -477,6 +485,41 @@ export class FormulaDispatcher implements ReadyStepRunner {
       run.finalized = true;
       this.live.delete(run.moleculeId);
       run.reject(error);
+    }
+  }
+
+  /**
+   * vibesync-9lzk.39: the blocker a step's reply carries, or null. Steps that
+   * judge work (a looping step such as the reviewer, or the formula's last
+   * step such as the tester) are read by the decision model when one is
+   * configured; every other step keeps the marker line. A judge failure is an
+   * error (the step fails), never a silent "not blocked". An unsettled reading
+   * fails closed with the reply attached.
+   */
+  private async readStepBlocker(args: {
+    readonly input: DispatchInput;
+    readonly step: BeadRow;
+    readonly moleculeId: string;
+    readonly stepSpec: StepSpec;
+    readonly stepName: string;
+    readonly output: string;
+  }): Promise<string | null> {
+    const marker = parseBlockedOutcome(args.output);
+    const steps = args.input.formula.steps;
+    const judges = args.stepSpec.loopsBackTo !== undefined || steps[steps.length - 1]?.name === args.stepName;
+    if (!this.stepJudge || !judges) return marker;
+    const judged = await this.stepJudge.judge({ role: args.stepSpec.role, reply: args.output });
+    const summary = marker ?? firstLine(args.output);
+    const verdict: StepVerdict = reconcileWithMarker(decideStepVerdict(judged.answers, summary), marker);
+    this.emit('dispatcher/step.verdict', args.moleculeId, args.step.id, {
+      stepName: args.stepName, role: args.stepSpec.role, stepId: args.step.id,
+      verdict: verdict.kind, answers: judged.answers, model: judged.model, inputTokens: judged.inputTokens, marker: marker !== null,
+    });
+    switch (verdict.kind) {
+      case 'approve': return null;
+      case 'changes_requested': return verdict.reason;
+      case 'await_ci': return `${verdict.reason}; a reply that only waits on CI is not a block: wait for the checks, then judge the finished result`;
+      case 'unsettled': return `verdict unsettled (fail closed): ${verdict.reason}`;
     }
   }
 
@@ -865,7 +908,10 @@ export class FormulaDispatcher implements ReadyStepRunner {
       const declared = bead ? readFailureClass(bead.metadata) : null;
       // vibesync-zvcm: a step that reports itself blocked must stop the formula.
       // Terminal: retrying cannot clear a blocker the agent named.
-      const blocker = parseBlockedOutcome(output.text);
+      // vibesync-9lzk.39: for a step that judges work (one that loops back, or
+      // the last step), the reply is read by the decision model, not by its
+      // marker line alone; the marker is a second signal (see verdict/decide).
+      const blocker = await this.readStepBlocker({ ...args, stepSpec, stepName, output: output.text });
       const overstepped = blocker === null && declared === null && stepSpec.planOnly
         ? await this.planOnlyViolation(args.input.motivatingBeadId, attemptStartedAt, { moleculeId: args.moleculeId, stepId: args.step.id })
         : null;
@@ -1277,6 +1323,11 @@ class AttemptFailure extends Error {
     super(message);
     this.name = 'AttemptFailure';
   }
+}
+
+function firstLine(text: string): string {
+  const line = text.split(/\r?\n/).map((l) => l.trim()).find((l) => l.length > 0) ?? '';
+  return line.slice(0, 200);
 }
 
 function retryStateKey(state: RetryState): string {
