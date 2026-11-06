@@ -511,7 +511,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     const judges = args.stepSpec.loopsBackTo !== undefined || steps[steps.length - 1]?.name === args.stepName;
     if (!this.stepJudge || !judges) return marker;
     const judged = await this.stepJudge.judge({ role: args.stepSpec.role, reply: args.output });
-    const summary = marker ?? firstLine(args.output);
+    const summary = marker ?? args.output;
     const finalStep = steps[steps.length - 1]?.name === args.stepName;
     const verdict: StepVerdict = reconcileWithMarker(decideStepVerdict(judged.answers, summary, { finalStep }), marker);
     this.emit('dispatcher/step.verdict', args.moleculeId, args.step.id, {
@@ -1329,11 +1329,6 @@ class AttemptFailure extends Error {
     super(message);
     this.name = 'AttemptFailure';
   }
-}
-
-function firstLine(text: string): string {
-  const line = text.split(/\r?\n/).map((l) => l.trim()).find((l) => l.length > 0) ?? '';
-  return line.slice(0, 200);
 }
 
 function retryStateKey(state: RetryState): string {

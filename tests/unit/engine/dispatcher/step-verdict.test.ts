@@ -112,7 +112,9 @@ describe('step verdicts from the decision model (vibesync-9lzk.39)', () => {
     expect(thrown).toBeInstanceOf(FormulaDispatchError);
     expect(h.events.find((e) => e.kind === 'dispatcher/step.verdict' && e.payload?.['stepName'] === 'tester')?.payload).toMatchObject({ verdict: 'unsettled' });
     const tester = await h.store.getBead(`${(thrown as FormulaDispatchError).moleculeId}-tester`);
-    expect(String((tester?.metadata?.['exec'] as Record<string, unknown>)['error_trace'])).toContain('verdict unsettled (fail closed)');
+    const failureReason = String((tester?.metadata?.['exec'] as Record<string, unknown>)['error_trace']);
+    expect(failureReason).toContain('verdict unsettled (fail closed)');
+    expect(failureReason).toContain('TypeScript check');
   });
 
   it('final tester reports of unrun required checks fail closed; reviewer mentions are ignored', async () => {
@@ -121,6 +123,11 @@ describe('step verdicts from the decision model (vibesync-9lzk.39)', () => {
       const thrown = await h.dispatcher.run({ formula: looping, pack: pack(), input: 'go', motivatingBeadId: 'w' }).catch((e: unknown) => e);
       expect(thrown).toBeInstanceOf(FormulaDispatchError);
       expect(h.events.find((e) => e.kind === 'dispatcher/step.verdict' && e.payload?.['stepName'] === 'tester')?.payload).toMatchObject({ verdict: 'unsettled' });
+      if (tester === ROUND3_UNRERUN_TESTER) {
+        const failedTester = await h.store.getBead(`${(thrown as FormulaDispatchError).moleculeId}-tester`);
+        const failureReason = String((failedTester?.metadata?.['exec'] as Record<string, unknown>)['error_trace']);
+        expect(failureReason).toContain('mutation');
+      }
     }
     const reviewer = harness([ROUND8_REVIEWER, ROUND4_NIT_REVIEW]);
     await expect(reviewer.dispatcher.run({ formula: looping, pack: pack(), input: 'go', motivatingBeadId: 'w' })).resolves.toBeDefined();
