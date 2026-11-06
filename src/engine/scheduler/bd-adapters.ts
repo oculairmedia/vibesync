@@ -170,6 +170,7 @@ export interface BdFormulaResolverOptions {
 
 export class BdFormulaResolver implements FormulaResolver {
   private readonly formula: Pack['formulas'][number];
+  private readonly warnedInvalidStepTimeoutBeadIds = new Set<string>();
 
   constructor(private readonly opts: BdFormulaResolverOptions) {
     const formula = opts.pack.formulas.find((f) => f.name === opts.formulaName);
@@ -195,7 +196,8 @@ export class BdFormulaResolver implements FormulaResolver {
     const stepTimeoutMs = typeof rawStepTimeoutMs === 'number' && Number.isInteger(rawStepTimeoutMs) && rawStepTimeoutMs > 0
       ? rawStepTimeoutMs
       : undefined;
-    if (rawStepTimeoutMs !== undefined && stepTimeoutMs === undefined) {
+    if (rawStepTimeoutMs !== undefined && stepTimeoutMs === undefined && !this.warnedInvalidStepTimeoutBeadIds.has(workBeadId)) {
+      this.warnedInvalidStepTimeoutBeadIds.add(workBeadId);
       this.opts.logger?.warn?.({ workBeadId, stepTimeoutMs: rawStepTimeoutMs }, 'Ignoring invalid step_timeout_ms metadata');
     }
     return {

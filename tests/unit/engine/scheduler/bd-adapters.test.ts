@@ -110,6 +110,22 @@ describe('BdFormulaResolver / BdLivenessProbe', () => {
     }
   });
 
+  it('warns once per bead for invalid step_timeout_ms metadata', async () => {
+    const warnings: unknown[] = [];
+    const resolver = new BdFormulaResolver({
+      bd: async (args) => JSON.stringify([{ id: args[1], status: 'open', metadata: { step_timeout_ms: 'abc' } }]),
+      pack, formulaName: 'f1', projectIdentifier: 'p',
+      logger: { warn: (...args: unknown[]) => warnings.push(args) },
+    });
+
+    await resolver.resolve('w1');
+    await resolver.resolve('w1');
+    await resolver.resolve('w1');
+    expect(warnings).toHaveLength(1);
+    await resolver.resolve('w2');
+    expect(warnings).toHaveLength(2);
+  });
+
   it('liveness: closed bead => bead-closed, open => alive, bd failure => throws (witness leaves slot alone)', async () => {
     const slot = { slotId: 's', workBeadId: 'w', allocatedAt: new Date() };
     expect(await new BdLivenessProbe(async () => JSON.stringify([{ status: 'closed' }])).probe(slot)).toBe('bead-closed');
