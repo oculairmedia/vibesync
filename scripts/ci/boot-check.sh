@@ -48,6 +48,10 @@ while (( SECONDS - START < BUDGET_S )); do
     fi
     # Matches both log formats: pino JSON ("msg":"API server running") and
     # pino-pretty text ("INFO: ... API server running").
+    LOG_DEADLINE=$(( $(date +%s%N) + 5000000000 ))
+    while ! grep -q 'API server running' "$LOG" && (( $(date +%s%N) < LOG_DEADLINE )); do
+      sleep 0.2
+    done
     if ! grep -q 'API server running' "$LOG"; then
       echo "boot-check: FAIL - /health answered but the launched process never logged 'API server running'" >&2
       tail -40 "$LOG" >&2
