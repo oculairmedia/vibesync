@@ -51,6 +51,7 @@ function harness(fake: FakeIrohWrapper) {
     provider: wrapWithParentAgentId(provider, PARENT),
     walker: new MoleculeWalker(store),
     eventBus: new EventBus({ noPersist: true }),
+    providerResolver: { resolve: (input) => input.projectIdentifier === 'vibesync' ? wrapWithParentAgentId(provider!, PARENT) : null },
   });
   return { dispatcher, store };
 }
@@ -133,6 +134,32 @@ describe('FormulaDispatcher + IrohWrapperProvider: direct role dispatch (vibesyn
     expect(result.outputs.reviewer).toBe('PONG');
     expect([...fake.conversationTags.values()]).toEqual([['lane:work', `run:${result.moleculeId}`]]);
     expect(fake.conversationTitles.get('conv-1')).toBe('code-review · reviewer');
+  });
+
+  it('resumes a running step through project agent resolution and replays its original turn', async () => {
+    const fake = new FakeIrohWrapper({ scope: [PARENT, ...Object.values(ROLE_AGENTS)] });
+    const { dispatcher, store } = harness(fake);
+    fake.seedConversation(ROLE_AGENTS.reviewer!, { id: 'conv-persisted', lastMessageAt: new Date().toISOString() });
+    const walker = new MoleculeWalker(store);
+    const view = await walker.dispatch({
+      prefix: 'mol', formulaName: 'code-review', title: '[formula:code-review] resume',
+      steps: [{ name: 'reviewer', role: 'reviewer' }],
+      projectIdentifier: 'vibesync',
+    } as Parameters<typeof walker.dispatch>[0]);
+    const stepId = `${view.rootId}-reviewer`;
+    await walker.startStep(stepId);
+    await walker.recordStepTask(stepId, {
+      providerKind: 'letta-code-iroh',
+      sessionId: 'letta-code-iroh:agent-previous:reviewer:1',
+      conversationId: 'conv-persisted',
+    });
+    const result = await dispatcher.resume(view.rootId);
+    expect(result.outputs.reviewer).toBe('PONG');
+    expect(fake.received.some((frame) => frame['type'] === 'input')).toBe(true);
+    expect(fake.received.filter((frame) => frame['type'] === 'runtime_start').at(-1)?.['conversation_id']).toBe('conv-persisted');
+    const input = fake.received.filter((frame) => frame['type'] === 'input').at(-1)!;
+    expect((((input['payload'] as { messages: Array<{ client_message_id: string }> }).messages)[0]!).client_message_id)
+      .toBe(`vibesync:${view.rootId}:reviewer:a1`);
   });
 
   it('records each role agent\'s own report as the step output, threads it into the next step, and fills the trace fields', async () => {

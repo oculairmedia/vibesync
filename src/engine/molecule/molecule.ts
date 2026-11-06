@@ -114,6 +114,8 @@ export interface MoleculeStore {
     readonly motivatingBeadId?: string;
     /** Persisted so resume() can still enforce the formula's delivery (vibesync-9lzk.21). */
     readonly delivers?: string;
+    /** Persisted so a resumed provider can recover project-scoped agent routing. */
+    readonly projectIdentifier?: string;
   }): Promise<void>;
   insertMoleculeStep(args: {
     readonly id: string;
@@ -289,6 +291,7 @@ export class MoleculeWalker {
     readonly title: string;
     readonly motivatingBeadId?: string;
     readonly delivers?: string;
+    readonly projectIdentifier?: string;
     readonly steps: readonly StepSpec[];
   }): Promise<MoleculeView> {
     const rootId = newMoleculeRootId(args.prefix);
@@ -298,6 +301,7 @@ export class MoleculeWalker {
       title: args.title,
       ...(args.motivatingBeadId ? { motivatingBeadId: args.motivatingBeadId } : {}),
       ...(args.delivers ? { delivers: args.delivers } : {}),
+      ...(args.projectIdentifier ? { projectIdentifier: args.projectIdentifier } : {}),
     });
     // Insert steps in declared order so depends_on references already exist.
     const stepIdByName = new Map<string, string>();

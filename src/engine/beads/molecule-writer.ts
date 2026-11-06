@@ -61,6 +61,7 @@ export class BdMoleculeWriter {
     readonly title: string;
     readonly motivatingBeadId?: string;
     readonly delivers?: string;
+    readonly projectIdentifier?: string;
     readonly metadata?: Record<string, unknown>;
   }): Promise<void> {
     const metadata = {
@@ -69,6 +70,7 @@ export class BdMoleculeWriter {
         formula: args.formulaName,
         ...(args.motivatingBeadId ? { motivating_bead: args.motivatingBeadId } : {}),
         ...(args.delivers ? { delivers: args.delivers } : {}),
+        ...(args.projectIdentifier ? { project_identifier: args.projectIdentifier } : {}),
       },
     };
     await this.create(args.id, 'molecule_root', args.title, metadata);
