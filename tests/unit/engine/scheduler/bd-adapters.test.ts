@@ -94,6 +94,22 @@ describe('BdFormulaResolver / BdLivenessProbe', () => {
     expect(await closed.resolve('w')).toBeNull();
   });
 
+  it('resolves only positive integer step_timeout_ms metadata and warns for invalid values', async () => {
+    const valid = new BdFormulaResolver({
+      bd: async () => JSON.stringify([{ id: 'w', status: 'open', metadata: { step_timeout_ms: 1_800_000 } }]),
+      pack, formulaName: 'f1', projectIdentifier: 'p',
+    });
+    expect(await valid.resolve('w')).toMatchObject({ stepTimeoutMs: 1_800_000 });
+
+    for (const value of [null, 'abc', 0, -5, 1.5, undefined]) {
+      const resolver = new BdFormulaResolver({
+        bd: async () => JSON.stringify([{ id: 'w', status: 'open', metadata: value === undefined ? null : { step_timeout_ms: value } }]),
+        pack, formulaName: 'f1', projectIdentifier: 'p',
+      });
+      expect(await resolver.resolve('w')).not.toHaveProperty('stepTimeoutMs');
+    }
+  });
+
   it('liveness: closed bead => bead-closed, open => alive, bd failure => throws (witness leaves slot alone)', async () => {
     const slot = { slotId: 's', workBeadId: 'w', allocatedAt: new Date() };
     expect(await new BdLivenessProbe(async () => JSON.stringify([{ status: 'closed' }])).probe(slot)).toBe('bead-closed');

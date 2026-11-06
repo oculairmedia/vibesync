@@ -55,6 +55,8 @@ export interface DispatchInput {
    * the molecule.
    */
   readonly projectIdentifier?: string;
+  /** Default turn timeout for every step; explicit formula-step timeouts win. */
+  readonly stepTimeoutMs?: number;
   /**
    * Called once, synchronously, as soon as the molecule exists (right after
    * the walker created it, BEFORE the first step runs) with its id
@@ -780,7 +782,9 @@ export class FormulaDispatcher implements ReadyStepRunner {
         infraRetries: state.infraRetries,
         provider: args.provider,
         ...(args.input.projectIdentifier ? { projectIdentifier: args.input.projectIdentifier } : {}),
-        ...(stepSpec.turnTimeoutMs !== undefined ? { turnTimeoutMs: stepSpec.turnTimeoutMs } : {}),
+        ...((stepSpec.turnTimeoutMs ?? args.input.stepTimeoutMs) !== undefined
+          ? { turnTimeoutMs: stepSpec.turnTimeoutMs ?? args.input.stepTimeoutMs }
+          : {}),
       });
     } catch (error) {
       const bead = await this.walker.readStep(args.step.id).catch(() => null);

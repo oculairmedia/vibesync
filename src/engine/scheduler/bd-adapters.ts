@@ -18,7 +18,7 @@
 
 
 import type { Pack } from '../packs/index.js';
-import type { FormulaResolver, ReadyBeadSource } from './daemon.js';
+import type { DaemonLogger, FormulaResolver, ReadyBeadSource } from './daemon.js';
 import {
   SLING_CONTEXT_LABEL,
   tryParseParams,
@@ -165,6 +165,7 @@ export interface BdFormulaResolverOptions {
   readonly pack: Pack;
   readonly formulaName: string;
   readonly projectIdentifier: string;
+  readonly logger?: Pick<DaemonLogger, 'warn'>;
 }
 
 export class BdFormulaResolver implements FormulaResolver {
@@ -187,11 +188,22 @@ export class BdFormulaResolver implements FormulaResolver {
     if (!bead || bead['status'] === 'closed') return null;
     const title = String(bead['title'] ?? '');
     const description = String(bead['description'] ?? '');
+    const metadata = bead['metadata'];
+    const rawStepTimeoutMs = typeof metadata === 'object' && metadata !== null && !Array.isArray(metadata)
+      ? (metadata as Row)['step_timeout_ms']
+      : undefined;
+    const stepTimeoutMs = typeof rawStepTimeoutMs === 'number' && Number.isInteger(rawStepTimeoutMs) && rawStepTimeoutMs > 0
+      ? rawStepTimeoutMs
+      : undefined;
+    if (rawStepTimeoutMs !== undefined && stepTimeoutMs === undefined) {
+      this.opts.logger?.warn?.({ workBeadId, stepTimeoutMs: rawStepTimeoutMs }, 'Ignoring invalid step_timeout_ms metadata');
+    }
     return {
       formula: this.formula,
       pack: this.opts.pack,
       projectIdentifier: this.opts.projectIdentifier,
       input: `Bead ${workBeadId}: ${title}${description ? `\n\n${description}` : ''}`,
+      ...(stepTimeoutMs !== undefined ? { stepTimeoutMs } : {}),
     };
   }
 }
