@@ -279,6 +279,27 @@ describe('IrohWrapperProvider', () => {
       expect(id).toBe('vibesync:mol-1:coder:a1');
     });
 
+    it('resumes the persisted role-agent conversation with the original client message id', async () => {
+      const fake = new FakeIrohWrapper({ scope: SCOPE });
+      const firstProvider = mk(fake);
+      await runStep(firstProvider, baseSpec({ stepName: 'coder', attempt: 1 }), 'original prompt');
+      const created = fake.received.find((f) => f['method'] === 'conversation.create')!;
+      const conversationId = String((created['result'] as Record<string, unknown> | undefined)?.['id'] ?? 'conv-1');
+
+      const resumedProvider = mk(fake);
+      const resumed = await runStep(resumedProvider, baseSpec({
+        stepName: 'coder', attempt: 1, resumeConversationId: conversationId,
+        resumeClientMessageId: 'vibesync:mol-1:coder:a1', providerKind: 'letta-code-iroh',
+      }), 'original prompt');
+
+      expect(resumed.some((e) => e.kind === 'message-delta')).toBe(true);
+      expect(fake.received.filter((f) => f['method'] === 'conversation.create')).toHaveLength(1);
+      const resumedStart = fake.received.filter((f) => f['type'] === 'runtime_start').at(-1);
+      expect(resumedStart?.['conversation_id']).toBe(conversationId);
+      const ids = fake.received.filter((f) => f['type'] === 'input').map((f) => (((f['payload'] as Record<string, unknown>)['messages'] as Record<string, unknown>[])[0]!)['client_message_id']);
+      expect(ids).toEqual(['vibesync:mol-1:coder:a1', 'vibesync:mol-1:coder:a1']);
+    });
+
     it('the fake host drops a repeated client_message_id in a NEW conversation, like the real host', async () => {
       const fake = new FakeIrohWrapper({ scope: SCOPE });
       const p = mk(fake);

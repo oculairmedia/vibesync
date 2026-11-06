@@ -128,21 +128,13 @@ export interface MoleculeStore {
   listMoleculeRoots(opts?: { statuses?: readonly string[]; limit?: number }): Promise<readonly BeadRow[]>;
   markStepRunning(stepId: string): Promise<void>;
   recordStepTask(stepId: string, task: {
-    /**
-     * Provider-opaque task id for restart re-attachment (f5g). Optional:
-     * the Iroh provider reports only a conversation id, so its steps carry
-     * no task id. `FormulaDispatcher.resume` needs a task id and fails a
-     * running step without one; on restart, boot instead closes interrupted
-     * molecules and the scheduler re-runs the work (vibesync-9lzk.9).
-     */
+    /** Provider-opaque task id for restart re-attachment (f5g). */
     readonly taskId?: string;
     readonly providerKind: string;
     readonly sessionId: string;
     /**
-     * Optional persistent-subagent conversation id (vibesync-mcz
-     * Phase D). When present, persisted as metadata.exec.conversation_id
-     * alongside task_id so a future resume can re-attach to the
-     * same conversation on the persistent role agent.
+     * Optional Iroh role-agent conversation id. The dispatcher combines it
+     * with the stable step identity to replay the original client message.
      */
     readonly conversationId?: string;
   }): Promise<void>;

@@ -18,8 +18,9 @@
  * injected AgentIdResolver (project_role_agents). If neither yields an id the
  * step FAILS with that reason; it never falls back to another agent.
  *
- * Per session: one fresh conversation on the role agent. One IrohConnection is
- * shared by every session of a provider instance.
+ * Per fresh session: one conversation on the role agent. A resume session
+ * reuses its persisted conversation and client message id. One IrohConnection
+ * is shared by every session of a provider instance.
  *
  * Event contract with the dispatcher (it concatenates EVERY message-delta into
  * the step output): live stream deltas are progress only and are surfaced as
@@ -34,7 +35,8 @@
  * SessionSpec.extra: parentAgentId (required; only passed to the resolver as
  * context, never messaged), agentId, projectIdentifier, moleculeId, stepName,
  * attempt, turnTimeoutMs. Others (subagentType, personaContent,
- * conversationId) are ignored: the conversation is always fresh.
+ * conversationId) are ignored on fresh runs. Resume specs provide the stored
+ * conversation and message ids so the wrapper can replay that turn.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -104,6 +106,8 @@ interface SessionState {
   readonly abort: AbortController;
   readonly seenTurnIds: Set<string>;
   conversationId: string | null;
+  readonly resumeConversationId: string | null;
+  readonly resumeClientMessageId: string | null;
   promptCount: number;
   stopped: boolean;
   events: SessionEvent[];
@@ -135,6 +139,10 @@ export class IrohWrapperProvider implements RuntimeProvider {
 
   async start(spec: SessionSpec): Promise<SessionHandle> {
     const projectIdentifier = readStringExtra(spec, 'projectIdentifier') ?? null;
+    const resumeConversationId = readStringExtra(spec, 'resumeConversationId') ?? null;
+    if (resumeConversationId && readStringExtra(spec, 'providerKind') !== IROH_PROVIDER_KIND) {
+      throw new Error('IrohWrapperProvider.start: resume metadata is for a different provider');
+    }
     // Only context for the resolver; the parent is never messaged by this provider.
     const parentAgentId = readStringExtra(spec, 'parentAgentId') ?? '';
 
@@ -181,6 +189,8 @@ export class IrohWrapperProvider implements RuntimeProvider {
       abort: new AbortController(),
       seenTurnIds: new Set(),
       conversationId: null,
+      resumeConversationId,
+      resumeClientMessageId: readStringExtra(spec, 'resumeClientMessageId') ?? null,
       promptCount: 0,
       stopped: false,
       events: [],
@@ -239,7 +249,7 @@ export class IrohWrapperProvider implements RuntimeProvider {
     // The role agent already carries its persona in its own system prompt.
     const text = contentToText(content);
     state.promptCount += 1;
-    const clientMessageId = clientMessageIdFor(state, h.id);
+    const clientMessageId = state.resumeClientMessageId ?? clientMessageIdFor(state, h.id);
     state.events = [];
 
     // Surface the conversation id to the dispatcher (step trace) as soon as the
@@ -325,7 +335,7 @@ export class IrohWrapperProvider implements RuntimeProvider {
     // Always a fresh conversation on the ROLE agent: a retried attempt must not
     // inherit a half-finished turn, and concurrent steps of one role must not
     // share context.
-    state.conversationId ??= await createConversation(this.conn, state.agentId, state.title ?? undefined, {
+    state.conversationId ??= state.resumeConversationId ?? await createConversation(this.conn, state.agentId, state.title ?? undefined, {
       tags: workConversationTags(state.moleculeId, state.motivatingBeadId),
     });
     conversationKnown(state.conversationId);

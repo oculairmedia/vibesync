@@ -12,6 +12,7 @@ import type { DeliveryVerifier, ShippedWorkProbe } from './delivery.js';
 import { decideStepVerdict, reconcileWithMarker, summarizeReplyForReason, type StepReplyJudge, type StepVerdict } from '../verdict/index.js';
 import { PROJECT_MEMORY_READ_FAILED_EVENT, renderProjectMemory, type ProjectMemorySource } from './project-memory.js';
 import { renderTemplate } from './render.js';
+import { IROH_PROVIDER_KIND } from '../runtime/index.js';
 import {
   classifyFailure,
   decideRetry,
@@ -41,7 +42,8 @@ import {
  *   await dispatcher.resume('hvsyn-mol-abc123')
  *
  * `resume()` re-attaches only to steps already marked `in_progress` with
- * `metadata.exec.task_id`; it does not redispatch open successor steps.
+ * `metadata.exec.task_id`, or an Iroh conversation; it does not redispatch
+ * open successor steps.
  */
 
 export interface DispatchInput {
@@ -1171,7 +1173,10 @@ export class FormulaDispatcher implements ReadyStepRunner {
     const role = readStepRole(args.step);
     const exec = readExec(args.step);
     const taskId = readString(exec.task_id);
-    if (!taskId) {
+    const providerKind = readString(exec.provider_kind);
+    const conversationId = readString(exec.conversation_id);
+    const isIrohConversation = providerKind === IROH_PROVIDER_KIND && conversationId !== null;
+    if (!taskId && !isIrohConversation) {
       const error = `FormulaDispatcher.resume: running step ${args.step.id} has no metadata.exec.task_id`;
       await this.walker.failStep(args.step.id, error);
       this.emit('dispatcher/step.failed', args.moleculeId, args.step.id, { stepName, role, stepId: args.step.id, error });
@@ -1188,11 +1193,16 @@ export class FormulaDispatcher implements ReadyStepRunner {
         extra: {
           moleculeId: args.moleculeId,
           stepName,
-          resumeTaskId: taskId,
+          ...(taskId ? { resumeTaskId: taskId } : {}),
+          ...(isIrohConversation ? {
+            resumeConversationId: conversationId,
+            resumeClientMessageId: clientMessageIdForStep(args.moleculeId, stepName, args.step),
+            providerKind,
+          } : {}),
           memfsEnabled: false,
         },
       });
-      this.emit('dispatcher/step.reattached', args.moleculeId, taskId, {
+      this.emit('dispatcher/step.reattached', args.moleculeId, taskId ?? undefined, {
         stepName,
         role,
         stepId: args.step.id,
@@ -1207,7 +1217,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
           role,
           providerKind: handle.providerKind,
           sessionId: handle.id,
-          taskId,
+          ...(taskId ? { taskId } : {}),
           resumed: true,
         });
         if (event.kind === 'message-delta') output += event.text;
@@ -1397,6 +1407,13 @@ function outputsFromClosedSteps(steps: readonly BeadRow[]): Record<string, strin
 function readExec(row: BeadRow): Record<string, unknown> {
   const exec = row.metadata.exec;
   return exec && typeof exec === 'object' ? exec as Record<string, unknown> : {};
+}
+
+function clientMessageIdForStep(moleculeId: string, stepName: string, step: BeadRow): string {
+  const retry = readRetryState(step.metadata);
+  const round = readReviewRound(step.metadata);
+  const attempt = `${retry.attempt}${retry.infraRetries > 0 ? `r${retry.infraRetries}` : ''}`;
+  return `vibesync:${moleculeId}:${stepName}${round > 1 ? `:r${round}` : ''}:a${attempt}`;
 }
 
 function readString(value: unknown): string | null {
