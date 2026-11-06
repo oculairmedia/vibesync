@@ -197,15 +197,23 @@ describe('decision table', () => {
     expect(summary.indexOf(second)).toBeGreaterThan(summary.indexOf(first));
     expect(summary).toContain(marker);
 
-    const checksOverBudget = summarizeReplyForReason(`${first}${second}`, 55);
-    expect(checksOverBudget.length).toBeLessThanOrEqual(55);
-    expect(checksOverBudget).toContain(first);
-    expect(checksOverBudget).toContain(second);
+    const longFirst = 'Typecheck was blocked: details.\n';
+    const longSecond = 'Mutation test was not rerun: details.\n';
+    const checksOverBudget = summarizeReplyForReason(`${longFirst}${longSecond}`, 60);
+    expect(checksOverBudget.length).toBeLessThanOrEqual(60);
+    expect(checksOverBudget).toContain(longFirst);
+    expect(checksOverBudget).not.toContain(longSecond);
+    expect(checksOverBudget).toContain(marker);
 
     const oversizedOpening = summarizeReplyForReason(`${'z'.repeat(200)}\n${first}`, 60);
     expect(oversizedOpening.length).toBeLessThanOrEqual(60);
     expect(oversizedOpening).toContain(first);
     expect(oversizedOpening).toContain(marker);
+  });
+  it('places the truncation marker on a separate line when a retained check has no newline', () => {
+    const summary = summarizeReplyForReason(`${'opening\n'.repeat(800)}Typecheck blocked`, 80);
+    expect(summary.length).toBeLessThanOrEqual(80);
+    expect(summary).toContain('\nTypecheck blocked\n[... reply truncated ...]\n');
   });
   it('maps the probability bands to verdicts, with the band between failing closed', () => {
     expect(decideStepVerdict({ ...clean, asks_change: 0.98, reports_all_gates_passed: 0.5 }, 's', { finalStep: false }).kind).toBe('changes_requested');

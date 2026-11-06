@@ -42,6 +42,12 @@ export function summarizeReplyForReason(reply: string, maxChars = 4000): string 
     }
   }
 
-  const body = output.join('');
-  return `${body}${truncation}`;
+  let body = output.join('');
+  let suffix = truncation;
+  if (body.length > 0 && !body.endsWith('\n') && !suffix.startsWith('\n')) {
+    // Keep the truncation marker on its own line without exceeding the cap.
+    if (body.length + suffix.length < limit) suffix = `\n${suffix}`;
+    else body = body.slice(0, Math.max(0, body.length - 1));
+  }
+  return `${body}${suffix}`.slice(0, limit);
 }
