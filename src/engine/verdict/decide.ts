@@ -23,7 +23,10 @@ function read(p: number): 'yes' | 'no' | 'unsettled' {
   return 'unsettled';
 }
 
-export function decideStepVerdict(answers: StepReplyAnswers, summary: string): StepVerdict {
+export function decideStepVerdict(answers: StepReplyAnswers, summary: string, options: { readonly finalStep: boolean }): StepVerdict {
+  if (options.finalStep && read(answers.reports_unverified_check) === 'yes') {
+    return { kind: 'unsettled', reason: `the final-step reply reports a required check was not verified (reports_unverified_check=${answers.reports_unverified_check.toFixed(2)}): ${summary}` };
+  }
   const asks = read(answers.asks_change);
   if (asks === 'unsettled') {
     return { kind: 'unsettled', reason: `the reply does not settle whether a change is needed (asks_change=${answers.asks_change.toFixed(2)}): ${summary}` };
