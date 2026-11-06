@@ -22,10 +22,12 @@ jobs:
         # Production installs with bun (bun.lock); npm ci took ~100 s here.
         # --ignore-scripts: node-pty (via @letta-ai/letta-code) has no linux-x64
         # prebuild and its script runs node-gyp@latest, which fails on the
-        # runner. Only better-sqlite3's native build is needed; rebuild it alone.
+        # runner. Install better-sqlite3's prebuild directly; compile only if
+        # no matching binary is available.
         run: |
           bun install --frozen-lockfile --ignore-scripts
-          npm rebuild better-sqlite3
+          cd node_modules/better-sqlite3
+          npx prebuild-install || npm run build-release
       - name: Type check (tsc --noEmit)
         run: npm run type-check
 
@@ -44,7 +46,8 @@ jobs:
         # Same install as the typecheck job (see there for why scripts are skipped).
         run: |
           bun install --frozen-lockfile --ignore-scripts
-          npm rebuild better-sqlite3
+          cd node_modules/better-sqlite3
+          npx prebuild-install || npm run build-release
       - name: Boot check (bun src/index.ts answers /health)
         run: scripts/ci/boot-check.sh 60
 
@@ -69,10 +72,12 @@ jobs:
 
       - name: Install dependencies
         # Production installs with bun (bun.lock); npm ci took ~100 s per job.
-        # See the typecheck job for why scripts are skipped and one is rebuilt.
+        # See the typecheck job for why scripts are skipped and the native
+        # prebuild is installed explicitly.
         run: |
           bun install --frozen-lockfile --ignore-scripts
-          npm rebuild better-sqlite3
+          cd node_modules/better-sqlite3
+          npx prebuild-install || npm run build-release
 
       - name: Run linter
         run: npm run lint --if-present
