@@ -6,7 +6,7 @@
  * the sweepAll fleet entry point.
  */
 
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -24,6 +24,7 @@ import {
 function makeDeps(overrides: Partial<PortSweeperDeps> = {}): PortSweeperDeps {
   return {
     readPort: () => null,
+    writePort: () => undefined,
     isEmbedded: () => false,
     listeningPorts: () => new Set<number>(),
     portOwnerCwd: () => null,
@@ -118,6 +119,7 @@ describe('repairProject', () => {
       3308,
       32100,
       makeDeps({
+        readPort: (path) => path === '/srv/a' ? 32100 : null,
         runBd: async (_cmd, args, opts): Promise<CommandResult> => {
           calls.push({ args, cwd: opts.cwd });
           return { stdout: '', stderr: '' };
@@ -195,8 +197,10 @@ describe('sweepAll', () => {
 
   it('still repairs server-mode project conflicts', async () => {
     const calls: string[][] = [];
+    let configuredPort = 3308;
     const report = await sweepAll([projectA], makeDeps({
-      readPort: () => 3308,
+      readPort: () => configuredPort,
+      writePort: (_path, port) => { configuredPort = port; },
       portOwnerCwd: () => '/wrong-owner',
       runBd: async (_cmd, args): Promise<CommandResult> => {
         calls.push([...args]);
@@ -210,6 +214,76 @@ describe('sweepAll', () => {
       ['dolt', 'set', 'port', '34000'],
       ['dolt', 'start'],
     ]);
+  });
+
+  it('updates and verifies the configured port when bd writes only metadata.json', async () => {
+    const projectPath = mkdtempSync(join(tmpdir(), 'port-sweeper-repair-'));
+    const beadsPath = join(projectPath, '.beads');
+    mkdirSync(beadsPath, { recursive: true });
+    writeFileSync(join(beadsPath, 'dolt-server.port'), '3308\n');
+    writeFileSync(join(beadsPath, 'metadata.json'), '{}');
+    const project = { identifier: 'temp-project', filesystem_path: projectPath };
+    const other = { identifier: 'other', filesystem_path: '/not-used' };
+    try {
+      const report = await sweepAll([project, other], makeDeps({
+        readPort: (path) => {
+          try {
+            return Number.parseInt(readFileSync(join(path, '.beads', 'dolt-server.port'), 'utf8').trim(), 10);
+          } catch {
+            return path === '/not-used' ? 3308 : null;
+          }
+        },
+        writePort: (path, port) => writeFileSync(join(path, '.beads', 'dolt-server.port'), `${port}\n`),
+        runBd: async (_command, args, options) => {
+          if (args[0] === 'dolt' && args[1] === 'set') {
+            // The real bd command updates metadata.json, not dolt-server.port.
+            writeFileSync(join(options.cwd, '.beads', 'metadata.json'), JSON.stringify({ dolt_server_port: Number(args[3]) }));
+          }
+          return { stdout: '', stderr: '' };
+        },
+      }), { apply: true, only: new Set(['temp-project']), portStart: 34000, portEnd: 34010 });
+
+      expect(report.conflicts).toHaveLength(1);
+      expect(report.repairs).toHaveLength(1);
+      expect(report.repairs[0]).toMatchObject({ ok: true, oldPort: 3308, newPort: 34000 });
+      expect(readFileSync(join(beadsPath, 'dolt-server.port'), 'utf8').trim()).toBe('34000');
+    } finally {
+      rmSync(projectPath, { recursive: true, force: true });
+    }
+  });
+
+  it('fails repair when configured port remains unchanged after bd metadata-only update', async () => {
+    const projectPath = mkdtempSync(join(tmpdir(), 'port-sweeper-failed-repair-'));
+    const beadsPath = join(projectPath, '.beads');
+    mkdirSync(beadsPath, { recursive: true });
+    writeFileSync(join(beadsPath, 'dolt-server.port'), '3308\n');
+    const project = { identifier: 'temp-project', filesystem_path: projectPath };
+    const other = { identifier: 'other', filesystem_path: '/not-used' };
+    try {
+      const report = await sweepAll([project, other], makeDeps({
+        readPort: (path) => {
+          try {
+            return Number.parseInt(readFileSync(join(path, '.beads', 'dolt-server.port'), 'utf8').trim(), 10);
+          } catch {
+            return path === '/not-used' ? 3308 : null;
+          }
+        },
+        writePort: () => undefined,
+        runBd: async (_command, args, options) => {
+          if (args[0] === 'dolt' && args[1] === 'set') {
+            writeFileSync(join(options.cwd, '.beads', 'metadata.json'), JSON.stringify({ dolt_server_port: Number(args[3]) }));
+          }
+          return { stdout: '', stderr: '' };
+        },
+      }), { apply: true, only: new Set(['temp-project']), portStart: 34000, portEnd: 34010 });
+
+      expect(report.conflicts).toHaveLength(1);
+      expect(report.repairs[0]).toMatchObject({ ok: false, oldPort: 3308, newPort: 34000 });
+      expect(report.repairs[0]?.error).toContain('configured port verification failed');
+      expect(readFileSync(join(beadsPath, 'dolt-server.port'), 'utf8').trim()).toBe('3308');
+    } finally {
+      rmSync(projectPath, { recursive: true, force: true });
+    }
   });
 
   it('flags both projects as duplicate when two pin the same port (symmetric)', async () => {
@@ -246,24 +320,38 @@ describe('sweepAll', () => {
 
   it('apply=true repairs conflicts and returns the new port assignments', async () => {
     const calls: { identifier: string; args: readonly string[] }[] = [];
+    const ports = new Map<string, number>([['/srv/a', 3308], ['/srv/b', 3308]]);
     const report = await sweepAll(
       [projectA, projectB],
       makeDeps({
-        readPort: () => 3308, // both pinned to 3308 → duplicate
+        readPort: (path) => ports.get(path) ?? null,
+        writePort: (path, port) => ports.set(path, port),
+        listeningPorts: () => new Set(),
         runBd: async (_cmd, args, opts): Promise<CommandResult> => {
           const identifier = opts.cwd === '/srv/a' ? 'a' : 'b';
           calls.push({ identifier, args });
+          if (args[1] === 'set') ports.set(opts.cwd, opts.cwd === '/srv/a' ? 34000 : 34001);
           return { stdout: '', stderr: '' };
         },
       }),
       { apply: true },
     );
-    // Project a sees b as duplicate; project b sees a as duplicate. Both
-    // conflicts fire → both get repaired.
-    expect(report.conflicts).toHaveLength(2);
-    expect(report.repairs).toHaveLength(2);
+    expect(report.conflicts).toHaveLength(1);
+    expect(report.repairs).toHaveLength(1);
     expect(report.repairs.every((r) => r.ok)).toBe(true);
-    expect(calls.length).toBe(4); // 2 projects × (set port + start)
+    expect(calls.length).toBe(2);
+  });
+
+  it('does not repair conflicts outside the explicit repairable set', async () => {
+    const runBd = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    const report = await sweepAll([projectA, projectB], makeDeps({
+      readPort: () => 3308,
+      runBd,
+    }), { apply: true, only: new Set(['a']), canRepair: () => false });
+    expect(report.conflicts.map((conflict) => conflict.project.identifier)).toEqual(['a']);
+    expect(report.repairs).toHaveLength(0);
+    expect(report.deferred).toEqual(['a']);
+    expect(runBd).not.toHaveBeenCalled();
   });
 
   it('only honors the `only` filter', async () => {

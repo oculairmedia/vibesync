@@ -35,7 +35,7 @@
  */
 
 import { execFile, execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, readlinkSync } from 'node:fs';
+import { existsSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -79,6 +79,8 @@ export type CommandRunner = (
 export interface PortSweeperDeps {
   /** Read .beads/dolt-server.port. */
   readonly readPort: (projectPath: string) => number | null;
+  /** Persist .beads/dolt-server.port. */
+  readonly writePort: (projectPath: string, port: number) => void;
   /** True when Beads uses embedded Dolt and has no server port to repair. */
   readonly isEmbedded: (projectPath: string) => boolean;
   /** Return the set of TCP ports currently in LISTEN state on this host. */
@@ -108,6 +110,7 @@ export interface SweepReport {
   readonly scanned: number;
   readonly conflicts: readonly PortConflict[];
   readonly repairs: readonly RepairResult[];
+  readonly deferred: readonly string[];
   readonly skipped: readonly { identifier: string; reason: string }[];
 }
 
@@ -117,6 +120,8 @@ export interface SweepOptions extends RepairOptions {
   readonly only?: ReadonlySet<string>;
   readonly portStart?: number;
   readonly portEnd?: number;
+  /** Called before each repair to exclude projects currently in backoff. */
+  readonly canRepair?: (project: SweeperProject) => boolean;
 }
 
 /* --------------------------------------------------------------------- *
@@ -131,6 +136,10 @@ export function readBeadsPortFromDisk(projectPath: string): number | null {
   } catch {
     return null;
   }
+}
+
+export function writeBeadsPortToDisk(projectPath: string, port: number): void {
+  writeFileSync(join(projectPath, '.beads', 'dolt-server.port'), `${port}\n`, 'utf8');
 }
 
 export function isEmbeddedBeadsProject(
@@ -203,6 +212,7 @@ async function defaultRunBd(
 
 export const defaultDeps: PortSweeperDeps = {
   readPort: readBeadsPortFromDisk,
+  writePort: writeBeadsPortToDisk,
   isEmbedded: (projectPath) =>
     isEmbeddedBeadsProject(projectPath, (failedPath, error) => {
       const message = error instanceof Error ? error.message : String(error);
@@ -335,7 +345,18 @@ export async function repairProject(
       timeout,
       env,
     });
+    deps.writePort(projectPath, newPort);
     await deps.runBd('bd', ['dolt', 'start'], { cwd: projectPath, timeout, env });
+    const configuredPort = deps.readPort(projectPath);
+    if (configuredPort !== newPort) {
+      return {
+        ok: false,
+        project,
+        oldPort,
+        newPort,
+        error: `configured port verification failed: expected ${newPort}, found ${configuredPort ?? 'none'}`,
+      };
+    }
     return { ok: true, project, oldPort, newPort };
   } catch (error) {
     return {
@@ -383,6 +404,7 @@ export async function sweepAll(
 ): Promise<SweepReport> {
   const conflicts: PortConflict[] = [];
   const repairs: RepairResult[] = [];
+  const deferred: string[] = [];
   const skipped: { identifier: string; reason: string }[] = [];
 
   const selected = opts.only
@@ -402,7 +424,9 @@ export async function sweepAll(
     if (!conflict) continue;
     conflicts.push(conflict);
 
-    if (opts.apply) {
+    if (opts.apply && !(opts.canRepair?.(project) ?? true)) {
+      deferred.push(project.identifier);
+    } else if (opts.apply) {
       const newPort = pickFreePort(
         registry,
         deps,
@@ -414,5 +438,5 @@ export async function sweepAll(
     }
   }
 
-  return { scanned: selected.length, conflicts, repairs, skipped };
+  return { scanned: selected.length, conflicts, repairs, deferred, skipped };
 }
