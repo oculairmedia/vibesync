@@ -12,7 +12,6 @@ interface RecordedRequest {
 let server: http.Server;
 let baseUrl = '';
 let requests: RecordedRequest[] = [];
-let uiServer: http.Server;
 
 beforeEach(async () => {
   requests = [];
@@ -69,12 +68,6 @@ beforeEach(async () => {
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  uiServer = http.createServer((_req, res) => {
-    res.writeHead(200);
-    res.end('ok');
-  });
-  uiServer.listen(3110, '127.0.0.1');
-  await once(uiServer, 'listening');
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('server did not bind to a TCP port');
   baseUrl = `http://127.0.0.1:${address.port}`;
@@ -82,8 +75,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   server.close();
-  uiServer.close();
-  await Promise.all([once(server, 'close'), once(uiServer, 'close')]);
+  await once(server, 'close');
 });
 
 describe('vibesync formula CLI', () => {
@@ -114,7 +106,9 @@ describe('vibesync formula CLI', () => {
   });
 
   it('checks current system health without requesting Temporal', async () => {
-    const result = await runCli(['status', '--json']);
+    const result = await runCli(['status', '--json'], {
+      NODE_OPTIONS: `--import ${new URL('./stub-health-probes.ts', import.meta.url).pathname}`,
+    });
 
     expect(result.code).toBe(1);
     expect(JSON.parse(result.stdout)).toEqual(expect.arrayContaining([
@@ -159,12 +153,12 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
   res.end(JSON.stringify(body));
 }
 
-function runCli(args: readonly string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
+function runCli(args: readonly string[], extraEnv: NodeJS.ProcessEnv = {}): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn('bun', ['src/app/cli.ts', '--api-url', baseUrl, ...args], {
       cwd: process.cwd(),
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, FORCE_COLOR: '0' },
+      env: { ...process.env, FORCE_COLOR: '0', ...extraEnv },
     });
     let stdout = '';
     let stderr = '';
