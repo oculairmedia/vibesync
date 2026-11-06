@@ -82,7 +82,7 @@ export function computeSchemaFingerprint(rows: readonly TableSchemaRow[]): strin
  * other tables (e.g. wisps, events) add them to `BD_FINGERPRINT_TABLES`
  * and bump the fingerprint.
  *
- * Verified with bd 1.2.2 build 7fcf4e1634bf1c18757d8f8c16a36fb2b14f7912,
+ * Verified with bd 1.3.2,
  * schema 65: disposable CLI fresh init and CLI DDL reproducing live column order.
  * Both pass the real molecule lifecycle/CLI roundtrip suite. Live was inspected
  * only with readonly SHOW CREATE TABLE. The sole difference is issues column
@@ -90,7 +90,7 @@ export function computeSchemaFingerprint(rows: readonly TableSchemaRow[]): strin
  * Keep canonicalization strict: accept only these two tested exact aggregates.
  * The old 1.0.4 shape is not retained: it was not revalidated with current writes.
  */
-export const BD_FINGERPRINT_BD_VERSION = '1.2.2';
+export const BD_FINGERPRINT_BD_VERSION = '1.3.2';
 export const BD_FINGERPRINT_TABLES: readonly string[] = ['issues', 'dependencies', 'metadata'];
 export const EXPECTED_BD_SCHEMA_FINGERPRINT =
   '55cf69b481e3086b0e8bd8b139c4dbfa598cdbdbe58d521ef791b0c72787efc5';

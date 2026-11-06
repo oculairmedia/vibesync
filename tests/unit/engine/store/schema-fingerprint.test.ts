@@ -141,6 +141,6 @@ describe('vendored constants', () => {
 
   it('have a non-placeholder fingerprint and pinned bd version', () => {
     expect(EXPECTED_BD_SCHEMA_FINGERPRINT).toMatch(/^[0-9a-f]{64}$/);
-    expect(BD_FINGERPRINT_BD_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(BD_FINGERPRINT_BD_VERSION).toBe('1.3.2');
   });
 });
