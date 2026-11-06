@@ -62,6 +62,14 @@ export interface StepSpec {
    * trials: the mayor wrote, committed and opened the PR itself.
    */
   readonly planOnly?: boolean;
+  /**
+   * Bounded review loop (vibesync-9lzk.24): when this step ends BLOCKED, reopen
+   * the named earlier step (the coder) for another round instead of failing
+   * the run. TOML `loops_back_to = "coder"`, `max_rounds = 3`. The run fails
+   * with an escalation once `maxRounds` rounds have ended blocked.
+   */
+  readonly loopsBackTo?: string;
+  readonly maxRounds?: number;
 }
 
 /**
@@ -146,6 +154,12 @@ export interface MoleculeStore {
     readonly failureClass: string | null;
     readonly errorTrace: string;
   }): Promise<void>;
+  /**
+   * vibesync-9lzk.24: reopen a CLOSED step for another review round. Fresh
+   * retry counters (a round is not a retry); `round` is recorded on the bead
+   * so the cap survives a restart; `note` is what the step gets told.
+   */
+  reopenStepForRound(stepId: string, args: { readonly round: number; readonly note: string }): Promise<void>;
   markStepDone(stepId: string, output: unknown): Promise<void>;
   markStepFailed(stepId: string, errorTrace: string, retryOutcome?: string): Promise<void>;
   // lcp-s0wi: mark a molecule root bead as terminal with an outcome.
@@ -348,6 +362,10 @@ export class MoleculeWalker {
   }
 
   /** Mark a step as done. Pass-through. */
+  async reopenStepForRound(stepId: string, args: { readonly round: number; readonly note: string }): Promise<void> {
+    await this.store.reopenStepForRound(stepId, args);
+  }
+
   async finishStep(stepId: string, output: unknown): Promise<void> {
     await this.store.markStepDone(stepId, output);
   }

@@ -26,6 +26,8 @@ export const INFRA_RETRIES_KEY = 'gc.infra_retries';
 export const FAILURE_CLASS_KEY = 'failure_class';
 export const LAST_FAILURE_CLASS_KEY = 'gc.last_failure_class';
 export const RETRY_OUTCOME_KEY = 'gc.retry_outcome';
+/** vibesync-9lzk.24: which review round a step is in (1 = the first run). */
+export const REVIEW_ROUND_KEY = 'gc.review_round';
 
 /**
  * How many INFRA failures (provider/transport error, timeout before the agent
@@ -101,6 +103,11 @@ function nonNegativeInt(v: unknown): number | null {
 }
 
 /** Read the retry state off a step bead's metadata. Pure; the bead is the only source. */
+/** The review round a step bead is in; 1 before any loop-back. */
+export function readReviewRound(metadata: Readonly<Record<string, unknown>>): number {
+  return positiveInt(metadata[REVIEW_ROUND_KEY]) ?? 1;
+}
+
 export function readRetryState(metadata: Readonly<Record<string, unknown>>): RetryState {
   return {
     attempt: positiveInt(metadata[RETRY_ATTEMPT_KEY]) ?? 1,

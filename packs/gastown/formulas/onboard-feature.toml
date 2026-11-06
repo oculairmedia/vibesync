@@ -21,6 +21,10 @@ role = "reviewer"
 prompt_template = "prompts/reviewer-system.md"
 depends_on = "coder"
 wait_for = "completion"
+# vibesync-9lzk.24: a blocking review sends the work back to the coder for
+# another round; after 3 blocked rounds the run fails and escalates.
+loops_back_to = "coder"
+max_rounds = 3
 
 [[formula.onboard-feature.steps]]
 role = "tester"

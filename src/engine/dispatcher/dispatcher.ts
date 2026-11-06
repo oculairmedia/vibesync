@@ -1,7 +1,8 @@
 import type { EventBus } from '../events/index.js';
 
 import type { Formula } from '../formula/index.js';
-import type { MoleculeWalker } from '../molecule/index.js';
+import type { MoleculeWalker, StepSpec } from '../molecule/index.js';
+import { newMoleculeStepId } from '../molecule/index.js';
 import type { BeadRow } from '../store/index.js';
 import type { Pack, RoleConfig } from '../packs/index.js';
 import type { RuntimeProvider, SessionEvent, SessionHandle } from '../runtime/index.js';
@@ -14,7 +15,7 @@ import {
   classifyFailure,
   decideRetry,
   readFailureClass,
-  readRetryState,
+  readRetryState, readReviewRound,
   resolveRetryPolicy,
   RETRY_OUTCOME_KEY,
   type FailureSignal,
@@ -364,7 +365,9 @@ export class FormulaDispatcher implements ReadyStepRunner {
     // policy has ruled on it (reopen, or a final outcome stamp) that closed
     // blocker must not release its dependents.
     if (await this.hasBlockerPendingRetry(ready.step.id)) return 'skipped';
-    const tryKey = `${ready.step.id}@${retryStateKey(readRetryState(ready.step.metadata))}`;
+    // A review round (vibesync-9lzk.24) reopens a step with fresh retry
+    // counters, so the round is part of the key or the re-run would be skipped.
+    const tryKey = `${ready.step.id}@r${readReviewRound(ready.step.metadata)}.${retryStateKey(readRetryState(ready.step.metadata))}`;
     if (run.startedSteps.has(tryKey)) return 'skipped';
     if (run.running >= this.maxParallelSteps) return 'skipped';
     run.startedSteps.add(tryKey);
@@ -475,6 +478,65 @@ export class FormulaDispatcher implements ReadyStepRunner {
       this.live.delete(run.moleculeId);
       run.reject(error);
     }
+  }
+
+  /**
+   * vibesync-9lzk.24: send the work back to `loopsBackTo` for another round.
+   * The reviewing step itself is finished (its verdict is its output) and
+   * reopened for the next round together with the target and every step
+   * between them, so the bead graph re-runs the chain: coder -> reviewer ->
+   * ... The round counter lives on the TARGET step bead, so the cap survives
+   * a restart. Returns 'exhausted' once `maxRounds` rounds ended blocked.
+   */
+  private async loopBack(args: {
+    readonly input: DispatchInput;
+    readonly step: BeadRow;
+    readonly moleculeId: string;
+    readonly outputs: Record<string, string>;
+    readonly stepSpec: StepSpec;
+    readonly stepName: string;
+    readonly blocker: string;
+    readonly output: string;
+  }): Promise<'reopened' | 'exhausted'> {
+    const target = args.stepSpec.loopsBackTo!;
+    const maxRounds = args.stepSpec.maxRounds ?? 3;
+    const steps = args.input.formula.steps;
+    const targetIdx = steps.findIndex((s) => s.name === target);
+    const selfIdx = steps.findIndex((s) => s.name === args.stepName);
+    const targetId = newMoleculeStepId(args.moleculeId, target);
+    const targetBead = await this.walker.readStep(targetId);
+    if (targetIdx < 0 || selfIdx <= targetIdx || !targetBead) {
+      throw new FormulaDispatchError(`FormulaDispatcher: step "${args.stepName}" loops back to "${target}", which is not an earlier step of this molecule`, args.moleculeId);
+    }
+    const round = readReviewRound(targetBead.metadata);
+    this.emit('dispatcher/step.review_blocked', args.moleculeId, args.step.id, {
+      stepName: args.stepName, role: args.stepSpec.role, stepId: args.step.id, loopsBackTo: target, round, maxRounds, reason: args.blocker,
+    });
+    if (round >= maxRounds) {
+      // The reviewing step closes blocked like any other; the caller fails the run.
+      this.emit('dispatcher/formula.review_exhausted', args.moleculeId, args.step.id, {
+        stepName: args.stepName, loopsBackTo: target, rounds: round, maxRounds, reason: args.blocker,
+      });
+      return 'exhausted';
+    }
+    // The verdict is this step's output for the next round; close it finished.
+    args.outputs[args.stepName] = args.output;
+    await this.walker.finishStep(args.step.id, { output: args.output, round });
+    const note = `Round ${round} review (${args.stepName}) requested changes: ${args.blocker}`;
+    // Reopen target..self (inclusive) in formula order so the chain re-runs.
+    // Later steps that have not run stay open; earlier ones stay closed.
+    for (const spec of steps.slice(targetIdx, selfIdx + 1)) {
+      const id = newMoleculeStepId(args.moleculeId, spec.name);
+      await this.walker.reopenStepForRound(id, { round: round + 1, note });
+      delete args.outputs[spec.name];
+    }
+    // The review text travels to the next round as a prior output under a
+    // stable name, so the coder prompt can read it (prior_review).
+    args.outputs['review'] = `${note}\n\n${args.output}`;
+    this.emit('dispatcher/step.loop_back', args.moleculeId, args.step.id, {
+      stepName: args.stepName, loopsBackTo: target, round: round + 1, maxRounds, reopened: steps.slice(targetIdx, selfIdx + 1).map((s) => s.name),
+    });
+    return 'reopened';
   }
 
   /**
@@ -816,9 +878,16 @@ export class FormulaDispatcher implements ReadyStepRunner {
           failureClass: null,
         };
       } else if (blocker !== null) {
+        // vibesync-9lzk.24: a reviewing step that blocks sends the work back
+        // for another round, up to the formula's cap; then the run fails with
+        // an escalation instead of looping forever.
+        const looped = stepSpec.loopsBackTo
+          ? await this.loopBack({ ...args, stepSpec, stepName, blocker, output: output.text })
+          : 'no-loop';
+        if (looped === 'reopened') return;
         failure = {
           signal: { origin: 'stopped' },
-          error: new StepBlockedError(blocker),
+          error: new StepBlockedError(looped === 'exhausted' ? `${blocker} (review loop exhausted after ${stepSpec.maxRounds ?? 3} rounds; escalated)` : blocker),
           failureClass: null,
         };
       } else if (declared === null) {
