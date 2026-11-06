@@ -2,6 +2,27 @@ import js from '@eslint/js';
 import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
+const layerRestrictions = (patterns) => ({
+  patterns: [{
+    group: patterns,
+    message: 'Respect the model -> beads -> runtime -> dispatch -> scheduler/extensions -> app dependency order.',
+  }],
+});
+
+const forbiddenHigherLayers = {
+  model: ['../beads/**', '../runtime/**', '../dispatcher/**', '../scheduler/**', '../extensions/**', '../../app/**'],
+  beads: ['../runtime/**', '../dispatcher/**', '../scheduler/**', '../extensions/**', '../../app/**'],
+  runtime: ['../dispatcher/**', '../scheduler/**', '../extensions/**', '../../app/**'],
+  dispatcher: ['../scheduler/**', '../extensions/**', '../../app/**'],
+  scheduler: ['../extensions/**', '../../app/**'],
+  extensions: ['../../app/**'],
+};
+
+const engineLayerRules = Object.entries(forbiddenHigherLayers).map(([layer, patterns]) => ({
+  files: [`src/engine/${layer}/**/*.ts`],
+  rules: { 'no-restricted-imports': ['error', layerRestrictions(patterns)] },
+}));
+
 export default [
   js.configs.recommended,
   {
@@ -47,6 +68,7 @@ export default [
     ...config,
     files: ['src/**/*.ts', 'tests/**/*.ts', 'scripts/**/*.ts'],
   })),
+  ...engineLayerRules,
   {
     // Ignore patterns
     ignores: [
