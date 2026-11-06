@@ -1,0 +1,4 @@
+**Concerns:**
+- [suggest] `tests/unit/config.test.ts:94` — The malformed-value loop leaves each setting at `"30000junk"` after the loop. Reset all three to valid values before `loadConfig()` so the valid-values assertion proves the parser accepts valid inputs independently for each setting.
+
+**Verdict:** LGTM-with-nits
