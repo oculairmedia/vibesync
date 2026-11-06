@@ -55,6 +55,15 @@ beforeEach(async () => {
       return;
     }
 
+    if (req.url === '/health') {
+      sendJson(res, 200, { status: 'ok' });
+      return;
+    }
+    if (req.url === '/api/registry/projects') {
+      sendJson(res, 200, { total: 2, projects: [] });
+      return;
+    }
+
     sendJson(res, 404, { error: 'not found' });
   });
   server.listen(0, '127.0.0.1');
@@ -96,6 +105,22 @@ describe('vibesync formula CLI', () => {
     expect(result.stdout).toContain('LGTM');
   });
 
+  it('checks current system health without requesting Temporal', async () => {
+    const result = await runCli(['status', '--json'], {
+      NODE_OPTIONS: `--import ${new URL('./stub-health-probes.ts', import.meta.url).pathname}`,
+    });
+
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stdout)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ component: 'API Server' }),
+      expect.objectContaining({ component: 'Registry' }),
+      expect.objectContaining({ component: 'UI Proxy' }),
+      expect.objectContaining({ component: 'External URL' }),
+    ]));
+    expect(result.stdout).not.toContain('Temporal');
+    expect(requests.map((request) => request.url)).toEqual(['/health', '/api/registry/projects']);
+  });
+
   it('resumes a molecule', async () => {
     const result = await runCli(['formula', 'resume', 'mol-123']);
 
@@ -128,12 +153,12 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
   res.end(JSON.stringify(body));
 }
 
-function runCli(args: readonly string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
+function runCli(args: readonly string[], extraEnv: NodeJS.ProcessEnv = {}): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn('bun', ['src/app/cli.ts', '--api-url', baseUrl, ...args], {
       cwd: process.cwd(),
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, FORCE_COLOR: '0' },
+      env: { ...process.env, FORCE_COLOR: '0', ...extraEnv },
     });
     let stdout = '';
     let stderr = '';
