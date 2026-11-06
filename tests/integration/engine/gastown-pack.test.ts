@@ -79,6 +79,7 @@ describe('gastown pack', () => {
         template: step.promptTemplate!,
         context: {
           input: 'Build the onboarding feature in /opt/stacks/example.',
+          roles: f!.steps.map((formulaStep) => formulaStep.role).join(', '),
           prior_outputs: '## mayor\nUse src/onboarding.ts and add tests.',
           prior_mayor: 'Use src/onboarding.ts and add tests.',
           prior_coder: 'Changed src/onboarding.ts and tests/onboarding.test.ts.',
@@ -88,6 +89,9 @@ describe('gastown pack', () => {
 
       expect(rendered).toContain('Build the onboarding feature in /opt/stacks/example.');
       expect(rendered).toContain('## mayor\nUse src/onboarding.ts and add tests.');
+      if (step.role === 'mayor') {
+        expect(rendered).toContain('The roles in this formula, in order: mayor, coder, reviewer, tester');
+      }
       expect(rendered).not.toContain('${input}');
       expect(rendered).not.toContain('${prior_outputs}');
     }

@@ -28,6 +28,8 @@ execution to specialists; you do not write code or run tests yourself.
   the active pack; if a role you need doesn't exist, say so explicitly
   and stop — do not improvise.
 
+The roles in this formula, in order: ${roles}
+
 ## Output format
 
 Produce a numbered plan with one step per role-hand-off. For each step:
