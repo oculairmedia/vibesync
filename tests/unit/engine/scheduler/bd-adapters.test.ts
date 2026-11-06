@@ -134,26 +134,22 @@ describe('BdFormulaResolver / BdLivenessProbe', () => {
     expect(await valid.resolve('w')).toMatchObject({ workdir: '/opt/stacks/x' });
 
     for (const value of [null, '', 'relative/path', 42]) {
+      const warnings: unknown[] = [];
       const resolver = new BdFormulaResolver({
         bd: async () => JSON.stringify([{ id: 'w', status: 'open', metadata: { workdir: value } }]),
-        pack, formulaName: 'f1', projectIdentifier: 'p',
+        pack, formulaName: 'f1', projectIdentifier: 'p', logger: { warn: (...args: unknown[]) => warnings.push(args) },
       });
       expect(await resolver.resolve('w')).not.toHaveProperty('workdir');
+      expect(await resolver.resolve('w')).not.toHaveProperty('workdir');
+      expect(warnings).toHaveLength(1);
     }
-    const noMetadata = new BdFormulaResolver({
+    const noMetadataWarnings: unknown[] = [];
+    const silentNoMetadata = new BdFormulaResolver({
       bd: async () => JSON.stringify([{ id: 'w', status: 'open', metadata: null }]),
-      pack, formulaName: 'f1', projectIdentifier: 'p',
+      pack, formulaName: 'f1', projectIdentifier: 'p', logger: { warn: (...args: unknown[]) => noMetadataWarnings.push(args) },
     });
-    expect(await noMetadata.resolve('w')).not.toHaveProperty('workdir');
-
-    const warnings: unknown[] = [];
-    const resolver = new BdFormulaResolver({
-      bd: async () => JSON.stringify([{ id: 'w', status: 'open', metadata: { workdir: 'relative/path' } }]),
-      pack, formulaName: 'f1', projectIdentifier: 'p', logger: { warn: (...args: unknown[]) => warnings.push(args) },
-    });
-    await resolver.resolve('w');
-    await resolver.resolve('w');
-    expect(warnings).toHaveLength(1);
+    expect(await silentNoMetadata.resolve('w')).not.toHaveProperty('workdir');
+    expect(noMetadataWarnings).toHaveLength(0);
   });
 
   it('liveness: closed bead => bead-closed, open => alive, bd failure => throws (witness leaves slot alone)', async () => {
