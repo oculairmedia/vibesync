@@ -21,8 +21,8 @@ import { newFakeProvider } from '../../../_fixtures/fake-provider.js';
 import { newDriven } from '../../../_fixtures/step-driver.js';
 import { InMemoryDoltClient } from '../../../_fixtures/in-memory-dolt-client.js';
 
-/** A PR as `gh pr view --json state,url,createdAt,headRefName,title,body` prints it. */
-interface FakePr { state: 'OPEN' | 'MERGED' | 'CLOSED'; createdAt?: string; headRefName?: string; title?: string; body?: string }
+/** A PR as `gh pr view --json state,url,createdAt,headRefName,title,body,commits` prints it. */
+interface FakePr { state: 'OPEN' | 'MERGED' | 'CLOSED'; createdAt?: string; headRefName?: string; title?: string; body?: string; commits?: { oid: string; committedDate: string }[] }
 
 /** Mirrors real gh: known PRs print JSON; unknown ones fail with gh's real error. */
 function fakeGh(prs: Readonly<Record<string, FakePr | 'OPEN' | 'MERGED' | 'CLOSED'>>): GhRunner & { calls: string[][] } {
@@ -43,6 +43,8 @@ function fakeGh(prs: Readonly<Record<string, FakePr | 'OPEN' | 'MERGED' | 'CLOSE
       headRefName: pr.headRefName ?? 'fix/work-1-thing',
       title: pr.title ?? 'fix: the thing (work-1)',
       body: pr.body ?? '',
+      // Real gh prints every commit with its dates; a PR opened "just now" has one fresh commit.
+      commits: pr.commits ?? [{ oid: 'abc1234', committedDate: pr.createdAt ?? new Date().toISOString() }],
     });
   }) as GhRunner & { calls: string[][] };
   run.calls = calls;
@@ -114,7 +116,7 @@ describe('declared delivery gates completion (vibesync-9lzk.21)', () => {
     const gh = fakeGh({ [PR]: 'OPEN' });
     const h = harness((spec) => reply(spec.role === 'coder' ? `**Delivered:** commit abc on b, PR ${PR}` : 'PASS'), gh);
     await expect(h.dispatcher.run({ formula: delivering, pack: pack(), input: 'go', motivatingBeadId: 'work-1' })).resolves.toMatchObject({ moleculeId: expect.any(String) });
-    expect(gh.calls).toEqual([['pr', 'view', PR, '--json', 'state,url,createdAt,headRefName,title,body']]);
+    expect(gh.calls).toEqual([['pr', 'view', PR, '--json', 'state,url,createdAt,headRefName,title,body,commits']]);
     expect(h.events.find((e) => e.kind === 'dispatcher/formula.delivered')?.payload).toMatchObject({ kind: 'pull_request', artifact: PR });
   });
 
@@ -124,6 +126,30 @@ describe('declared delivery gates completion (vibesync-9lzk.21)', () => {
       fakeGh({ [old]: { state: 'MERGED', createdAt: '2026-11-04T18:25:56Z', title: 'refactor: retire HealthPatrol (vibesync-9lzk.12)' } }));
     const thrown = await h.dispatcher.run({ formula: delivering, pack: pack(), input: 'go', motivatingBeadId: 'work-1' }).catch((e: unknown) => e);
     expect(String((thrown as Error).message)).toContain('before this run started');
+  });
+
+  // vibesync-9lzk.38: round 9's review round. PR #100 was opened at 02:49 by
+  // the previous run; this run pushed 551a7fb to it at 03:11. Real `gh pr view
+  // --json commits` shape from that PR.
+  it('REGRESSION (round 9): a PR opened BEFORE the run that received a commit DURING it is this run\'s delivery', async () => {
+    const existing = 'https://github.com/oculairmedia/vibesync/pull/100';
+    const commits = [
+      { oid: 'bed3869', committedDate: '2026-11-06T02:49:09Z' },
+      { oid: '551a7fb', committedDate: new Date(Date.now() + 5_000).toISOString() },
+    ];
+    const h = harness((spec) => reply(spec.role === 'coder' ? `pushed 551a7fb to ${existing}` : 'PASS'),
+      fakeGh({ [existing]: { state: 'OPEN', createdAt: '2026-11-06T02:49:21Z', title: 'feat(engine): a work bead can set its steps\' time limit (work-1)', commits } }));
+    await expect(h.dispatcher.run({ formula: delivering, pack: pack(), input: 'go', motivatingBeadId: 'work-1' })).resolves.toBeDefined();
+    expect(h.events.find((e) => e.kind === 'dispatcher/formula.delivered')?.payload).toMatchObject({ artifact: existing });
+  });
+
+  it('a PR opened before the run with NO commit during it is still not this run\'s delivery', async () => {
+    const existing = 'https://github.com/oculairmedia/vibesync/pull/100';
+    const commits = [{ oid: 'bed3869', committedDate: '2026-11-06T02:49:09Z' }];
+    const h = harness((spec) => reply(spec.role === 'coder' ? `see ${existing}` : 'PASS'),
+      fakeGh({ [existing]: { state: 'OPEN', createdAt: '2026-11-06T02:49:21Z', title: 'feat (work-1)', commits } }));
+    const thrown = await h.dispatcher.run({ formula: delivering, pack: pack(), input: 'go', motivatingBeadId: 'work-1' }).catch((e: unknown) => e);
+    expect(String((thrown as Error).message)).toContain('received no commit during it');
   });
 
   it('an open PR opened during the run but for a different bead does not count', async () => {

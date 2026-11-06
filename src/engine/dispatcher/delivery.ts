@@ -57,7 +57,7 @@ export function candidatePullRequests(outputs: Readonly<Record<string, string>>)
 }
 
 /** Fields read from `gh pr view --json` (names as gh prints them). */
-const PR_FIELDS = 'state,url,createdAt,headRefName,title,body';
+const PR_FIELDS = 'state,url,createdAt,headRefName,title,body,commits';
 
 interface PrView {
   readonly state?: string;
@@ -66,6 +66,8 @@ interface PrView {
   readonly headRefName?: string;
   readonly title?: string;
   readonly body?: string;
+  /** `gh pr view --json commits`: every commit on the PR with its dates. */
+  readonly commits?: readonly { readonly oid?: string; readonly committedDate?: string }[];
 }
 
 /**
@@ -133,11 +135,21 @@ function notThisRunsPr(pr: PrView, claim: DeliveryClaim): string | null {
   const created = pr.createdAt ? Date.parse(pr.createdAt) : NaN;
   if (Number.isNaN(created)) return 'has no creation time';
   // One minute of slack for clock skew between this host and GitHub.
-  if (created < claim.startedAt.getTime() - 60_000) return `was opened ${pr.createdAt}, before this run started (${claim.startedAt.toISOString()})`;
+  const runStart = claim.startedAt.getTime() - 60_000;
+  // This run's PR is one it opened, or one it pushed a commit to (a review
+  // round updates the existing PR, vibesync-9lzk.38). A PR with no activity
+  // during the run is someone else's.
+  if (created < runStart && !commitDuringRun(pr, runStart)) {
+    return `was opened ${pr.createdAt}, before this run started (${claim.startedAt.toISOString()}), and received no commit during it`;
+  }
   const bead = claim.motivatingBeadId!;
   const named = [pr.title, pr.headRefName, pr.body].some((t) => typeof t === 'string' && t.includes(bead));
   if (!named) return `does not name the work bead ${bead} in its title, branch or body`;
   return null;
+}
+
+function commitDuringRun(pr: PrView, runStart: number): boolean {
+  return (pr.commits ?? []).some((c) => typeof c.committedDate === 'string' && Date.parse(c.committedDate) >= runStart);
 }
 
 /** The project repository from `gh repo view` in the project checkout, cached after the first success. */
