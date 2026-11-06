@@ -98,7 +98,8 @@ jobs:
         run: |
           set -euo pipefail
           archive=dolt-linux-amd64.tar.gz
-          curl -fsSLO "https://github.com/dolthub/dolt/releases/latest/download/$archive"
+          curl -fsSLO "https://github.com/dolthub/dolt/releases/download/v2.7.2/$archive"
+          echo "72825a65d96bf0a0967ec408ad43bc21afc9b1c899b84cb84344a35f567fb11f  $archive" | sha256sum --check
           mkdir -p "$RUNNER_TEMP/dolt"
           tar -xzf "$archive" -C "$RUNNER_TEMP/dolt"
           dolt_binary="$(find "$RUNNER_TEMP/dolt" -type f -name dolt -print -quit)"
