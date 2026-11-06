@@ -223,11 +223,18 @@ describe('decision table', () => {
       expect(summary.length).toBeLessThanOrEqual(budget);
       expect(summary).toContain('[... reply truncated ...]');
       expect(summary).toMatch(/(?:^|\n)\[\.\.\. reply truncated \.\.\.\]\n?$/);
-      expect(summary.includes(checkLine) || !summary.includes('Typecheck')).toBe(true);
-      if (summary.includes(checkLine)) {
-        expect(summary).toMatch(new RegExp(`(?:^|\\n)${checkLine}\\n`));
+      if (budget === 42) {
+        expect(summary).not.toContain('Typecheck');
+      } else {
+        expect(summary).toContain(checkLine);
+        expect(summary).toMatch(new RegExp(`(?:^|\\n)${checkLine}\\n\\[\\.\\.\\. reply truncated \.\.\.\\]`));
       }
     }
+
+    const terminated = summarizeReplyForReason(`${reply}\n`, 43);
+    expect(terminated.length).toBeLessThanOrEqual(43);
+    expect(terminated).toContain(checkLine);
+    expect(terminated).toMatch(new RegExp(`(?:^|\\n)${checkLine}\\n\\[\\.\\.\\. reply truncated \.\.\.\\]`));
   });
   it('maps the probability bands to verdicts, with the band between failing closed', () => {
     expect(decideStepVerdict({ ...clean, asks_change: 0.98, reports_all_gates_passed: 0.5 }, 's', { finalStep: false }).kind).toBe('changes_requested');

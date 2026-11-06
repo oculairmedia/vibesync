@@ -13,25 +13,29 @@ export function summarizeReplyForReason(reply: string, maxChars = 4000): string 
   const marker = `${TRUNCATION_MARKER}\n`;
   // The marker is useful when it fits; for tiny limits its prefix is enough to
   // signal truncation while ensuring the result always stays within the cap.
-  const truncation = marker.slice(0, limit);
-  // Reserve a separator even when the selected reply lines don't end in one.
-  const budget = Math.max(0, limit - truncation.length - 1);
+  const truncation = limit >= marker.length ? marker : marker.slice(0, limit);
   const selectedChecks = new Set<number>();
-  let used = 0;
+  let checkLength = 0;
 
   for (const [lineIndex, line] of lines.entries()) {
     if (!isCheckLine(line)) continue;
-    if (used + line.length > budget) continue;
+    const nextLength = checkLength + line.length;
+    const separatorLength = nextLength > 0 && !line.endsWith('\n') ? 1 : 0;
+    // Keep a full check line, its separating newline, and at least the marker.
+    if (nextLength + TRUNCATION_MARKER.length + separatorLength > limit) continue;
     selectedChecks.add(lineIndex);
-    used += line.length;
+    checkLength = nextLength;
   }
 
   const opening: boolean[] = [];
+  let used = checkLength;
   for (const [lineIndex, line] of lines.entries()) {
     if (isCheckLine(line)) continue;
-    if (used + line.length > budget) break;
+    const nextLength = used + line.length;
+    const separatorLength = nextLength > 0 && !line.endsWith('\n') ? 1 : 0;
+    if (nextLength + truncation.length + separatorLength > limit) break;
     opening[lineIndex] = true;
-    used += line.length;
+    used = nextLength;
   }
 
   const output: string[] = [];
@@ -45,5 +49,11 @@ export function summarizeReplyForReason(reply: string, maxChars = 4000): string 
 
   const body = output.join('');
   const separator = body.length > 0 && !body.endsWith('\n') && !truncation.startsWith('\n') ? '\n' : '';
-  return `${body}${separator}${truncation}`.slice(0, limit);
+  let renderedMarker = truncation;
+  let renderedSeparator = separator;
+  // At an exact budget, retain the marker and check line but omit its final newline.
+  if (`${body}${renderedSeparator}${renderedMarker}`.length > limit && renderedMarker.endsWith('\n')) {
+    renderedMarker = renderedMarker.slice(0, -1);
+  }
+  return `${body}${renderedSeparator}${renderedMarker}`;
 }
