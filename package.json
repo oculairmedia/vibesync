@@ -17,7 +17,7 @@
     "test:coverage": "bunx vitest run --coverage",
     "test:unit": "bunx vitest run tests/unit",
     "test:integration": "bunx vitest run tests/integration",
-    "lint": "eslint .",
+    "lint": "node scripts/eslint-baseline-check.mjs",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -25,7 +25,9 @@
     "type-check:all": "bun run type-check",
     "vibesync": "bun src/app/cli.ts",
     "build:openapi": "bun scripts/generate-openapi.ts",
-    "rig:dogfood": "bun scripts/dogfood-rig.ts"
+    "rig:dogfood": "bun scripts/dogfood-rig.ts",
+    "lint:raw": "eslint .",
+    "lint:baseline:update": "node scripts/eslint-baseline-update.mjs"
   },
   "keywords": [
     "vibesync",
@@ -63,6 +65,8 @@
     "globals": "^16.5.0",
     "prettier": "^3.6.2",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.6"
+    "vitest": "^4.0.6",
+    "typescript-eslint": "^8.46.4",
+    "eslint-plugin-import": "^2.32.0"
   }
 }

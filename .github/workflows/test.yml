@@ -75,8 +75,7 @@ jobs:
           npm rebuild better-sqlite3
 
       - name: Run linter
-        run: npm run lint --if-present
-        continue-on-error: true
+        run: npm run lint
 
       # One test run per job. On 20.x that run also collects coverage; it used
       # to run the full suite twice more (test:coverage, then the threshold
