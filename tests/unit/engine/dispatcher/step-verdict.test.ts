@@ -155,7 +155,9 @@ describe('step verdicts from the decision model (vibesync-9lzk.39)', () => {
   it('the clean final tester reply approves despite mentioning completed checks', async () => {
     const h = harness([ROUND4_NIT_REVIEW], ROUND10_CLEAN_TESTER);
     await expect(h.dispatcher.run({ formula: looping, pack: pack(), input: 'go', motivatingBeadId: 'w' })).resolves.toBeDefined();
-    expect(h.events.find((e) => e.kind === 'dispatcher/step.verdict' && e.payload?.['stepName'] === 'tester')?.payload).toMatchObject({ verdict: 'approve' });
+    // vibesync-9lzk.46: a final-step approval is confirmed against the PR checks; with no PR in this run it stays approved.
+    expect(h.events.find((e) => e.kind === 'dispatcher/step.verdict' && e.payload?.['stepName'] === 'tester')?.payload).toMatchObject({ verdict: 'check_ci' });
+    expect(h.events.some((e) => e.kind === 'dispatcher/formula.completed')).toBe(true);
   });
 
   it('a judge failure is an error that fails the step, never a silent approval', async () => {
@@ -238,12 +240,15 @@ describe('decision table', () => {
   });
   it('maps the probability bands to verdicts, with the band between failing closed', () => {
     expect(decideStepVerdict({ ...clean, asks_change: 0.98, reports_all_gates_passed: 0.5 }, 's', { finalStep: false }).kind).toBe('changes_requested');
-    expect(decideStepVerdict(clean, 's', { finalStep: true }).kind).toBe('approve');
+    expect(decideStepVerdict(clean, 's', { finalStep: true })).toMatchObject({ kind: 'check_ci', from: 'approve' });
+    expect(decideStepVerdict(clean, 's', { finalStep: false }).kind).toBe('approve');
     expect(decideStepVerdict({ ...clean, asks_change: 0.94, blocks_only_on_pending_ci: 0.97, reports_all_gates_passed: 0.1 }, 's', { finalStep: false }).kind).toBe('await_ci');
     expect(decideStepVerdict({ ...clean, asks_change: 0.61, blocks_only_on_pending_ci: 0.02, reports_all_gates_passed: 0.04 }, 's', { finalStep: false }).kind).toBe('unsettled');
     expect(decideStepVerdict({ ...clean, asks_change: 0.3 }, 's', { finalStep: false }).kind).toBe('unsettled');
     expect(decideStepVerdict({ ...clean, reports_unverified_check: 0.98 }, 'typecheck blocked', { finalStep: true })).toMatchObject({ kind: 'unsettled', reason: expect.stringContaining('typecheck blocked') });
     expect(decideStepVerdict({ ...clean, reports_unverified_check: 0.98 }, 'reviewer', { finalStep: false }).kind).toBe('approve');
+    // vibesync-9lzk.46: a final step that only waits on CI is settled from the checks, BEFORE the unverified rule.
+    expect(decideStepVerdict({ ...clean, asks_change: 0.96, blocks_only_on_pending_ci: 0.95, reports_unverified_check: 0.96 }, 's', { finalStep: true })).toMatchObject({ kind: 'check_ci', from: 'pending' });
   });
   it('a marker line that contradicts an approval is unsettled, never an override either way', () => {
     expect(reconcileWithMarker({ kind: 'approve' }, 'the test cannot fail').kind).toBe('unsettled');

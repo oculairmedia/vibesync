@@ -135,6 +135,8 @@ async function bootEngine(db: Registry): Promise<OrchestrationHandle | null> {
         // vibesync-9lzk.39: reviewing/testing step replies are read by the Jev
         // decision model when a key is configured; without one, marker lines only.
         ...(stepJudge ? { stepJudge } : {}),
+        // vibesync-9lzk.46: fast checks a final step waits on (comma list); integration-bd is a merge gate, not here.
+        ...(process.env['VIBESYNC_STEP_CI_CHECKS'] ? { stepCiChecks: process.env['VIBESYNC_STEP_CI_CHECKS'].split(',').map((c) => c.trim()).filter((c) => c.length > 0) } : {}),
         projectMemory: createBdProjectMemorySource((projectIdentifier) => {
           const fsPath = db.getProject(projectIdentifier)?.filesystem_path;
           if (!fsPath) return null;

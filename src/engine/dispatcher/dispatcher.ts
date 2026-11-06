@@ -9,7 +9,8 @@ import type { RuntimeProvider, SessionEvent, SessionHandle } from '../runtime/in
 import type { ReadyStep, ReadyStepRunner, StepRunOutcome } from '../molecule/index.js';
 import { parseBlockedOutcome, STEP_OUTCOME_INSTRUCTIONS } from './step-outcome.js';
 import type { DeliveryVerifier, ShippedWorkProbe } from './delivery.js';
-import { decideStepVerdict, reconcileWithMarker, summarizeReplyForReason, type StepReplyJudge, type StepVerdict } from '../verdict/index.js';
+import { candidatePullRequests } from './delivery.js';
+import { decideStepVerdict, reconcileWithMarker, settleCi, summarizeReplyForReason, type FinalStepVerdict, type PrChecksReader, type StepReplyJudge, type StepVerdict } from '../verdict/index.js';
 import { PROJECT_MEMORY_READ_FAILED_EVENT, renderProjectMemory, type ProjectMemorySource } from './project-memory.js';
 import { renderTemplate } from './render.js';
 import {
@@ -139,6 +140,12 @@ export interface FormulaDispatcherOptions {
    */
   readonly stepJudge?: StepReplyJudge;
   /**
+   * vibesync-9lzk.46: reads the delivered PR's checks when the final step's
+   * verdict depends on CI. Absent = the final step cannot confirm CI, and a
+   * CI-shaped verdict fails closed (unsettled), never passes.
+   */
+  readonly prChecks?: { readonly reader: PrChecksReader; readonly names: readonly string[]; readonly pollMs?: number; readonly maxWaitMs?: number };
+  /**
    * Called (never throws) right after a molecule is cooked and registered, so
    * the step loop can pick up its first ready steps promptly instead of waiting
    * for its next interval. Boot wires this to `StepDispatcher.kick`.
@@ -218,6 +225,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
   private readonly projectMemory: ProjectMemorySource | null;
   private readonly shippedWorkProbe: ShippedWorkProbe | null;
   private readonly stepJudge: StepReplyJudge | null;
+  private readonly prChecks: FormulaDispatcherOptions['prChecks'] | null;
   private readonly onMoleculeCooked: ((moleculeId: string) => void) | null;
   private readonly moleculeQueue: QueuedMoleculeRun[] = [];
   private readonly live = new Map<string, MoleculeRun>();
@@ -235,6 +243,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     this.projectMemory = opts.projectMemory ?? null;
     this.shippedWorkProbe = opts.shippedWorkProbe ?? null;
     this.stepJudge = opts.stepJudge ?? null;
+    this.prChecks = opts.prChecks ?? null;
     this.onMoleculeCooked = opts.onMoleculeCooked ?? null;
   }
 
@@ -518,6 +527,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     readonly stepSpec: StepSpec;
     readonly stepName: string;
     readonly output: string;
+    readonly outputs?: Readonly<Record<string, string>>;
   }): Promise<string | null> {
     const marker = parseBlockedOutcome(args.output);
     const steps = args.input.formula.steps;
@@ -526,16 +536,59 @@ export class FormulaDispatcher implements ReadyStepRunner {
     const judged = await this.stepJudge.judge({ role: args.stepSpec.role, reply: args.output });
     const summary = marker ?? summarizeReplyForReason(args.output);
     const finalStep = steps[steps.length - 1]?.name === args.stepName;
-    const verdict: StepVerdict = reconcileWithMarker(decideStepVerdict(judged.answers, summary, { finalStep }), marker);
+    const judgedVerdict: FinalStepVerdict = reconcileWithMarker(decideStepVerdict(judged.answers, summary, { finalStep }), marker);
     this.emit('dispatcher/step.verdict', args.moleculeId, args.step.id, {
       stepName: args.stepName, role: args.stepSpec.role, stepId: args.step.id,
-      verdict: verdict.kind, answers: judged.answers, model: judged.model, inputTokens: judged.inputTokens, marker: marker !== null,
+      verdict: judgedVerdict.kind, answers: judged.answers, model: judged.model, inputTokens: judged.inputTokens, marker: marker !== null,
     });
+    const verdict: StepVerdict = judgedVerdict.kind === 'check_ci'
+      ? await this.settleFinalStepCi({ ...args, reason: judgedVerdict.reason, from: judgedVerdict.from, summary })
+      : judgedVerdict;
     switch (verdict.kind) {
       case 'approve': return null;
       case 'changes_requested': return verdict.reason;
       case 'await_ci': return `${verdict.reason}; a reply that only waits on CI is not a block: wait for the checks, then judge the finished result`;
       case 'unsettled': return `verdict unsettled (fail closed): ${verdict.reason}`;
+    }
+  }
+
+  /**
+   * vibesync-9lzk.46: the final step's CI verdict comes from the delivered PR's
+   * real checks (the configured fast checks only), never from the reply's
+   * wording. Pending waits (polled, capped); any failed check is a change
+   * request; all green approves. With no PR or no reader it fails closed.
+   */
+  private async settleFinalStepCi(args: {
+    readonly step: BeadRow;
+    readonly moleculeId: string;
+    readonly stepName: string;
+    readonly output: string;
+    readonly outputs?: Readonly<Record<string, string>>;
+    readonly reason: string;
+    readonly from: 'approve' | 'pending';
+    readonly summary: string;
+  }): Promise<StepVerdict> {
+    const prUrl = candidatePullRequests({ ...(args.outputs ?? {}), [args.stepName]: args.output }).at(-1);
+    // A run that delivers no PR (or a dispatcher without a reader) keeps an
+    // approval; only a reply that WAITS on CI needs checks it cannot read.
+    if ((!this.prChecks || !prUrl) && args.from === 'approve') return { kind: 'approve' };
+    if (!this.prChecks || !prUrl) {
+      return { kind: 'unsettled', reason: `${args.reason}, but the PR checks cannot be read (${!prUrl ? 'no PR URL in the run outputs' : 'no PR checks reader configured'}): ${args.summary}` };
+    }
+    const cfg = this.prChecks;
+    let outcome;
+    try {
+      outcome = await settleCi(cfg.reader, prUrl, {
+        names: cfg.names, pollMs: cfg.pollMs ?? 20_000, maxWaitMs: cfg.maxWaitMs ?? 10 * 60_000, sleep, now: () => Date.now(),
+      });
+    } catch (err) {
+      return { kind: 'unsettled', reason: `${args.reason}, but reading the PR checks failed (${stringifyError(err)}): ${args.summary}` };
+    }
+    this.emit('dispatcher/step.ci_checks', args.moleculeId, args.step.id, { stepName: args.stepName, prUrl, checks: cfg.names, outcome: outcome.kind, ...(outcome.kind === 'failed' ? { failed: outcome.failed } : {}), ...(outcome.kind === 'still_pending' ? { pending: outcome.pending } : {}) });
+    switch (outcome.kind) {
+      case 'green': return { kind: 'approve' };
+      case 'failed': return { kind: 'changes_requested', reason: `required check(s) failed on ${prUrl}: ${outcome.failed.join(', ')}` };
+      case 'still_pending': return { kind: 'unsettled', reason: `required check(s) still pending on ${prUrl} after the wait cap: ${outcome.pending.join(', ')}` };
     }
   }
 
@@ -929,7 +982,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
       // vibesync-9lzk.39: for a step that judges work (one that loops back, or
       // the last step), the reply is read by the decision model, not by its
       // marker line alone; the marker is a second signal (see verdict/decide).
-      const blocker = await this.readStepBlocker({ ...args, stepSpec, stepName, output: output.text });
+      const blocker = await this.readStepBlocker({ ...args, stepSpec, stepName, output: output.text, outputs: args.outputs });
       const overstepped = blocker === null && declared === null && stepSpec.planOnly
         ? await this.planOnlyViolation(args.input.motivatingBeadId, attemptStartedAt, { moleculeId: args.moleculeId, stepId: args.step.id })
         : null;
