@@ -5,6 +5,7 @@ import tseslint from 'typescript-eslint';
 export default [
   js.configs.recommended,
   {
+    files: ['**/*.js', '**/*.mjs', '**/*.cjs'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',

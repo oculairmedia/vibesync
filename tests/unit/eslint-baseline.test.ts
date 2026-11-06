@@ -12,6 +12,7 @@ describe('ESLint baseline gate', () => {
     const temporaryDir = mkdtempSync(path.join(tmpdir(), 'vibesync-eslint-'));
       const existingFile = path.join(repoRoot, 'tests/unit/eslint-baseline-existing.lint.ts');
       const newFile = path.join(repoRoot, 'tests/unit/eslint-baseline-new.lint.ts');
+    const malformedFile = path.join(repoRoot, 'tests/unit/eslint-baseline-malformed.lint.ts');
     try {
       const baseline = JSON.parse(readFileSync(path.join(repoRoot, 'eslint-baseline.json'), 'utf8')) as Record<string, number>;
       baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-explicit-any'] = 2;
@@ -42,9 +43,19 @@ describe('ESLint baseline gate', () => {
       });
       expect(newResult.status).toBe(1);
       expect(newResult.stderr).toContain('ESLint introduced');
+
+      writeFileSync(malformedFile, 'const malformed: = ;\n');
+      const malformedResult = spawnSync(process.execPath, [checkInRepo], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        env: { ...process.env, ESLINT_EXTRA_FILE: malformedFile, ESLINT_BASELINE_PATH: path.join(temporaryDir, 'eslint-baseline.json') },
+      });
+      expect(malformedResult.status).toBe(1);
+      expect(malformedResult.stderr).toContain('fatal or unclassified diagnostics');
     } finally {
       rmSync(existingFile, { force: true });
       rmSync(newFile, { force: true });
+      rmSync(malformedFile, { force: true });
       rmSync(path.join(repoRoot, 'scripts/eslint-baseline-check.test-helper.mjs'), { force: true });
       rmSync(temporaryDir, { recursive: true, force: true });
     }
