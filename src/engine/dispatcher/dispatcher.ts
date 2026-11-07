@@ -906,10 +906,6 @@ export class FormulaDispatcher implements ReadyStepRunner {
     readonly rolesByName: ReadonlyMap<string, RoleConfig>;
     readonly provider: RuntimeProvider;
   }): Promise<void> {
-    return this.runStepPrepared(args);
-  }
-
-  private async runStepPrepared(args: Parameters<FormulaDispatcher['runStep']>[0]): Promise<void> {
     const stepName = readStepName(args.step);
     const stepSpec = args.input.formula.steps.find((candidate) => candidate.name === stepName);
     if (!stepSpec) {
