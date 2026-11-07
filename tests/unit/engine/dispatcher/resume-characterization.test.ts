@@ -157,6 +157,42 @@ describe('FormulaDispatcher.resume characterization', () => {
     expect(h.events.at(-1)?.payload).toMatchObject({ reason: 'running steps completed; open successors require a fresh formula run context' });
   });
 
+  it('verifies delivery after a reattached running step completes the molecule (declined)', async () => {
+    const verifier: DeliveryVerifier = { verify: async () => ({ ok: false, reason: 'no matching pull request' }) };
+    const h = harness({ deliveryVerifier: verifier, script: () => eventScript([{ kind: 'message-delta', ts: new Date().toISOString(), text: 'recovered, no PR opened' }]) });
+    const view = await rootWithSteps(h.store, ['worker'], { delivers: 'pull_request', motivatingBeadId: 'vibesync-work' });
+    const stepId = newMoleculeStepId(view.rootId, 'worker');
+    await h.walker.startStep(stepId);
+    await h.walker.recordStepTask(stepId, { taskId: 'task-delivery', providerKind: 'fake-runtime', sessionId: 'old-session' });
+
+    const error = await h.dispatcher.resume(view.rootId).catch((value: unknown) => value);
+
+    // The step itself finished; it is the DELIVERY check on this second path that fails the run.
+    expect(error).toBeInstanceOf(FormulaDispatchError);
+    expect((error as Error).message).toContain('declared delivery not met: no matching pull request');
+    expect((await h.store.getBead(stepId))?.status).toBe('closed');
+    expect((await h.store.getBead(view.rootId))?.metadata).toMatchObject({ exec: { outcome: 'failed' } });
+    expect(h.events.map((event) => event.kind)).not.toContain('dispatcher/formula.completed');
+    expect(h.events.at(-1)?.kind).toBe('dispatcher/formula.failed');
+  });
+
+  it('completes with a delivery event after a reattached running step when verification succeeds', async () => {
+    const verifier: DeliveryVerifier = { verify: async () => ({ ok: true, artifact: 'https://github.com/org/repo/pull/11' }) };
+    const h = harness({ deliveryVerifier: verifier, script: () => eventScript([{ kind: 'message-delta', ts: new Date().toISOString(), text: 'recovered and delivered' }]) });
+    const view = await rootWithSteps(h.store, ['worker'], { delivers: 'pull_request', motivatingBeadId: 'vibesync-work' });
+    const stepId = newMoleculeStepId(view.rootId, 'worker');
+    await h.walker.startStep(stepId);
+    await h.walker.recordStepTask(stepId, { taskId: 'task-delivery-ok', providerKind: 'fake-runtime', sessionId: 'old-session' });
+
+    const result = await h.dispatcher.resume(view.rootId);
+
+    expect(result.outputs).toEqual({ worker: 'recovered and delivered' });
+    const kinds = h.events.map((event) => event.kind);
+    expect(kinds.indexOf('dispatcher/formula.delivered')).toBeGreaterThan(-1);
+    expect(kinds.indexOf('dispatcher/formula.delivered')).toBeLessThan(kinds.indexOf('dispatcher/formula.completed'));
+    expect(h.events.find((event) => event.kind === 'dispatcher/formula.delivered')?.payload).toMatchObject({ resumed: true, artifact: 'https://github.com/org/repo/pull/11' });
+  });
+
   it.each([
     { kind: 'error' as const, message: 'reattach failed', expected: 'reattach failed' },
     { kind: 'stopped' as const, message: undefined, expected: 'runtime stopped before turn completion' },
