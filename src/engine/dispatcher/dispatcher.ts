@@ -705,14 +705,9 @@ export class FormulaDispatcher implements ReadyStepRunner {
   }
 
   /**
-   * resume() has no formula in scope, so it reads the delivery the root
-   * recorded at dispatch (vibesync-9lzk.21 review). Throws, after failing the
-   * root and emitting formula.failed, when that delivery is not met.
-   */
-  /**
    * Finish a resumed molecule: verify its recorded delivery, then announce
-   * completion. One place so a recorded delivery is always checked before the
-   * completion event (CodeRabbit on #128).
+   * completion. Both resume paths go through here, so a recorded delivery is
+   * always checked before formula.completed is emitted.
    */
   private async completeResumedMolecule(args: {
     readonly view: { readonly root: BeadRow };
@@ -736,6 +731,11 @@ export class FormulaDispatcher implements ReadyStepRunner {
     });
   }
 
+  /**
+   * resume() has no formula in scope, so it reads the delivery the root
+   * recorded at dispatch (vibesync-9lzk.21 review). Throws, after failing the
+   * root and emitting formula.failed, when that delivery is not met.
+   */
   private async requireResumedDelivery(
     args: ResumedDeliveryArgs,
   ): Promise<void> {
