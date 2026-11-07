@@ -71,6 +71,23 @@ describe('FormulaDispatcher', () => {
     });
   });
 
+  it('stops observing at turn-done and stops the provider before finishing the step', async () => {
+    const { dispatcher, provider, events } = newHarness({
+      script: async function* () {
+        const ts = new Date().toISOString();
+        yield { kind: 'turn-done', ts };
+        throw new Error('event after completion must not be consumed');
+      },
+    });
+
+    await dispatcher.run({ formula: singleStepFormula(), pack: singleStepPack(), input: 'go' });
+
+    expect(provider.recorder.stops).toHaveLength(1);
+    const kinds = events.map((event) => event.kind);
+    expect(kinds.indexOf('dispatcher/step.finished')).toBeGreaterThan(kinds.indexOf('runtime/session.turn_done'));
+    expect(kinds).not.toContain('dispatcher/step.failed');
+  });
+
   it('applies the dispatch timeout to every step unless the formula declares an override', async () => {
     const formula: Formula = {
       name: 'timeouts', description: '', whenToUse: '',

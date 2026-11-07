@@ -1212,6 +1212,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
       }
       if (event.kind === 'tool-call' || event.kind === 'tool-result') agentActed = true;
       this.handleStepAttemptEvent(event, agentActed);
+      if (event.kind === 'turn-done') break;
     }
     return { text, eventCount };
   }
