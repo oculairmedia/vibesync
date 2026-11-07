@@ -1,10 +1,9 @@
 import type { EventBus } from '../events/index.js';
 
-import type { Formula } from '../formula/index.js';
 import type { MoleculeView, MoleculeWalker, StepSpec } from '../molecule/index.js';
 import { newMoleculeStepId } from '../molecule/index.js';
 import type { BeadRow } from '../store/index.js';
-import type { Pack, RoleConfig } from '../packs/index.js';
+import type { RoleConfig } from '../packs/index.js';
 import type { RuntimeProvider, SessionEvent, SessionHandle } from '../runtime/index.js';
 import type { ReadyStep, ReadyStepRunner, StepRunOutcome } from '../molecule/index.js';
 import { parseBlockedOutcome, STEP_OUTCOME_INSTRUCTIONS } from './step-outcome.js';
@@ -20,12 +19,34 @@ import {
   readRetryState, readReviewRound,
   resolveRetryPolicy,
   RETRY_OUTCOME_KEY,
-  type FailureSignal,
-  type FailureKind,
   type RetryDecision,
   type ResolvedRetryPolicy,
   type RetryState,
 } from '../retry/index.js';
+import {
+  AttemptFailure,
+  FormulaCancellationConflictError,
+  FormulaDispatchError,
+  FormulaEscalationError,
+  StepBlockedError,
+  type CancelResult,
+  type DispatchInput,
+  type DispatchResult,
+  type MoleculeRun,
+  type ProviderResolver,
+  type QueuedMoleculeRun,
+  type ResumedDeliveryArgs,
+  type RuntimeSessionEventContext,
+  type StepAttemptArgs,
+  type StepFailureContext,
+  type StepRunArgs,
+  type StepRunContext,
+  type StepRunFailure,
+} from './types.js';
+import { createDispatcherEmitter } from './emit.js';
+
+export { FormulaDispatchError, FormulaEscalationError, FormulaCancellationConflictError } from './types.js';
+export type { DispatchInput, ProviderResolver, DispatchResult, CancelResult } from './types.js';
 
 /**
  * FormulaDispatcher runs formula steps and records enough provider-opaque
@@ -47,92 +68,6 @@ import {
  * `resume()` re-attaches only to steps already marked `in_progress` with
  * `metadata.exec.task_id`; it does not redispatch open successor steps.
  */
-
-export interface DispatchInput {
-  readonly formula: Formula;
-  readonly pack: Pack;
-  readonly input: string;
-  readonly motivatingBeadId?: string;
-  /**
-   * Per-project routing key (vibesync-f5g / vibesync-8hk). When set, the
-   * dispatcher consults its ProviderResolver to pick the RuntimeProvider for
-   * this run and resolves the step's role agent and project memory for this
-   * project. When omitted, the default provider supplied at construction runs
-   * the molecule.
-   */
-  readonly projectIdentifier?: string;
-  /** Default turn timeout for every step; explicit formula-step timeouts win. */
-  readonly stepTimeoutMs?: number;
-  /** Absolute directory in which the runtime starts each step session. */
-  readonly workdir?: string;
-  /**
-   * Called once, synchronously, as soon as the molecule exists (right after
-   * the walker created it, BEFORE the first step runs) with its id
-   * (vibesync-izn3). `run()` only returns the molecule id when the whole
-   * formula finishes, which is too late for a caller that must `cancel()` a
-   * run that never finishes. A throwing callback is logged-and-ignored by the
-   * dispatcher: it can never fail the run.
-   */
-  readonly onStarted?: (moleculeId: string) => void;
-}
-
-/**
- * Routes a dispatch to the right RuntimeProvider based on the project
- * identifier. Implementations look up the per-project routing row
- * (provider_kind, PM parent agent id). See ProjectLettaRepository.
- *
- * Returns null when the project has no override: the dispatcher then uses its
- * default provider. Throws for a row it must not run (a removed provider
- * kind); the run then fails before any molecule is cooked.
- */
-export interface ProviderResolver {
-  resolve(input: DispatchInput): Promise<RuntimeProvider | null> | RuntimeProvider | null;
-}
-
-export interface DispatchResult {
-  readonly moleculeId: string;
-  readonly outputs: Readonly<Record<string, string>>;
-}
-
-export interface CancelResult {
-  readonly moleculeId: string;
-  readonly cancelledStepCount: number;
-}
-
-type StepRunArgs = {
-  readonly input: DispatchInput;
-  readonly step: BeadRow;
-  readonly moleculeId: string;
-  readonly outputs: Record<string, string>;
-  readonly rolesByName: ReadonlyMap<string, RoleConfig>;
-  readonly provider: RuntimeProvider;
-};
-
-type StepRunFailure = { readonly signal: FailureSignal; readonly error: unknown; readonly failureClass: string | null };
-
-interface StepFailureContext {
-  readonly stepRun: StepRunContext;
-  readonly policy: ResolvedRetryPolicy;
-  readonly state: RetryState;
-  readonly failure: StepRunFailure;
-  readonly kind: FailureKind;
-  readonly reason: string;
-}
-
-interface StepRunContext {
-  readonly args: StepRunArgs;
-  readonly stepSpec: StepSpec;
-  readonly stepName: string;
-  readonly roleConfig: RoleConfig;
-}
-
-interface ResumedDeliveryArgs {
-  readonly root: BeadRow;
-  readonly moleculeId: string;
-  readonly outputs: Record<string, string>;
-  readonly startedAt: number;
-  readonly motivatingBeadId: string | null;
-}
 
 export interface FormulaDispatcherOptions {
   readonly provider: RuntimeProvider;
@@ -191,70 +126,11 @@ export interface FormulaDispatcherOptions {
   readonly onMoleculeCooked?: (moleculeId: string) => void;
 }
 
-interface QueuedMoleculeRun {
-  readonly input: DispatchInput;
-  readonly resolve: () => void;
-}
-
-/** In-process run context of one cooked molecule (formula, pack, input, outputs). */
-interface MoleculeRun {
-  readonly input: DispatchInput;
-  readonly moleculeId: string;
-  readonly provider: RuntimeProvider;
-  readonly startedAt: number;
-  readonly outputs: Record<string, string>;
-  readonly rolesByName: ReadonlyMap<string, RoleConfig>;
-  /**
-   * Tries already started, keyed `<stepId>@<attempt>.<infraRetries>` (the retry
-   * state READ FROM THE BEAD, vibesync-ynmp). A step bead is offered again only
-   * after a failed try reopened it with new counters; the same try is never
-   * run twice. Not a counter: nothing here decides whether to retry.
-   */
-  readonly startedSteps: Set<string>;
-  running: number;
-  failed: boolean;
-  failure: unknown;
-  cancelled: boolean;
-  finalized: boolean;
-  readonly resolve: (result: DispatchResult) => void;
-  readonly reject: (error: unknown) => void;
-}
-
-export class FormulaDispatchError extends Error {
-  constructor(
-    message: string,
-    readonly moleculeId: string,
-    options: { readonly cause?: unknown } = {},
-  ) {
-    super(message, options);
-    this.name = 'FormulaDispatchError';
-  }
-}
-
-/**
- * vibesync-9lzk.43: a run that stopped on purpose, waiting for a person: a
- * step reported itself blocked, a verdict failed closed, or the review loop
- * ran out of rounds. Retrying it would restart work a reviewer rejected, so
- * the scheduler must not treat it as a retryable dispatch failure.
- */
-export class FormulaEscalationError extends FormulaDispatchError {
-  constructor(message: string, moleculeId: string, options: { readonly cause?: unknown } = {}) {
-    super(message, moleculeId, options);
-    this.name = 'FormulaEscalationError';
-  }
-}
-
-export class FormulaCancellationConflictError extends FormulaDispatchError {
-  constructor(message: string, moleculeId: string) {
-    super(message, moleculeId);
-    this.name = 'FormulaCancellationConflictError';
-  }
-}
-
 export class FormulaDispatcher implements ReadyStepRunner {
   private readonly defaultProvider: RuntimeProvider;
   private readonly walker: MoleculeWalker;
-  private readonly eventBus: EventBus;
+  readonly emit: (kind: string, moleculeId: string | undefined, taskId: string | undefined, payload: Readonly<Record<string, unknown>>) => void;
+  readonly emitRuntimeSessionEvent: (event: SessionEvent, context: RuntimeSessionEventContext) => void;
   private readonly idPrefix: string;
   private readonly maxParallelSteps: number;
   private readonly maxConcurrentMolecules: number;
@@ -272,7 +148,9 @@ export class FormulaDispatcher implements ReadyStepRunner {
   constructor(opts: FormulaDispatcherOptions) {
     this.defaultProvider = opts.provider;
     this.walker = opts.walker;
-    this.eventBus = opts.eventBus;
+    const emitter = createDispatcherEmitter(opts.eventBus);
+    this.emit = emitter.emit;
+    this.emitRuntimeSessionEvent = emitter.emitRuntimeSessionEvent;
     this.idPrefix = opts.idPrefix;
     this.maxParallelSteps = normalizeMaxParallelSteps(opts.maxParallelSteps);
     this.maxConcurrentMolecules = normalizeMaxConcurrentMolecules(opts.maxConcurrentMolecules);
@@ -1603,88 +1481,6 @@ export class FormulaDispatcher implements ReadyStepRunner {
     return { output, eventCount };
   }
 
-  private emit(kind: string, moleculeId: string | undefined, taskId: string | undefined, payload: Readonly<Record<string, unknown>>): void {
-    this.eventBus.emit({
-      layer: 'dispatcher',
-      kind,
-      ...(moleculeId ? { molecule_id: moleculeId } : {}),
-      ...(taskId ? { task_id: taskId } : {}),
-      payload,
-    });
-  }
-
-  private emitRuntimeSessionEvent(event: SessionEvent, context: RuntimeSessionEventContext): void {
-    this.eventBus.emit({
-      layer: 'runtime',
-      kind: `runtime/session.${event.kind.replace(/-/g, '_')}`,
-      molecule_id: context.moleculeId,
-      ...(context.taskId ? { task_id: context.taskId } : {}),
-      teammate: context.role,
-      payload: {
-        ...sessionEventPayload(event),
-        stepId: context.stepId,
-        stepName: context.stepName,
-        role: context.role,
-        providerKind: context.providerKind,
-        sessionId: context.sessionId,
-        ...(context.attempt ? { attempt: context.attempt } : {}),
-        ...(context.taskId ? { taskId: context.taskId } : {}),
-        ...(context.conversationId ? { conversationId: context.conversationId } : {}),
-        ...(context.agentId ? { agentId: context.agentId } : {}),
-        ...(context.projectIdentifier ? { projectIdentifier: context.projectIdentifier } : {}),
-        ...(context.resumed ? { resumed: true } : {}),
-      },
-    });
-  }
-}
-
-interface RuntimeSessionEventContext {
-  readonly moleculeId: string;
-  readonly stepId: string;
-  readonly stepName: string;
-  readonly role: string;
-  readonly providerKind: string;
-  readonly sessionId: string;
-  readonly attempt?: number;
-  readonly taskId?: string;
-  readonly conversationId?: string;
-  readonly agentId?: string;
-  readonly projectIdentifier?: string;
-  readonly resumed?: boolean;
-}
-
-type StepAttemptArgs = {
-  readonly stepId: string;
-  readonly stepName: string;
-  readonly role: string;
-  readonly roleConfig: RoleConfig;
-  readonly moleculeId: string;
-  readonly formulaName: string;
-  readonly motivatingBeadId?: string;
-  readonly rendered: string;
-  readonly attempt: number;
-  readonly infraRetries: number;
-  readonly reviewRound: number;
-  readonly provider: RuntimeProvider;
-  readonly projectIdentifier?: string;
-  readonly turnTimeoutMs?: number;
-  readonly workdir?: string;
-};
-
-function sessionEventPayload(event: SessionEvent): Readonly<Record<string, unknown>> {
-  const base = { eventKind: event.kind, ts: event.ts };
-  const payloads: { [K in SessionEvent['kind']]: (event: Extract<SessionEvent, { kind: K }>) => Readonly<Record<string, unknown>> } = {
-    started: () => base,
-    'first-token': () => base,
-    stopped: () => base,
-    'message-delta': (value) => ({ ...base, text: value.text, textLength: value.text.length }),
-    'tool-call': (value) => ({ ...base, tool: value.tool, args: value.args }),
-    'tool-result': (value) => ({ ...base, tool: value.tool, result: value.result, ok: value.ok }),
-    usage: (value) => ({ ...base, prompt: value.prompt, completion: value.completion }),
-    'turn-done': (value) => ({ ...base, ...(value.stopReason ? { stopReason: value.stopReason } : {}) }),
-    error: (value) => ({ ...base, code: value.code, message: value.message }),
-  };
-  return (payloads[event.kind] as (value: SessionEvent) => Readonly<Record<string, unknown>>)(event);
 }
 
 function renderContext(input: string, outputs: Readonly<Record<string, string>>, steps: readonly StepSpec[]): Readonly<Record<string, string | number | boolean>> {
@@ -1705,22 +1501,6 @@ function formatPriorOutputs(outputs: Readonly<Record<string, string>>): string {
   return entries
     .map(([stepName, output]) => [`## ${stepName}`, output.trim() || '(empty output)'].join('\n'))
     .join('\n\n');
-}
-
-/** A failed try with the structured signal the retry policy classifies on (never the message text). */
-/** A step's reply ended with the structured blocked line (vibesync-zvcm). */
-class StepBlockedError extends Error {
-  constructor(readonly reason: string) {
-    super(`step blocked: ${reason}`);
-    this.name = 'StepBlockedError';
-  }
-}
-
-class AttemptFailure extends Error {
-  constructor(message: string, readonly signal: FailureSignal) {
-    super(message);
-    this.name = 'AttemptFailure';
-  }
 }
 
 function retryStateKey(state: RetryState): string {
