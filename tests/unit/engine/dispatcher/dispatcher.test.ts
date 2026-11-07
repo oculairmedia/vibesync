@@ -72,17 +72,35 @@ describe('FormulaDispatcher', () => {
   });
 
   it('stops observing at turn-done and stops the provider before finishing the step', async () => {
-    const { dispatcher, provider, events } = newHarness({
+    const timeline: string[] = [];
+    const provider = newFakeProvider({
+      kind: 'fake-runtime',
       script: async function* () {
         const ts = new Date().toISOString();
         yield { kind: 'turn-done', ts };
         throw new Error('event after completion must not be consumed');
       },
     });
-
+    const eventBus = new EventBus({ noPersist: true });
+    const events: Event[] = [];
+    eventBus.subscribe((event) => {
+      events.push(event);
+      if (event.kind === 'dispatcher/step.finished') timeline.push(event.kind);
+    });
+    const store = new InMemoryDoltClient();
+    const dispatcher = newDriven(store, { idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus });
+    const stop = provider.stop.bind(provider);
+    provider.stop = async (handle) => {
+      timeline.push('provider.stop');
+      await stop(handle);
+    };
     await dispatcher.run({ formula: singleStepFormula(), pack: singleStepPack(), input: 'go' });
 
     expect(provider.recorder.stops).toHaveLength(1);
+    const finishedIndex = events.findIndex((event) => event.kind === 'dispatcher/step.finished');
+    expect(timeline).toEqual(['provider.stop', 'dispatcher/step.finished']);
+    expect(finishedIndex).toBeGreaterThan(-1);
+    expect(events.slice(0, finishedIndex).some((event) => event.kind === 'runtime/session.turn_done')).toBe(true);
     const kinds = events.map((event) => event.kind);
     expect(kinds.indexOf('dispatcher/step.finished')).toBeGreaterThan(kinds.indexOf('runtime/session.turn_done'));
     expect(kinds).not.toContain('dispatcher/step.failed');
