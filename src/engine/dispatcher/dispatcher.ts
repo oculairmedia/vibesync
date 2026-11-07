@@ -709,6 +709,33 @@ export class FormulaDispatcher implements ReadyStepRunner {
    * recorded at dispatch (vibesync-9lzk.21 review). Throws, after failing the
    * root and emitting formula.failed, when that delivery is not met.
    */
+  /**
+   * Finish a resumed molecule: verify its recorded delivery, then announce
+   * completion. One place so a recorded delivery is always checked before the
+   * completion event (CodeRabbit on #128).
+   */
+  private async completeResumedMolecule(args: {
+    readonly view: { readonly root: BeadRow };
+    readonly moleculeId: string;
+    readonly outputs: Record<string, string>;
+    readonly startedAt: number;
+    readonly motivatingBeadId: string | null;
+  }): Promise<void> {
+    await this.requireResumedDelivery({
+      root: args.view.root,
+      moleculeId: args.moleculeId,
+      outputs: args.outputs,
+      startedAt: args.startedAt,
+      motivatingBeadId: args.motivatingBeadId,
+    });
+    this.emit('dispatcher/formula.completed', args.moleculeId, undefined, {
+      moleculeId: args.moleculeId,
+      durationMs: Date.now() - args.startedAt,
+      resumed: true,
+      ...(args.motivatingBeadId ? { motivating_bead: args.motivatingBeadId } : {}),
+    });
+  }
+
   private async requireResumedDelivery(
     args: ResumedDeliveryArgs,
   ): Promise<void> {
@@ -836,19 +863,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     if (!(await this.walker.isComplete(args.moleculeId))) {
       throw new FormulaDispatchError(`FormulaDispatcher: molecule ${args.moleculeId} has no running steps to resume`, args.moleculeId);
     }
-    await this.requireResumedDelivery({
-      root: args.view.root,
-      moleculeId: args.moleculeId,
-      outputs: args.outputs,
-      startedAt: args.startedAt,
-      motivatingBeadId: args.motivatingBeadId,
-    });
-    this.emit('dispatcher/formula.completed', args.moleculeId, undefined, {
-      moleculeId: args.moleculeId,
-      durationMs: Date.now() - args.startedAt,
-      resumed: true,
-      ...(args.motivatingBeadId ? { motivating_bead: args.motivatingBeadId } : {}),
-    });
+    await this.completeResumedMolecule(args);
   }
 
   private async resumeRunningSteps(args: {
@@ -889,19 +904,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
       });
       return;
     }
-    await this.requireResumedDelivery({
-      root: args.view.root,
-      moleculeId: args.moleculeId,
-      outputs: args.outputs,
-      startedAt: args.startedAt,
-      motivatingBeadId: args.motivatingBeadId,
-    });
-    this.emit('dispatcher/formula.completed', args.moleculeId, undefined, {
-      moleculeId: args.moleculeId,
-      durationMs: Date.now() - args.startedAt,
-      resumed: true,
-      ...(args.motivatingBeadId ? { motivating_bead: args.motivatingBeadId } : {}),
-    });
+    await this.completeResumedMolecule(args);
   }
 
   async cancel(moleculeId: string): Promise<CancelResult> {
@@ -1295,9 +1298,9 @@ export class FormulaDispatcher implements ReadyStepRunner {
     const exec = readExec(args.step);
     const taskId = readString(exec.task_id);
     if (!taskId) {
-      await this.failResumedStepWithoutTask({ ...args, stepName, role });
+      return this.failResumedStepWithoutTask({ ...args, stepName, role });
     }
-    const resumedTaskId = taskId as string;
+    const resumedTaskId = taskId;
 
     let handle: SessionHandle | null = null;
     try {
