@@ -23,6 +23,7 @@ import {
   type RetryState,
 } from '../retry/index.js';
 import {
+  AttemptFailure,
   FormulaCancellationConflictError,
   FormulaDispatchError,
   FormulaEscalationError,
