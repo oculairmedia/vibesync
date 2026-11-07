@@ -124,7 +124,7 @@ describe('FormulaDispatcher.resume characterization', () => {
     expect(h.events[1]?.payload).toMatchObject({ resumed: true, artifact: 'https://github.com/org/repo/pull/9' });
   });
 
-  it('fails a resumed running step with a blocked outcome and closes its root failed', async () => {
+  it('fails a resumed running step with a blocked outcome and leaves the root open', async () => {
     const h = harness({ script: () => eventScript([{ kind: 'message-delta', ts: new Date().toISOString(), text: 'STEP OUTCOME: BLOCKED - needs approval' }]) });
     const view = await rootWithSteps(h.store, ['worker']);
     const stepId = newMoleculeStepId(view.rootId, 'worker');
@@ -155,6 +155,31 @@ describe('FormulaDispatcher.resume characterization', () => {
     expect((await h.store.getBead(newMoleculeStepId(view.rootId, 'next')))?.status).toBe('open');
     expect(h.events.at(-1)?.kind).toBe('dispatcher/formula.resume.paused');
     expect(h.events.at(-1)?.payload).toMatchObject({ reason: 'running steps completed; open successors require a fresh formula run context' });
+  });
+
+  it.each([
+    { kind: 'error' as const, message: 'reattach failed', expected: 'reattach failed' },
+    { kind: 'stopped' as const, message: undefined, expected: 'runtime stopped before turn completion' },
+  ])('fails a resumed step when runtime emits $kind', async ({ kind, message, expected }) => {
+    const runtimeEvent: SessionEvent = kind === 'error'
+      ? { kind, ts: new Date().toISOString(), message: message!, code: 'runtime_error' }
+      : { kind, ts: new Date().toISOString() };
+    const h = harness({ script: () => eventScript([runtimeEvent]) });
+    const view = await rootWithSteps(h.store, ['worker']);
+    const stepId = newMoleculeStepId(view.rootId, 'worker');
+    await h.walker.startStep(stepId);
+    await h.walker.recordStepTask(stepId, { taskId: 'task-runtime-failure', providerKind: 'fake-runtime', sessionId: 'old-session' });
+
+    const error = await h.dispatcher.resume(view.rootId).catch((value: unknown) => value);
+
+    expect(error).toBeInstanceOf(FormulaDispatchError);
+    expect((error as Error).message).toBe('FormulaDispatcher: resumed step "worker" failed');
+    expect((error as Error).cause).toMatchObject({ message: expected });
+    expect((await h.store.getBead(stepId))?.status).toBe('closed');
+    expect((await h.store.getBead(stepId))?.metadata).toMatchObject({ exec: { error_trace: expected } });
+    expect(h.events.map((event) => event.kind)).toContain(`runtime/session.${kind}`);
+    expect(h.events.map((event) => event.kind)).toContain('dispatcher/step.failed');
+    expect(h.events.at(-1)?.kind).toBe('dispatcher/formula.failed');
   });
 });
 
