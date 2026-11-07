@@ -72,7 +72,7 @@ function makeStore(): SlingContextStore & {
   };
 }
 
-function harness(opts: { beads: string[]; poolSize: number; store?: ReturnType<typeof makeStore> }) {
+function harness(opts: { beads: string[]; poolSize: number; store?: ReturnType<typeof makeStore>; onRunEscalated?: SchedulerDaemonDeps['onRunEscalated'] }) {
   const runs: Deferred[] = [];
   const merged: number[] = [];
   const probeCalls: string[] = [];
@@ -116,6 +116,7 @@ function harness(opts: { beads: string[]; poolSize: number; store?: ReturnType<t
 
   const facts: PrFacts = { requiredChecks: { ci: 'SUCCESS' }, mergeable: 'MERGEABLE', deletedFiles: 0, behindBase: false };
   const deps: SchedulerDaemonDeps = {
+    ...(opts.onRunEscalated ? { onRunEscalated: opts.onRunEscalated } : {}),
     dispatcher,
     formulaResolver: {
       async resolve(workBeadId) {
@@ -311,6 +312,30 @@ describe('SchedulerDaemon — dispatch off the tick (vibesync-q50w)', () => {
     } finally {
       process.off('unhandledRejection', onUnhandled);
     }
+  });
+
+  it('5c. (vibesync-9lzk.53) an escalated run notifies the observer once with the bead and the reason; a plain failure does not', async () => {
+    const seen: Array<{ workBeadId: string; reason: string }> = [];
+    const h = track(harness({ beads: ['we', 'wi'], poolSize: 2, onRunEscalated: (i) => { seen.push({ workBeadId: i.workBeadId, reason: i.reason }); } }));
+    await tickReturns(h.daemon);
+    h.runsFor('we')[0]!.reject(new FormulaEscalationError('FormulaDispatcher: step "reviewer" escalated: review loop exhausted after 3 rounds; escalated', 'mol-we-1'));
+    h.runsFor('wi')[0]!.reject(new Error('provider down'));
+    await vi.waitFor(() => { expect(seen).toHaveLength(1); }, { timeout: 1500 });
+    expect(seen[0]).toMatchObject({ workBeadId: 'we' });
+    expect(seen[0]!.reason).toContain('review loop exhausted');
+    await sleep(50);
+    expect(seen).toHaveLength(1); // wi (plain failure) never notified; we not notified twice
+  });
+
+  it('5d. (vibesync-9lzk.53) an observer that throws never breaks settlement: the context still closes as escalated', async () => {
+    const h = track(harness({ beads: ['we'], poolSize: 1, onRunEscalated: () => { throw new Error('wake exploded'); } }));
+    await tickReturns(h.daemon);
+    h.runsFor('we')[0]!.reject(new FormulaEscalationError('step "tester" escalated: x', 'mol-we-1'));
+    await vi.waitFor(() => { expect(h.store.rows.filter((r) => r.tracks === 'we').map((r) => r.reason)).toEqual(['escalated']); }, { timeout: 1500 });
+    // The failure is contained by the observer guard itself, not by the outer settlement catch:
+    // the loop's own message appears and 'run settlement bookkeeping failed' does not.
+    await vi.waitFor(() => { expect(h.logs.some((l) => l.m === 'scheduler: onRunEscalated observer failed')).toBe(true); }, { timeout: 1500 });
+    expect(h.logs.some((l) => l.m === 'scheduler: run settlement bookkeeping failed')).toBe(false);
   });
 
   it('6. the same bead never has two concurrent runs, across many ticks', async () => {

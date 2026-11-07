@@ -164,6 +164,12 @@ export interface SchedulerLoopDeps {
    * (errors are logged and swallowed).
    */
   readonly onRunSettled?: () => void;
+  /**
+   * vibesync-9lzk.53: a run stopped on purpose to wait for a person and its
+   * context was closed as `escalated`. An interface seam so an observer can
+   * tell the project PM. Must not throw (errors are logged and swallowed).
+   */
+  readonly onRunEscalated?: (input: { readonly workBeadId: string; readonly contextId: string; readonly reason: string }) => void | Promise<void>;
   readonly logger?: { info?(o: unknown, m: string): void; warn?(o: unknown, m: string): void };
 }
 
@@ -403,6 +409,11 @@ export class SchedulerLoop {
           { workBeadId: candidate.workBeadId, contextId: candidate.contextId, error: errMessage(error) },
           'scheduler: run escalated — context closed, not retried',
         );
+        try {
+          await this.deps.onRunEscalated?.({ workBeadId: candidate.workBeadId, contextId: candidate.contextId, reason: errMessage(error) });
+        } catch (err) {
+          this.deps.logger?.warn?.({ workBeadId: candidate.workBeadId, error: errMessage(err) }, 'scheduler: onRunEscalated observer failed');
+        }
       } else {
         this.settledFailed.push(candidate.workBeadId);
         if (await this.accountFailure(candidate, error)) this.settledBroken.push(candidate.contextId);
