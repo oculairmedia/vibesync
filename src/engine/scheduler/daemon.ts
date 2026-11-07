@@ -178,6 +178,8 @@ export interface SchedulerDaemonDeps {
     readonly deadlineMs: number;
     readonly elapsedMs: number;
   }) => void;
+  /** vibesync-9lzk.53: a run escalated to a person (see SchedulerLoopDeps.onRunEscalated). */
+  readonly onRunEscalated?: (input: { readonly workBeadId: string; readonly contextId: string; readonly reason: string }) => void | Promise<void>;
 }
 
 export interface DaemonTickResult {
@@ -279,6 +281,7 @@ export class SchedulerDaemon {
       executor: { execute: (c) => executor.start(c) },
       // Trigger (c): a settled run frees capacity — ask for a prompt tick.
       onRunSettled: () => { this.requestTick('run-finished'); },
+      ...(deps.onRunEscalated ? { onRunEscalated: deps.onRunEscalated } : {}),
       ...(deps.logger ? { logger: deps.logger } : {}),
     });
 

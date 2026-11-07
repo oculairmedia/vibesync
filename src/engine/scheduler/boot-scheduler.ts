@@ -47,6 +47,7 @@ import { FilePmWakeStateStore, type PmWakeStateStore } from '../pm-wake/state.js
 import { BdPendingWakeStore } from '../pm-wake/pending-store.js';
 import type { InboxCliOptions } from '../pm-wake/inbox-cli-adapter.js';
 import { LoggingPmWakeSink, PmWaker, type PmWakeSink } from '../pm-wake/waker.js';
+import { createEscalationNotifier } from './escalation-notify.js';
 import type { GitHubPort } from '../refinery/refinery.js';
 
 /** The `scheduler` config section (structurally identical to AppConfig['scheduler']). */
@@ -207,6 +208,12 @@ export function startSchedulerDaemon(opts: StartOptions): SchedulerHandle {
     ...(config.runDeadlineMs !== undefined ? { runDeadlineMs: config.runDeadlineMs } : {}),
     ...(logger ? { logger } : {}),
     ...(pmWaker ? pmWakeTriggers(pmWaker) : {}),
+    // vibesync-9lzk.53: an escalated run tells the project PM (inbox wake) and leaves the reason on the bead.
+    onRunEscalated: createEscalationNotifier({
+      ...(pmWaker ? { wakePm: (id: string, detail: string) => pmWaker.noteStall(id, detail) } : {}),
+      commentOnBead: async (id, text) => { await opts.bd(['comments', 'add', id, text]); },
+      ...(logger ? { logger } : {}),
+    }),
     onTick: tickReporter(config, bus, pmWaker, logger),
   });
 
