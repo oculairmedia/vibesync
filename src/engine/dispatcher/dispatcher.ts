@@ -430,16 +430,15 @@ export class FormulaDispatcher implements ReadyStepRunner {
    */
   async runReadyStep(ready: ReadyStep): Promise<StepRunOutcome> {
     const run = this.live.get(ready.moleculeId);
-    if (!run || run.failed || run.cancelled) return 'skipped';
+    if (!run || cannotStartSteps(run)) return 'skipped';
     // An agent may CLOSE a step while declaring a failure_class; until the retry
     // policy has ruled on it (reopen, or a final outcome stamp) that closed
     // blocker must not release its dependents.
     if (await this.hasBlockerPendingRetry(ready.step.id)) return 'skipped';
     // A review round (vibesync-9lzk.24) reopens a step with fresh retry
     // counters, so the round is part of the key or the re-run would be skipped.
-    const tryKey = `${ready.step.id}@r${readReviewRound(ready.step.metadata)}.${retryStateKey(readRetryState(ready.step.metadata))}`;
-    if (run.startedSteps.has(tryKey)) return 'skipped';
-    if (run.running >= this.maxParallelSteps) return 'skipped';
+    const tryKey = readyStepTryKey(ready.step);
+    if (hasStartedTryOrAtParallelLimit(run, tryKey, this.maxParallelSteps)) return 'skipped';
     run.startedSteps.add(tryKey);
     run.running++;
     let outcome: StepRunOutcome = 'finished';
@@ -1457,23 +1456,11 @@ export class FormulaDispatcher implements ReadyStepRunner {
     let agentActed = false;
     for await (const event of args.provider.observe(handle)) {
       eventCount++;
-      this.emitRuntimeSessionEvent(event, {
-        moleculeId: args.moleculeId,
-        stepId: args.stepId,
-        stepName: args.stepName,
-        role: args.role,
-        attempt: args.attempt,
-        providerKind: handle.providerKind,
-        sessionId: handle.id,
-        ...(taskId ? { taskId } : {}),
-        ...(conversationId ? { conversationId } : {}),
-        ...(args.projectIdentifier ? { projectIdentifier: args.projectIdentifier } : {}),
-      });
+      this.emitRuntimeSessionEvent(event, buildStepAttemptEventPayload(args, handle, taskId, conversationId));
       if (event.kind === 'message-delta') {
         text += event.text;
-        if (event.text.length > 0) agentActed = true;
       }
-      if (event.kind === 'tool-call' || event.kind === 'tool-result') agentActed = true;
+      agentActed = didAgentAct(event, agentActed);
       this.handleStepAttemptEvent(event, agentActed);
       if (event.kind === 'turn-done') break;
     }
@@ -1798,6 +1785,43 @@ function isFinalFormulaStep(steps: readonly StepSpec[], stepName: string): boole
 
 function isEarlierLoopTarget(targetIdx: number, selfIdx: number, targetBead: BeadRow | null): targetBead is BeadRow {
   return targetIdx >= 0 && selfIdx > targetIdx && targetBead !== null;
+}
+
+function cannotStartSteps(run: MoleculeRun | undefined): boolean {
+  return !run || run.failed || run.cancelled;
+}
+
+function readyStepTryKey(step: BeadRow): string {
+  return `${step.id}@r${readReviewRound(step.metadata)}.${retryStateKey(readRetryState(step.metadata))}`;
+}
+
+function hasStartedTryOrAtParallelLimit(run: MoleculeRun, tryKey: string, maxParallelSteps: number): boolean {
+  return run.startedSteps.has(tryKey) || run.running >= maxParallelSteps;
+}
+
+function didAgentAct(event: SessionEvent, agentActed: boolean): boolean {
+  return agentActed || (event.kind === 'message-delta' && event.text.length > 0) ||
+    event.kind === 'tool-call' || event.kind === 'tool-result';
+}
+
+function buildStepAttemptEventPayload(
+  args: StepAttemptArgs,
+  handle: SessionHandle,
+  taskId: string | undefined,
+  conversationId: string | undefined,
+): RuntimeSessionEventContext {
+  return {
+    moleculeId: args.moleculeId,
+    stepId: args.stepId,
+    stepName: args.stepName,
+    role: args.role,
+    attempt: args.attempt,
+    providerKind: handle.providerKind,
+    sessionId: handle.id,
+    ...(taskId ? { taskId } : {}),
+    ...(conversationId ? { conversationId } : {}),
+    ...(args.projectIdentifier ? { projectIdentifier: args.projectIdentifier } : {}),
+  };
 }
 
 function readExec(row: BeadRow): Record<string, unknown> {
