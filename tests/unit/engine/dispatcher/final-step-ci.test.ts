@@ -163,6 +163,20 @@ describe('final step CI from the PR checks (vibesync-9lzk.46)', () => {
   });
 });
 
+describe('final step with a PR but no PR-checks reader configured (xcvm CodeRabbit nitpick)', () => {
+  it('a CI-waiting reply fails closed (escalates): the checks cannot be read, so pending is not a pass', async () => {
+    const thrown = await run(harness(REAL.devjPending, null)).catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(FormulaEscalationError);
+    expect(String((thrown as Error).message)).toContain('no PR checks reader configured');
+  });
+
+  it('an approving reply still completes: with nothing to read, the approval stands', async () => {
+    const h = harness(REAL.v16aCleanPass, null);
+    await expect(run(h)).resolves.toBeDefined();
+    expect(h.events.some((e) => e.kind === 'dispatcher/step.ci_checks')).toBe(false);
+  });
+});
+
 describe('gh PR checks reader', () => {
   it('maps gh buckets to pass/fail/pending, treats an unreported check as pending, and reads JSON from a non-zero exit', async () => {
     const out = JSON.stringify([
