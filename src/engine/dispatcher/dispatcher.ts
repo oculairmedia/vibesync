@@ -10,7 +10,7 @@ import type { ReadyStep, ReadyStepRunner, StepRunOutcome } from '../molecule/ind
 import { parseBlockedOutcome, STEP_OUTCOME_INSTRUCTIONS } from './step-outcome.js';
 import type { DeliveryVerifier, ShippedWorkProbe } from './delivery.js';
 import { candidatePullRequests } from './delivery.js';
-import { decideStepVerdict, reconcileWithMarker, settleCi, summarizeReplyForReason, type FinalStepVerdict, type PrChecksReader, type StepReplyJudge, type StepVerdict } from '../verdict/index.js';
+import { decideStepVerdict, reconcileWithMarker, settleCi, summarizeReplyForReason, type FinalStepVerdict, type CiOutcome, type PrChecksReader, type StepReplyJudge, type StepVerdict } from '../verdict/index.js';
 import { PROJECT_MEMORY_READ_FAILED_EVENT, renderProjectMemory, type ProjectMemorySource } from './project-memory.js';
 import { renderTemplate } from './render.js';
 import {
@@ -622,11 +622,28 @@ export class FormulaDispatcher implements ReadyStepRunner {
     readonly summary: string;
   }): Promise<StepVerdict> {
     const prUrl = candidatePullRequests({ ...(args.outputs ?? {}), [args.stepName]: args.output }).at(-1);
-    const cfg = this.prChecks;
-    if (!cfg || !prUrl) {
-      if (args.from === 'approve') return { kind: 'approve' };
-      return this.unreadableCiVerdict(args, prUrl);
-    }
+    if (this.canApproveWithoutReadableCi(args.from, prUrl)) return { kind: 'approve' };
+    if (!this.prChecks || !prUrl) return this.unreadableCiVerdict(args, prUrl);
+    return this.readFinalStepCi({
+      step: args.step, moleculeId: args.moleculeId, stepName: args.stepName,
+      prUrl, reason: args.reason, summary: args.summary, cfg: this.prChecks,
+    });
+  }
+
+  private canApproveWithoutReadableCi(from: 'approve' | 'pending', prUrl: string | undefined): boolean {
+    return from === 'approve' && (!this.prChecks || !prUrl);
+  }
+
+  private async readFinalStepCi(args: {
+    readonly step: BeadRow;
+    readonly moleculeId: string;
+    readonly stepName: string;
+    readonly prUrl: string;
+    readonly reason: string;
+    readonly summary: string;
+    readonly cfg: NonNullable<FormulaDispatcherOptions['prChecks']>;
+  }): Promise<StepVerdict> {
+    const { cfg, prUrl } = args;
     let outcome;
     try {
       outcome = await settleCi(cfg.reader, prUrl, {
@@ -636,11 +653,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
       return { kind: 'unsettled', reason: `${args.reason}, but reading the PR checks failed (${stringifyError(err)}): ${args.summary}` };
     }
     this.emit('dispatcher/step.ci_checks', args.moleculeId, args.step.id, { stepName: args.stepName, prUrl, checks: cfg.names, outcome: outcome.kind, ...(outcome.kind === 'failed' ? { failed: outcome.failed } : {}), ...(outcome.kind === 'still_pending' ? { pending: outcome.pending } : {}) });
-    switch (outcome.kind) {
-      case 'green': return { kind: 'approve' };
-      case 'failed': return { kind: 'changes_requested', reason: `required check(s) failed on ${prUrl}: ${outcome.failed.join(', ')}` };
-      case 'still_pending': return { kind: 'unsettled', reason: `required check(s) still pending on ${prUrl} after the wait cap: ${outcome.pending.join(', ')}` };
-    }
+    return ciOutcomeVerdict(outcome, prUrl);
   }
 
   private unreadableCiVerdict(
@@ -683,10 +696,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
       stepName: args.stepName, role: args.stepSpec.role, stepId: args.step.id, loopsBackTo: target, round, maxRounds, reason: args.blocker,
     });
     if (round >= maxRounds) {
-      // The reviewing step closes blocked like any other; the caller fails the run.
-      this.emit('dispatcher/formula.review_exhausted', args.moleculeId, args.step.id, {
-        stepName: args.stepName, loopsBackTo: target, rounds: round, maxRounds, reason: args.blocker,
-      });
+      this.emitReviewExhausted(args, target, round, maxRounds);
       return 'exhausted';
     }
     // The verdict is this step's output for the next round; close it finished.
@@ -729,6 +739,18 @@ export class FormulaDispatcher implements ReadyStepRunner {
     this.emit('dispatcher/step.loop_back', args.moleculeId, args.step.id, {
       stepName: args.stepName, loopsBackTo: args.target, round: args.round + 1,
       maxRounds: args.maxRounds, reopened: reopened.map((s) => s.name),
+    });
+  }
+
+  private emitReviewExhausted(
+    args: { readonly moleculeId: string; readonly step: BeadRow; readonly stepName: string; readonly blocker: string },
+    target: string,
+    round: number,
+    maxRounds: number,
+  ): void {
+    // The reviewing step closes blocked like any other; the caller fails the run.
+    this.emit('dispatcher/formula.review_exhausted', args.moleculeId, args.step.id, {
+      stepName: args.stepName, loopsBackTo: target, rounds: round, maxRounds, reason: args.blocker,
     });
   }
 
@@ -981,19 +1003,26 @@ export class FormulaDispatcher implements ReadyStepRunner {
 
   async cancel(moleculeId: string): Promise<CancelResult> {
     const view = await this.walker.load(moleculeId);
-    if (!view) {
-      throw new FormulaDispatchError(`FormulaDispatcher: molecule ${moleculeId} not found`, moleculeId);
-    }
+    if (!view) throw new FormulaDispatchError(`FormulaDispatcher: molecule ${moleculeId} not found`, moleculeId);
     const running = await this.walker.findRunning(moleculeId);
-    if (running.length === 0) {
-      throw new FormulaCancellationConflictError(`FormulaDispatcher: molecule ${moleculeId} has no running steps to cancel`, moleculeId);
-    }
+    if (running.length === 0) throw new FormulaCancellationConflictError(`FormulaDispatcher: molecule ${moleculeId} has no running steps to cancel`, moleculeId);
 
     // Closing the running steps below unblocks their dependents in the bead
     // graph; mark the run so none of them is started.
     const liveRun = this.live.get(moleculeId);
     if (liveRun) liveRun.cancelled = true;
+    const cancelledStepCount = await this.cancelRunningSteps(moleculeId, running);
+    await this.walker.markMoleculeRootStatus(moleculeId, 'closed', 'cancelled');
+    this.emit('dispatcher/formula.cancelled', moleculeId, undefined, {
+      moleculeId,
+      cancelledStepCount,
+    });
+    // Release the run() caller now if no step of this process is still unwinding.
+    if (liveRun) await this.settleMolecule(liveRun);
+    return { moleculeId, cancelledStepCount };
+  }
 
+  private async cancelRunningSteps(moleculeId: string, running: readonly BeadRow[]): Promise<number> {
     let cancelledStepCount = 0;
     for (const step of running) {
       const stepName = readStepName(step);
@@ -1014,15 +1043,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
         ...(sessionId ? { sessionId } : {}),
       });
     }
-
-    await this.walker.markMoleculeRootStatus(moleculeId, 'closed', 'cancelled');
-    this.emit('dispatcher/formula.cancelled', moleculeId, undefined, {
-      moleculeId,
-      cancelledStepCount,
-    });
-    // Release the run() caller now if no step of this process is still unwinding.
-    if (liveRun) await this.settleMolecule(liveRun);
-    return { moleculeId, cancelledStepCount };
+    return cancelledStepCount;
   }
 
   private async runStep(args: {
@@ -1646,6 +1667,14 @@ function hasOutputPayload(payload: unknown): payload is { readonly output: strin
 
 function isSoftFailedStep(step: BeadRow): boolean {
   return step.metadata['gc.retry_outcome'] === 'soft_failed';
+}
+
+function ciOutcomeVerdict(outcome: CiOutcome, prUrl: string): StepVerdict {
+  switch (outcome.kind) {
+    case 'green': return { kind: 'approve' };
+    case 'failed': return { kind: 'changes_requested', reason: `required check(s) failed on ${prUrl}: ${outcome.failed.join(', ')}` };
+    case 'still_pending': return { kind: 'unsettled', reason: `required check(s) still pending on ${prUrl} after the wait cap: ${outcome.pending.join(', ')}` };
+  }
 }
 
 function isFinalFormulaStep(steps: readonly StepSpec[], stepName: string): boolean {
