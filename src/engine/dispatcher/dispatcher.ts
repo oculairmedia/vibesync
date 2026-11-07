@@ -110,21 +110,51 @@ type StepRunArgs = {
 
 type StepRunFailure = { readonly signal: FailureSignal; readonly error: unknown; readonly failureClass: string | null };
 
-interface StepFailureContext {
-  readonly stepRun: StepRunContext;
-  readonly policy: ResolvedRetryPolicy;
-  readonly state: RetryState;
-  readonly failure: StepRunFailure;
-  readonly kind: FailureKind;
-  readonly reason: string;
-}
-
 interface StepRunContext {
   readonly args: StepRunArgs;
   readonly stepSpec: StepSpec;
   readonly stepName: string;
   readonly roleConfig: RoleConfig;
 }
+
+interface StepTurnContext {
+  readonly run: StepRunContext;
+  readonly attemptStartedAt: Date;
+  readonly attempt: number;
+}
+
+interface StepAttemptState {
+  readonly policy: ResolvedRetryPolicy;
+  readonly state: RetryState;
+  readonly turn: StepTurnContext;
+}
+
+interface StepPromptContext {
+  readonly run: StepRunContext;
+  readonly attempt: number;
+}
+
+interface StepTurnResult {
+  readonly output: Awaited<ReturnType<FormulaDispatcher['runStepAttempt']>> | null;
+  readonly failure: StepRunFailure | null;
+}
+
+interface StepAttemptInput {
+  readonly context: StepRunContext;
+  readonly state: RetryState;
+  readonly rendered: string;
+}
+
+interface StepSettlementContext {
+  readonly run: StepRunContext;
+  readonly attemptState: StepAttemptState;
+  readonly failure: StepRunFailure;
+  readonly kind: FailureKind;
+  readonly reason: string;
+}
+
+type StepFailureContext = { readonly settlement: StepSettlementContext };
+type StepRetryContext = { readonly settlement: StepSettlementContext };
 
 interface ResumedDeliveryArgs {
   readonly root: BeadRow;
@@ -1077,64 +1107,70 @@ export class FormulaDispatcher implements ReadyStepRunner {
 
   private async runStep(args: StepRunArgs): Promise<void> {
     const context = this.prepareStepRun(args);
-    const { stepName, stepSpec } = context;
+    const { args: runArgs } = context;
     // ONE try per call (vibesync-ynmp). Where the step is in its retry policy is
     // read from the BEAD, never from this process: a failed try reopens the step
     // with new counters and the bead graph offers it again, so a restart between
     // tries resumes at the right attempt.
+    const attemptState = this.readStepAttemptState(context);
+    await this.walker.recordStepAttempt(runArgs.step.id, attemptState.state.attempt);
+    await this.runPreparedStep({ context, attemptState });
+  }
+
+  private async runPreparedStep(args: { readonly context: StepRunContext; readonly attemptState: StepAttemptState }): Promise<void> {
+    const rendered = await this.prepareStepPrompt({ run: args.context, attempt: args.attemptState.state.attempt });
+    await this.executeStepAttempt({ ...args.attemptState, rendered });
+  }
+
+  private readStepAttemptState(context: StepRunContext): StepAttemptState {
+    const { args, stepSpec } = context;
     const policy = resolveRetryPolicy(stepSpec);
     const state = readRetryState(args.step.metadata);
     const attemptStartedAt = new Date();
-    await this.walker.recordStepAttempt(args.step.id, state.attempt);
-    const rendered = await this.renderStepPrompt(args, stepSpec, stepName, state.attempt);
+    return { policy, state, turn: { run: context, attemptStartedAt, attempt: state.attempt } };
+  }
 
-    const turn = await this.runStepTurn(context, rendered, state);
-    let failure = turn.failure;
+  private stepSettlementContext(
+    attemptState: StepAttemptState,
+    failure: StepRunFailure,
+  ): StepFailureContext {
+    return {
+      settlement: {
+        run: attemptState.turn.run,
+        attemptState,
+        failure,
+        kind: this.stepFailureKind(failure),
+        reason: stringifyError(failure.error),
+      },
+    };
+  }
 
-    if (turn.output !== null) {
-      const judged = await this.judgeStepTurn(context, turn.output, attemptStartedAt, state.attempt);
+  private async executeStepAttempt(attemptState: StepAttemptState & { readonly rendered: string }): Promise<void> {
+    const { turn: attemptContext, state, rendered } = attemptState;
+    const context = attemptContext.run;
+    const { args } = context;
+    const result = await this.runStepTurn({ context, state, rendered });
+    if (result.output !== null) {
+      const judged = await this.judgeStepTurn(attemptContext, result.output);
       if (judged === 'finished' || judged === 'looped') return;
-      failure = judged;
+      await this.settleStepFailure(this.stepSettlementContext(attemptState, judged));
+      return;
     }
-    if (failure === null) {
+    if (result.failure === null) {
       // Unreachable: the turn either threw (failure set in catch) or completed
       // (success returned above, or a declared failure_class set it).
       throw new Error(`step ${args.step.id}: attempt ended with neither an output nor a failure`);
     }
 
-    await this.settleStepFailure(context, policy, state, failure);
+    await this.settleStepFailure(this.stepSettlementContext(attemptState, result.failure));
   }
 
-  private async runStepTurn(
-    context: StepRunContext,
-    rendered: string,
-    state: RetryState,
-  ): Promise<{ readonly output: Awaited<ReturnType<FormulaDispatcher['runStepAttempt']>> | null; readonly failure: StepRunFailure | null }> {
-    const { args, stepName, stepSpec, roleConfig } = context;
+  private async runStepTurn(attempt: StepAttemptInput): Promise<StepTurnResult> {
     // Only the AGENT TURN is retryable; bead persistence after it stays outside this try.
     try {
-      const output = await this.runStepAttempt({
-        stepId: args.step.id,
-        stepName,
-        role: stepSpec.role,
-        roleConfig,
-        moleculeId: args.moleculeId,
-        formulaName: args.input.formula.name,
-        ...(args.input.motivatingBeadId ? { motivatingBeadId: args.input.motivatingBeadId } : {}),
-        rendered,
-        attempt: state.attempt,
-        infraRetries: state.infraRetries,
-        reviewRound: readReviewRound(args.step.metadata),
-        provider: args.provider,
-        ...(args.input.projectIdentifier ? { projectIdentifier: args.input.projectIdentifier } : {}),
-        ...((stepSpec.turnTimeoutMs ?? args.input.stepTimeoutMs) !== undefined
-          ? { turnTimeoutMs: stepSpec.turnTimeoutMs ?? args.input.stepTimeoutMs }
-          : {}),
-        ...(args.input.workdir !== undefined ? { workdir: args.input.workdir } : {}),
-      });
-      return { output, failure: null };
+      return { output: await this.runStepAttempt(this.stepAttemptArgs(attempt)), failure: null };
     } catch (error) {
-      const bead = await this.walker.readStep(args.step.id).catch(() => null);
+      const bead = await this.walker.readStep(attempt.context.args.step.id).catch(() => null);
       return {
         output: null,
         failure: {
@@ -1144,6 +1180,30 @@ export class FormulaDispatcher implements ReadyStepRunner {
         },
       };
     }
+  }
+
+  private stepAttemptArgs(attempt: StepAttemptInput): Parameters<FormulaDispatcher['runStepAttempt']>[0] {
+    const { context, state, rendered } = attempt;
+    const { args, stepName, stepSpec, roleConfig } = context;
+    return {
+      stepId: args.step.id,
+      stepName,
+      role: stepSpec.role,
+      roleConfig,
+      moleculeId: args.moleculeId,
+      formulaName: args.input.formula.name,
+      ...(args.input.motivatingBeadId ? { motivatingBeadId: args.input.motivatingBeadId } : {}),
+      rendered,
+      attempt: state.attempt,
+      infraRetries: state.infraRetries,
+      reviewRound: readReviewRound(args.step.metadata),
+      provider: args.provider,
+      ...(args.input.projectIdentifier ? { projectIdentifier: args.input.projectIdentifier } : {}),
+      ...((stepSpec.turnTimeoutMs ?? args.input.stepTimeoutMs) !== undefined
+        ? { turnTimeoutMs: stepSpec.turnTimeoutMs ?? args.input.stepTimeoutMs }
+        : {}),
+      ...(args.input.workdir !== undefined ? { workdir: args.input.workdir } : {}),
+    };
   }
 
   private prepareStepRun(args: StepRunArgs): StepRunContext {
@@ -1156,20 +1216,16 @@ export class FormulaDispatcher implements ReadyStepRunner {
     if (!roleConfig) {
       throw new FormulaDispatchError(`FormulaDispatcher: pack ${args.input.pack.manifest.name} has no role "${stepSpec.role}"`, args.moleculeId);
     }
-    if (!stepSpec.promptTemplate) {
-      throw new FormulaDispatchError(`FormulaDispatcher: step "${stepName}" has no promptTemplate`, args.moleculeId);
-    }
     return { args, stepSpec, stepName, roleConfig };
   }
 
-  private async renderStepPrompt(
-    args: StepRunArgs,
-    stepSpec: StepSpec,
-    stepName: string,
-    attempt: number,
-  ): Promise<string> {
+  private async prepareStepPrompt(context: StepPromptContext): Promise<string> {
+    const { args, stepSpec, stepName } = context.run;
+    const attempt = context.attempt;
     const template = stepSpec.promptTemplate;
-    if (!template) throw new Error(`step "${stepName}" has no promptTemplate`);
+    if (!template) {
+      throw new FormulaDispatchError(`FormulaDispatcher: step "${stepName}" has no promptTemplate`, args.moleculeId);
+    }
     return renderTemplate({
       packRoot: args.input.pack.root,
       template,
@@ -1182,21 +1238,19 @@ export class FormulaDispatcher implements ReadyStepRunner {
   }
 
   private async judgeStepTurn(
-    context: StepRunContext,
+    context: StepTurnContext,
     output: Awaited<ReturnType<FormulaDispatcher['runStepAttempt']>>,
-    attemptStartedAt: Date,
-    attempt: number,
   ): Promise<'finished' | 'looped' | StepRunFailure> {
-    const verdict = await this.handleStepVerdict(context, output, attemptStartedAt);
+    const verdict = await this.handleStepVerdict(context, output);
     if (verdict !== null) return verdict;
-    return this.finishStepTurn(context, output, attempt);
+    return this.finishStepTurn(context.run, output, context.attempt);
   }
 
   private async handleStepVerdict(
-    context: StepRunContext,
+    turn: StepTurnContext,
     output: Awaited<ReturnType<FormulaDispatcher['runStepAttempt']>>,
-    attemptStartedAt: Date,
   ): Promise<'looped' | StepRunFailure | null> {
+    const { run: context, attemptStartedAt } = turn;
     const { args, stepSpec, stepName } = context;
     const bead = await this.walker.readStep(args.step.id);
     const declared = bead ? readFailureClass(bead.metadata) : null;
@@ -1265,36 +1319,22 @@ export class FormulaDispatcher implements ReadyStepRunner {
     return 'finished';
   }
 
-  private async settleStepFailure(
-    context: StepRunContext,
-    policy: ResolvedRetryPolicy,
-    state: RetryState,
-    failure: StepRunFailure,
-  ): Promise<void> {
+  private async settleStepFailure(context: StepFailureContext): Promise<void> {
+    await this.retryStepFailure({ settlement: context });
+  }
+
+  private stepFailureKind(failure: StepRunFailure): FailureKind {
     // A failure_class means the agent ran and declared it; cancel/stop still wins.
     const classified = classifyFailure(failure.signal);
-    const kind = failure.failureClass !== null && classified !== 'terminal' ? 'agent' : classified;
-    const decision = decideRetry({ policy, state, kind });
-    const failureContext: StepFailureContext = {
-      stepRun: context,
-      policy,
-      state,
-      failure,
-      kind,
-      reason: stringifyError(failure.error),
-    };
-    if (decision.action === 'retry') {
-      await this.retryStepFailure(failureContext, decision);
-      return;
-    }
-    await this.finishStepFailure(failureContext, decision);
+    return failure.failureClass !== null && classified !== 'terminal' ? 'agent' : classified;
   }
 
   private async finishStepFailure(
-    failureContext: StepFailureContext,
+    failureContext: StepSettlementContext,
     decision: Exclude<RetryDecision, { readonly action: 'retry' }>,
   ): Promise<void> {
-    const { stepRun: context, state, failure } = failureContext;
+    const { run: context, attemptState, failure } = failureContext;
+    const state = attemptState.state;
     const { args, stepSpec, stepName } = context;
     const { trace, outcomeLabel } = this.stepFailureTrace(failureContext, decision);
     await this.walker.failStep(args.step.id, trace, outcomeLabel);
@@ -1315,10 +1355,15 @@ export class FormulaDispatcher implements ReadyStepRunner {
   }
 
   private async retryStepFailure(
-    failureContext: StepFailureContext,
-    decision: Extract<RetryDecision, { readonly action: 'retry' }>,
+    failureContext: StepRetryContext,
   ): Promise<void> {
-    const { stepRun: context, policy, state, failure, kind, reason } = failureContext;
+    const { run: context, attemptState, failure, kind, reason } = failureContext.settlement;
+    const { policy, state } = attemptState;
+    const decision = decideRetry({ policy, state, kind });
+    if (decision.action === 'soft_fail' || decision.action === 'fail') {
+      await this.finishStepFailure(failureContext.settlement, decision);
+      return;
+    }
     const { args, stepSpec, stepName } = context;
     await this.walker.reopenStepForRetry(args.step.id, {
       attempt: decision.next.attempt,
@@ -1336,10 +1381,11 @@ export class FormulaDispatcher implements ReadyStepRunner {
   }
 
   private stepFailureTrace(
-    failureContext: StepFailureContext,
+    failureContext: StepSettlementContext,
     decision: Exclude<RetryDecision, { readonly action: 'retry' }>,
   ): { readonly trace: string; readonly outcomeLabel: string } {
-    const { policy, state, failure, reason } = failureContext;
+    const { failure, reason, attemptState } = failureContext;
+    const { policy, state } = attemptState;
     const classSuffix = failure.failureClass ? ` (failure_class=${failure.failureClass})` : '';
     const trace = decision.outcome === 'exhausted'
       ? `retry exhausted after ${state.attempt} of ${policy.maxAttempts} attempts${classSuffix}: ${reason}`
