@@ -1104,107 +1104,131 @@ export class FormulaDispatcher implements ReadyStepRunner {
     readonly turnTimeoutMs?: number;
     readonly workdir?: string;
   }): Promise<{ readonly text: string; readonly eventCount: number }> {
+    this.emitStepAttemptStarted(args);
+    let handle: SessionHandle | null = null;
+    try {
+      handle = await this.startStepAttempt(args);
+      const promptResult = await args.provider.prompt(handle, [{ type: 'text', text: args.rendered }]);
+      const traceConversationId = promptResult.conversationId;
+      await this.recordStepAttemptTask(args, handle, promptResult.taskId, traceConversationId);
+      const observed = await this.observeStepAttempt(args, handle, promptResult.taskId, traceConversationId);
+      return { text: observed.text, eventCount: observed.eventCount };
+    } finally {
+      if (handle) await args.provider.stop(handle);
+    }
+  }
+
+  private emitStepAttemptStarted(args: StepAttemptArgs): void {
     this.emit('dispatcher/step.started', args.moleculeId, args.stepId, {
       stepName: args.stepName,
       role: args.role,
       stepId: args.stepId,
       attempt: args.attempt,
     });
+  }
 
-    let handle: Awaited<ReturnType<RuntimeProvider['start']>> | null = null;
+  private async startStepAttempt(args: StepAttemptArgs): Promise<SessionHandle> {
+    await this.walker.startStep(args.stepId);
+    return args.provider.start(this.stepAttemptSessionSpec(args));
+  }
+
+  private stepAttemptSessionSpec(args: StepAttemptArgs): Parameters<RuntimeProvider['start']>[0] {
+    return {
+      role: args.role,
+      label: `${args.formulaName}/${args.stepName}`,
+      extra: this.stepAttemptExtra(args),
+    };
+  }
+
+  private stepAttemptExtra(args: StepAttemptArgs): NonNullable<Parameters<RuntimeProvider['start']>[0]['extra']> {
+    return {
+      moleculeId: args.moleculeId,
+      stepName: args.stepName,
+      formulaName: args.formulaName,
+      ...(args.motivatingBeadId ? { motivatingBeadId: args.motivatingBeadId } : {}),
+      attempt: args.attempt,
+      infraRetries: args.infraRetries,
+      ...(args.reviewRound > 1 ? { reviewRound: args.reviewRound } : {}),
+      stepId: args.stepId,
+      memfsEnabled: false,
+      memoryBlocks: args.roleConfig.memoryBlocks ?? [],
+      ...(args.roleConfig.memoryBlocksPolicy?.mode === 'replace' ? { memoryBlockSeedMode: 'replace' } : {}),
+      ...(args.roleConfig.tools && args.roleConfig.tools.length > 0 ? { tools: [...args.roleConfig.tools] } : {}),
+      ...(args.projectIdentifier ? { projectIdentifier: args.projectIdentifier } : {}),
+      ...(args.turnTimeoutMs !== undefined ? { turnTimeoutMs: args.turnTimeoutMs } : {}),
+      ...(args.workdir !== undefined ? { workdir: args.workdir } : {}),
+    };
+  }
+
+  private async recordStepAttemptTask(
+    args: StepAttemptArgs,
+    handle: SessionHandle,
+    taskId: string | undefined,
+    conversationId: string | undefined,
+  ): Promise<void> {
+    if (!taskId && !conversationId) return;
+    await this.walker.recordStepTask(args.stepId, {
+      ...(taskId ? { taskId } : {}),
+      providerKind: handle.providerKind,
+      sessionId: handle.id,
+      ...(conversationId ? { conversationId } : {}),
+    });
+    this.emit('dispatcher/step.task_recorded', args.moleculeId, taskId, {
+      stepName: args.stepName,
+      role: args.role,
+      stepId: args.stepId,
+      sessionId: handle.id,
+      attempt: args.attempt,
+      ...(conversationId ? { conversationId } : {}),
+    });
+  }
+
+  private async observeStepAttempt(
+    args: StepAttemptArgs,
+    handle: SessionHandle,
+    taskId: string | undefined,
+    conversationId: string | undefined,
+  ): Promise<{ readonly text: string; readonly eventCount: number }> {
+    let text = '';
     let eventCount = 0;
-    let output = '';
-    // Did the agent do anything (text or tool use)? A failure before that is infra.
     let agentActed = false;
-    try {
-      await this.walker.startStep(args.stepId);
-      handle = await args.provider.start({
+    for await (const event of args.provider.observe(handle)) {
+      eventCount++;
+      this.emitRuntimeSessionEvent(event, {
+        moleculeId: args.moleculeId,
+        stepId: args.stepId,
+        stepName: args.stepName,
         role: args.role,
-        label: `${args.formulaName}/${args.stepName}`,
-        extra: {
-          moleculeId: args.moleculeId,
-          stepName: args.stepName,
-          formulaName: args.formulaName,
-          ...(args.motivatingBeadId ? { motivatingBeadId: args.motivatingBeadId } : {}),
-          attempt: args.attempt,
-          infraRetries: args.infraRetries,
-          ...(args.reviewRound > 1 ? { reviewRound: args.reviewRound } : {}),
-          stepId: args.stepId,
-          memfsEnabled: false,
-          memoryBlocks: args.roleConfig.memoryBlocks ?? [],
-          ...(args.roleConfig.memoryBlocksPolicy?.mode === 'replace' ? { memoryBlockSeedMode: 'replace' } : {}),
-          ...(args.roleConfig.tools && args.roleConfig.tools.length > 0 ? { tools: [...args.roleConfig.tools] } : {}),
-          ...(args.projectIdentifier ? { projectIdentifier: args.projectIdentifier } : {}),
-          ...(args.turnTimeoutMs !== undefined ? { turnTimeoutMs: args.turnTimeoutMs } : {}),
-          ...(args.workdir !== undefined ? { workdir: args.workdir } : {}),
-        },
+        attempt: args.attempt,
+        providerKind: handle.providerKind,
+        sessionId: handle.id,
+        ...(taskId ? { taskId } : {}),
+        ...(conversationId ? { conversationId } : {}),
+        ...(args.projectIdentifier ? { projectIdentifier: args.projectIdentifier } : {}),
       });
-      const promptResult = await args.provider.prompt(handle, [{ type: 'text', text: args.rendered }]);
-      // Persist execution metadata whenever there is any: a taskId (resume
-      // contract) or a conversationId. Absent fields are not written.
-      // vibesync-jni4: the provider creates the conversation on the host and
-      // reports its real id; that is the id the trace records.
-      const traceConversationId = promptResult.conversationId;
-      if (promptResult.taskId || traceConversationId) {
-        await this.walker.recordStepTask(args.stepId, {
-          ...(promptResult.taskId ? { taskId: promptResult.taskId } : {}),
-          providerKind: handle.providerKind,
-          sessionId: handle.id,
-          ...(traceConversationId ? { conversationId: traceConversationId } : {}),
-        });
-        this.emit('dispatcher/step.task_recorded', args.moleculeId, promptResult.taskId, {
-          stepName: args.stepName,
-          role: args.role,
-          stepId: args.stepId,
-          sessionId: handle.id,
-          attempt: args.attempt,
-          ...(traceConversationId ? { conversationId: traceConversationId } : {}),
-        });
+      if (event.kind === 'message-delta') {
+        text += event.text;
+        if (event.text.length > 0) agentActed = true;
       }
-      for await (const event of args.provider.observe(handle)) {
-        eventCount++;
-        this.emitRuntimeSessionEvent(event, {
-          moleculeId: args.moleculeId,
-          stepId: args.stepId,
-          stepName: args.stepName,
-          role: args.role,
-          attempt: args.attempt,
-          providerKind: handle.providerKind,
-          sessionId: handle.id,
-          ...(promptResult.taskId ? { taskId: promptResult.taskId } : {}),
-          ...(traceConversationId ? { conversationId: traceConversationId } : {}),
-          ...(args.projectIdentifier ? { projectIdentifier: args.projectIdentifier } : {}),
-        });
-        if (event.kind === 'message-delta') {
-          output += event.text;
-          if (event.text.length > 0) agentActed = true;
-        }
-        if (event.kind === 'tool-call' || event.kind === 'tool-result') agentActed = true;
-        if (event.kind === 'error') {
-          throw new AttemptFailure(event.message, { origin: 'event', code: event.code, producedOutput: agentActed });
-        }
-        if (event.kind === 'stopped') {
-          throw new AttemptFailure('runtime stopped before turn completion', { origin: 'stopped' });
-        }
-        if (event.kind === 'turn-done') {
-          // vibesync-uuas: a turn that ended on requires_approval did NOT
-          // do the work — the agent halted waiting for an approver that
-          // never comes on the headless dispatch path. Treating it as
-          // success closes the step green with empty output (silent
-          // failure). Fail the step instead so retries/visibility kick in.
-          if (event.stopReason === 'requires_approval') {
-            throw new AttemptFailure(
-              'runtime halted on requires_approval — no approver attached for headless dispatch; ' +
-                'the Agent/tool call never executed (set SHIM_PERMISSION_MODE=bypassPermissions on the shim)',
-              { origin: 'event', code: 'requires_approval', producedOutput: agentActed },
-            );
-          }
-          break;
-        }
-      }
-      return { text: output, eventCount };
-    } finally {
-      if (handle) await args.provider.stop(handle);
+      if (event.kind === 'tool-call' || event.kind === 'tool-result') agentActed = true;
+      this.handleStepAttemptEvent(event, agentActed);
+    }
+    return { text, eventCount };
+  }
+
+  private handleStepAttemptEvent(event: SessionEvent, agentActed: boolean): void {
+    if (event.kind === 'error') {
+      throw new AttemptFailure(event.message, { origin: 'event', code: event.code, producedOutput: agentActed });
+    }
+    if (event.kind === 'stopped') {
+      throw new AttemptFailure('runtime stopped before turn completion', { origin: 'stopped' });
+    }
+    if (event.kind === 'turn-done' && event.stopReason === 'requires_approval') {
+      throw new AttemptFailure(
+        'runtime halted on requires_approval — no approver attached for headless dispatch; ' +
+          'the Agent/tool call never executed (set SHIM_PERMISSION_MODE=bypassPermissions on the shim)',
+        { origin: 'event', code: 'requires_approval', producedOutput: agentActed },
+      );
     }
   }
 
@@ -1344,25 +1368,38 @@ interface RuntimeSessionEventContext {
   readonly resumed?: boolean;
 }
 
+type StepAttemptArgs = {
+  readonly stepId: string;
+  readonly stepName: string;
+  readonly role: string;
+  readonly roleConfig: RoleConfig;
+  readonly moleculeId: string;
+  readonly formulaName: string;
+  readonly motivatingBeadId?: string;
+  readonly rendered: string;
+  readonly attempt: number;
+  readonly infraRetries: number;
+  readonly reviewRound: number;
+  readonly provider: RuntimeProvider;
+  readonly projectIdentifier?: string;
+  readonly turnTimeoutMs?: number;
+  readonly workdir?: string;
+};
+
 function sessionEventPayload(event: SessionEvent): Readonly<Record<string, unknown>> {
-  switch (event.kind) {
-    case 'started':
-    case 'first-token':
-    case 'stopped':
-      return { eventKind: event.kind, ts: event.ts };
-    case 'message-delta':
-      return { eventKind: event.kind, ts: event.ts, text: event.text, textLength: event.text.length };
-    case 'tool-call':
-      return { eventKind: event.kind, ts: event.ts, tool: event.tool, args: event.args };
-    case 'tool-result':
-      return { eventKind: event.kind, ts: event.ts, tool: event.tool, result: event.result, ok: event.ok };
-    case 'usage':
-      return { eventKind: event.kind, ts: event.ts, prompt: event.prompt, completion: event.completion };
-    case 'turn-done':
-      return { eventKind: event.kind, ts: event.ts, ...(event.stopReason ? { stopReason: event.stopReason } : {}) };
-    case 'error':
-      return { eventKind: event.kind, ts: event.ts, code: event.code, message: event.message };
-  }
+  const base = { eventKind: event.kind, ts: event.ts };
+  const payloads: { [K in SessionEvent['kind']]: (event: Extract<SessionEvent, { kind: K }>) => Readonly<Record<string, unknown>> } = {
+    started: () => base,
+    'first-token': () => base,
+    stopped: () => base,
+    'message-delta': (value) => ({ ...base, text: value.text, textLength: value.text.length }),
+    'tool-call': (value) => ({ ...base, tool: value.tool, args: value.args }),
+    'tool-result': (value) => ({ ...base, tool: value.tool, result: value.result, ok: value.ok }),
+    usage: (value) => ({ ...base, prompt: value.prompt, completion: value.completion }),
+    'turn-done': (value) => ({ ...base, ...(value.stopReason ? { stopReason: value.stopReason } : {}) }),
+    error: (value) => ({ ...base, code: value.code, message: value.message }),
+  };
+  return (payloads[event.kind] as (value: SessionEvent) => Readonly<Record<string, unknown>>)(event);
 }
 
 function renderContext(input: string, outputs: Readonly<Record<string, string>>, steps: readonly StepSpec[]): Readonly<Record<string, string | number | boolean>> {
