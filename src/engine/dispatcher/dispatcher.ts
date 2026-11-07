@@ -10,7 +10,7 @@ import type { ReadyStep, ReadyStepRunner, StepRunOutcome } from '../molecule/ind
 import { parseBlockedOutcome, STEP_OUTCOME_INSTRUCTIONS } from './step-outcome.js';
 import type { DeliveryVerifier, ShippedWorkProbe } from './delivery.js';
 import { candidatePullRequests } from './delivery.js';
-import { decideStepVerdict, reconcileWithMarker, settleCi, summarizeReplyForReason, type FinalStepVerdict, type PrChecksReader, type StepReplyJudge, type StepVerdict } from '../verdict/index.js';
+import { decideStepVerdict, reconcileWithMarker, settleCi, summarizeReplyForReason, type FinalStepVerdict, type CiOutcome, type PrChecksReader, type StepReplyJudge, type StepVerdict } from '../verdict/index.js';
 import { PROJECT_MEMORY_READ_FAILED_EVENT, renderProjectMemory, type ProjectMemorySource } from './project-memory.js';
 import { renderTemplate } from './render.js';
 import {
@@ -462,65 +462,87 @@ export class FormulaDispatcher implements ReadyStepRunner {
   private async settleMolecule(run: MoleculeRun): Promise<void> {
     if (run.finalized || run.running > 0) return;
     try {
-      if (run.cancelled) {
-        // cancel() already closed the root as 'cancelled' and emitted
-        // formula.cancelled. The step it stopped may well have thrown on the way
-        // down; that must not turn the cancelled root into a 'failed' one.
-        run.finalized = true;
-        this.live.delete(run.moleculeId);
-        run.reject(new FormulaDispatchError(`FormulaDispatcher: molecule ${run.moleculeId} was cancelled`, run.moleculeId));
-        return;
-      }
-      if (run.failed) {
-        run.finalized = true;
-        this.live.delete(run.moleculeId);
-        await this.walker.markMoleculeRootStatus(run.moleculeId, 'closed', 'failed');
-        this.emit('dispatcher/formula.failed', run.moleculeId, undefined, {
-          moleculeId: run.moleculeId,
-          error: stringifyError(run.failure),
-          // vibesync-u32z: carry the motivating bead on the completion event so
-          // the writeback hook can resolve it directly from the event, without
-          // depending solely on re-reading the persisted molecule_root row (a
-          // single point of failure if any dispatch path or Dolt write dropped
-          // the exec.motivating_bead stamp).
-          ...(run.input.motivatingBeadId ? { motivating_bead: run.input.motivatingBeadId } : {}),
-        });
-        run.reject(run.failure);
-        return;
-      }
-      if (!(await this.walker.isComplete(run.moleculeId)) || run.finalized) return;
-      // vibesync-9lzk.21: every step finished, but a formula that declares a
-      // delivery only completes once that artifact verifiably exists.
-      const undelivered = await this.checkDelivery(run);
-      if (undelivered !== null) {
-        if (run.finalized) return;
-        run.failed = true;
-        run.failure = new FormulaDispatchError(`FormulaDispatcher: ${undelivered}`, run.moleculeId);
-        await this.settleMolecule(run);
-        return;
-      }
-      if (run.finalized) return;
-      run.finalized = true;
-      this.live.delete(run.moleculeId);
-      await this.walker.markMoleculeRootStatus(run.moleculeId, 'closed', 'completed');
-      this.emit('dispatcher/formula.completed', run.moleculeId, undefined, {
-        moleculeId: run.moleculeId,
-        durationMs: Date.now() - run.startedAt,
-        // vibesync-u32z: see the failure branch above — the completion event is
-        // now self-describing so the writeback hook never has to reverse-engineer
-        // the motivating bead from a row that may not carry it.
-        ...(run.input.motivatingBeadId ? { motivating_bead: run.input.motivatingBeadId } : {}),
-      });
-      run.resolve({ moleculeId: run.moleculeId, outputs: run.outputs });
+      await this.settleMoleculeOutcome(run);
     } catch (error) {
-      // Persisting the outcome failed: settle the caller's promise anyway so a
-      // run (and the pool slot / molecule slot behind it) is never stuck.
-      run.finalized = true;
-      this.live.delete(run.moleculeId);
-      run.reject(error);
+      this.rejectSettlementError(run, error);
     }
   }
 
+  private async settleMoleculeOutcome(run: MoleculeRun): Promise<void> {
+    if (await this.settleKnownMoleculeOutcome(run)) return;
+    if (!(await this.walker.isComplete(run.moleculeId)) || run.finalized) return;
+    // vibesync-9lzk.21: every step finished, but a formula that declares a
+    // delivery only completes once that artifact verifiably exists.
+    const undelivered = await this.checkDelivery(run);
+    if (undelivered !== null) {
+      if (run.finalized) return;
+      run.failed = true;
+      run.failure = new FormulaDispatchError(`FormulaDispatcher: ${undelivered}`, run.moleculeId);
+      await this.settleMolecule(run);
+      return;
+    }
+    await this.completeMolecule(run);
+  }
+
+  private rejectSettlementError(run: MoleculeRun, error: unknown): void {
+    // Persisting the outcome failed: settle the caller's promise anyway so a
+    // run (and the pool slot / molecule slot behind it) is never stuck.
+    run.finalized = true;
+    this.live.delete(run.moleculeId);
+    run.reject(error);
+  }
+
+  private async settleKnownMoleculeOutcome(run: MoleculeRun): Promise<boolean> {
+    if (run.cancelled) {
+      this.rejectCancelledMolecule(run);
+      return true;
+    }
+    if (!run.failed) return false;
+    await this.rejectFailedMolecule(run);
+    return true;
+  }
+
+  private rejectCancelledMolecule(run: MoleculeRun): void {
+    // cancel() already closed the root as 'cancelled' and emitted
+    // formula.cancelled. The step it stopped may well have thrown on the way
+    // down; that must not turn the cancelled root into a 'failed' one.
+    run.finalized = true;
+    this.live.delete(run.moleculeId);
+    run.reject(new FormulaDispatchError(`FormulaDispatcher: molecule ${run.moleculeId} was cancelled`, run.moleculeId));
+  }
+
+  private async rejectFailedMolecule(run: MoleculeRun): Promise<void> {
+    run.finalized = true;
+    this.live.delete(run.moleculeId);
+    await this.walker.markMoleculeRootStatus(run.moleculeId, 'closed', 'failed');
+    this.emit('dispatcher/formula.failed', run.moleculeId, undefined, {
+      moleculeId: run.moleculeId,
+      error: stringifyError(run.failure),
+      // vibesync-u32z: carry the motivating bead on the completion event so
+      // the writeback hook can resolve it directly from the event, without
+      // depending solely on re-reading the persisted molecule_root row (a
+      // single point of failure if any dispatch path or Dolt write dropped
+      // the exec.motivating_bead stamp).
+      ...(run.input.motivatingBeadId ? { motivating_bead: run.input.motivatingBeadId } : {}),
+    });
+    run.reject(run.failure);
+  }
+
+  private async completeMolecule(run: MoleculeRun): Promise<void> {
+    if (run.finalized) return;
+    run.finalized = true;
+    this.live.delete(run.moleculeId);
+    await this.walker.markMoleculeRootStatus(run.moleculeId, 'closed', 'completed');
+    this.emit('dispatcher/formula.completed', run.moleculeId, undefined, {
+      moleculeId: run.moleculeId,
+      durationMs: Date.now() - run.startedAt,
+      // vibesync-u32z: see the failure branch above — the completion event is
+      // now self-describing so the writeback hook never has to reverse-engineer
+      // the motivating bead from a row that may not carry it.
+      ...(run.input.motivatingBeadId ? { motivating_bead: run.input.motivatingBeadId } : {}),
+    });
+    run.resolve({ moleculeId: run.moleculeId, outputs: run.outputs });
+  }
   /**
    * vibesync-9lzk.39: the blocker a step's reply carries, or null. Steps that
    * judge work (a looping step such as the reviewer, or the formula's last
@@ -540,15 +562,37 @@ export class FormulaDispatcher implements ReadyStepRunner {
   }): Promise<string | null> {
     const marker = parseBlockedOutcome(args.output);
     const steps = args.input.formula.steps;
-    const judges = args.stepSpec.loopsBackTo !== undefined || steps[steps.length - 1]?.name === args.stepName;
+    const finalStep = isFinalFormulaStep(steps, args.stepName);
+    const judges = args.stepSpec.loopsBackTo !== undefined || finalStep;
     if (!this.stepJudge || !judges) return marker;
-    const judged = await this.stepJudge.judge({ role: args.stepSpec.role, reply: args.output });
-    const summary = marker ?? summarizeReplyForReason(args.output);
-    const finalStep = steps[steps.length - 1]?.name === args.stepName;
-    const judgedVerdict: FinalStepVerdict = reconcileWithMarker(decideStepVerdict(judged.answers, summary, { finalStep }), marker);
+    return this.judgeStepBlocker({
+      step: args.step,
+      moleculeId: args.moleculeId,
+      stepSpec: args.stepSpec,
+      stepName: args.stepName,
+      output: args.output,
+      ...(args.outputs ? { outputs: args.outputs } : {}),
+      marker,
+      finalStep,
+    });
+  }
+
+  private async judgeStepBlocker(args: {
+    readonly step: BeadRow;
+    readonly moleculeId: string;
+    readonly stepSpec: StepSpec;
+    readonly stepName: string;
+    readonly output: string;
+    readonly outputs?: Readonly<Record<string, string>>;
+    readonly marker: string | null;
+    readonly finalStep: boolean;
+  }): Promise<string | null> {
+    const judged = await this.stepJudge!.judge({ role: args.stepSpec.role, reply: args.output });
+    const summary = args.marker ?? summarizeReplyForReason(args.output);
+    const judgedVerdict: FinalStepVerdict = reconcileWithMarker(decideStepVerdict(judged.answers, summary, { finalStep: args.finalStep }), args.marker);
     this.emit('dispatcher/step.verdict', args.moleculeId, args.step.id, {
       stepName: args.stepName, role: args.stepSpec.role, stepId: args.step.id,
-      verdict: judgedVerdict.kind, answers: judged.answers, model: judged.model, inputTokens: judged.inputTokens, marker: marker !== null,
+      verdict: judgedVerdict.kind, answers: judged.answers, model: judged.model, inputTokens: judged.inputTokens, marker: args.marker !== null,
     });
     const verdict: StepVerdict = judgedVerdict.kind === 'check_ci'
       ? await this.settleFinalStepCi({ ...args, reason: judgedVerdict.reason, from: judgedVerdict.from, summary })
@@ -578,13 +622,28 @@ export class FormulaDispatcher implements ReadyStepRunner {
     readonly summary: string;
   }): Promise<StepVerdict> {
     const prUrl = candidatePullRequests({ ...(args.outputs ?? {}), [args.stepName]: args.output }).at(-1);
-    // A run that delivers no PR (or a dispatcher without a reader) keeps an
-    // approval; only a reply that WAITS on CI needs checks it cannot read.
-    if ((!this.prChecks || !prUrl) && args.from === 'approve') return { kind: 'approve' };
-    if (!this.prChecks || !prUrl) {
-      return { kind: 'unsettled', reason: `${args.reason}, but the PR checks cannot be read (${!prUrl ? 'no PR URL in the run outputs' : 'no PR checks reader configured'}): ${args.summary}` };
-    }
-    const cfg = this.prChecks;
+    if (this.canApproveWithoutReadableCi(args.from, prUrl)) return { kind: 'approve' };
+    if (!this.prChecks || !prUrl) return this.unreadableCiVerdict(args, prUrl);
+    return this.readFinalStepCi({
+      step: args.step, moleculeId: args.moleculeId, stepName: args.stepName,
+      prUrl, reason: args.reason, summary: args.summary, cfg: this.prChecks,
+    });
+  }
+
+  private canApproveWithoutReadableCi(from: 'approve' | 'pending', prUrl: string | undefined): boolean {
+    return from === 'approve' && (!this.prChecks || !prUrl);
+  }
+
+  private async readFinalStepCi(args: {
+    readonly step: BeadRow;
+    readonly moleculeId: string;
+    readonly stepName: string;
+    readonly prUrl: string;
+    readonly reason: string;
+    readonly summary: string;
+    readonly cfg: NonNullable<FormulaDispatcherOptions['prChecks']>;
+  }): Promise<StepVerdict> {
+    const { cfg, prUrl } = args;
     let outcome;
     try {
       outcome = await settleCi(cfg.reader, prUrl, {
@@ -594,11 +653,14 @@ export class FormulaDispatcher implements ReadyStepRunner {
       return { kind: 'unsettled', reason: `${args.reason}, but reading the PR checks failed (${stringifyError(err)}): ${args.summary}` };
     }
     this.emit('dispatcher/step.ci_checks', args.moleculeId, args.step.id, { stepName: args.stepName, prUrl, checks: cfg.names, outcome: outcome.kind, ...(outcome.kind === 'failed' ? { failed: outcome.failed } : {}), ...(outcome.kind === 'still_pending' ? { pending: outcome.pending } : {}) });
-    switch (outcome.kind) {
-      case 'green': return { kind: 'approve' };
-      case 'failed': return { kind: 'changes_requested', reason: `required check(s) failed on ${prUrl}: ${outcome.failed.join(', ')}` };
-      case 'still_pending': return { kind: 'unsettled', reason: `required check(s) still pending on ${prUrl} after the wait cap: ${outcome.pending.join(', ')}` };
-    }
+    return ciOutcomeVerdict(outcome, prUrl);
+  }
+
+  private unreadableCiVerdict(
+    args: { readonly reason: string; readonly from: 'approve' | 'pending'; readonly summary: string },
+    prUrl: string | undefined,
+  ): StepVerdict {
+    return { kind: 'unsettled', reason: `${args.reason}, but the PR checks cannot be read (${!prUrl ? 'no PR URL in the run outputs' : 'no PR checks reader configured'}): ${args.summary}` };
   }
 
   /**
@@ -626,7 +688,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     const selfIdx = steps.findIndex((s) => s.name === args.stepName);
     const targetId = newMoleculeStepId(args.moleculeId, target);
     const targetBead = await this.walker.readStep(targetId);
-    if (targetIdx < 0 || selfIdx <= targetIdx || !targetBead) {
+    if (!isEarlierLoopTarget(targetIdx, selfIdx, targetBead)) {
       throw new FormulaDispatchError(`FormulaDispatcher: step "${args.stepName}" loops back to "${target}", which is not an earlier step of this molecule`, args.moleculeId);
     }
     const round = readReviewRound(targetBead.metadata);
@@ -634,30 +696,62 @@ export class FormulaDispatcher implements ReadyStepRunner {
       stepName: args.stepName, role: args.stepSpec.role, stepId: args.step.id, loopsBackTo: target, round, maxRounds, reason: args.blocker,
     });
     if (round >= maxRounds) {
-      // The reviewing step closes blocked like any other; the caller fails the run.
-      this.emit('dispatcher/formula.review_exhausted', args.moleculeId, args.step.id, {
-        stepName: args.stepName, loopsBackTo: target, rounds: round, maxRounds, reason: args.blocker,
-      });
+      this.emitReviewExhausted(args, target, round, maxRounds);
       return 'exhausted';
     }
     // The verdict is this step's output for the next round; close it finished.
     args.outputs[args.stepName] = args.output;
     await this.walker.finishStep(args.step.id, { output: args.output, round });
     const note = `Round ${round} review (${args.stepName}) requested changes: ${args.blocker}`;
+    await this.reopenLoopSteps({
+      steps, targetIdx, selfIdx, step: args.step, moleculeId: args.moleculeId,
+      outputs: args.outputs, stepName: args.stepName, output: args.output,
+      note, round, target, maxRounds,
+    });
+    return 'reopened';
+  }
+
+  private async reopenLoopSteps(args: {
+    readonly steps: readonly StepSpec[];
+    readonly targetIdx: number;
+    readonly selfIdx: number;
+    readonly step: BeadRow;
+    readonly moleculeId: string;
+    readonly outputs: Record<string, string>;
+    readonly stepName: string;
+    readonly output: string;
+    readonly note: string;
+    readonly round: number;
+    readonly target: string;
+    readonly maxRounds: number;
+  }): Promise<void> {
+    const reopened = args.steps.slice(args.targetIdx, args.selfIdx + 1);
     // Reopen target..self (inclusive) in formula order so the chain re-runs.
     // Later steps that have not run stay open; earlier ones stay closed.
-    for (const spec of steps.slice(targetIdx, selfIdx + 1)) {
+    for (const spec of reopened) {
       const id = newMoleculeStepId(args.moleculeId, spec.name);
-      await this.walker.reopenStepForRound(id, { round: round + 1, note });
+      await this.walker.reopenStepForRound(id, { round: args.round + 1, note: args.note });
       delete args.outputs[spec.name];
     }
     // The review text travels to the next round as a prior output under a
     // stable name, so the coder prompt can read it (prior_review).
-    args.outputs['review'] = `${note}\n\n${args.output}`;
+    args.outputs['review'] = `${args.note}\n\n${args.output}`;
     this.emit('dispatcher/step.loop_back', args.moleculeId, args.step.id, {
-      stepName: args.stepName, loopsBackTo: target, round: round + 1, maxRounds, reopened: steps.slice(targetIdx, selfIdx + 1).map((s) => s.name),
+      stepName: args.stepName, loopsBackTo: args.target, round: args.round + 1,
+      maxRounds: args.maxRounds, reopened: reopened.map((s) => s.name),
     });
-    return 'reopened';
+  }
+
+  private emitReviewExhausted(
+    args: { readonly moleculeId: string; readonly step: BeadRow; readonly stepName: string; readonly blocker: string },
+    target: string,
+    round: number,
+    maxRounds: number,
+  ): void {
+    // The reviewing step closes blocked like any other; the caller fails the run.
+    this.emit('dispatcher/formula.review_exhausted', args.moleculeId, args.step.id, {
+      stepName: args.stepName, loopsBackTo: target, rounds: round, maxRounds, reason: args.blocker,
+    });
   }
 
   /**
@@ -909,19 +1003,26 @@ export class FormulaDispatcher implements ReadyStepRunner {
 
   async cancel(moleculeId: string): Promise<CancelResult> {
     const view = await this.walker.load(moleculeId);
-    if (!view) {
-      throw new FormulaDispatchError(`FormulaDispatcher: molecule ${moleculeId} not found`, moleculeId);
-    }
+    if (!view) throw new FormulaDispatchError(`FormulaDispatcher: molecule ${moleculeId} not found`, moleculeId);
     const running = await this.walker.findRunning(moleculeId);
-    if (running.length === 0) {
-      throw new FormulaCancellationConflictError(`FormulaDispatcher: molecule ${moleculeId} has no running steps to cancel`, moleculeId);
-    }
+    if (running.length === 0) throw new FormulaCancellationConflictError(`FormulaDispatcher: molecule ${moleculeId} has no running steps to cancel`, moleculeId);
 
     // Closing the running steps below unblocks their dependents in the bead
     // graph; mark the run so none of them is started.
     const liveRun = this.live.get(moleculeId);
     if (liveRun) liveRun.cancelled = true;
+    const cancelledStepCount = await this.cancelRunningSteps(moleculeId, running);
+    await this.walker.markMoleculeRootStatus(moleculeId, 'closed', 'cancelled');
+    this.emit('dispatcher/formula.cancelled', moleculeId, undefined, {
+      moleculeId,
+      cancelledStepCount,
+    });
+    // Release the run() caller now if no step of this process is still unwinding.
+    if (liveRun) await this.settleMolecule(liveRun);
+    return { moleculeId, cancelledStepCount };
+  }
 
+  private async cancelRunningSteps(moleculeId: string, running: readonly BeadRow[]): Promise<number> {
     let cancelledStepCount = 0;
     for (const step of running) {
       const stepName = readStepName(step);
@@ -942,15 +1043,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
         ...(sessionId ? { sessionId } : {}),
       });
     }
-
-    await this.walker.markMoleculeRootStatus(moleculeId, 'closed', 'cancelled');
-    this.emit('dispatcher/formula.cancelled', moleculeId, undefined, {
-      moleculeId,
-      cancelledStepCount,
-    });
-    // Release the run() caller now if no step of this process is still unwinding.
-    if (liveRun) await this.settleMolecule(liveRun);
-    return { moleculeId, cancelledStepCount };
+    return cancelledStepCount;
   }
 
   private async runStep(args: {
@@ -1559,13 +1652,37 @@ function outputsFromClosedSteps(steps: readonly BeadRow[]): Record<string, strin
     if (step.status !== 'closed') continue;
     const stepName = readStepName(step);
     const payload = readExec(step).output_payload;
-    if (payload && typeof payload === 'object' && 'output' in payload && typeof payload.output === 'string') {
+    if (hasOutputPayload(payload)) {
       outputs[stepName] = payload.output;
-    } else if (step.metadata['gc.retry_outcome'] === 'soft_failed') {
+    } else if (isSoftFailedStep(step)) {
       outputs[stepName] = softFailMarker(stepName, readString(readExec(step).error_trace) ?? 'soft_fail');
     }
   }
   return outputs;
+}
+
+function hasOutputPayload(payload: unknown): payload is { readonly output: string } {
+  return payload !== null && typeof payload === 'object' && 'output' in payload && typeof payload.output === 'string';
+}
+
+function isSoftFailedStep(step: BeadRow): boolean {
+  return step.metadata['gc.retry_outcome'] === 'soft_failed';
+}
+
+function ciOutcomeVerdict(outcome: CiOutcome, prUrl: string): StepVerdict {
+  switch (outcome.kind) {
+    case 'green': return { kind: 'approve' };
+    case 'failed': return { kind: 'changes_requested', reason: `required check(s) failed on ${prUrl}: ${outcome.failed.join(', ')}` };
+    case 'still_pending': return { kind: 'unsettled', reason: `required check(s) still pending on ${prUrl} after the wait cap: ${outcome.pending.join(', ')}` };
+  }
+}
+
+function isFinalFormulaStep(steps: readonly StepSpec[], stepName: string): boolean {
+  return steps[steps.length - 1]?.name === stepName;
+}
+
+function isEarlierLoopTarget(targetIdx: number, selfIdx: number, targetBead: BeadRow | null): targetBead is BeadRow {
+  return targetIdx >= 0 && selfIdx > targetIdx && targetBead !== null;
 }
 
 function readExec(row: BeadRow): Record<string, unknown> {
