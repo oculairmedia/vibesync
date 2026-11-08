@@ -8,11 +8,9 @@ import path from 'node:path';
 const repoRoot = process.cwd();
 
 describe('ESLint baseline gate', () => {
-  it('allows an existing baselined violation and rejects a new one', () => {
+  it('allows an existing baselined violation', () => {
     const temporaryDir = mkdtempSync(path.join(tmpdir(), 'vibesync-eslint-'));
-      const existingFile = path.join(repoRoot, 'tests/unit/eslint-baseline-existing.lint.ts');
-      const newFile = path.join(repoRoot, 'tests/unit/eslint-baseline-new.lint.ts');
-    const malformedFile = path.join(repoRoot, 'tests/unit/eslint-baseline-malformed.lint.ts');
+    const existingFile = path.join(repoRoot, 'tests/unit/eslint-baseline-existing.lint.ts');
     try {
       const baseline = JSON.parse(readFileSync(path.join(repoRoot, 'eslint-baseline.json'), 'utf8')) as Record<string, number>;
       baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-explicit-any'] = 2;
@@ -20,13 +18,7 @@ describe('ESLint baseline gate', () => {
       baseline['scripts/eslint-baseline-check.test-helper.mjs:quotes'] = 3;
       writeFileSync(path.join(temporaryDir, 'eslint-baseline.json'), JSON.stringify(baseline));
 
-      const checkScript = readFileSync(path.join(repoRoot, 'scripts/eslint-baseline-check.mjs'), 'utf8')
-        .replace("path.join(root, 'eslint-baseline.json')", `path.join(root, ${JSON.stringify(path.join(temporaryDir, 'eslint-baseline.json'))})`)
-        .replaceAll("'node_modules/eslint/bin/eslint.js'", JSON.stringify(path.join(repoRoot, 'node_modules/eslint/bin/eslint.js')));
-      const checkPath = path.join(temporaryDir, 'check.mjs');
-      writeFileSync(checkPath, checkScript);
-      const checkInRepo = path.join(repoRoot, 'scripts/eslint-baseline-check.test-helper.mjs');
-      writeFileSync(checkInRepo, checkScript);
+      const checkInRepo = writeBaselineCheckHelper(temporaryDir);
 
       writeFileSync(existingFile, 'const existing: any = 1;\n');
       const existingResult = spawnSync(process.execPath, [checkInRepo], {
@@ -35,6 +27,23 @@ describe('ESLint baseline gate', () => {
         env: { ...process.env, ESLINT_EXTRA_FILE: existingFile, ESLINT_BASELINE_PATH: path.join(temporaryDir, 'eslint-baseline.json') },
       });
       expect(existingResult.status, existingResult.stderr).toBe(0);
+    } finally {
+      rmSync(existingFile, { force: true });
+      rmSync(path.join(repoRoot, 'scripts/eslint-baseline-check.test-helper.mjs'), { force: true });
+      rmSync(temporaryDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a new violation', () => {
+    const temporaryDir = mkdtempSync(path.join(tmpdir(), 'vibesync-eslint-'));
+    const newFile = path.join(repoRoot, 'tests/unit/eslint-baseline-new.lint.ts');
+    try {
+      const baseline = JSON.parse(readFileSync(path.join(repoRoot, 'eslint-baseline.json'), 'utf8')) as Record<string, number>;
+      baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-explicit-any'] = 2;
+      baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-unused-vars'] = 2;
+      baseline['scripts/eslint-baseline-check.test-helper.mjs:quotes'] = 3;
+      writeFileSync(path.join(temporaryDir, 'eslint-baseline.json'), JSON.stringify(baseline));
+      const checkInRepo = writeBaselineCheckHelper(temporaryDir);
 
       writeFileSync(newFile, 'const regression: any = 1;\n');
       const newResult = spawnSync(process.execPath, [checkInRepo], {
@@ -44,6 +53,23 @@ describe('ESLint baseline gate', () => {
       });
       expect(newResult.status).toBe(1);
       expect(newResult.stderr).toContain('ESLint introduced');
+    } finally {
+      rmSync(newFile, { force: true });
+      rmSync(path.join(repoRoot, 'scripts/eslint-baseline-check.test-helper.mjs'), { force: true });
+      rmSync(temporaryDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a malformed file', () => {
+    const temporaryDir = mkdtempSync(path.join(tmpdir(), 'vibesync-eslint-'));
+    const malformedFile = path.join(repoRoot, 'tests/unit/eslint-baseline-malformed.lint.ts');
+    try {
+      const baseline = JSON.parse(readFileSync(path.join(repoRoot, 'eslint-baseline.json'), 'utf8')) as Record<string, number>;
+      baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-explicit-any'] = 2;
+      baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-unused-vars'] = 2;
+      baseline['scripts/eslint-baseline-check.test-helper.mjs:quotes'] = 3;
+      writeFileSync(path.join(temporaryDir, 'eslint-baseline.json'), JSON.stringify(baseline));
+      const checkInRepo = writeBaselineCheckHelper(temporaryDir);
 
       writeFileSync(malformedFile, 'const malformed: = ;\n');
       const malformedResult = spawnSync(process.execPath, [checkInRepo], {
@@ -54,8 +80,6 @@ describe('ESLint baseline gate', () => {
       expect(malformedResult.status).toBe(1);
       expect(malformedResult.stderr).toContain('fatal or unclassified diagnostics');
     } finally {
-      rmSync(existingFile, { force: true });
-      rmSync(newFile, { force: true });
       rmSync(malformedFile, { force: true });
       rmSync(path.join(repoRoot, 'scripts/eslint-baseline-check.test-helper.mjs'), { force: true });
       rmSync(temporaryDir, { recursive: true, force: true });
@@ -145,3 +169,12 @@ describe('ESLint baseline gate', () => {
     expect(unsafeWrites).toEqual([]);
   });
 });
+
+function writeBaselineCheckHelper(temporaryDir: string): string {
+  const checkScript = readFileSync(path.join(repoRoot, 'scripts/eslint-baseline-check.mjs'), 'utf8')
+    .replace("path.join(root, 'eslint-baseline.json')", `path.join(root, ${JSON.stringify(path.join(temporaryDir, 'eslint-baseline.json'))})`)
+    .replaceAll("'node_modules/eslint/bin/eslint.js'", JSON.stringify(path.join(repoRoot, 'node_modules/eslint/bin/eslint.js')));
+  const checkInRepo = path.join(repoRoot, 'scripts/eslint-baseline-check.test-helper.mjs');
+  writeFileSync(checkInRepo, checkScript);
+  return checkInRepo;
+}
