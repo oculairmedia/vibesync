@@ -11,7 +11,6 @@ import {
   type DispatchResult,
   type ResumedDeliveryArgs,
   type RuntimeSessionEventContext,
-  type DispatchInput,
 } from './types.js';
 import { readExec, readProjectIdentifier, readStepName, readStepRole, readString, softFailMarker, stringifyError } from './util.js';
 
@@ -306,7 +305,7 @@ export class ResumeCoordinator {
 
   private async resolveProvider(projectIdentifier: string | undefined): Promise<RuntimeProvider> {
     if (!this.deps.providerResolver || !projectIdentifier) return this.deps.defaultProvider;
-    return await this.deps.providerResolver.resolve({ projectIdentifier } as DispatchInput) ?? this.deps.defaultProvider;
+    return await this.deps.providerResolver.resolve({ projectIdentifier }) ?? this.deps.defaultProvider;
   }
 }
 

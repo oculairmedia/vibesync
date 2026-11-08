@@ -50,7 +50,7 @@ export interface DispatchInput {
  * kind); the run then fails before any molecule is cooked.
  */
 export interface ProviderResolver {
-  resolve(input: DispatchInput): Promise<RuntimeProvider | null> | RuntimeProvider | null;
+  resolve(input: { readonly projectIdentifier?: string }): Promise<RuntimeProvider | null> | RuntimeProvider | null;
 }
 
 export interface DispatchResult {
