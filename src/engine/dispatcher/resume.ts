@@ -11,7 +11,7 @@ import {
   type ResumedDeliveryArgs,
   type RuntimeSessionEventContext,
 } from './types.js';
-import { readExec, readStepName, readStepRole, readString, stringifyError } from './util.js';
+import { readExec, readStepName, readStepRole, readString, softFailMarker, stringifyError } from './util.js';
 
 export interface ResumeCoordinatorDeps {
   readonly walker: MoleculeWalker;
@@ -318,11 +318,6 @@ function hasOutputPayload(payload: unknown): payload is { readonly output: strin
 
 function isSoftFailedStep(step: BeadRow): boolean {
   return step.metadata['gc.retry_outcome'] === 'soft_failed';
-}
-
-/** What a dependent's prompt sees in place of the output of a step that soft-failed. */
-function softFailMarker(stepName: string, errorTrace: string): string {
-  return `[step "${stepName}" soft-failed and produced no output: ${errorTrace}]`;
 }
 
 /**
