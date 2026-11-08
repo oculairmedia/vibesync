@@ -2,7 +2,7 @@ import type { MoleculeWalker } from '../molecule/index.js';
 import type { BeadRow } from '../store/index.js';
 import type { RuntimeProvider } from '../runtime/index.js';
 import type { DeliveryVerifier } from './delivery.js';
-import { FormulaCancellationConflictError, FormulaDispatchError, type CancelResult, type MoleculeRun } from './types.js';
+import { FormulaCancellationConflictError, FormulaDispatchError, type CancelResult, type DispatchInput, type MoleculeRun, type ProviderResolver } from './types.js';
 import { readExec, readStepName, readStepRole, readString, stringifyError } from './util.js';
 
 export interface MoleculeSettlerDeps {
@@ -10,6 +10,7 @@ export interface MoleculeSettlerDeps {
   readonly live: Map<string, MoleculeRun>;
   readonly deliveryVerifier: DeliveryVerifier | null;
   readonly defaultProvider: RuntimeProvider;
+  readonly providerResolver: ProviderResolver | null;
   readonly emit: (kind: string, moleculeId: string | undefined, taskId: string | undefined, payload: Readonly<Record<string, unknown>>) => void;
 }
 
@@ -138,7 +139,8 @@ export class MoleculeSettler {
     // graph; mark the run so none of them is started.
     const liveRun = this.deps.live.get(moleculeId);
     if (liveRun) liveRun.cancelled = true;
-    const cancelledStepCount = await this.cancelRunningSteps(moleculeId, running);
+    const provider = liveRun?.provider ?? await this.resolveProvider(view.root);
+    const cancelledStepCount = await this.cancelRunningSteps(moleculeId, running, provider);
     await this.deps.walker.markMoleculeRootStatus(moleculeId, 'closed', 'cancelled');
     this.deps.emit('dispatcher/formula.cancelled', moleculeId, undefined, {
       moleculeId,
@@ -149,7 +151,7 @@ export class MoleculeSettler {
     return { moleculeId, cancelledStepCount };
   }
 
-  private async cancelRunningSteps(moleculeId: string, running: readonly BeadRow[]): Promise<number> {
+  private async cancelRunningSteps(moleculeId: string, running: readonly BeadRow[], provider: RuntimeProvider): Promise<number> {
     let cancelledStepCount = 0;
     for (const step of running) {
       const stepName = readStepName(step);
@@ -159,7 +161,7 @@ export class MoleculeSettler {
       const providerKind = readString(exec.provider_kind);
       const taskId = readString(exec.task_id) ?? undefined;
       if (sessionId && providerKind) {
-        await this.deps.defaultProvider.stop({ id: sessionId, providerKind });
+        await provider.stop({ id: sessionId, providerKind });
       }
       await this.deps.walker.failStep(step.id, 'cancelled');
       cancelledStepCount++;
@@ -171,5 +173,12 @@ export class MoleculeSettler {
       });
     }
     return cancelledStepCount;
+  }
+
+  private async resolveProvider(root: BeadRow): Promise<RuntimeProvider> {
+    const projectIdentifier = readString(root.metadata['projectIdentifier']) ?? readString(readExec(root)['projectIdentifier']);
+    if (!this.deps.providerResolver || !projectIdentifier) return this.deps.defaultProvider;
+    const input = { projectIdentifier } as DispatchInput;
+    return await this.deps.providerResolver.resolve(input) ?? this.deps.defaultProvider;
   }
 }

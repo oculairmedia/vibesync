@@ -66,6 +66,7 @@ export const MoleculeRootExec = z.looseObject({
   formula: z.string().min(1),
   /** Set at dispatch when a motivating bead was supplied (writeback target). */
   motivating_bead: OpaqueId.optional(),
+  projectIdentifier: z.string().optional(),
   /** Closed enum — exhaustiveness is load-bearing. */
   outcome: z.enum(MOLECULE_OUTCOMES).optional(),
   /** Stamped ONLY after the writeback note lands (er21 ordering). */
