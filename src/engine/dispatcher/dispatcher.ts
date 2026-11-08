@@ -1,10 +1,10 @@
 import type { EventBus } from '../events/index.js';
 
-import type { MoleculeView, MoleculeWalker, StepSpec } from '../molecule/index.js';
+import type { MoleculeWalker, StepSpec } from '../molecule/index.js';
 import type { BeadRow } from '../store/index.js';
-import type { RuntimeProvider, SessionEvent, SessionHandle } from '../runtime/index.js';
+import type { RuntimeProvider, SessionEvent } from '../runtime/index.js';
 import type { ReadyStep, ReadyStepRunner, StepRunOutcome } from '../molecule/index.js';
-import { parseBlockedOutcome, STEP_OUTCOME_INSTRUCTIONS } from './step-outcome.js';
+import { STEP_OUTCOME_INSTRUCTIONS } from './step-outcome.js';
 import type { DeliveryVerifier, ShippedWorkProbe } from './delivery.js';
 import type { StepReplyJudge } from '../verdict/index.js';
 import { PROJECT_MEMORY_READ_FAILED_EVENT, renderProjectMemory, type ProjectMemorySource } from './project-memory.js';
@@ -31,7 +31,6 @@ import {
   type MoleculeRun,
   type ProviderResolver,
   type QueuedMoleculeRun,
-  type ResumedDeliveryArgs,
   type RuntimeSessionEventContext,
   type StepAttemptOutput,
   type StepFailureContext,
@@ -43,8 +42,9 @@ import {
 import { createDispatcherEmitter } from './emit.js';
 import { StepAttemptRunner } from './step-attempt.js';
 import { StepVerdictReader } from './step-verdict.js';
-import { readExec, readStepName, readStepRole, readString, sleep, stringifyError } from './util.js';
+import { readExec, readStepName, readString, sleep, stringifyError } from './util.js';
 import { MoleculeSettler } from './settlement.js';
+import { ResumeCoordinator } from './resume.js';
 
 export { FormulaDispatchError, FormulaEscalationError, FormulaCancellationConflictError } from './types.js';
 export type { DispatchInput, ProviderResolver, DispatchResult, CancelResult } from './types.js';
@@ -135,6 +135,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
   private readonly stepAttempt: StepAttemptRunner;
   private readonly stepVerdict: StepVerdictReader;
   private readonly settler: MoleculeSettler;
+  private readonly resumeCoordinator: ResumeCoordinator;
   private readonly idPrefix: string;
   private readonly maxParallelSteps: number;
   private readonly maxConcurrentMolecules: number;
@@ -178,6 +179,13 @@ export class FormulaDispatcher implements ReadyStepRunner {
       deliveryVerifier: this.deliveryVerifier,
       defaultProvider: this.defaultProvider,
       emit: this.emit,
+    });
+    this.resumeCoordinator = new ResumeCoordinator({
+      walker: this.walker,
+      defaultProvider: this.defaultProvider,
+      deliveryVerifier: this.deliveryVerifier,
+      emit: this.emit,
+      emitRuntimeSessionEvent: this.emitRuntimeSessionEvent,
     });
     this.onMoleculeCooked = opts.onMoleculeCooked ?? null;
   }
@@ -381,76 +389,6 @@ export class FormulaDispatcher implements ReadyStepRunner {
 
 
   /**
-   * Finish a resumed molecule: verify its recorded delivery, then announce
-   * completion. Both resume paths go through here, so a recorded delivery is
-   * always checked before formula.completed is emitted.
-   */
-  private async completeResumedMolecule(args: {
-    readonly view: { readonly root: BeadRow };
-    readonly moleculeId: string;
-    readonly outputs: Record<string, string>;
-    readonly startedAt: number;
-    readonly motivatingBeadId: string | null;
-  }): Promise<void> {
-    await this.requireResumedDelivery({
-      root: args.view.root,
-      moleculeId: args.moleculeId,
-      outputs: args.outputs,
-      startedAt: args.startedAt,
-      motivatingBeadId: args.motivatingBeadId,
-    });
-    this.emit('dispatcher/formula.completed', args.moleculeId, undefined, {
-      moleculeId: args.moleculeId,
-      durationMs: Date.now() - args.startedAt,
-      resumed: true,
-      ...(args.motivatingBeadId ? { motivating_bead: args.motivatingBeadId } : {}),
-    });
-  }
-
-  /**
-   * resume() has no formula in scope, so it reads the delivery the root
-   * recorded at dispatch (vibesync-9lzk.21 review). Throws, after failing the
-   * root and emitting formula.failed, when that delivery is not met.
-   */
-  private async requireResumedDelivery(
-    args: ResumedDeliveryArgs,
-  ): Promise<void> {
-    const { root, moleculeId, motivatingBeadId } = args;
-    const exec = root.metadata['exec'];
-    const kind = typeof exec === 'object' && exec !== null ? (exec as Record<string, unknown>)['delivers'] : undefined;
-    if (kind === undefined) return;
-    const reason = await this.verifyResumedDelivery({ ...args, kind });
-    if (reason === null) return;
-    await this.walker.markMoleculeRootStatus(moleculeId, 'closed', 'failed');
-    this.emit('dispatcher/formula.failed', moleculeId, undefined, {
-      moleculeId, error: reason, resumed: true,
-      ...(motivatingBeadId ? { motivating_bead: motivatingBeadId } : {}),
-    });
-    throw new FormulaDispatchError(`FormulaDispatcher: ${reason}`, moleculeId);
-  }
-
-  private async verifyResumedDelivery(
-    args: ResumedDeliveryArgs & { readonly kind: unknown },
-  ): Promise<string | null> {
-    const { root, moleculeId, outputs, startedAt, motivatingBeadId, kind } = args;
-    // The run this resumes began when the root was created, not at this resume.
-    const runStarted = root.created_at instanceof Date ? root.created_at.getTime() : startedAt;
-    if (kind !== 'pull_request') return `molecule records an unknown delivery kind ${JSON.stringify(kind)}`;
-    if (!this.deliveryVerifier) return 'molecule declares delivers = "pull_request" but no delivery verifier is configured';
-    try {
-      const verdict = await this.deliveryVerifier.verify({
-        kind, outputs, moleculeId, startedAt: new Date(runStarted),
-        ...(motivatingBeadId ? { motivatingBeadId } : {}),
-      });
-      if ('reason' in verdict) return `declared delivery not met: ${verdict.reason}`;
-      this.emit('dispatcher/formula.delivered', moleculeId, undefined, { moleculeId, kind, artifact: verdict.artifact, resumed: true });
-      return null;
-    } catch (err) {
-      return `declared delivery could not be verified: ${stringifyError(err)}`;
-    }
-  }
-
-  /**
    * Memory improves a step and must never stop one. A read failure runs the
    * step without memory and is reported, so broken memory is visible rather
    * than silently missing from every prompt.
@@ -501,86 +439,8 @@ export class FormulaDispatcher implements ReadyStepRunner {
     next.resolve();
   }
 
-  async resume(moleculeId: string): Promise<DispatchResult> {
-    const startedAt = Date.now();
-    const view = await this.walker.load(moleculeId);
-    if (!view) {
-      throw new FormulaDispatchError(`FormulaDispatcher: molecule ${moleculeId} not found`, moleculeId);
-    }
-
-    const outputs = outputsFromClosedSteps(view.steps);
-    // vibesync-u32z: on resume, `input` is not in scope — recover the
-    // motivating bead from the persisted molecule_root exec so the completion
-    // event stays self-describing across a restart/resume too.
-    const motivatingBeadId = readMotivatingBead(view.root);
-    this.emit('dispatcher/formula.resumed', moleculeId, undefined, {
-      moleculeId,
-      runningStepCount: view.steps.filter((step) => step.status === 'in_progress').length,
-    });
-
-    const running = await this.walker.findRunning(moleculeId);
-    if (running.length === 0) {
-      await this.completeOrRejectWithoutRunningSteps({ view, moleculeId, outputs, startedAt, motivatingBeadId });
-      return { moleculeId, outputs };
-    }
-
-    await this.resumeRunningSteps({ running, moleculeId, outputs, view, startedAt, motivatingBeadId });
-
-    return { moleculeId, outputs };
-  }
-
-  private async completeOrRejectWithoutRunningSteps(args: {
-    readonly view: MoleculeView;
-    readonly moleculeId: string;
-    readonly outputs: Record<string, string>;
-    readonly startedAt: number;
-    readonly motivatingBeadId: string | null;
-  }): Promise<void> {
-    if (!(await this.walker.isComplete(args.moleculeId))) {
-      throw new FormulaDispatchError(`FormulaDispatcher: molecule ${args.moleculeId} has no running steps to resume`, args.moleculeId);
-    }
-    await this.completeResumedMolecule(args);
-  }
-
-  private async resumeRunningSteps(args: {
-    readonly running: readonly BeadRow[];
-    readonly moleculeId: string;
-    readonly outputs: Record<string, string>;
-    readonly view: MoleculeView;
-    readonly startedAt: number;
-    readonly motivatingBeadId: string | null;
-  }): Promise<void> {
-    try {
-      for (const step of args.running) {
-        await this.resumeStep({ step, moleculeId: args.moleculeId, outputs: args.outputs });
-      }
-    } catch (error) {
-      this.emit('dispatcher/formula.failed', args.moleculeId, undefined, {
-        moleculeId: args.moleculeId,
-        error: stringifyError(error),
-        resumed: true,
-        ...(args.motivatingBeadId ? { motivating_bead: args.motivatingBeadId } : {}),
-      });
-      throw error;
-    }
-    await this.settleResumedMolecule(args);
-  }
-
-  private async settleResumedMolecule(args: {
-    readonly moleculeId: string;
-    readonly outputs: Record<string, string>;
-    readonly view: MoleculeView;
-    readonly startedAt: number;
-    readonly motivatingBeadId: string | null;
-  }): Promise<void> {
-    if (!(await this.walker.isComplete(args.moleculeId))) {
-      this.emit('dispatcher/formula.resume.paused', args.moleculeId, undefined, {
-        moleculeId: args.moleculeId,
-        reason: 'running steps completed; open successors require a fresh formula run context',
-      });
-      return;
-    }
-    await this.completeResumedMolecule(args);
+  resume(moleculeId: string): Promise<DispatchResult> {
+    return this.resumeCoordinator.resume(moleculeId);
   }
 
   cancel(moleculeId: string): Promise<CancelResult> {
@@ -861,126 +721,6 @@ export class FormulaDispatcher implements ReadyStepRunner {
     return { trace, outcomeLabel: decision.action === 'soft_fail' ? 'soft_failed' : decision.outcome };
   }
 
-  private async resumeStep(args: {
-    readonly step: BeadRow;
-    readonly moleculeId: string;
-    readonly outputs: Record<string, string>;
-  }): Promise<void> {
-    const stepName = readStepName(args.step);
-    const role = readStepRole(args.step);
-    const exec = readExec(args.step);
-    const taskId = readString(exec.task_id);
-    if (!taskId) {
-      return this.failResumedStepWithoutTask({ ...args, stepName, role });
-    }
-    const resumedTaskId = taskId;
-
-    let handle: SessionHandle | null = null;
-    try {
-      handle = await this.provider.start({
-        role,
-        label: `resume/${args.moleculeId}/${stepName}`,
-        extra: {
-          moleculeId: args.moleculeId,
-          stepName,
-          resumeTaskId: resumedTaskId,
-          memfsEnabled: false,
-        },
-      });
-      this.emit('dispatcher/step.reattached', args.moleculeId, resumedTaskId, {
-        stepName,
-        role,
-        stepId: args.step.id,
-        sessionId: handle.id,
-      });
-      const { output, eventCount } = await this.observeResumedStep({ ...args, stepName, role, taskId: resumedTaskId, handle });
-      // vibesync-zvcm: a resumed step that reports itself blocked fails like a
-      // fresh one; the catch below closes it failed and aborts the molecule.
-      const blocker = parseBlockedOutcome(output);
-      if (blocker !== null) throw new StepBlockedError(blocker);
-      args.outputs[stepName] = output;
-      await this.walker.finishStep(args.step.id, { output, eventCount, resumed: true });
-      this.emit('dispatcher/step.finished', args.moleculeId, args.step.id, {
-        stepName,
-        role,
-        stepId: args.step.id,
-        outputLength: output.length,
-        resumed: true,
-      });
-    } catch (error) {
-      await this.reportResumedStepFailure({ step: args.step, moleculeId: args.moleculeId, stepName, role, error });
-    } finally {
-      if (handle) await this.provider.stop(handle);
-    }
-  }
-
-  private async reportResumedStepFailure(args: {
-    readonly step: BeadRow;
-    readonly moleculeId: string;
-    readonly stepName: string;
-    readonly role: string;
-    readonly error: unknown;
-  }): Promise<never> {
-    const retryOutcome = args.error instanceof StepBlockedError ? 'not_retryable' : undefined;
-    await this.walker.failStep(args.step.id, stringifyError(args.error), retryOutcome);
-    this.emit('dispatcher/step.failed', args.moleculeId, args.step.id, {
-      stepName: args.stepName,
-      role: args.role,
-      stepId: args.step.id,
-      error: stringifyError(args.error),
-      resumed: true,
-      ...(retryOutcome ? { retryOutcome } : {}),
-    });
-    if (args.error instanceof StepBlockedError) {
-      throw new FormulaEscalationError(`FormulaDispatcher: resumed step "${args.stepName}" escalated: ${args.error.reason}`, args.moleculeId, { cause: args.error });
-    }
-    throw new FormulaDispatchError(`FormulaDispatcher: resumed step "${args.stepName}" failed`, args.moleculeId, { cause: args.error });
-  }
-
-  private async failResumedStepWithoutTask(args: {
-    readonly step: BeadRow;
-    readonly moleculeId: string;
-    readonly stepName: string;
-    readonly role: string;
-  }): Promise<never> {
-    const error = `FormulaDispatcher.resume: running step ${args.step.id} has no metadata.exec.task_id`;
-    await this.walker.failStep(args.step.id, error);
-    this.emit('dispatcher/step.failed', args.moleculeId, args.step.id, {
-      stepName: args.stepName, role: args.role, stepId: args.step.id, error,
-    });
-    throw new FormulaDispatchError(error, args.moleculeId);
-  }
-
-  private async observeResumedStep(args: {
-    readonly step: BeadRow;
-    readonly moleculeId: string;
-    readonly stepName: string;
-    readonly role: string;
-    readonly taskId: string;
-    readonly handle: SessionHandle;
-  }): Promise<{ readonly output: string; readonly eventCount: number }> {
-    let output = '';
-    let eventCount = 0;
-    for await (const event of this.provider.observe(args.handle)) {
-      eventCount++;
-      this.emitRuntimeSessionEvent(event, {
-        moleculeId: args.moleculeId,
-        stepId: args.step.id,
-        stepName: args.stepName,
-        role: args.role,
-        providerKind: args.handle.providerKind,
-        sessionId: args.handle.id,
-        taskId: args.taskId,
-        resumed: true,
-      });
-      if (event.kind === 'message-delta') output += event.text;
-      if (event.kind === 'error') throw new Error(event.message);
-      if (event.kind === 'stopped') throw new Error('runtime stopped before turn completion');
-      if (event.kind === 'turn-done') break;
-    }
-    return { output, eventCount };
-  }
-
 }
 
 function renderContext(input: string, outputs: Readonly<Record<string, string>>, steps: readonly StepSpec[]): Readonly<Record<string, string | number | boolean>> {
@@ -1045,15 +785,6 @@ function readyStepTryKey(step: BeadRow): string {
 
 function hasStartedTryOrAtParallelLimit(run: MoleculeRun, tryKey: string, maxParallelSteps: number): boolean {
   return run.startedSteps.has(tryKey) || run.running >= maxParallelSteps;
-}
-
-/**
- * vibesync-u32z: recover the motivating bead id from a molecule_root row's
- * exec metadata. Used by resume() (where the original DispatchInput is not in
- * scope) so the completion event can still carry the motivating bead.
- */
-function readMotivatingBead(row: BeadRow): string | null {
-  return readString(readExec(row)['motivating_bead']);
 }
 
 function normalizeMaxParallelSteps(value: number | undefined): number {
