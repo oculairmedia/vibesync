@@ -173,11 +173,13 @@ export class FormulaDispatcher implements ReadyStepRunner {
       live: this.live,
       deliveryVerifier: this.deliveryVerifier,
       defaultProvider: this.defaultProvider,
+      providerResolver: this.providerResolver,
       emit: this.emit,
     });
     this.resumeCoordinator = new ResumeCoordinator({
       walker: this.walker,
       defaultProvider: this.defaultProvider,
+      providerResolver: this.providerResolver,
       deliveryVerifier: this.deliveryVerifier,
       emit: this.emit,
       emitRuntimeSessionEvent: this.emitRuntimeSessionEvent,
@@ -247,6 +249,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
       formulaName: input.formula.name,
       title: `[formula:${input.formula.name}] ${input.formula.description || input.input.slice(0, 80)}`,
       ...(input.motivatingBeadId ? { motivatingBeadId: input.motivatingBeadId } : {}),
+      ...(input.projectIdentifier ? { projectIdentifier: input.projectIdentifier } : {}),
       ...(input.formula.delivers ? { delivers: input.formula.delivers } : {}),
       steps: input.formula.steps,
     });

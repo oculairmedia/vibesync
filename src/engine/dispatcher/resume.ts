@@ -3,6 +3,7 @@ import type { BeadRow } from '../store/index.js';
 import type { RuntimeProvider, SessionEvent, SessionHandle } from '../runtime/index.js';
 import { parseBlockedOutcome } from './step-outcome.js';
 import type { DeliveryVerifier } from './delivery.js';
+import type { ProviderResolver } from './types.js';
 import {
   FormulaDispatchError,
   FormulaEscalationError,
@@ -10,12 +11,14 @@ import {
   type DispatchResult,
   type ResumedDeliveryArgs,
   type RuntimeSessionEventContext,
+  type DispatchInput,
 } from './types.js';
 import { readExec, readStepName, readStepRole, readString, softFailMarker, stringifyError } from './util.js';
 
 export interface ResumeCoordinatorDeps {
   readonly walker: MoleculeWalker;
   readonly defaultProvider: RuntimeProvider;
+  readonly providerResolver: ProviderResolver | null;
   readonly deliveryVerifier: DeliveryVerifier | null;
   readonly emit: (kind: string, moleculeId: string | undefined, taskId: string | undefined, payload: Readonly<Record<string, unknown>>) => void;
   readonly emitRuntimeSessionEvent: (event: SessionEvent, context: RuntimeSessionEventContext) => void;
@@ -47,7 +50,8 @@ export class ResumeCoordinator {
       return { moleculeId, outputs };
     }
 
-    await this.resumeRunningSteps({ running, moleculeId, outputs, view, startedAt, motivatingBeadId });
+    const provider = await this.resolveProvider(readProjectIdentifier(view.root));
+    await this.resumeRunningSteps({ running, moleculeId, outputs, view, startedAt, motivatingBeadId, provider });
 
     return { moleculeId, outputs };
   }
@@ -142,10 +146,11 @@ export class ResumeCoordinator {
     readonly view: MoleculeView;
     readonly startedAt: number;
     readonly motivatingBeadId: string | null;
+    readonly provider: RuntimeProvider;
   }): Promise<void> {
     try {
       for (const step of args.running) {
-        await this.resumeStep({ step, moleculeId: args.moleculeId, outputs: args.outputs });
+        await this.resumeStep({ step, moleculeId: args.moleculeId, outputs: args.outputs, provider: args.provider });
       }
     } catch (error) {
       this.deps.emit('dispatcher/formula.failed', args.moleculeId, undefined, {
@@ -180,6 +185,7 @@ export class ResumeCoordinator {
     readonly step: BeadRow;
     readonly moleculeId: string;
     readonly outputs: Record<string, string>;
+    readonly provider: RuntimeProvider;
   }): Promise<void> {
     const stepName = readStepName(args.step);
     const role = readStepRole(args.step);
@@ -192,7 +198,7 @@ export class ResumeCoordinator {
 
     let handle: SessionHandle | null = null;
     try {
-      handle = await this.deps.defaultProvider.start({
+      handle = await args.provider.start({
         role,
         label: `resume/${args.moleculeId}/${stepName}`,
         extra: {
@@ -225,7 +231,7 @@ export class ResumeCoordinator {
     } catch (error) {
       await this.reportResumedStepFailure({ step: args.step, moleculeId: args.moleculeId, stepName, role, error });
     } finally {
-      if (handle) await this.deps.defaultProvider.stop(handle);
+      if (handle) await args.provider.stop(handle);
     }
   }
 
@@ -273,10 +279,11 @@ export class ResumeCoordinator {
     readonly role: string;
     readonly taskId: string;
     readonly handle: SessionHandle;
+    readonly provider: RuntimeProvider;
   }): Promise<{ readonly output: string; readonly eventCount: number }> {
     let output = '';
     let eventCount = 0;
-    for await (const event of this.deps.defaultProvider.observe(args.handle)) {
+    for await (const event of args.provider.observe(args.handle)) {
       eventCount++;
       this.deps.emitRuntimeSessionEvent(event, {
         moleculeId: args.moleculeId,
@@ -294,6 +301,11 @@ export class ResumeCoordinator {
       if (event.kind === 'turn-done') break;
     }
     return { output, eventCount };
+  }
+
+  private async resolveProvider(projectIdentifier: string | undefined): Promise<RuntimeProvider> {
+    if (!this.deps.providerResolver || !projectIdentifier) return this.deps.defaultProvider;
+    return await this.deps.providerResolver.resolve({ projectIdentifier } as DispatchInput) ?? this.deps.defaultProvider;
   }
 }
 
@@ -327,4 +339,8 @@ function isSoftFailedStep(step: BeadRow): boolean {
  */
 function readMotivatingBead(row: BeadRow): string | null {
   return readString(readExec(row)['motivating_bead']);
+}
+
+function readProjectIdentifier(row: BeadRow): string | undefined {
+  return readString(row.metadata['projectIdentifier']) ?? readString(readExec(row)['projectIdentifier']) ?? undefined;
 }

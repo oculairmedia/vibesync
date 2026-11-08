@@ -60,6 +60,7 @@ export class BdMoleculeWriter {
     readonly formulaName: string;
     readonly title: string;
     readonly motivatingBeadId?: string;
+    readonly projectIdentifier?: string;
     readonly delivers?: string;
     readonly metadata?: Record<string, unknown>;
   }): Promise<void> {
@@ -68,6 +69,7 @@ export class BdMoleculeWriter {
       exec: {
         formula: args.formulaName,
         ...(args.motivatingBeadId ? { motivating_bead: args.motivatingBeadId } : {}),
+        ...(args.projectIdentifier ? { projectIdentifier: args.projectIdentifier } : {}),
         ...(args.delivers ? { delivers: args.delivers } : {}),
       },
     };

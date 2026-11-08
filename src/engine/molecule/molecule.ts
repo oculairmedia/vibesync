@@ -112,6 +112,7 @@ export interface MoleculeStore {
     readonly formulaName: string;
     readonly title: string;
     readonly motivatingBeadId?: string;
+    readonly projectIdentifier?: string;
     /** Persisted so resume() can still enforce the formula's delivery (vibesync-9lzk.21). */
     readonly delivers?: string;
   }): Promise<void>;
@@ -296,6 +297,7 @@ export class MoleculeWalker {
     readonly formulaName: string;
     readonly title: string;
     readonly motivatingBeadId?: string;
+    readonly projectIdentifier?: string;
     readonly delivers?: string;
     readonly steps: readonly StepSpec[];
   }): Promise<MoleculeView> {
@@ -305,6 +307,7 @@ export class MoleculeWalker {
       formulaName: args.formulaName,
       title: args.title,
       ...(args.motivatingBeadId ? { motivatingBeadId: args.motivatingBeadId } : {}),
+      ...(args.projectIdentifier ? { projectIdentifier: args.projectIdentifier } : {}),
       ...(args.delivers ? { delivers: args.delivers } : {}),
     });
     // Insert steps in declared order so depends_on references already exist.
