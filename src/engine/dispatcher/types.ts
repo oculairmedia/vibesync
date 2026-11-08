@@ -180,6 +180,12 @@ export interface RuntimeSessionEventContext {
   readonly resumed?: boolean;
 }
 
+/** What one provider attempt produced: the reply text and how many session events it took. */
+export interface StepAttemptOutput {
+  readonly text: string;
+  readonly eventCount: number;
+}
+
 export type StepAttemptArgs = {
   readonly stepId: string;
   readonly stepName: string;

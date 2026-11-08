@@ -36,6 +36,7 @@ import {
   type QueuedMoleculeRun,
   type ResumedDeliveryArgs,
   type RuntimeSessionEventContext,
+  type StepAttemptOutput,
   type StepFailureContext,
   type StepRunArgs,
   type StepRunContext,
@@ -991,7 +992,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     context: StepRunContext,
     rendered: string,
     state: RetryState,
-  ): Promise<{ readonly output: { readonly text: string; readonly eventCount: number } | null; readonly failure: StepRunFailure | null }> {
+  ): Promise<{ readonly output: Awaited<ReturnType<StepAttemptRunner['runStepAttempt']>> | null; readonly failure: StepRunFailure | null }> {
     const { args, stepName, stepSpec, roleConfig } = context;
     // Only the AGENT TURN is retryable; bead persistence after it stays outside this try.
     try {
@@ -1065,7 +1066,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
 
   private async judgeStepTurn(
     context: StepRunContext,
-    output: { readonly text: string; readonly eventCount: number },
+    output: StepAttemptOutput,
     attemptStartedAt: Date,
     attempt: number,
   ): Promise<'finished' | 'looped' | StepRunFailure> {
@@ -1076,7 +1077,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
 
   private async handleStepVerdict(
     context: StepRunContext,
-    output: { readonly text: string; readonly eventCount: number },
+    output: StepAttemptOutput,
     attemptStartedAt: Date,
   ): Promise<'looped' | StepRunFailure | null> {
     const { args, stepSpec, stepName } = context;
@@ -1131,7 +1132,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
 
   private async finishStepTurn(
     context: StepRunContext,
-    output: { readonly text: string; readonly eventCount: number },
+    output: StepAttemptOutput,
     attempt: number,
   ): Promise<'finished'> {
     const { args, stepSpec, stepName } = context;

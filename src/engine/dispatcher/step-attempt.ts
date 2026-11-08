@@ -1,6 +1,6 @@
 import type { MoleculeWalker } from '../molecule/index.js';
 import type { RuntimeProvider, SessionEvent, SessionHandle } from '../runtime/index.js';
-import { AttemptFailure, type RuntimeSessionEventContext, type StepAttemptArgs } from './types.js';
+import { AttemptFailure, type RuntimeSessionEventContext, type StepAttemptArgs, type StepAttemptOutput } from './types.js';
 
 export interface StepAttemptDeps {
   readonly walker: MoleculeWalker;
@@ -11,7 +11,7 @@ export interface StepAttemptDeps {
 export class StepAttemptRunner {
   constructor(private readonly deps: StepAttemptDeps) {}
 
-  async runStepAttempt(args: StepAttemptArgs): Promise<{ readonly text: string; readonly eventCount: number }> {
+  async runStepAttempt(args: StepAttemptArgs): Promise<StepAttemptOutput> {
     this.emitStepAttemptStarted(args);
     let handle: SessionHandle | null = null;
     try {
@@ -96,7 +96,7 @@ export class StepAttemptRunner {
     handle: SessionHandle,
     taskId: string | undefined,
     conversationId: string | undefined,
-  ): Promise<{ readonly text: string; readonly eventCount: number }> {
+  ): Promise<StepAttemptOutput> {
     let text = '';
     let eventCount = 0;
     let agentActed = false;
