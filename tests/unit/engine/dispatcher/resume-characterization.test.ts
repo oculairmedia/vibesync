@@ -61,7 +61,7 @@ describe('FormulaDispatcher.resume characterization', () => {
 
     expect(error).toBeInstanceOf(FormulaDispatchError);
     expect((error as Error).message).toContain('unknown delivery kind "archive"');
-    expect((await h.store.getBead(view.rootId))?.metadata).toMatchObject({ exec: { outcome: 'failed' } });
+    expect(await h.store.getBead(view.rootId)).toMatchObject({ status: 'closed', metadata: { exec: { outcome: 'failed' } } });
     expect(h.events.map((event) => event.kind)).toEqual(['dispatcher/formula.resumed', 'dispatcher/formula.failed']);
     expect(h.events.at(-1)?.payload).toMatchObject({ resumed: true, error: expect.stringContaining('unknown delivery kind') });
   });
@@ -75,7 +75,7 @@ describe('FormulaDispatcher.resume characterization', () => {
 
     expect(error).toBeInstanceOf(FormulaDispatchError);
     expect((error as Error).message).toContain('no delivery verifier is configured');
-    expect((await h.store.getBead(view.rootId))?.metadata).toMatchObject({ exec: { outcome: 'failed' } });
+    expect(await h.store.getBead(view.rootId)).toMatchObject({ status: 'closed', metadata: { exec: { outcome: 'failed' } } });
     expect(h.events.at(-1)?.payload).toMatchObject({ error: expect.stringContaining('no delivery verifier') });
   });
 
@@ -89,7 +89,7 @@ describe('FormulaDispatcher.resume characterization', () => {
 
     expect(error).toBeInstanceOf(FormulaDispatchError);
     expect((error as Error).message).toContain('declared delivery not met: no matching pull request');
-    expect((await h.store.getBead(view.rootId))?.metadata).toMatchObject({ exec: { outcome: 'failed' } });
+    expect(await h.store.getBead(view.rootId)).toMatchObject({ status: 'closed', metadata: { exec: { outcome: 'failed' } } });
     expect(h.events.at(-1)?.payload).toMatchObject({ resumed: true, motivating_bead: 'vibesync-work' });
   });
 
@@ -171,7 +171,7 @@ describe('FormulaDispatcher.resume characterization', () => {
     expect(error).toBeInstanceOf(FormulaDispatchError);
     expect((error as Error).message).toContain('declared delivery not met: no matching pull request');
     expect((await h.store.getBead(stepId))?.status).toBe('closed');
-    expect((await h.store.getBead(view.rootId))?.metadata).toMatchObject({ exec: { outcome: 'failed' } });
+    expect(await h.store.getBead(view.rootId)).toMatchObject({ status: 'closed', metadata: { exec: { outcome: 'failed' } } });
     expect(h.events.map((event) => event.kind)).not.toContain('dispatcher/formula.completed');
     expect(h.events.at(-1)?.kind).toBe('dispatcher/formula.failed');
   });
