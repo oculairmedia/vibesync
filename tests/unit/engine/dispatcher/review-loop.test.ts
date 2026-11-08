@@ -89,6 +89,18 @@ describe('bounded review loop (vibesync-9lzk.24)', () => {
     expect(h.events.find((e) => e.kind === 'dispatcher/step.loop_back')?.payload).toMatchObject({ loopsBackTo: 'coder', round: 2, maxRounds: 3, reopened: ['coder', 'reviewer'] });
   });
 
+  it('a hand-built looping step with NO maxRounds still stops after 3 rounds (the fallback inside loopBack, vibesync-vp76.3)', async () => {
+    // The TOML parser fills in max_rounds = 3, so this path is only reachable with a formula built in code.
+    // Without the fallback the loop would never end.
+    const noCap: Formula = { ...looping(), steps: looping().steps.map((s) => { const { maxRounds: _unused, ...rest } = s; return rest; }) };
+    expect(noCap.steps.find((s) => s.name === 'reviewer')?.maxRounds).toBeUndefined();
+    const h = harness(99);
+    const thrown = await h.dispatcher.run({ formula: noCap, pack: pack(), input: 'go', motivatingBeadId: 'work-1' }).catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(FormulaEscalationError);
+    expect(h.seen).toEqual({ mayor: 1, coder: 3, reviewer: 3, tester: 0 });
+    expect(h.events.find((e) => e.kind === 'dispatcher/formula.review_exhausted')?.payload).toMatchObject({ rounds: 3, maxRounds: 3 });
+  });
+
   it('the tester runs only after the reviewer finally approves, and sees the final coder output', async () => {
     const h = harness(2);
     await h.dispatcher.run({ formula: looping(), pack: pack(), input: 'go', motivatingBeadId: 'work-1' });

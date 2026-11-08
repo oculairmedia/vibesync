@@ -171,6 +171,19 @@ describe('step verdicts from the decision model (vibesync-9lzk.39)', () => {
     expect(h.events.some((e) => e.kind === 'dispatcher/formula.completed')).toBe(false);
   });
 
+  it('a reply whose BLOCKED marker contradicts an approving judge is not an approval: it loops back (vibesync-vp76.3)', async () => {
+    // The judge reads this reply as an approval, but the reply itself ends with the BLOCKED line.
+    // reconcileWithMarker turns the disagreement into 'unsettled', which a looping step sends back to the coder.
+    // Without that call in the dispatcher path the marker is ignored and the run simply completes.
+    const approvesEverything: StepReplyJudge = { async judge() { return { answers: clean, model: 'jev-1.14.0', inputTokens: 1 }; } };
+    const contradictory = 'LGTM overall.\nSTEP OUTCOME: BLOCKED - needs a human decision';
+    const h = harness([contradictory], 'PASS: all gates green', approvesEverything);
+    const thrown = await h.dispatcher.run({ formula: looping, pack: pack(), input: 'go', motivatingBeadId: 'w' }).catch((e: unknown) => e);
+    expect(h.events.some((e) => e.kind === 'dispatcher/step.loop_back')).toBe(true);
+    expect(thrown).toBeInstanceOf(Error);
+    expect(String((thrown as Error).message)).toContain('escalated');
+  });
+
   it('without a judge the marker line is the only signal (pre-Jev behaviour unchanged)', async () => {
     const h = harness([ROUND10_REVIEW], 'PASS: all gates green', null);
     await expect(h.dispatcher.run({ formula: looping, pack: pack(), input: 'go', motivatingBeadId: 'w' })).resolves.toBeDefined();
