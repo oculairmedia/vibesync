@@ -614,7 +614,6 @@ describe('FormulaDispatcher', () => {
       const defaultProvider = newFakeProvider({ kind: 'default-runtime' });
       const alternateProvider = newFakeProvider({ kind: 'fake-runtime' });
       const walker = new MoleculeWalker(store);
-      let started: string | undefined;
       const dispatcher = new FormulaDispatcher({
         idPrefix: 'mol', provider: defaultProvider, walker, eventBus: new EventBus({ noPersist: true }),
         providerResolver: { resolve: (input) => input.projectIdentifier === 'vibesync' ? alternateProvider : null },
@@ -623,7 +622,7 @@ describe('FormulaDispatcher', () => {
         prefix: 'mol', formulaName: 'single-step', title: 'single-step', projectIdentifier: 'vibesync',
         steps: [{ name: 'worker', role: 'worker' }],
       });
-      started = view.rootId;
+      const started = view.rootId;
       const stepId = newMoleculeStepId(view.rootId, 'worker');
       await walker.startStep(stepId);
       await walker.recordStepTask(stepId, {
