@@ -107,6 +107,9 @@
           "type": "string",
           "minLength": 1
         },
+        "projectIdentifier": {
+          "type": "string"
+        },
         "outcome": {
           "type": "string",
           "enum": [
@@ -539,6 +542,9 @@
             "motivating_bead": {
               "type": "string",
               "minLength": 1
+            },
+            "projectIdentifier": {
+              "type": "string"
             },
             "outcome": {
               "type": "string",
