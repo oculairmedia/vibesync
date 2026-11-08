@@ -3,7 +3,15 @@ import type { StepSpec } from '../molecule/index.js';
 import type { BeadRow } from '../store/index.js';
 import type { Pack, RoleConfig } from '../packs/index.js';
 import type { RuntimeProvider } from '../runtime/index.js';
+import type { PrChecksReader } from '../verdict/index.js';
 import type { FailureKind, FailureSignal, ResolvedRetryPolicy, RetryState } from '../retry/index.js';
+
+export interface PrChecksOptions {
+  readonly reader: PrChecksReader;
+  readonly names: readonly string[];
+  readonly pollMs?: number;
+  readonly maxWaitMs?: number;
+}
 
 export interface DispatchInput {
   readonly formula: Formula;
