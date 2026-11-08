@@ -42,7 +42,7 @@ import {
 import { createDispatcherEmitter } from './emit.js';
 import { StepAttemptRunner } from './step-attempt.js';
 import { StepVerdictReader } from './step-verdict.js';
-import { readStepName, sleep, stringifyError } from './util.js';
+import { readExec, readStepName, readString, sleep, stringifyError } from './util.js';
 import { MoleculeSettler } from './settlement.js';
 import { ResumeCoordinator } from './resume.js';
 
@@ -272,7 +272,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     const provider = await this.resolveProvider(input);
     return this.registerAndAwait({
       input, view, provider, startedAt: Date.now(),
-      outputs: {}, announce: false,
+      outputs: outputsFromClosedSteps(view.steps), announce: false,
     });
   }
 
@@ -750,6 +750,29 @@ function retryStateKey(state: RetryState): string {
 /** What a dependent's prompt sees in place of the output of a step that soft-failed. */
 function softFailMarker(stepName: string, errorTrace: string): string {
   return `[step "${stepName}" soft-failed and produced no output: ${errorTrace}]`;
+}
+
+function outputsFromClosedSteps(steps: readonly BeadRow[]): Record<string, string> {
+  const outputs: Record<string, string> = {};
+  for (const step of steps) {
+    if (step.status !== 'closed') continue;
+    const stepName = readStepName(step);
+    const payload = readExec(step).output_payload;
+    if (hasOutputPayload(payload)) {
+      outputs[stepName] = payload.output;
+    } else if (isSoftFailedStep(step)) {
+      outputs[stepName] = softFailMarker(stepName, readString(readExec(step).error_trace) ?? 'soft_fail');
+    }
+  }
+  return outputs;
+}
+
+function hasOutputPayload(payload: unknown): payload is { readonly output: string } {
+  return payload !== null && typeof payload === 'object' && 'output' in payload && typeof payload.output === 'string';
+}
+
+function isSoftFailedStep(step: BeadRow): boolean {
+  return step.metadata['gc.retry_outcome'] === 'soft_failed';
 }
 
 function cannotStartSteps(run: MoleculeRun | undefined): boolean {
