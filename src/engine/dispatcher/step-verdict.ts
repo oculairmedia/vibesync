@@ -19,6 +19,14 @@ export interface StepVerdictDeps {
 export class StepVerdictReader {
   constructor(private readonly deps: StepVerdictDeps) {}
 
+  /**
+   * vibesync-9lzk.39: the blocker a step's reply carries, or null. Steps that
+   * judge work (a looping step such as the reviewer, or the formula's last
+   * step such as the tester) are read by the decision model when one is
+   * configured; every other step keeps the marker line. A judge failure is an
+   * error (the step fails), never a silent "not blocked". An unsettled reading
+   * fails closed with the reply attached.
+   */
   async readStepBlocker(args: {
     readonly input: DispatchInput;
     readonly step: BeadRow;
