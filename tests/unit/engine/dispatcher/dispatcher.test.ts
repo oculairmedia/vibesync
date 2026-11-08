@@ -580,28 +580,33 @@ describe('FormulaDispatcher', () => {
   });
 
   describe('per-project provider routing (vibesync-f5g)', () => {
-    it('resumes a persisted task on its resolved project provider', async () => {
+    it('resumes a dispatcher-created persisted task on its resolved project provider after restart', async () => {
       const store = new InMemoryDoltClient();
-      const defaultProvider = newFakeProvider({ kind: 'default-runtime', script: scriptByRole({ reviewer: 'wrong provider' }) });
+      const defaultProvider = newFakeProvider({ kind: 'default-runtime' });
       const alternateProvider = newFakeProvider({ kind: 'fake-runtime', script: (spec) => eventScript([
         { kind: 'message-delta', text: `reattached ${String(spec.extra?.['resumeTaskId'] ?? '')}` },
       ]) });
-      const walker = new MoleculeWalker(store);
-      const dispatcher = newDriven(store, {
-        idPrefix: 'mol', provider: defaultProvider, walker, eventBus: new EventBus({ noPersist: true }),
+      const options = {
+        idPrefix: 'mol', provider: defaultProvider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }),
         providerResolver: { resolve: (input) => input.projectIdentifier === 'vibesync' ? alternateProvider : null },
+      };
+      const originalDispatcher = newDriven(store, options);
+      let moleculeId = '';
+      const pending = originalDispatcher.run({
+        formula: singleStepFormula(), pack: singleStepPack(), input: 'go', projectIdentifier: 'vibesync',
+        onStarted: (id) => { moleculeId = id; },
       });
-      const view = await walker.dispatch({
-        prefix: 'mol', formulaName: 'single-step', title: 'single-step', projectIdentifier: 'vibesync',
-        steps: [{ name: 'worker', role: 'worker' }],
-      });
-      const stepId = newMoleculeStepId(view.rootId, 'worker');
+      await waitForCondition(() => alternateProvider.recorder.starts.length === 1);
+      const stepId = newMoleculeStepId(moleculeId, 'worker');
+      const walker = new MoleculeWalker(store);
       await walker.startStep(stepId);
       await walker.recordStepTask(stepId, {
         taskId: 'task-resume-project', providerKind: 'fake-runtime', sessionId: 'fake-runtime:worker-previous',
       });
 
-      await dispatcher.resume(view.rootId);
+      await newDriven(store, options).resume(moleculeId);
+      await originalDispatcher.cancel(moleculeId).catch(() => undefined);
+      await pending.catch(() => undefined);
 
       expect(alternateProvider.recorder.starts).toContainEqual(expect.objectContaining({
         extra: expect.objectContaining({ resumeTaskId: 'task-resume-project' }),
@@ -609,29 +614,73 @@ describe('FormulaDispatcher', () => {
       expect(defaultProvider.recorder.starts).toHaveLength(0);
     });
 
-    it('cancels a live molecule on its resolved project provider', async () => {
+    it('cancels a dispatcher-created persisted molecule on its resolved project provider after restart', async () => {
       const store = new InMemoryDoltClient();
       const defaultProvider = newFakeProvider({ kind: 'default-runtime' });
       const alternateProvider = newFakeProvider({ kind: 'fake-runtime' });
-      const walker = new MoleculeWalker(store);
-      const dispatcher = new FormulaDispatcher({
-        idPrefix: 'mol', provider: defaultProvider, walker, eventBus: new EventBus({ noPersist: true }),
+      const options = {
+        idPrefix: 'mol', provider: defaultProvider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }),
         providerResolver: { resolve: (input) => input.projectIdentifier === 'vibesync' ? alternateProvider : null },
+      };
+      const originalDispatcher = newDriven(store, options);
+      let moleculeId = '';
+      const pending = originalDispatcher.run({
+        formula: singleStepFormula(), pack: singleStepPack(), input: 'go', projectIdentifier: 'vibesync',
+        onStarted: (id) => { moleculeId = id; },
       });
-      const view = await walker.dispatch({
-        prefix: 'mol', formulaName: 'single-step', title: 'single-step', projectIdentifier: 'vibesync',
-        steps: [{ name: 'worker', role: 'worker' }],
-      });
-      const started = view.rootId;
-      const stepId = newMoleculeStepId(view.rootId, 'worker');
+      await waitForCondition(() => alternateProvider.recorder.starts.length === 1);
+      const stepId = newMoleculeStepId(moleculeId, 'worker');
+      const walker = new MoleculeWalker(store);
       await walker.startStep(stepId);
       await walker.recordStepTask(stepId, {
         taskId: 'task-cancel-project', providerKind: 'fake-runtime', sessionId: 'fake-runtime:worker-previous',
       });
 
-      await dispatcher.cancel(started);
+      await newDriven(store, options).cancel(moleculeId);
+      await pending.catch(() => undefined);
 
       expect(alternateProvider.recorder.stops).toContainEqual({ id: 'fake-runtime:worker-previous', providerKind: 'fake-runtime' });
+      expect(defaultProvider.recorder.stops).toHaveLength(0);
+    });
+
+    it('cancels a live run using the provider selected when it was dispatched', async () => {
+      const store = new InMemoryDoltClient();
+      const defaultProvider = newFakeProvider({ kind: 'default-runtime' });
+      let releaseObservation: (() => void) | undefined;
+      const observationBlocked = new Promise<void>((resolve) => { releaseObservation = resolve; });
+      const alternateProvider = newFakeProvider({
+        kind: 'fake-runtime',
+        script: async function* () {
+          await observationBlocked;
+          yield { kind: 'turn-done', ts: new Date().toISOString() };
+        },
+      });
+      const dispatcher = newDriven(store, {
+        idPrefix: 'mol', provider: defaultProvider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }),
+        providerResolver: { resolve: (input) => input.projectIdentifier === 'vibesync' ? alternateProvider : null },
+      });
+      let moleculeId = '';
+      const pending = dispatcher.run({
+        formula: singleStepFormula(), pack: singleStepPack(), input: 'go', projectIdentifier: 'vibesync',
+        onStarted: (id) => { moleculeId = id; },
+      });
+      await waitForCondition(() => alternateProvider.recorder.starts.length === 1);
+      const stepId = newMoleculeStepId(moleculeId, 'worker');
+      for (let attempt = 0; attempt < 50; attempt++) {
+        if ((await store.getBead(stepId))?.status === 'in_progress') break;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      expect((await store.getBead(stepId))?.status).toBe('in_progress');
+      for (let attempt = 0; attempt < 50; attempt++) {
+        const exec = (await store.getBead(stepId))?.metadata['exec'] as Record<string, unknown> | undefined;
+        if (exec?.['session_id']) break;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      await dispatcher.cancel(moleculeId);
+      releaseObservation?.();
+      await pending.catch(() => undefined);
+
+      expect(alternateProvider.recorder.stops).toContainEqual({ id: 'fake-runtime:worker-1', providerKind: 'fake-runtime' });
       expect(defaultProvider.recorder.stops).toHaveLength(0);
     });
 
