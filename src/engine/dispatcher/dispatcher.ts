@@ -3,7 +3,6 @@ import type { EventBus } from '../events/index.js';
 import type { MoleculeView, MoleculeWalker, StepSpec } from '../molecule/index.js';
 import { newMoleculeStepId } from '../molecule/index.js';
 import type { BeadRow } from '../store/index.js';
-import type { RoleConfig } from '../packs/index.js';
 import type { RuntimeProvider, SessionEvent, SessionHandle } from '../runtime/index.js';
 import type { ReadyStep, ReadyStepRunner, StepRunOutcome } from '../molecule/index.js';
 import { parseBlockedOutcome, STEP_OUTCOME_INSTRUCTIONS } from './step-outcome.js';
@@ -37,13 +36,14 @@ import {
   type QueuedMoleculeRun,
   type ResumedDeliveryArgs,
   type RuntimeSessionEventContext,
-  type StepAttemptArgs,
+  type StepAttemptOutput,
   type StepFailureContext,
   type StepRunArgs,
   type StepRunContext,
   type StepRunFailure,
 } from './types.js';
 import { createDispatcherEmitter } from './emit.js';
+import { StepAttemptRunner } from './step-attempt.js';
 
 export { FormulaDispatchError, FormulaEscalationError, FormulaCancellationConflictError } from './types.js';
 export type { DispatchInput, ProviderResolver, DispatchResult, CancelResult } from './types.js';
@@ -131,6 +131,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
   private readonly walker: MoleculeWalker;
   readonly emit: (kind: string, moleculeId: string | undefined, taskId: string | undefined, payload: Readonly<Record<string, unknown>>) => void;
   readonly emitRuntimeSessionEvent: (event: SessionEvent, context: RuntimeSessionEventContext) => void;
+  private readonly stepAttempt: StepAttemptRunner;
   private readonly idPrefix: string;
   private readonly maxParallelSteps: number;
   private readonly maxConcurrentMolecules: number;
@@ -151,6 +152,11 @@ export class FormulaDispatcher implements ReadyStepRunner {
     const emitter = createDispatcherEmitter(opts.eventBus);
     this.emit = emitter.emit;
     this.emitRuntimeSessionEvent = emitter.emitRuntimeSessionEvent;
+    this.stepAttempt = new StepAttemptRunner({
+      walker: this.walker,
+      emit: this.emit,
+      emitRuntimeSessionEvent: this.emitRuntimeSessionEvent,
+    });
     this.idPrefix = opts.idPrefix;
     this.maxParallelSteps = normalizeMaxParallelSteps(opts.maxParallelSteps);
     this.maxConcurrentMolecules = normalizeMaxConcurrentMolecules(opts.maxConcurrentMolecules);
@@ -986,11 +992,11 @@ export class FormulaDispatcher implements ReadyStepRunner {
     context: StepRunContext,
     rendered: string,
     state: RetryState,
-  ): Promise<{ readonly output: Awaited<ReturnType<FormulaDispatcher['runStepAttempt']>> | null; readonly failure: StepRunFailure | null }> {
+  ): Promise<{ readonly output: Awaited<ReturnType<StepAttemptRunner['runStepAttempt']>> | null; readonly failure: StepRunFailure | null }> {
     const { args, stepName, stepSpec, roleConfig } = context;
     // Only the AGENT TURN is retryable; bead persistence after it stays outside this try.
     try {
-      const output = await this.runStepAttempt({
+      const output = await this.stepAttempt.runStepAttempt({
         stepId: args.step.id,
         stepName,
         role: stepSpec.role,
@@ -1060,7 +1066,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
 
   private async judgeStepTurn(
     context: StepRunContext,
-    output: Awaited<ReturnType<FormulaDispatcher['runStepAttempt']>>,
+    output: StepAttemptOutput,
     attemptStartedAt: Date,
     attempt: number,
   ): Promise<'finished' | 'looped' | StepRunFailure> {
@@ -1071,7 +1077,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
 
   private async handleStepVerdict(
     context: StepRunContext,
-    output: Awaited<ReturnType<FormulaDispatcher['runStepAttempt']>>,
+    output: StepAttemptOutput,
     attemptStartedAt: Date,
   ): Promise<'looped' | StepRunFailure | null> {
     const { args, stepSpec, stepName } = context;
@@ -1126,7 +1132,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
 
   private async finishStepTurn(
     context: StepRunContext,
-    output: Awaited<ReturnType<FormulaDispatcher['runStepAttempt']>>,
+    output: StepAttemptOutput,
     attempt: number,
   ): Promise<'finished'> {
     const { args, stepSpec, stepName } = context;
@@ -1224,141 +1230,6 @@ export class FormulaDispatcher implements ReadyStepRunner {
         ? `infra failure persisted after ${state.infraRetries} retries: ${reason}`
         : reason;
     return { trace, outcomeLabel: decision.action === 'soft_fail' ? 'soft_failed' : decision.outcome };
-  }
-
-  private async runStepAttempt(args: {
-    readonly stepId: string;
-    readonly stepName: string;
-    readonly role: string;
-    readonly roleConfig: RoleConfig;
-    readonly moleculeId: string;
-    readonly formulaName: string;
-    readonly motivatingBeadId?: string;
-    readonly rendered: string;
-    readonly attempt: number;
-    readonly infraRetries: number;
-    /** vibesync-9lzk.41: the review round (1 = first run), so the session can make the prompt id unique. */
-    readonly reviewRound: number;
-    readonly provider: RuntimeProvider;
-    readonly projectIdentifier?: string;
-    readonly turnTimeoutMs?: number;
-    readonly workdir?: string;
-  }): Promise<{ readonly text: string; readonly eventCount: number }> {
-    this.emitStepAttemptStarted(args);
-    let handle: SessionHandle | null = null;
-    try {
-      handle = await this.startStepAttempt(args);
-      const promptResult = await args.provider.prompt(handle, [{ type: 'text', text: args.rendered }]);
-      const traceConversationId = promptResult.conversationId;
-      await this.recordStepAttemptTask(args, handle, promptResult.taskId, traceConversationId);
-      const observed = await this.observeStepAttempt(args, handle, promptResult.taskId, traceConversationId);
-      return { text: observed.text, eventCount: observed.eventCount };
-    } finally {
-      if (handle) await args.provider.stop(handle);
-    }
-  }
-
-  private emitStepAttemptStarted(args: StepAttemptArgs): void {
-    this.emit('dispatcher/step.started', args.moleculeId, args.stepId, {
-      stepName: args.stepName,
-      role: args.role,
-      stepId: args.stepId,
-      attempt: args.attempt,
-    });
-  }
-
-  private async startStepAttempt(args: StepAttemptArgs): Promise<SessionHandle> {
-    await this.walker.startStep(args.stepId);
-    return args.provider.start(this.stepAttemptSessionSpec(args));
-  }
-
-  private stepAttemptSessionSpec(args: StepAttemptArgs): Parameters<RuntimeProvider['start']>[0] {
-    return {
-      role: args.role,
-      label: `${args.formulaName}/${args.stepName}`,
-      extra: this.stepAttemptExtra(args),
-    };
-  }
-
-  private stepAttemptExtra(args: StepAttemptArgs): NonNullable<Parameters<RuntimeProvider['start']>[0]['extra']> {
-    return {
-      moleculeId: args.moleculeId,
-      stepName: args.stepName,
-      formulaName: args.formulaName,
-      ...(args.motivatingBeadId ? { motivatingBeadId: args.motivatingBeadId } : {}),
-      attempt: args.attempt,
-      infraRetries: args.infraRetries,
-      ...(args.reviewRound > 1 ? { reviewRound: args.reviewRound } : {}),
-      stepId: args.stepId,
-      memfsEnabled: false,
-      memoryBlocks: args.roleConfig.memoryBlocks ?? [],
-      ...(args.roleConfig.memoryBlocksPolicy?.mode === 'replace' ? { memoryBlockSeedMode: 'replace' } : {}),
-      ...(args.roleConfig.tools && args.roleConfig.tools.length > 0 ? { tools: [...args.roleConfig.tools] } : {}),
-      ...(args.projectIdentifier ? { projectIdentifier: args.projectIdentifier } : {}),
-      ...(args.turnTimeoutMs !== undefined ? { turnTimeoutMs: args.turnTimeoutMs } : {}),
-      ...(args.workdir !== undefined ? { workdir: args.workdir } : {}),
-    };
-  }
-
-  private async recordStepAttemptTask(
-    args: StepAttemptArgs,
-    handle: SessionHandle,
-    taskId: string | undefined,
-    conversationId: string | undefined,
-  ): Promise<void> {
-    if (!taskId && !conversationId) return;
-    await this.walker.recordStepTask(args.stepId, {
-      ...(taskId ? { taskId } : {}),
-      providerKind: handle.providerKind,
-      sessionId: handle.id,
-      ...(conversationId ? { conversationId } : {}),
-    });
-    this.emit('dispatcher/step.task_recorded', args.moleculeId, taskId, {
-      stepName: args.stepName,
-      role: args.role,
-      stepId: args.stepId,
-      sessionId: handle.id,
-      attempt: args.attempt,
-      ...(conversationId ? { conversationId } : {}),
-    });
-  }
-
-  private async observeStepAttempt(
-    args: StepAttemptArgs,
-    handle: SessionHandle,
-    taskId: string | undefined,
-    conversationId: string | undefined,
-  ): Promise<{ readonly text: string; readonly eventCount: number }> {
-    let text = '';
-    let eventCount = 0;
-    let agentActed = false;
-    for await (const event of args.provider.observe(handle)) {
-      eventCount++;
-      this.emitRuntimeSessionEvent(event, buildStepAttemptEventPayload(args, handle, taskId, conversationId));
-      if (event.kind === 'message-delta') {
-        text += event.text;
-      }
-      agentActed = didAgentAct(event, agentActed);
-      this.handleStepAttemptEvent(event, agentActed);
-      if (event.kind === 'turn-done') break;
-    }
-    return { text, eventCount };
-  }
-
-  private handleStepAttemptEvent(event: SessionEvent, agentActed: boolean): void {
-    if (event.kind === 'error') {
-      throw new AttemptFailure(event.message, { origin: 'event', code: event.code, producedOutput: agentActed });
-    }
-    if (event.kind === 'stopped') {
-      throw new AttemptFailure('runtime stopped before turn completion', { origin: 'stopped' });
-    }
-    if (event.kind === 'turn-done' && event.stopReason === 'requires_approval') {
-      throw new AttemptFailure(
-        'runtime halted on requires_approval — no approver attached for headless dispatch; ' +
-          'the Agent/tool call never executed (set SHIM_PERMISSION_MODE=bypassPermissions on the shim)',
-        { origin: 'event', code: 'requires_approval', producedOutput: agentActed },
-      );
-    }
   }
 
   private async resumeStep(args: {
@@ -1577,31 +1448,6 @@ function readyStepTryKey(step: BeadRow): string {
 
 function hasStartedTryOrAtParallelLimit(run: MoleculeRun, tryKey: string, maxParallelSteps: number): boolean {
   return run.startedSteps.has(tryKey) || run.running >= maxParallelSteps;
-}
-
-function didAgentAct(event: SessionEvent, agentActed: boolean): boolean {
-  return agentActed || (event.kind === 'message-delta' && event.text.length > 0) ||
-    event.kind === 'tool-call' || event.kind === 'tool-result';
-}
-
-function buildStepAttemptEventPayload(
-  args: StepAttemptArgs,
-  handle: SessionHandle,
-  taskId: string | undefined,
-  conversationId: string | undefined,
-): RuntimeSessionEventContext {
-  return {
-    moleculeId: args.moleculeId,
-    stepId: args.stepId,
-    stepName: args.stepName,
-    role: args.role,
-    attempt: args.attempt,
-    providerKind: handle.providerKind,
-    sessionId: handle.id,
-    ...(taskId ? { taskId } : {}),
-    ...(conversationId ? { conversationId } : {}),
-    ...(args.projectIdentifier ? { projectIdentifier: args.projectIdentifier } : {}),
-  };
 }
 
 function readExec(row: BeadRow): Record<string, unknown> {

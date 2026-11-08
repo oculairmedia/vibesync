@@ -106,6 +106,29 @@ describe('FormulaDispatcher', () => {
     expect(kinds).not.toContain('dispatcher/step.failed');
   });
 
+  it('records the runtime task id on the step bead BEFORE it starts observing events (vibesync-vp76.2)', async () => {
+    // A restart resumes a running step by its persisted task id (see "resumes a running step"). That
+    // id must therefore already be on the bead when the first event arrives; if the order of
+    // "record the task" and "observe the stream" ever flipped, a crash mid-stream would leave a
+    // running step with no task id to reattach to.
+    const store = new InMemoryDoltClient();
+    let taskIdOnBeadWhenFirstEventArrived: unknown = 'observe never started';
+    const provider = newFakeProvider({
+      kind: 'fake-runtime',
+      script: async function* (spec: SessionSpec) {
+        const stepId = (spec.extra as { stepId: string }).stepId;
+        const bead = await store.getBead(stepId);
+        taskIdOnBeadWhenFirstEventArrived = (bead?.metadata as { exec?: { task_id?: string } } | undefined)?.exec?.task_id;
+        yield { kind: 'turn-done', ts: new Date().toISOString() };
+      },
+    });
+    const dispatcher = newDriven(store, { idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }) });
+    await dispatcher.run({ formula: singleStepFormula(), pack: singleStepPack(), input: 'go' });
+
+    expect(typeof taskIdOnBeadWhenFirstEventArrived).toBe('string');
+    expect(taskIdOnBeadWhenFirstEventArrived).toContain(':prompt-');
+  });
+
   it('applies the dispatch timeout to every step unless the formula declares an override', async () => {
     const formula: Formula = {
       name: 'timeouts', description: '', whenToUse: '',
