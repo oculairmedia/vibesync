@@ -108,6 +108,8 @@ interface BootArgs {
   readonly judge?: StepReplyJudge;
   /** The path the engine is given for its own checkout; defaults to the real one. */
   readonly engineRoot?: (homeRoot: string) => string;
+  /** A gh handed to boot as the scheduler's (the scheduler itself stays off). */
+  readonly schedulerGh?: FakeGh;
 }
 
 async function boot(args: BootArgs) {
@@ -116,7 +118,10 @@ async function boot(args: BootArgs) {
   const homeGh = repoGh('acme/home', args.homePrs);
   const otherGh = repoGh('acme/other', args.otherPrs);
   const ghRoots: string[] = [];
+  /** Which fake gh a checkout path gets; a test can add a checkout that is its own repository. */
+  const ghByRoot = new Map<string, FakeGh>();
   const engineRoot = args.engineRoot?.(homeRoot) ?? homeRoot;
+  ghByRoot.set(homeRoot, homeGh).set(engineRoot, homeGh).set(otherRoot, otherGh);
   const store = Object.assign(new InMemoryDoltClient(), { beadsRoot: engineRoot });
   const registry = args.registry === false ? null : (args.registry ?? (({ homeRoot: h, otherRoot: o }) => ({ home: h, other: o })))({ homeRoot, otherRoot });
   const provider = newFakeProvider({ kind: 'fake', script: (spec: SessionSpec) => reply(spec.role === 'coder' ? `PR ${args.prUrl}` : spec.role === 'mayor' ? 'planned' : 'PASS') });
@@ -127,17 +132,18 @@ async function boot(args: BootArgs) {
     persistEvents: false,
     runDriftAuditOnBoot: false,
     stepTickIntervalMs: 10,
-    projectGh: (root) => { ghRoots.push(root); return root === homeRoot || root === engineRoot ? homeGh : otherGh; },
+    projectGh: (root) => { ghRoots.push(root); return ghByRoot.get(root) ?? otherGh; },
     ...(registry ? { projectRoot: (id: string) => registry[id] ?? null } : {}),
     ...(args.homeVerifier ? { deliveryVerifier: args.homeVerifier } : {}),
     ...(args.judge ? { stepJudge: args.judge } : {}),
+    ...(args.schedulerGh ? { scheduler: { config: { enabled: false }, gh: args.schedulerGh } as never } : {}),
   });
   handles.push(handle);
   const run = (projectIdentifier?: string, formula: Formula = ship) => handle.dispatcher.run({
     formula, pack: pack(), input: 'go', motivatingBeadId: BEAD, ...(projectIdentifier ? { projectIdentifier } : {}),
   });
   const roles = (): string[] => provider.recorder.starts.map((start) => start.role);
-  return { run, roles, registry, homeRoot, engineRoot, otherRoot, homeGh, otherGh, ghRoots };
+  return { run, roles, registry, homeRoot, engineRoot, otherRoot, homeGh, otherGh, ghRoots, ghByRoot };
 }
 
 describe('project bindings built at boot (vibesync-9lzk.55.1)', () => {
@@ -221,6 +227,16 @@ describe('project bindings built at boot (vibesync-9lzk.55.1)', () => {
     expect(h.ghRoots).toEqual([h.homeRoot]);
   });
 
+  it('the home project is verified through its own checkout, not through the scheduler\'s gh', async () => {
+    // The scheduler's gh belongs to the scheduled project: with the scheduler off, or scheduling
+    // another checkout, it says nothing about where the engine's own pull requests live.
+    const schedulerGh = repoGh('acme/scheduled');
+    const h = await boot({ prUrl: HOME_PR, homePrs: [HOME_PR], schedulerGh });
+    await expect(h.run()).resolves.toBeDefined();
+    expect(prViews(h.homeGh)).toEqual([HOME_PR]);
+    expect(schedulerGh.calls).toEqual([]);
+  });
+
   it('an engine started through a symlinked path still recognises its own checkout in the registry', async () => {
     // The verifier passed to boot belongs to the home project. If the engine failed to recognise the
     // registry's real path as its own checkout, this run would get a separate binding and bypass it.
@@ -245,14 +261,21 @@ describe('project bindings built at boot (vibesync-9lzk.55.1)', () => {
     expect(h.ghRoots).toEqual([h.engineRoot]);
   });
 
-  it('a project whose registered checkout changes gets a binding for the new checkout', async () => {
+  it('a project whose registered checkout changes is verified in the new checkout\'s repository', async () => {
     const h = await boot({ prUrl: OTHER_PR, otherPrs: [OTHER_PR] });
     await expect(h.run('other')).resolves.toBeDefined();
-    // The registry row now points at a third checkout (PATCH /api/registry/projects/other).
+    // The registry row now points at a third checkout (PATCH /api/registry/projects/other),
+    // and that checkout is a DIFFERENT repository, which has no such pull request.
     const moved = mkdtempSync(join(tmpdir(), 'vibesync-binding-moved-'));
+    const movedGh = repoGh('acme/moved');
+    h.ghByRoot.set(moved, movedGh);
     h.registry!['other'] = moved;
-    await expect(h.run('other')).resolves.toBeDefined();
+    const error = await h.run('other').catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(FormulaDispatchError);
+    expect(String((error as Error).message)).toContain('acme/moved');
     expect(h.ghRoots).toEqual([h.homeRoot, h.otherRoot, moved]);
+    // The old checkout's gh was asked once, by the first run only.
+    expect(prViews(h.otherGh)).toEqual([OTHER_PR]);
   });
 
   it('a registered checkout that does not exist is an unknown project, not the home project', async () => {

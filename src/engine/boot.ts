@@ -342,10 +342,12 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   // the StepDispatcher offers it to the dispatcher. A cooked molecule wakes it.
   let steps: StepDispatcher | null = null;
   // The home project's gh runs in the checkout that owns this engine's tracker,
-  // so `gh repo view` names the repository its runs' PRs live in.
+  // so `gh repo view` names the repository its runs' PRs live in. It is never
+  // the scheduler's gh: that one belongs to the SCHEDULED project, which can be
+  // unset (scheduler off) or a different checkout.
   const ghFor = opts.projectGh ?? createCheckoutGhRunner;
   const ciCheckNames = opts.stepCiChecks ?? DEFAULT_STEP_CI_CHECKS;
-  const homeRepository = createRepositoryBinding(opts.scheduler?.gh ?? ghFor(opts.dolt.beadsRoot), ciCheckNames);
+  const homeRepository = createRepositoryBinding(ghFor(opts.dolt.beadsRoot), ciCheckNames);
   // A verifier or probe passed to boot replaces the HOME project's only.
   const homeBinding: ProjectBinding = {
     deliveryVerifier: opts.deliveryVerifier ?? homeRepository.deliveryVerifier,
