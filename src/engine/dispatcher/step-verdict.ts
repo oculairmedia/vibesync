@@ -4,8 +4,9 @@ import type { BeadRow } from '../store/index.js';
 import { decideStepVerdict, reconcileWithMarker, settleCi, summarizeReplyForReason, type FinalStepVerdict, type CiOutcome, type StepReplyJudge, type StepVerdict } from '../verdict/index.js';
 import { readReviewRound } from '../retry/index.js';
 import { parseBlockedOutcome } from './step-outcome.js';
-import { candidatePullRequests, type ShippedWorkProbe } from './delivery.js';
-import type { ProjectBindingResolver } from './project-binding-types.js';
+import { candidatePullRequests, repositoryOf, type ShippedWorkProbe } from './delivery.js';
+import type { ProjectBinding, ProjectBindingResolver } from './project-binding-types.js';
+import { UnknownProjectError } from './project-binding.js';
 import { FormulaDispatchError, type DispatchInput, type PrChecksOptions } from './types.js';
 import { sleep, stringifyError } from './util.js';
 
@@ -104,7 +105,10 @@ export class StepVerdictReader {
     const prUrl = candidatePullRequests({ ...(args.outputs ?? {}), [args.stepName]: args.output }).at(-1);
     let cfg: PrChecksOptions | null;
     try {
-      cfg = this.deps.projectBindings(args.projectIdentifier).prChecks;
+      const binding = this.deps.projectBindings(args.projectIdentifier);
+      cfg = binding.prChecks;
+      const foreign = cfg && prUrl ? await foreignRepository(prUrl, binding) : null;
+      if (foreign !== null) return { kind: 'unsettled', reason: `${args.reason}, but ${foreign}: ${args.summary}` };
     } catch (err) {
       return { kind: 'unsettled', reason: `${args.reason}, but project binding failed (${stringifyError(err)}): ${args.summary}` };
     }
@@ -260,7 +264,8 @@ export class StepVerdictReader {
       return `plan-only step shipped work: it opened ${prs.join(', ')} for ${bead}; planning steps must not edit, commit, push or open pull requests`;
     } catch (error) {
       this.deps.emit('dispatcher/plan-only.check_failed', context.moleculeId, context.stepId, { bead, error: stringifyError(error) });
-      return null;
+      // An unreachable GitHub must not stop planning; a project with no checkout is not an outage.
+      return error instanceof UnknownProjectError ? `plan-only check cannot run: ${error.message}` : null;
     }
   }
 }
@@ -279,4 +284,16 @@ function isFinalFormulaStep(steps: readonly StepSpec[], stepName: string): boole
 
 function isEarlierLoopTarget(targetIdx: number, selfIdx: number, targetBead: BeadRow | null): targetBead is BeadRow {
   return targetIdx >= 0 && selfIdx > targetIdx && targetBead !== null;
+}
+
+/**
+ * Why CI must not be read from `prUrl` for this binding, or null when it may.
+ * A reply can name any pull request; only one in the run's own repository
+ * counts. A binding that names no repository (a caller-supplied reader) is not
+ * checked here.
+ */
+async function foreignRepository(prUrl: string, binding: ProjectBinding): Promise<string | null> {
+  if (!binding.repository) return null;
+  const expected = (await binding.repository()).toLowerCase();
+  return repositoryOf(prUrl) === expected ? null : `${prUrl} is not in the project repository ${expected}`;
 }

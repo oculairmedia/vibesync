@@ -16,6 +16,8 @@ import { assertProviderKind, bootOrchestrationPlane, releaseDoltAfterFailedBoot,
 import { createTypeSafeJudge, createBdProjectMemorySource } from '../engine/dispatcher/index.js';
 import { BdVersionTooOldError, probeBdVersion } from '../engine/bd-version.js';
 import { createCliRunner } from '../engine/scheduler/bd-adapters.js';
+import { createCheckoutGhRunner } from '../engine/beads/index.js';
+import { registryProjectRoot } from '../engine/dispatcher/project-binding.js';
 import { registryPmAgentLookup } from '../engine/pm-wake/waker.js';
 import { DoltClient, defaultDoltBootDeps } from '../engine/store/index.js';
 import { ProjectRegistry } from './registry/project-registry';
@@ -80,19 +82,16 @@ function createProvisioner(db: Registry): DoltHubProvisionerApi | null {
   }
 }
 
-/** bd runner bound to the scheduled project's own Beads directory, resolved per call. */
+/** bd or gh bound to the scheduled project's own checkout, resolved per call. */
 function projectCli(db: Registry, binary: 'bd' | 'gh', actor: string) {
   return async (args: readonly string[]): Promise<string> => {
     const project = db.getProject(config.scheduler.projectIdentifier);
     const fsPath = project?.filesystem_path;
-    if (binary === 'bd' && !fsPath) {
+    if (!fsPath) {
       throw new Error(`project "${config.scheduler.projectIdentifier}" has no filesystem_path`);
     }
-    return createCliRunner({
-      binary,
-      ...(fsPath ? { cwd: fsPath } : {}),
-      ...(binary === 'bd' ? { env: { BEADS_DIR: `${fsPath}/.beads`, BEADS_ACTOR: actor } } : {}),
-    })(args);
+    if (binary === 'gh') return createCheckoutGhRunner(fsPath)(args);
+    return createCliRunner({ binary, cwd: fsPath, env: { BEADS_DIR: `${fsPath}/.beads`, BEADS_ACTOR: actor } })(args);
   };
 }
 
@@ -130,7 +129,7 @@ async function bootEngine(db: Registry): Promise<OrchestrationHandle | null> {
           gh: projectCli(db, 'gh', 'vibesync-scheduler'),
         },
         waits: { config: config.waits, logger, bd: projectCli(db, 'bd', 'vibesync-waits') },
-        projectRoot: (projectIdentifier) => db.getProject(projectIdentifier)?.filesystem_path ?? null,
+        projectRoot: registryProjectRoot(db),
         // vibesync-9lzk.25: each step reads ITS project's codebase memories,
         // through that project's own checkout; memories never cross projects.
         // vibesync-9lzk.39: reviewing/testing step replies are read by the Jev

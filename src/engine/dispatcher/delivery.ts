@@ -41,8 +41,8 @@ export type GhRunner = (args: readonly string[]) => Promise<string>;
 
 const PR_URL = /https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)/gi;
 
-/** `owner/name` of a github.com PR URL. */
-function repositoryOf(url: string): string {
+/** `owner/name` (lower case) of a github.com PR URL; empty when it is not one. */
+export function repositoryOf(url: string): string {
   const m = /https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/pull\//i.exec(url);
   return m ? `${m[1]}/${m[2]}`.toLowerCase() : '';
 }

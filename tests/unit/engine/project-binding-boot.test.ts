@@ -4,14 +4,17 @@
  * resolver; these drive the real one, so the registry lookup, the home-checkout
  * check, the per-project cache and the unknown-project rule are pinned.
  */
-import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
 
 import { bootOrchestrationPlane, type OrchestrationHandle } from '../../../src/engine/boot.js';
-import { FormulaDispatchError, type DeliveryVerifier } from '../../../src/engine/dispatcher/index.js';
+import { createCheckoutGhRunner } from '../../../src/engine/beads/index.js';
+import { FormulaDispatchError, FormulaEscalationError, type DeliveryVerifier, type StepReplyJudge } from '../../../src/engine/dispatcher/index.js';
+import { registryProjectRoot } from '../../../src/engine/dispatcher/project-binding.js';
 import type { Formula } from '../../../src/engine/formula/index.js';
 import type { Pack } from '../../../src/engine/packs/index.js';
 import type { SessionEvent, SessionSpec } from '../../../src/engine/runtime/index.js';
@@ -42,6 +45,7 @@ function repoGh(repository: string, openPrs: readonly string[] = []): FakeGh {
       });
     }
     if (args[0] === 'pr' && args[1] === 'list') return '[]';
+    if (args[0] === 'pr' && args[1] === 'checks') return JSON.stringify(['typecheck', 'test (20.x)', 'boot'].map((name) => ({ name, bucket: 'pass' })));
     throw new Error(`fake gh: unexpected call ${args.join(' ')}`);
   }) as FakeGh;
   (gh as { calls: string[][] }).calls = calls;
@@ -49,6 +53,7 @@ function repoGh(repository: string, openPrs: readonly string[] = []): FakeGh {
 }
 
 const prViews = (gh: FakeGh): string[] => gh.calls.filter((c) => c[0] === 'pr' && c[1] === 'view').map((c) => c[2]!);
+const prChecks = (gh: FakeGh): string[] => gh.calls.filter((c) => c[0] === 'pr' && c[1] === 'checks').map((c) => c[2]!);
 const repoViews = (gh: FakeGh): number => gh.calls.filter((c) => c[0] === 'repo' && c[1] === 'view').length;
 
 async function* reply(text: string): AsyncIterable<SessionEvent> {
@@ -62,7 +67,7 @@ function pack(): Pack {
   const root = mkdtempSync(join(tmpdir(), 'vibesync-binding-boot-pack-'));
   mkdirSync(join(root, 'prompts'));
   writeFileSync(join(root, 'prompts', 'p.md'), 'Do ${input}');
-  return { manifest: { name: 'p', version: '1' }, root, scope: 'project', roles: ['coder', 'tester'].map((name) => ({ name, memoryBlocks: [] })), formulas: [] };
+  return { manifest: { name: 'p', version: '1' }, root, scope: 'project', roles: ['coder', 'tester', 'mayor'].map((name) => ({ name, memoryBlocks: [] })), formulas: [] };
 }
 
 const ship: Formula = {
@@ -71,6 +76,20 @@ const ship: Formula = {
     { name: 'coder', role: 'coder', promptTemplate: 'prompts/p.md' },
     { name: 'tester', role: 'tester', promptTemplate: 'prompts/p.md', dependsOn: ['coder'] },
   ],
+};
+
+/** No declared delivery: the final step's CI read is the only repository check this run gets. */
+const review: Formula = { name: 'review', description: 'review', whenToUse: '', steps: ship.steps };
+const plan: Formula = {
+  name: 'plan', description: 'plan', whenToUse: '',
+  steps: [
+    { name: 'mayor', role: 'mayor', promptTemplate: 'prompts/p.md', planOnly: true },
+    { name: 'coder', role: 'coder', promptTemplate: 'prompts/p.md', dependsOn: ['mayor'] },
+  ],
+};
+/** Reads the final reply as an approval that still has to be confirmed against the PR's checks. */
+const approvingJudge: StepReplyJudge = {
+  async judge() { return { answers: { asks_change: 0.02, blocks_only_on_pending_ci: 0.05, reports_all_gates_passed: 0.5, reports_unverified_check: 0.04 }, model: 'test', inputTokens: 1 }; },
 };
 
 const handles: OrchestrationHandle[] = [];
@@ -86,6 +105,9 @@ interface BootArgs {
   /** project -> checkout path; `false` boots without any registry lookup. */
   readonly registry?: ((roots: { homeRoot: string; otherRoot: string }) => Record<string, string>) | false;
   readonly homeVerifier?: DeliveryVerifier;
+  readonly judge?: StepReplyJudge;
+  /** The path the engine is given for its own checkout; defaults to the real one. */
+  readonly engineRoot?: (homeRoot: string) => string;
 }
 
 async function boot(args: BootArgs) {
@@ -94,24 +116,28 @@ async function boot(args: BootArgs) {
   const homeGh = repoGh('acme/home', args.homePrs);
   const otherGh = repoGh('acme/other', args.otherPrs);
   const ghRoots: string[] = [];
-  const store = Object.assign(new InMemoryDoltClient(), { beadsRoot: homeRoot });
+  const engineRoot = args.engineRoot?.(homeRoot) ?? homeRoot;
+  const store = Object.assign(new InMemoryDoltClient(), { beadsRoot: engineRoot });
   const registry = args.registry === false ? null : (args.registry ?? (({ homeRoot: h, otherRoot: o }) => ({ home: h, other: o })))({ homeRoot, otherRoot });
+  const provider = newFakeProvider({ kind: 'fake', script: (spec: SessionSpec) => reply(spec.role === 'coder' ? `PR ${args.prUrl}` : spec.role === 'mayor' ? 'planned' : 'PASS') });
   const handle = await bootOrchestrationPlane({
     dolt: store as never,
     beadsStore: store as never,
-    provider: newFakeProvider({ kind: 'fake', script: (spec: SessionSpec) => reply(spec.role === 'coder' ? `PR ${args.prUrl}` : 'PASS') }),
+    provider,
     persistEvents: false,
     runDriftAuditOnBoot: false,
     stepTickIntervalMs: 10,
-    projectGh: (root) => { ghRoots.push(root); return root === homeRoot ? homeGh : otherGh; },
+    projectGh: (root) => { ghRoots.push(root); return root === homeRoot || root === engineRoot ? homeGh : otherGh; },
     ...(registry ? { projectRoot: (id: string) => registry[id] ?? null } : {}),
     ...(args.homeVerifier ? { deliveryVerifier: args.homeVerifier } : {}),
+    ...(args.judge ? { stepJudge: args.judge } : {}),
   });
   handles.push(handle);
-  const run = (projectIdentifier?: string) => handle.dispatcher.run({
-    formula: ship, pack: pack(), input: 'go', motivatingBeadId: BEAD, ...(projectIdentifier ? { projectIdentifier } : {}),
+  const run = (projectIdentifier?: string, formula: Formula = ship) => handle.dispatcher.run({
+    formula, pack: pack(), input: 'go', motivatingBeadId: BEAD, ...(projectIdentifier ? { projectIdentifier } : {}),
   });
-  return { run, homeRoot, otherRoot, homeGh, otherGh, ghRoots };
+  const roles = (): string[] => provider.recorder.starts.map((start) => start.role);
+  return { run, roles, registry, homeRoot, engineRoot, otherRoot, homeGh, otherGh, ghRoots };
 }
 
 describe('project bindings built at boot (vibesync-9lzk.55.1)', () => {
@@ -193,5 +219,106 @@ describe('project bindings built at boot (vibesync-9lzk.55.1)', () => {
     expect(prViews(h.homeGh)).toEqual([HOME_PR]);
     // No second gh was built for the link path.
     expect(h.ghRoots).toEqual([h.homeRoot]);
+  });
+
+  it('an engine started through a symlinked path still recognises its own checkout in the registry', async () => {
+    // The verifier passed to boot belongs to the home project. If the engine failed to recognise the
+    // registry's real path as its own checkout, this run would get a separate binding and bypass it.
+    let homeVerifierCalls = 0;
+    const homeVerifier: DeliveryVerifier = {
+      verify: async () => { homeVerifierCalls += 1; return { ok: true, artifact: HOME_PR }; },
+    };
+    const h = await boot({
+      prUrl: HOME_PR,
+      homePrs: [HOME_PR],
+      homeVerifier,
+      engineRoot: (homeRoot) => {
+        const link = join(mkdtempSync(join(tmpdir(), 'vibesync-binding-engine-link-')), 'engine-link');
+        symlinkSync(homeRoot, link);
+        return link;
+      },
+    });
+    expect(h.engineRoot).not.toBe(h.homeRoot);
+    await expect(h.run('home')).resolves.toBeDefined();
+    expect(homeVerifierCalls).toBe(1);
+    // Only the engine's own gh was built: no second binding for the same checkout.
+    expect(h.ghRoots).toEqual([h.engineRoot]);
+  });
+
+  it('a project whose registered checkout changes gets a binding for the new checkout', async () => {
+    const h = await boot({ prUrl: OTHER_PR, otherPrs: [OTHER_PR] });
+    await expect(h.run('other')).resolves.toBeDefined();
+    // The registry row now points at a third checkout (PATCH /api/registry/projects/other).
+    const moved = mkdtempSync(join(tmpdir(), 'vibesync-binding-moved-'));
+    h.registry!['other'] = moved;
+    await expect(h.run('other')).resolves.toBeDefined();
+    expect(h.ghRoots).toEqual([h.homeRoot, h.otherRoot, moved]);
+  });
+
+  it('a registered checkout that does not exist is an unknown project, not the home project', async () => {
+    const h = await boot({ prUrl: HOME_PR, homePrs: [HOME_PR], registry: ({ homeRoot }) => ({ home: homeRoot, gone: '/nonexistent/vibesync-binding-gone' }) });
+    const error = await h.run('gone').catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(FormulaDispatchError);
+    expect(String((error as Error).message)).toContain('gone');
+    expect(prViews(h.homeGh)).toEqual([]);
+  });
+
+  it('the final step does not read CI from a pull request in another repository', async () => {
+    // The reply names a PR that exists and is green, but in the OTHER repository; this run is the home project's.
+    const h = await boot({ prUrl: OTHER_PR, otherPrs: [OTHER_PR], judge: approvingJudge });
+    const error = await h.run('home', review).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(FormulaEscalationError);
+    expect(String((error as Error).message)).toContain('is not in the project repository acme/home');
+    expect(prChecks(h.homeGh)).toEqual([]);
+    expect(prChecks(h.otherGh)).toEqual([]);
+  });
+
+  it('the final step reads CI for a pull request in the run\'s own repository', async () => {
+    const h = await boot({ prUrl: OTHER_PR, otherPrs: [OTHER_PR], judge: approvingJudge });
+    await expect(h.run('other', review)).resolves.toBeDefined();
+    expect(prChecks(h.otherGh)).toEqual([OTHER_PR]);
+    expect(prChecks(h.homeGh)).toEqual([]);
+  });
+
+  it('a plan-only step of a project the registry does not know is blocked; the coder never starts', async () => {
+    const h = await boot({ prUrl: HOME_PR, registry: ({ homeRoot }) => ({ home: homeRoot }) });
+    const error = await h.run('ghost', plan).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(FormulaEscalationError);
+    expect(String((error as Error).message)).toContain('ghost');
+    expect(h.roles()).toEqual(['mayor']);
+  });
+});
+
+describe('gh bound to a checkout (vibesync-9lzk.55.1)', () => {
+  it('runs in the checkout and never inherits GH_REPO', async () => {
+    // A stand-in `gh` on PATH that reports the environment and directory it was started with.
+    const bin = mkdtempSync(join(tmpdir(), 'vibesync-fake-gh-'));
+    writeFileSync(join(bin, 'gh'), '#!/bin/sh\nprintf \'%s|%s\' "${GH_REPO-unset}" "$(pwd -P)"\n');
+    chmodSync(join(bin, 'gh'), 0o755);
+    const checkout = mkdtempSync(join(tmpdir(), 'vibesync-fake-gh-cwd-'));
+    const realCheckout = execFileSync('/bin/sh', ['-c', 'pwd -P'], { cwd: checkout, encoding: 'utf8' }).trim();
+    const before = { path: process.env['PATH'], repo: process.env['GH_REPO'] };
+    process.env['PATH'] = `${bin}:${before.path ?? ''}`;
+    process.env['GH_REPO'] = 'someone/else';
+    try {
+      expect(await createCheckoutGhRunner(checkout)(['repo', 'view'])).toBe(`unset|${realCheckout}`);
+    } finally {
+      process.env['PATH'] = before.path;
+      if (before.repo === undefined) delete process.env['GH_REPO'];
+      else process.env['GH_REPO'] = before.repo;
+    }
+  });
+});
+
+describe('registry lookup for a project checkout (vibesync-9lzk.55.1)', () => {
+  it('returns the registered path, and null for an unknown project or one with no path', () => {
+    const rows: Record<string, { filesystem_path?: string | null }> = {
+      known: { filesystem_path: '/srv/known' }, pathless: { filesystem_path: null }, blank: { filesystem_path: '' },
+    };
+    const lookup = registryProjectRoot({ getProject: (id) => rows[id] ?? null });
+    expect(lookup('known')).toBe('/srv/known');
+    expect(lookup('missing')).toBeNull();
+    expect(lookup('pathless')).toBeNull();
+    expect(lookup('blank')).toBeNull();
   });
 });

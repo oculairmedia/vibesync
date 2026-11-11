@@ -24,7 +24,7 @@ import type { AgentIdResolver, RuntimeProvider } from './runtime/index.js';
 import { startSchedulerDaemon, SCHEDULER_START_FAILED_EVENT } from './scheduler/boot-scheduler.js';
 import { StepDispatcher, StoreReadyStepSource } from './scheduler/step-dispatcher.js';
 import { assertBdVersion } from './bd-version.js';
-import { BeadsStore, createCliRunner, type CommandRunner } from './beads/index.js';
+import { BeadsStore, createCheckoutGhRunner, createCliRunner, type CommandRunner } from './beads/index.js';
 import type { MoleculeStore } from './molecule/molecule.js';
 import type { WritebackStore } from './dispatcher/writeback-hook.js';
 import { createInboxCliAdapter } from './pm-wake/inbox-cli-adapter.js';
@@ -226,6 +226,7 @@ function createRepositoryBinding(gh: CommandRunner, ciCheckNames: readonly strin
     deliveryVerifier: createGhDeliveryVerifier(gh, repositoryTarget),
     shippedWorkProbe: createGhShippedWorkProbe(gh, repositoryTarget),
     prChecks: { reader: createGhPrChecksReader(gh), names: ciCheckNames },
+    repository: async () => (await repositoryTarget()).repository,
   };
 }
 
@@ -234,8 +235,12 @@ function createRepositoryBinding(gh: CommandRunner, ciCheckNames: readonly strin
  * registry lookup, is the home project (the checkout that owns this engine's
  * tracker). A project whose registered checkout IS the home checkout is home
  * too. Any other registered project gets collaborators bound to its own
- * checkout, built once. A project the registry does not know throws: nothing
- * is ever verified in the home repository on its behalf.
+ * checkout. A project the registry does not know throws: nothing is ever
+ * verified in the home repository on its behalf.
+ *
+ * The registry is asked on every call, because a project's checkout path can be
+ * changed while the service runs (PATCH /api/registry/projects/:id). A binding
+ * is reused only while the project still resolves to the same canonical path.
  */
 function buildProjectBindings(args: {
   readonly homeRoot: string;
@@ -244,24 +249,33 @@ function buildProjectBindings(args: {
   readonly ghFor: (root: string) => CommandRunner;
   readonly ciCheckNames: readonly string[];
 }): ProjectBindingResolver {
-  const byProject = new Map<string, ProjectBinding>();
+  // Resolved on first use, not at boot: an engine that is never asked about a
+  // project (single-repository use) needs no home checkout on disk.
+  let homeRoot: string | null = null;
+  const byProject = new Map<string, { readonly root: string; readonly binding: ProjectBinding }>();
   return (projectIdentifier) => {
     if (!projectIdentifier || !args.projectRoot) return args.homeBinding;
+    const registered = args.projectRoot(projectIdentifier);
+    if (!registered) throw new UnknownProjectError(projectIdentifier);
+    const root = canonicalRoot(registered, projectIdentifier);
     const cached = byProject.get(projectIdentifier);
-    if (cached) return cached;
-    const root = args.projectRoot(projectIdentifier);
-    if (!root) throw new UnknownProjectError(projectIdentifier);
-    const binding = sameRealPath(root, args.homeRoot)
-      ? args.homeBinding
-      : createRepositoryBinding(args.ghFor(root), args.ciCheckNames);
-    byProject.set(projectIdentifier, binding);
+    if (cached?.root === root) return cached.binding;
+    homeRoot ??= realpathSync(args.homeRoot);
+    const binding = root === homeRoot ? args.homeBinding : createRepositoryBinding(args.ghFor(root), args.ciCheckNames);
+    byProject.set(projectIdentifier, { root, binding });
     return binding;
   };
 }
 
-function sameRealPath(left: string, right: string): boolean {
-  return realpathSync(left) === realpathSync(right);
+/** The checkout's real path. A registered path that does not exist is as unusable as an unregistered project. */
+function canonicalRoot(registered: string, projectIdentifier: string): string {
+  try {
+    return realpathSync(registered);
+  } catch {
+    throw new UnknownProjectError(projectIdentifier, `registered checkout ${registered} does not exist`);
+  }
 }
+
 
 export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions): Promise<OrchestrationHandle> {
   // vibesync-efee: fail before any side effect when bd is too old for the
@@ -329,7 +343,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   let steps: StepDispatcher | null = null;
   // The home project's gh runs in the checkout that owns this engine's tracker,
   // so `gh repo view` names the repository its runs' PRs live in.
-  const ghFor = opts.projectGh ?? ((cwd: string) => createCliRunner({ binary: 'gh', cwd }));
+  const ghFor = opts.projectGh ?? createCheckoutGhRunner;
   const ciCheckNames = opts.stepCiChecks ?? DEFAULT_STEP_CI_CHECKS;
   const homeRepository = createRepositoryBinding(opts.scheduler?.gh ?? ghFor(opts.dolt.beadsRoot), ciCheckNames);
   // A verifier or probe passed to boot replaces the HOME project's only.
@@ -337,6 +351,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     deliveryVerifier: opts.deliveryVerifier ?? homeRepository.deliveryVerifier,
     shippedWorkProbe: opts.shippedWorkProbe ?? homeRepository.shippedWorkProbe,
     prChecks: homeRepository.prChecks,
+    ...(homeRepository.repository ? { repository: homeRepository.repository } : {}),
   };
   const projectBindings = buildProjectBindings({
     homeRoot: opts.dolt.beadsRoot,

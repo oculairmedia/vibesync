@@ -59,6 +59,16 @@ export function createCliRunner(opts: CliRunnerOptions): CommandRunner {
   };
 }
 
+/**
+ * `gh` bound to one checkout (vibesync-9lzk.55.1). GH_REPO is removed from its
+ * environment: gh uses that variable instead of the working directory to pick
+ * the repository, so an inherited value would point every project's checks at
+ * the same repository.
+ */
+export function createCheckoutGhRunner(cwd: string): CommandRunner {
+  return createCliRunner({ binary: 'gh', cwd, env: { GH_REPO: undefined } });
+}
+
 /** Parse CLI JSON output, tolerating leading non-JSON noise (warnings). */
 export function parseJsonOutput(raw: string, context: string): unknown {
   const start = raw.search(/[[{]/);

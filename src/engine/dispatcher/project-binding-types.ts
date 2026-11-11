@@ -6,6 +6,11 @@ export interface ProjectBinding {
   readonly deliveryVerifier: DeliveryVerifier | null;
   readonly shippedWorkProbe: ShippedWorkProbe | null;
   readonly prChecks: PrChecksOptions | null;
+  /**
+   * `owner/name` of the repository this binding checks, when it is bound to one.
+   * A final step never reads CI from a pull request in any other repository.
+   */
+  readonly repository?: () => Promise<string>;
 }
 
 /**
