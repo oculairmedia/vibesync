@@ -32,6 +32,8 @@ import { MoleculeSettler } from './settlement.js';
 import { ResumeCoordinator } from './resume.js';
 import { StepAttemptRunner } from './step-attempt.js';
 import { StepVerdictReader } from './step-verdict.js';
+import { createProjectBindingResolver } from './project-binding.js';
+import type { ProjectBinding, ProjectBindingResolver } from './project-binding-types.js';
 
 export { FormulaDispatchError, FormulaEscalationError, FormulaCancellationConflictError } from './types.js';
 export type { DispatchInput, ProviderResolver, DispatchResult, CancelResult } from './types.js';
@@ -106,6 +108,7 @@ export interface FormulaDispatcherOptions {
    * CI-shaped verdict fails closed (unsettled), never passes.
    */
   readonly prChecks?: PrChecksOptions;
+  readonly projectBindings?: ProjectBindingResolver;
   /**
    * Called (never throws) right after a molecule is cooked and registered, so
    * the step loop can pick up its first ready steps promptly instead of waiting
@@ -128,7 +131,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
   private readonly maxParallelSteps: number;
   private readonly maxConcurrentMolecules: number;
   private readonly providerResolver: ProviderResolver | null;
-  private readonly deliveryVerifier: DeliveryVerifier | null;
+  private readonly projectBindings: ProjectBindingResolver;
   private readonly projectMemory: ProjectMemorySource | null;
   private readonly stepJudge: StepReplyJudge | null;
   private readonly onMoleculeCooked: ((moleculeId: string) => void) | null;
@@ -151,15 +154,19 @@ export class FormulaDispatcher implements ReadyStepRunner {
     this.maxParallelSteps = normalizeMaxParallelSteps(opts.maxParallelSteps);
     this.maxConcurrentMolecules = normalizeMaxConcurrentMolecules(opts.maxConcurrentMolecules);
     this.providerResolver = opts.providerResolver ?? null;
-    this.deliveryVerifier = opts.deliveryVerifier ?? null;
+    const defaultBinding: ProjectBinding = {
+      deliveryVerifier: opts.deliveryVerifier ?? null,
+      shippedWorkProbe: opts.shippedWorkProbe ?? null,
+      prChecks: opts.prChecks ?? null,
+    };
+    this.projectBindings = opts.projectBindings ?? createProjectBindingResolver(defaultBinding);
     this.projectMemory = opts.projectMemory ?? null;
     this.stepJudge = opts.stepJudge ?? null;
     this.stepVerdict = new StepVerdictReader({
       walker: this.walker,
       emit: this.emit,
       stepJudge: this.stepJudge,
-      prChecks: opts.prChecks ?? null,
-      shippedWorkProbe: opts.shippedWorkProbe ?? null,
+      projectBindings: this.projectBindings,
     });
     this.stepTurn = new StepTurnRunner({
       walker: this.walker,
@@ -171,7 +178,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     this.settler = new MoleculeSettler({
       walker: this.walker,
       live: this.live,
-      deliveryVerifier: this.deliveryVerifier,
+      projectBindings: this.projectBindings,
       defaultProvider: this.defaultProvider,
       providerResolver: this.providerResolver,
       emit: this.emit,
@@ -180,7 +187,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
       walker: this.walker,
       defaultProvider: this.defaultProvider,
       providerResolver: this.providerResolver,
-      deliveryVerifier: this.deliveryVerifier,
+      projectBindings: this.projectBindings,
       emit: this.emit,
       emitRuntimeSessionEvent: this.emitRuntimeSessionEvent,
     });

@@ -2,7 +2,7 @@ import type { MoleculeView, MoleculeWalker } from '../molecule/index.js';
 import type { BeadRow } from '../store/index.js';
 import type { RuntimeProvider, SessionEvent, SessionHandle } from '../runtime/index.js';
 import { parseBlockedOutcome } from './step-outcome.js';
-import type { DeliveryVerifier } from './delivery.js';
+import type { ProjectBindingResolver } from './project-binding-types.js';
 import type { ProviderResolver } from './types.js';
 import {
   FormulaDispatchError,
@@ -19,7 +19,7 @@ export interface ResumeCoordinatorDeps {
   readonly walker: MoleculeWalker;
   readonly defaultProvider: RuntimeProvider;
   readonly providerResolver: ProviderResolver | null;
-  readonly deliveryVerifier: DeliveryVerifier | null;
+  readonly projectBindings: ProjectBindingResolver;
   readonly emit: (kind: string, moleculeId: string | undefined, taskId: string | undefined, payload: Readonly<Record<string, unknown>>) => void;
   readonly emitRuntimeSessionEvent: (event: SessionEvent, context: RuntimeSessionEventContext) => void;
 }
@@ -112,9 +112,10 @@ export class ResumeCoordinator {
     // The run this resumes began when the root was created, not at this resume.
     const runStarted = root.created_at instanceof Date ? root.created_at.getTime() : startedAt;
     if (kind !== 'pull_request') return `molecule records an unknown delivery kind ${JSON.stringify(kind)}`;
-    if (!this.deps.deliveryVerifier) return 'molecule declares delivers = "pull_request" but no delivery verifier is configured';
     try {
-      const verdict = await this.deps.deliveryVerifier.verify({
+      const verifier = this.deps.projectBindings(readProjectIdentifier(root)).deliveryVerifier;
+      if (!verifier) return 'molecule declares delivers = "pull_request" but no delivery verifier is configured';
+      const verdict = await verifier.verify({
         kind, outputs, moleculeId, startedAt: new Date(runStarted),
         ...(motivatingBeadId ? { motivatingBeadId } : {}),
       });
