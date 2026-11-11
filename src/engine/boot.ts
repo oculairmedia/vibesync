@@ -229,11 +229,7 @@ function createProjectBinding(gh: CommandRunner, opts: BootOrchestrationPlaneOpt
 }
 
 function sameRealPath(left: string, right: string): boolean {
-  try {
-    return realpathSync(left) === realpathSync(right);
-  } catch {
-    return left === right;
-  }
+  return realpathSync(left) === realpathSync(right);
 }
 
 export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions): Promise<OrchestrationHandle> {
@@ -307,7 +303,10 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     if (!projectIdentifier || !opts.projectRoot) return homeBinding;
     const root = opts.projectRoot(projectIdentifier);
     if (!root) throw new UnknownProjectError(projectIdentifier);
-    if (sameRealPath(root, opts.dolt.beadsRoot)) return homeBinding;
+    if (sameRealPath(root, opts.dolt.beadsRoot)) {
+      bindingByProject.set(projectIdentifier, homeBinding);
+      return homeBinding;
+    }
     const cached = bindingByProject.get(projectIdentifier);
     if (cached) return cached;
     const binding = createProjectBinding((opts.projectGh ?? ((cwd) => createCliRunner({ binary: 'gh', cwd })))(root), opts);

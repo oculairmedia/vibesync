@@ -131,7 +131,6 @@ export class FormulaDispatcher implements ReadyStepRunner {
   private readonly maxParallelSteps: number;
   private readonly maxConcurrentMolecules: number;
   private readonly providerResolver: ProviderResolver | null;
-  private readonly deliveryVerifier: DeliveryVerifier | null;
   private readonly projectBindings: ProjectBindingResolver;
   private readonly projectMemory: ProjectMemorySource | null;
   private readonly stepJudge: StepReplyJudge | null;
@@ -155,9 +154,8 @@ export class FormulaDispatcher implements ReadyStepRunner {
     this.maxParallelSteps = normalizeMaxParallelSteps(opts.maxParallelSteps);
     this.maxConcurrentMolecules = normalizeMaxConcurrentMolecules(opts.maxConcurrentMolecules);
     this.providerResolver = opts.providerResolver ?? null;
-    this.deliveryVerifier = opts.deliveryVerifier ?? null;
     const defaultBinding: ProjectBinding = {
-      deliveryVerifier: this.deliveryVerifier,
+      deliveryVerifier: opts.deliveryVerifier ?? null,
       shippedWorkProbe: opts.shippedWorkProbe ?? null,
       prChecks: opts.prChecks ?? null,
     };

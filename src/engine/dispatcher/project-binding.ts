@@ -1,7 +1,10 @@
+import type { DeliveryVerifier, ShippedWorkProbe } from './delivery.js';
+import type { PrChecksOptions } from './types.js';
+
 export interface ProjectBinding {
-  readonly deliveryVerifier: import('./delivery.js').DeliveryVerifier | null;
-  readonly shippedWorkProbe: import('./delivery.js').ShippedWorkProbe | null;
-  readonly prChecks: import('./types.js').PrChecksOptions | null;
+  readonly deliveryVerifier: DeliveryVerifier | null;
+  readonly shippedWorkProbe: ShippedWorkProbe | null;
+  readonly prChecks: PrChecksOptions | null;
 }
 
 /** Resolves repository-bound collaborators for one run's project. */
