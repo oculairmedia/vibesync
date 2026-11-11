@@ -100,12 +100,6 @@ export interface ResumedDeliveryArgs {
   readonly motivatingBeadId: string | null;
 }
 
-export interface ProjectBinding {
-  readonly deliveryVerifier: import('./delivery.js').DeliveryVerifier | null;
-  readonly shippedWorkProbe: import('./delivery.js').ShippedWorkProbe | null;
-  readonly prChecks: PrChecksOptions | null;
-}
-
 export interface QueuedMoleculeRun {
   readonly input: DispatchInput;
   readonly resolve: () => void;

@@ -188,7 +188,7 @@ export class StepTurnRunner {
     const declared = bead ? readFailureClass(bead.metadata) : null;
     const blocker = await this.deps.stepVerdict.readStepBlocker({ ...args, stepSpec, stepName, output: output.text, outputs: args.outputs });
     const overstepped = blocker === null && declared === null && stepSpec.planOnly
-      ? await this.deps.stepVerdict.planOnlyViolation(args.input.motivatingBeadId, attemptStartedAt, { moleculeId: args.moleculeId, stepId: args.step.id })
+      ? await this.deps.stepVerdict.planOnlyViolation(args.input.motivatingBeadId, attemptStartedAt, { moleculeId: args.moleculeId, stepId: args.step.id, ...(args.input.projectIdentifier ? { projectIdentifier: args.input.projectIdentifier } : {}) })
       : null;
     const overstepFailure = this.overstepVerdict(overstepped);
     if (overstepFailure !== null) return overstepFailure;

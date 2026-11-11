@@ -5,6 +5,7 @@ import { decideStepVerdict, reconcileWithMarker, settleCi, summarizeReplyForReas
 import { readReviewRound } from '../retry/index.js';
 import { parseBlockedOutcome } from './step-outcome.js';
 import { candidatePullRequests, type ShippedWorkProbe } from './delivery.js';
+import type { ProjectBindingResolver } from './project-binding.js';
 import { FormulaDispatchError, type DispatchInput, type PrChecksOptions } from './types.js';
 import { sleep, stringifyError } from './util.js';
 
@@ -12,8 +13,7 @@ export interface StepVerdictDeps {
   readonly walker: MoleculeWalker;
   readonly emit: (kind: string, moleculeId: string | undefined, taskId: string | undefined, payload: Readonly<Record<string, unknown>>) => void;
   readonly stepJudge: StepReplyJudge | null;
-  readonly prChecks: PrChecksOptions | null;
-  readonly shippedWorkProbe: ShippedWorkProbe | null;
+  readonly projectBindings: ProjectBindingResolver;
 }
 
 export class StepVerdictReader {
@@ -35,6 +35,7 @@ export class StepVerdictReader {
     readonly stepName: string;
     readonly output: string;
     readonly outputs?: Readonly<Record<string, string>>;
+      readonly projectIdentifier?: string;
   }): Promise<string | null> {
     const marker = parseBlockedOutcome(args.output);
     const steps = args.input.formula.steps;
@@ -48,6 +49,7 @@ export class StepVerdictReader {
       stepName: args.stepName,
       output: args.output,
       ...(args.outputs ? { outputs: args.outputs } : {}),
+      ...(args.input.projectIdentifier ? { projectIdentifier: args.input.projectIdentifier } : {}),
       marker,
       finalStep,
     });
@@ -60,6 +62,7 @@ export class StepVerdictReader {
     readonly stepName: string;
     readonly output: string;
     readonly outputs?: Readonly<Record<string, string>>;
+    readonly projectIdentifier?: string;
     readonly marker: string | null;
     readonly finalStep: boolean;
   }): Promise<string | null> {
@@ -93,21 +96,28 @@ export class StepVerdictReader {
     readonly stepName: string;
     readonly output: string;
     readonly outputs?: Readonly<Record<string, string>>;
+    readonly projectIdentifier?: string;
     readonly reason: string;
     readonly from: 'approve' | 'pending';
     readonly summary: string;
   }): Promise<StepVerdict> {
     const prUrl = candidatePullRequests({ ...(args.outputs ?? {}), [args.stepName]: args.output }).at(-1);
-    if (this.canApproveWithoutReadableCi(args.from, prUrl)) return { kind: 'approve' };
-    if (!this.deps.prChecks || !prUrl) return this.unreadableCiVerdict(args, prUrl);
+    let cfg: PrChecksOptions | null;
+    try {
+      cfg = this.deps.projectBindings(args.projectIdentifier).prChecks;
+    } catch (err) {
+      return { kind: 'unsettled', reason: `${args.reason}, but project binding failed (${stringifyError(err)}): ${args.summary}` };
+    }
+    if (this.canApproveWithoutReadableCi(args.from, prUrl, cfg)) return { kind: 'approve' };
+    if (!cfg || !prUrl) return this.unreadableCiVerdict(args, prUrl);
     return this.readFinalStepCi({
       step: args.step, moleculeId: args.moleculeId, stepName: args.stepName,
-      prUrl, reason: args.reason, summary: args.summary, cfg: this.deps.prChecks,
+      prUrl, reason: args.reason, summary: args.summary, cfg,
     });
   }
 
-  private canApproveWithoutReadableCi(from: 'approve' | 'pending', prUrl: string | undefined): boolean {
-    return from === 'approve' && (!this.deps.prChecks || !prUrl);
+  private canApproveWithoutReadableCi(from: 'approve' | 'pending', prUrl: string | undefined, cfg: PrChecksOptions | null): boolean {
+    return from === 'approve' && (!cfg || !prUrl);
   }
 
   private async readFinalStepCi(args: {
@@ -239,11 +249,13 @@ export class StepVerdictReader {
   async planOnlyViolation(
     bead: string | undefined,
     since: Date,
-    context: { readonly moleculeId: string; readonly stepId: string },
+    context: { readonly moleculeId: string; readonly stepId: string; readonly projectIdentifier?: string },
   ): Promise<string | null> {
-    if (!this.deps.shippedWorkProbe || !bead) return null;
+    if (!bead) return null;
     try {
-      const prs = await this.deps.shippedWorkProbe.pullRequestsOpenedSince(bead, since);
+      const probe: ShippedWorkProbe | null = this.deps.projectBindings(context.projectIdentifier).shippedWorkProbe;
+      if (!probe) return null;
+      const prs = await probe.pullRequestsOpenedSince(bead, since);
       if (prs.length === 0) return null;
       return `plan-only step shipped work: it opened ${prs.join(', ')} for ${bead}; planning steps must not edit, commit, push or open pull requests`;
     } catch (error) {
