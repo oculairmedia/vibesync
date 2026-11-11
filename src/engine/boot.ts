@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import {
   createGhDeliveryVerifier,
   createGhShippedWorkProbe,
@@ -7,6 +8,9 @@ import {
   createGhPrChecksReader,
   type ProjectMemorySource,
   type DeliveryVerifier,
+  type ProjectBinding,
+  type ProjectBindingResolver,
+  UnknownProjectError,
   FormulaDispatcher,
   installWritebackHook,
   type ProviderResolver,
@@ -86,6 +90,10 @@ export interface BootOrchestrationPlaneOptions {
    * `gh` CLI (the scheduler's gh runner when supplied, else `gh` on PATH).
    */
   readonly deliveryVerifier?: DeliveryVerifier;
+  /** Checkout path of a registered project, or null when the registry does not know it. */
+  readonly projectRoot?: (projectIdentifier: string) => string | null;
+  /** Test seam for constructing repository-bound GitHub collaborators. */
+  readonly projectGh?: (root: string) => CommandRunner;
   /**
    * Codebase memories injected into step prompts (vibesync-9lzk.25), keyed by
    * the step's project. Supplied by the app, which can resolve a project's
@@ -211,6 +219,23 @@ export async function releaseDoltAfterFailedBoot(
 /** vibesync-9lzk.46: the fast checks a final step waits on; integration-bd gates the merge only. */
 export const DEFAULT_STEP_CI_CHECKS: readonly string[] = ['typecheck', 'test (20.x)', 'boot'];
 
+function createProjectBinding(gh: CommandRunner, opts: BootOrchestrationPlaneOptions): ProjectBinding {
+  const repositoryTarget = ghRepositoryTarget(gh);
+  return {
+    deliveryVerifier: opts.deliveryVerifier ?? createGhDeliveryVerifier(gh, repositoryTarget),
+    shippedWorkProbe: opts.shippedWorkProbe ?? createGhShippedWorkProbe(gh, repositoryTarget),
+    prChecks: { reader: createGhPrChecksReader(gh), names: opts.stepCiChecks ?? DEFAULT_STEP_CI_CHECKS },
+  };
+}
+
+function sameRealPath(left: string, right: string): boolean {
+  try {
+    return realpathSync(left) === realpathSync(right);
+  } catch {
+    return left === right;
+  }
+}
+
 export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions): Promise<OrchestrationHandle> {
   // vibesync-efee: fail before any side effect when bd is too old for the
   // primitives formula steps depend on.
@@ -275,10 +300,20 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   // vibesync-efee: steps are beads; the bead graph decides what is ready and
   // the StepDispatcher offers it to the dispatcher. A cooked molecule wakes it.
   let steps: StepDispatcher | null = null;
-  // The scheduler's gh runs in the project checkout, so `gh repo view` names
-  // the repository a run's PRs live in (delivery check and plan-only guard).
-  const projectGh = opts.scheduler?.gh ?? createCliRunner({ binary: 'gh', cwd: opts.dolt.beadsRoot });
-  const repositoryTarget = ghRepositoryTarget(projectGh);
+  const homeGh = opts.scheduler?.gh ?? createCliRunner({ binary: 'gh', cwd: opts.dolt.beadsRoot });
+  const homeBinding = createProjectBinding(homeGh, opts);
+  const bindingByProject = new Map<string, ProjectBinding>();
+  const projectBindings: ProjectBindingResolver = (projectIdentifier) => {
+    if (!projectIdentifier || !opts.projectRoot) return homeBinding;
+    const root = opts.projectRoot(projectIdentifier);
+    if (!root) throw new UnknownProjectError(projectIdentifier);
+    if (sameRealPath(root, opts.dolt.beadsRoot)) return homeBinding;
+    const cached = bindingByProject.get(projectIdentifier);
+    if (cached) return cached;
+    const binding = createProjectBinding((opts.projectGh ?? ((cwd) => createCliRunner({ binary: 'gh', cwd })))(root), opts);
+    bindingByProject.set(projectIdentifier, binding);
+    return binding;
+  };
   const dispatcher = new FormulaDispatcher({
     provider,
     walker,
@@ -288,10 +323,8 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     ...(maxConcurrentMolecules === undefined ? {} : { maxConcurrentMolecules }),
     ...(providerResolver ? { providerResolver } : {}),
     ...(opts.projectMemory ? { projectMemory: opts.projectMemory } : {}),
-    deliveryVerifier: opts.deliveryVerifier ?? createGhDeliveryVerifier(projectGh, repositoryTarget),
-    shippedWorkProbe: opts.shippedWorkProbe ?? createGhShippedWorkProbe(projectGh, repositoryTarget),
+    projectBindings,
     ...(opts.stepJudge ? { stepJudge: opts.stepJudge } : {}),
-    prChecks: { reader: createGhPrChecksReader(projectGh), names: opts.stepCiChecks ?? DEFAULT_STEP_CI_CHECKS },
   });
 
   steps = new StepDispatcher({

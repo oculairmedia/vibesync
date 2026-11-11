@@ -130,6 +130,7 @@ async function bootEngine(db: Registry): Promise<OrchestrationHandle | null> {
           gh: projectCli(db, 'gh', 'vibesync-scheduler'),
         },
         waits: { config: config.waits, logger, bd: projectCli(db, 'bd', 'vibesync-waits') },
+        projectRoot: (projectIdentifier) => db.getProject(projectIdentifier)?.filesystem_path ?? null,
         // vibesync-9lzk.25: each step reads ITS project's codebase memories,
         // through that project's own checkout; memories never cross projects.
         // vibesync-9lzk.39: reviewing/testing step replies are read by the Jev
