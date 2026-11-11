@@ -1,9 +1,4 @@
-import type { ProjectBinding as ProjectBindingType } from './project-binding-types.js';
-
-export type ProjectBinding = ProjectBindingType;
-
-/** Resolves repository-bound collaborators for one run's project. */
-export type ProjectBindingResolver = (projectIdentifier: string | undefined) => ProjectBinding;
+import type { ProjectBinding, ProjectBindingResolver } from './project-binding-types.js';
 
 export class UnknownProjectError extends Error {
   constructor(readonly projectIdentifier: string) {
@@ -12,6 +7,7 @@ export class UnknownProjectError extends Error {
   }
 }
 
+/** One binding for every project: a dispatcher built without a resolver (single-repository use). */
 export function createProjectBindingResolver(binding: ProjectBinding): ProjectBindingResolver {
   return () => binding;
 }
