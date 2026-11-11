@@ -188,7 +188,7 @@ export class StepTurnRunner {
     const declared = bead ? readFailureClass(bead.metadata) : null;
     const blocker = await this.deps.stepVerdict.readStepBlocker({ ...args, stepSpec, stepName, output: output.text, outputs: args.outputs });
     const overstepped = blocker === null && declared === null && stepSpec.planOnly
-      ? await this.deps.stepVerdict.planOnlyViolation(args.input.motivatingBeadId, attemptStartedAt, { moleculeId: args.moleculeId, stepId: args.step.id })
+      ? await this.deps.stepVerdict.planOnlyViolation(args.input.motivatingBeadId, attemptStartedAt, planOnlyContext(args))
       : null;
     const overstepFailure = this.overstepVerdict(overstepped);
     if (overstepFailure !== null) return overstepFailure;
@@ -335,4 +335,10 @@ export class StepTurnRunner {
     return { trace, outcomeLabel: decision.action === 'soft_fail' ? 'soft_failed' : decision.outcome };
   }
 
+}
+
+/** What the plan-only guard needs to know about the run: where its events go and whose repository to probe. */
+function planOnlyContext(args: StepRunArgs): { readonly moleculeId: string; readonly stepId: string; readonly projectIdentifier?: string } {
+  const projectIdentifier = args.input.projectIdentifier;
+  return { moleculeId: args.moleculeId, stepId: args.step.id, ...(projectIdentifier ? { projectIdentifier } : {}) };
 }

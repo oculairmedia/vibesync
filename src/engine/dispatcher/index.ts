@@ -6,6 +6,8 @@ export type {
   FormulaDispatcherOptions,
   ProviderResolver,
 } from './dispatcher.js';
+export { UnknownProjectError } from './project-binding.js';
+export type { ProjectBinding, ProjectBindingResolver } from './project-binding-types.js';
 export { renderTemplate } from './render.js';
 export type { RenderInput } from './render.js';
 export { installWritebackHook } from './writeback-hook.js';

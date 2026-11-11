@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import {
   createGhDeliveryVerifier,
   createGhShippedWorkProbe,
@@ -7,6 +8,9 @@ import {
   createGhPrChecksReader,
   type ProjectMemorySource,
   type DeliveryVerifier,
+  type ProjectBinding,
+  type ProjectBindingResolver,
+  UnknownProjectError,
   FormulaDispatcher,
   installWritebackHook,
   type ProviderResolver,
@@ -20,7 +24,7 @@ import type { AgentIdResolver, RuntimeProvider } from './runtime/index.js';
 import { startSchedulerDaemon, SCHEDULER_START_FAILED_EVENT } from './scheduler/boot-scheduler.js';
 import { StepDispatcher, StoreReadyStepSource } from './scheduler/step-dispatcher.js';
 import { assertBdVersion } from './bd-version.js';
-import { BeadsStore, createCliRunner, type CommandRunner } from './beads/index.js';
+import { BeadsStore, createCheckoutGhRunner, createCliRunner, type CommandRunner } from './beads/index.js';
 import type { MoleculeStore } from './molecule/molecule.js';
 import type { WritebackStore } from './dispatcher/writeback-hook.js';
 import { createInboxCliAdapter } from './pm-wake/inbox-cli-adapter.js';
@@ -86,6 +90,10 @@ export interface BootOrchestrationPlaneOptions {
    * `gh` CLI (the scheduler's gh runner when supplied, else `gh` on PATH).
    */
   readonly deliveryVerifier?: DeliveryVerifier;
+  /** Checkout path of a registered project, or null when the registry does not know it. */
+  readonly projectRoot?: (projectIdentifier: string) => string | null;
+  /** The gh bound to a checkout (the home one included). Tests inject a fake; production runs the real CLI there. */
+  readonly projectGh?: (root: string) => CommandRunner;
   /**
    * Codebase memories injected into step prompts (vibesync-9lzk.25), keyed by
    * the step's project. Supplied by the app, which can resolve a project's
@@ -211,6 +219,64 @@ export async function releaseDoltAfterFailedBoot(
 /** vibesync-9lzk.46: the fast checks a final step waits on; integration-bd gates the merge only. */
 export const DEFAULT_STEP_CI_CHECKS: readonly string[] = ['typecheck', 'test (20.x)', 'boot'];
 
+/** Repository-bound collaborators for one checkout, all built from the gh that runs there. */
+function createRepositoryBinding(gh: CommandRunner, ciCheckNames: readonly string[]): ProjectBinding {
+  const repositoryTarget = ghRepositoryTarget(gh);
+  return {
+    deliveryVerifier: createGhDeliveryVerifier(gh, repositoryTarget),
+    shippedWorkProbe: createGhShippedWorkProbe(gh, repositoryTarget),
+    prChecks: { reader: createGhPrChecksReader(gh), names: ciCheckNames },
+    repository: async () => (await repositoryTarget()).repository,
+  };
+}
+
+/**
+ * vibesync-9lzk.55.1: the binding for a run's project. No project, or no
+ * registry lookup, is the home project (the checkout that owns this engine's
+ * tracker). A project whose registered checkout IS the home checkout is home
+ * too. Any other registered project gets collaborators bound to its own
+ * checkout. A project the registry does not know throws: nothing is ever
+ * verified in the home repository on its behalf.
+ *
+ * The registry is asked on every call, because a project's checkout path can be
+ * changed while the service runs (PATCH /api/registry/projects/:id). A binding
+ * is reused only while the project still resolves to the same canonical path.
+ */
+function buildProjectBindings(args: {
+  readonly homeRoot: string;
+  readonly homeBinding: ProjectBinding;
+  readonly projectRoot: ((projectIdentifier: string) => string | null) | undefined;
+  readonly ghFor: (root: string) => CommandRunner;
+  readonly ciCheckNames: readonly string[];
+}): ProjectBindingResolver {
+  // Resolved on first use, not at boot: an engine that is never asked about a
+  // project (single-repository use) needs no home checkout on disk.
+  let homeRoot: string | null = null;
+  const byProject = new Map<string, { readonly root: string; readonly binding: ProjectBinding }>();
+  return (projectIdentifier) => {
+    if (!projectIdentifier || !args.projectRoot) return args.homeBinding;
+    const registered = args.projectRoot(projectIdentifier);
+    if (!registered) throw new UnknownProjectError(projectIdentifier);
+    const root = canonicalRoot(registered, projectIdentifier);
+    const cached = byProject.get(projectIdentifier);
+    if (cached?.root === root) return cached.binding;
+    homeRoot ??= realpathSync(args.homeRoot);
+    const binding = root === homeRoot ? args.homeBinding : createRepositoryBinding(args.ghFor(root), args.ciCheckNames);
+    byProject.set(projectIdentifier, { root, binding });
+    return binding;
+  };
+}
+
+/** The checkout's real path. A registered path that does not exist is as unusable as an unregistered project. */
+function canonicalRoot(registered: string, projectIdentifier: string): string {
+  try {
+    return realpathSync(registered);
+  } catch {
+    throw new UnknownProjectError(projectIdentifier, `registered checkout ${registered} does not exist`);
+  }
+}
+
+
 export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions): Promise<OrchestrationHandle> {
   // vibesync-efee: fail before any side effect when bd is too old for the
   // primitives formula steps depend on.
@@ -275,10 +341,27 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   // vibesync-efee: steps are beads; the bead graph decides what is ready and
   // the StepDispatcher offers it to the dispatcher. A cooked molecule wakes it.
   let steps: StepDispatcher | null = null;
-  // The scheduler's gh runs in the project checkout, so `gh repo view` names
-  // the repository a run's PRs live in (delivery check and plan-only guard).
-  const projectGh = opts.scheduler?.gh ?? createCliRunner({ binary: 'gh', cwd: opts.dolt.beadsRoot });
-  const repositoryTarget = ghRepositoryTarget(projectGh);
+  // The home project's gh runs in the checkout that owns this engine's tracker,
+  // so `gh repo view` names the repository its runs' PRs live in. It is never
+  // the scheduler's gh: that one belongs to the SCHEDULED project, which can be
+  // unset (scheduler off) or a different checkout.
+  const ghFor = opts.projectGh ?? createCheckoutGhRunner;
+  const ciCheckNames = opts.stepCiChecks ?? DEFAULT_STEP_CI_CHECKS;
+  const homeRepository = createRepositoryBinding(ghFor(opts.dolt.beadsRoot), ciCheckNames);
+  // A verifier or probe passed to boot replaces the HOME project's only.
+  const homeBinding: ProjectBinding = {
+    deliveryVerifier: opts.deliveryVerifier ?? homeRepository.deliveryVerifier,
+    shippedWorkProbe: opts.shippedWorkProbe ?? homeRepository.shippedWorkProbe,
+    prChecks: homeRepository.prChecks,
+    ...(homeRepository.repository ? { repository: homeRepository.repository } : {}),
+  };
+  const projectBindings = buildProjectBindings({
+    homeRoot: opts.dolt.beadsRoot,
+    homeBinding,
+    projectRoot: opts.projectRoot,
+    ghFor,
+    ciCheckNames,
+  });
   const dispatcher = new FormulaDispatcher({
     provider,
     walker,
@@ -288,10 +371,8 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     ...(maxConcurrentMolecules === undefined ? {} : { maxConcurrentMolecules }),
     ...(providerResolver ? { providerResolver } : {}),
     ...(opts.projectMemory ? { projectMemory: opts.projectMemory } : {}),
-    deliveryVerifier: opts.deliveryVerifier ?? createGhDeliveryVerifier(projectGh, repositoryTarget),
-    shippedWorkProbe: opts.shippedWorkProbe ?? createGhShippedWorkProbe(projectGh, repositoryTarget),
+    projectBindings,
     ...(opts.stepJudge ? { stepJudge: opts.stepJudge } : {}),
-    prChecks: { reader: createGhPrChecksReader(projectGh), names: opts.stepCiChecks ?? DEFAULT_STEP_CI_CHECKS },
   });
 
   steps = new StepDispatcher({

@@ -1,14 +1,14 @@
 import type { MoleculeWalker } from '../molecule/index.js';
 import type { BeadRow } from '../store/index.js';
 import type { RuntimeProvider } from '../runtime/index.js';
-import type { DeliveryVerifier } from './delivery.js';
+import type { ProjectBindingResolver } from './project-binding-types.js';
 import { FormulaCancellationConflictError, FormulaDispatchError, type CancelResult, type DispatchInput, type MoleculeRun, type ProviderResolver } from './types.js';
 import { readExec, readStepName, readStepRole, readString, stringifyError } from './util.js';
 
 export interface MoleculeSettlerDeps {
   readonly walker: MoleculeWalker;
   readonly live: Map<string, MoleculeRun>;
-  readonly deliveryVerifier: DeliveryVerifier | null;
+  readonly projectBindings: ProjectBindingResolver;
   readonly defaultProvider: RuntimeProvider;
   readonly providerResolver: ProviderResolver | null;
   readonly emit: (kind: string, moleculeId: string | undefined, taskId: string | undefined, payload: Readonly<Record<string, unknown>>) => void;
@@ -114,9 +114,10 @@ export class MoleculeSettler {
   private async checkDelivery(run: MoleculeRun): Promise<string | null> {
     const kind = run.input.formula.delivers;
     if (kind === undefined) return null;
-    if (!this.deps.deliveryVerifier) return `formula "${run.input.formula.name}" declares delivers = "${kind}" but no delivery verifier is configured`;
     try {
-      const verdict = await this.deps.deliveryVerifier.verify({
+      const verifier = this.deps.projectBindings(run.input.projectIdentifier).deliveryVerifier;
+      if (!verifier) return `formula "${run.input.formula.name}" declares delivers = "${kind}" but no delivery verifier is configured`;
+      const verdict = await verifier.verify({
         kind, outputs: run.outputs, moleculeId: run.moleculeId, startedAt: new Date(run.startedAt),
         ...(run.input.motivatingBeadId ? { motivatingBeadId: run.input.motivatingBeadId } : {}),
       });
