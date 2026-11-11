@@ -102,7 +102,7 @@ export class ProjectRegistry {
 
       results.discovered++;
       try {
-        this._registerDir(dirPath, { hasGit });
+        this._registerDir(dirPath, { hasGit, provision: false });
         results.updated++;
       } catch (err) {
         const msg = `Failed to register ${dirPath}: ${(err as Error).message}`;
@@ -142,7 +142,7 @@ export class ProjectRegistry {
 
     const hasGit = fs.existsSync(path.join(absPath, '.git'));
     // An explicit registration is a deliberate (re)activation.
-    this._registerDir(absPath, { hasGit, reactivate: true });
+    this._registerDir(absPath, { hasGit, reactivate: true, provision: true });
 
     const folderName = path.basename(absPath);
     return this.getProjectByPath(absPath) || this.getProject(folderName);
@@ -217,7 +217,7 @@ export class ProjectRegistry {
    * status: re-registering every repo as `active` would silently resurrect
    * archived (deprecated) projects on each restart.
    */
-  private _registerDir(dirPath: string, { hasGit, reactivate = false }: { hasGit: boolean; reactivate?: boolean }): void {
+  private _registerDir(dirPath: string, { hasGit, reactivate = false, provision }: { hasGit: boolean; reactivate?: boolean; provision: boolean }): void {
     const folderName = path.basename(dirPath);
     const now = Date.now();
 
@@ -236,14 +236,16 @@ export class ProjectRegistry {
     });
     this.db.setProjectScan(identifier, techStack, now);
 
-    // Never provision (bd init, add a remote) a project an operator archived;
-    // only an explicit registration reactivates it.
-    if (existing && !reactivate && existing.status !== 'active') return;
+    if (!provision) return;
 
     try {
       const rig = ensureRig(dirPath);
       if (rig.action !== 'none' && rig.action !== 'skipped') {
-        this.log.info({ dirPath, action: rig.action, message: rig.message }, 'Rig auto-provisioned');
+        if (rig.ok) {
+          this.log.info({ dirPath, action: rig.action, message: rig.message }, 'Rig auto-provisioned');
+        } else {
+          this.log.warn({ dirPath, action: rig.action, message: rig.message }, 'Rig auto-provisioning failed');
+        }
         if (rig.ok && rig.remoteUrl) {
           this.db.setBeadsRemoteResult(identifier, { ok: true, remoteUrl: rig.remoteUrl }, now);
           this.onRigEvent?.({ type: 'rig:provisioned', projectId: identifier, action: rig.action, remoteUrl: rig.remoteUrl });

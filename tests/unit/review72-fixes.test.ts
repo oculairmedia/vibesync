@@ -65,17 +65,17 @@ describe('archiving and provisioning', () => {
     expect(db.listRoleAgents('p')).toHaveLength(1);
   });
 
-  it('a boot scan never provisions an archived project; explicit registration does', () => {
+  it('boot scans never provision projects; explicit registration does, including archived projects', () => {
     const repo = path.join(dir, 'stacks', 'old-proj');
     fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
     const ensureRig = vi.spyOn(provisioner, 'ensureRig').mockReturnValue({ ok: true, action: 'none', message: '' } as never);
     const registry = new ProjectRegistry({ db, baseDir: path.join(dir, 'stacks') });
     registry.scanProjects();
-    expect(ensureRig).toHaveBeenCalledTimes(1);
+    expect(ensureRig).toHaveBeenCalledTimes(0);
     registry.archiveProject('old-proj');
     registry.scanProjects();
-    expect(ensureRig).toHaveBeenCalledTimes(1);
+    expect(ensureRig).toHaveBeenCalledTimes(0);
     registry.registerProject(repo);
-    expect(ensureRig).toHaveBeenCalledTimes(2);
+    expect(ensureRig).toHaveBeenCalledTimes(1);
   });
 });
