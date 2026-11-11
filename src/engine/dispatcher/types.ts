@@ -5,6 +5,7 @@ import type { Pack, RoleConfig } from '../packs/index.js';
 import type { RuntimeProvider } from '../runtime/index.js';
 import type { PrChecksReader } from '../verdict/index.js';
 import type { FailureKind, FailureSignal, ResolvedRetryPolicy, RetryState } from '../retry/index.js';
+export type { ProjectBindingResolver } from './project-binding.js';
 
 export interface PrChecksOptions {
   readonly reader: PrChecksReader;
@@ -97,6 +98,12 @@ export interface ResumedDeliveryArgs {
   readonly outputs: Record<string, string>;
   readonly startedAt: number;
   readonly motivatingBeadId: string | null;
+}
+
+export interface ProjectBinding {
+  readonly deliveryVerifier: import('./delivery.js').DeliveryVerifier | null;
+  readonly shippedWorkProbe: import('./delivery.js').ShippedWorkProbe | null;
+  readonly prChecks: PrChecksOptions | null;
 }
 
 export interface QueuedMoleculeRun {
