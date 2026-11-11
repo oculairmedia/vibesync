@@ -2,7 +2,7 @@ import type { MoleculeView, MoleculeWalker } from '../molecule/index.js';
 import type { BeadRow } from '../store/index.js';
 import type { RuntimeProvider, SessionEvent, SessionHandle } from '../runtime/index.js';
 import { parseBlockedOutcome } from './step-outcome.js';
-import type { ProjectBindingResolver } from './project-binding.js';
+import type { ProjectBindingResolver } from './project-binding-types.js';
 import type { ProviderResolver } from './types.js';
 import {
   FormulaDispatchError,

@@ -5,7 +5,7 @@ import { decideStepVerdict, reconcileWithMarker, settleCi, summarizeReplyForReas
 import { readReviewRound } from '../retry/index.js';
 import { parseBlockedOutcome } from './step-outcome.js';
 import { candidatePullRequests, type ShippedWorkProbe } from './delivery.js';
-import type { ProjectBindingResolver } from './project-binding.js';
+import type { ProjectBindingResolver } from './project-binding-types.js';
 import { FormulaDispatchError, type DispatchInput, type PrChecksOptions } from './types.js';
 import { sleep, stringifyError } from './util.js';
 

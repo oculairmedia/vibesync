@@ -32,8 +32,8 @@ import { MoleculeSettler } from './settlement.js';
 import { ResumeCoordinator } from './resume.js';
 import { StepAttemptRunner } from './step-attempt.js';
 import { StepVerdictReader } from './step-verdict.js';
-import { createProjectBindingResolver, type ProjectBindingResolver } from './project-binding.js';
-import type { ProjectBinding } from './project-binding.js';
+import { createProjectBindingResolver } from './project-binding.js';
+import type { ProjectBinding, ProjectBindingResolver } from './project-binding-types.js';
 
 export { FormulaDispatchError, FormulaEscalationError, FormulaCancellationConflictError } from './types.js';
 export type { DispatchInput, ProviderResolver, DispatchResult, CancelResult } from './types.js';

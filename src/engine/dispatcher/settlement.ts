@@ -1,7 +1,7 @@
 import type { MoleculeWalker } from '../molecule/index.js';
 import type { BeadRow } from '../store/index.js';
 import type { RuntimeProvider } from '../runtime/index.js';
-import type { ProjectBindingResolver } from './project-binding.js';
+import type { ProjectBindingResolver } from './project-binding-types.js';
 import { FormulaCancellationConflictError, FormulaDispatchError, type CancelResult, type DispatchInput, type MoleculeRun, type ProviderResolver } from './types.js';
 import { readExec, readStepName, readStepRole, readString, stringifyError } from './util.js';
 

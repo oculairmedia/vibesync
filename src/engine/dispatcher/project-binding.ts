@@ -1,11 +1,6 @@
-import type { DeliveryVerifier, ShippedWorkProbe } from './delivery.js';
-import type { PrChecksOptions } from './types.js';
+import type { ProjectBinding as ProjectBindingType } from './project-binding-types.js';
 
-export interface ProjectBinding {
-  readonly deliveryVerifier: DeliveryVerifier | null;
-  readonly shippedWorkProbe: ShippedWorkProbe | null;
-  readonly prChecks: PrChecksOptions | null;
-}
+export type ProjectBinding = ProjectBindingType;
 
 /** Resolves repository-bound collaborators for one run's project. */
 export type ProjectBindingResolver = (projectIdentifier: string | undefined) => ProjectBinding;
