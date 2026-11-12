@@ -102,6 +102,9 @@ describe('cross-project writeback', () => {
   it('treats only bd exact bead-not-found output as a missing bead', async () => {
     expect(await createBdProjectBeadStore(fakeBd({}, [])).getBead(WORK_BEAD)).toBeNull();
     await expect(createBdProjectBeadStore(fakeBd({}, [], 'database not found')).getBead(WORK_BEAD)).rejects.toThrow('database not found');
+    await expect(createBdProjectBeadStore(async () => '[]').getBead(WORK_BEAD)).rejects.toThrow('invalid bead response');
+    await expect(createBdProjectBeadStore(async () => '[{"id":"different-id"}]').getBead(WORK_BEAD)).rejects.toThrow('mismatched bead id');
+    await expect(createBdProjectBeadStore(async () => '[{"title":"missing id"}]').getBead(WORK_BEAD)).rejects.toThrow('mismatched bead id');
   });
 
   it('uses the engine store for runs without a project and for the home project', async () => {

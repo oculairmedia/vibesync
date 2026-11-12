@@ -24,10 +24,10 @@ export function createBdProjectBeadStore(bd: CommandRunner): ProjectBeadStore {
       throw error;
     }
     const parsed = parseJsonOutput(raw, `bd show ${id}`);
-    const row = Array.isArray(parsed) ? parsed[0] : parsed;
-    if (!row || typeof row !== 'object') return null;
+    const row = Array.isArray(parsed) ? parsed.length === 1 ? parsed[0] : null : parsed;
+    if (!row || typeof row !== 'object') throw new Error(`bd show ${id} returned an invalid bead response`);
     const r = row as Record<string, unknown>;
-    if (typeof r['id'] !== 'string' || r['id'] !== id) return null;
+    if (typeof r['id'] !== 'string' || r['id'] !== id) throw new Error(`bd show ${id} returned a mismatched bead id`);
     const str = (key: string, fallback = ''): string => typeof r[key] === 'string' ? r[key] as string : fallback;
     const date = (key: string): Date | null => typeof r[key] === 'string' ? new Date(r[key] as string) : null;
     return {

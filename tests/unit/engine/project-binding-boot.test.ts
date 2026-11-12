@@ -161,17 +161,18 @@ async function boot(args: BootArgs) {
       store.beads.set(rootArgs.id, { ...row, metadata: { ...row.metadata, projectIdentifier: rootArgs.projectIdentifier } });
     }
   };
+  const engineStore = store;
   handles.push(handle);
   const run = (projectIdentifier?: string, formula: Formula = ship) => handle.dispatcher.run({
     formula, pack: pack(), input: 'go', motivatingBeadId: BEAD, ...(projectIdentifier ? { projectIdentifier } : {}),
   });
-  const waitForNote = async (): Promise<void> => {
-    for (let attempt = 0; attempt < 100 && completionNotes.length === 0; attempt++) {
+  const waitForNote = async (done: () => boolean): Promise<void> => {
+    for (let attempt = 0; attempt < 100 && !done(); attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
   };
   const roles = (): string[] => provider.recorder.starts.map((start) => start.role);
-  return { run, roles, registry, homeRoot, engineRoot, otherRoot, homeGh, otherGh, ghRoots, ghByRoot, bdRoots, completionNotes, waitForNote };
+  return { run, roles, registry, homeRoot, engineRoot, otherRoot, homeGh, otherGh, ghRoots, ghByRoot, bdRoots, completionNotes, waitForNote, engineStore };
 }
 
 describe('project bindings built at boot (vibesync-9lzk.55.1)', () => {
@@ -188,8 +189,10 @@ describe('project bindings built at boot (vibesync-9lzk.55.1)', () => {
         throw new Error(`unexpected bd ${bdArgs.join(' ')}`);
       },
     });
-    await expect(h.run('other')).resolves.toBeDefined();
-    await h.waitForNote();
+    const run = await h.run('other');
+    const root = run.moleculeId;
+    await h.waitForNote(() => work.notes.includes('formula ship completed') && h.completionNotes.length === 0 &&
+      h.engineStore.beads.get(root)?.metadata.exec?.['writeback_status'] === 'completed');
     expect(work.notes).toContain('formula ship completed');
     expect(h.completionNotes).toEqual([]);
     expect(calls.map((call) => call.split(':').at(-1))).toEqual(['show', 'show', 'update']);
@@ -208,7 +211,7 @@ describe('project bindings built at boot (vibesync-9lzk.55.1)', () => {
       },
     });
     await expect(h.run('other')).resolves.toBeDefined();
-    await h.waitForNote();
+    await h.waitForNote(() => noted.length > 0);
     noted.splice(0);
     const moved = mkdtempSync(join(tmpdir(), 'vibesync-binding-moved-bd-'));
     h.ghByRoot.set(moved, repoGh('acme/other', [OTHER_PR]));
