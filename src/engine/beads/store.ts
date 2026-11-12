@@ -7,7 +7,7 @@
  * and WritebackStore ports, so callers do not know which path a call takes.
  */
 import type { MoleculeStore } from '../molecule/molecule.js';
-import type { WritebackStore } from '../dispatcher/writeback-hook.js';
+import type { WritebackStore } from '../molecule/index.js';
 import type { BeadRow, DependencyRow } from '../store/index.js';
 import type { CommandRunner } from './cli.js';
 import { BdMoleculeWriter } from './molecule-writer.js';

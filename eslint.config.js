@@ -2,26 +2,36 @@ import js from '@eslint/js';
 import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
-const layerRestrictions = (patterns) => ({
-  patterns: [{
-    group: patterns,
-    message: 'Respect the model -> beads -> runtime -> dispatch -> scheduler/extensions -> app dependency order.',
-  }],
+/**
+ * The engine's packages in dependency order (vibesync-9lzk.59.1). A package may
+ * import from its own layer's other packages only through their index, and from
+ * any lower layer; never from a higher one. Every directory under src/engine
+ * must appear here exactly once: tests/unit/engine-layers.test.ts fails otherwise.
+ * boot.ts (the composition root) is the one file allowed to import every layer.
+ */
+export const ENGINE_LAYERS = [
+  ['contracts', 'events', 'retry', 'runtime', 'store', 'verdict'],
+  ['molecule', 'formula', 'packs'],
+  ['beads'],
+  ['escalation', 'pm-wake', 'refinery', 'waits'],
+  ['dispatcher'],
+  ['scheduler'],
+];
+
+const engineLayerRules = ENGINE_LAYERS.flatMap((packages, layer) => {
+  const higher = ENGINE_LAYERS.slice(layer + 1).flat();
+  return packages.map((pkg) => ({
+    files: [`src/engine/${pkg}/**/*.ts`],
+    rules: {
+      'no-restricted-imports': ['error', {
+        patterns: [{
+          group: [...higher.map((h) => `../${h}/**`), '../boot', '../boot.js', '../../app/**'],
+          message: `${pkg} is in engine layer ${layer}; it may not import ${higher.length ? higher.join(', ') + ', ' : ''}boot or src/app. See ENGINE_LAYERS in eslint.config.js.`,
+        }],
+      }],
+    },
+  }));
 });
-
-const forbiddenHigherLayers = {
-  model: ['../beads/**', '../runtime/**', '../dispatcher/**', '../scheduler/**', '../extensions/**', '../../app/**'],
-  beads: ['../runtime/**', '../dispatcher/**', '../scheduler/**', '../extensions/**', '../../app/**'],
-  runtime: ['../dispatcher/**', '../scheduler/**', '../extensions/**', '../../app/**'],
-  dispatcher: ['../scheduler/**', '../extensions/**', '../../app/**'],
-  scheduler: ['../extensions/**', '../../app/**'],
-  extensions: ['../../app/**'],
-};
-
-const engineLayerRules = Object.entries(forbiddenHigherLayers).map(([layer, patterns]) => ({
-  files: [`src/engine/${layer}/**/*.ts`],
-  rules: { 'no-restricted-imports': ['error', layerRestrictions(patterns)] },
-}));
 
 export default [
   js.configs.recommended,
