@@ -11,7 +11,8 @@ export type { ProjectBinding, ProjectBindingResolver } from './project-binding-t
 export { renderTemplate } from './render.js';
 export type { RenderInput } from './render.js';
 export { installWritebackHook } from './writeback-hook.js';
-export type { WritebackHookDeps, WritebackStore } from './writeback-hook.js';
+export type { WritebackHookDeps } from './writeback-hook.js';
+export type { WritebackStore } from '../molecule/index.js';
 export { candidatePullRequests, createGhDeliveryVerifier, createGhShippedWorkProbe, ghRepositoryTarget } from './delivery.js';
 export type { DeliveryClaim, DeliveryTarget, DeliveryVerdict, DeliveryVerifier, GhRunner, ShippedWorkProbe } from './delivery.js';
 export { createBdProjectMemorySource, PROJECT_MEMORY_PREFIX, PROJECT_MEMORY_READ_FAILED_EVENT, renderProjectMemory } from './project-memory.js';
