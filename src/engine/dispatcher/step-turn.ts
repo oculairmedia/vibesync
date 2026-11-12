@@ -26,7 +26,7 @@ import {
 } from './types.js';
 import { StepAttemptRunner } from './step-attempt.js';
 import { StepVerdictReader } from './step-verdict.js';
-import { GitTurnLimitPreserver, NO_UNCOMMITTED_WORK, turnLimitRecord, type TurnLimitPreserver, type TurnLimitRecordStore } from './turn-limit.js';
+import { GitTurnLimitPreserver, NO_UNCOMMITTED_WORK, WIP_NOT_CHECKED, turnLimitRecord, type TurnLimitPreserver, type TurnLimitRecordStore } from './turn-limit.js';
 import { readStepName, sleep, softFailMarker, stringifyError } from './util.js';
 
 export interface StepTurnDeps {
@@ -294,8 +294,8 @@ export class StepTurnRunner {
       ? await (this.deps.turnLimitPreserver ?? new GitTurnLimitPreserver())
         .preserve({ workdir: args.workdir, workBeadId, moleculeId: args.moleculeId })
         .catch((error: unknown) => `WIP preservation failed: ${stringifyError(error)}`)
-      : NO_UNCOMMITTED_WORK;
-    const recorded = workBeadId && work !== NO_UNCOMMITTED_WORK
+      : WIP_NOT_CHECKED;
+    const recorded = workBeadId && work !== NO_UNCOMMITTED_WORK && work !== WIP_NOT_CHECKED
       ? await this.postTurnLimitRecord(args.input.projectIdentifier, workBeadId, turnLimitRecord(work, args.moleculeId))
       : '';
     const reported = `${work}${recorded}`;

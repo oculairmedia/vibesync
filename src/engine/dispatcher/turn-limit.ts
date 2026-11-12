@@ -43,6 +43,8 @@ export class GitTurnLimitPreserver implements TurnLimitPreserver {
 }
 
 export const NO_UNCOMMITTED_WORK = 'no uncommitted work';
+/** The worktree was never inspected: the run had no work bead or no workdir. Not the same as clean. */
+export const WIP_NOT_CHECKED = 'WIP not checked: the run has no work bead or no workdir';
 
 /** No git command may hang the escalation (a push to an unresponsive remote, a credential prompt). */
 const GIT_TIMEOUT_MS = 60_000;

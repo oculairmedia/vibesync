@@ -3,7 +3,7 @@
  * BEAD (gc.retry_attempt), the agent declares a retryable failure by writing
  * failure_class on that bead, and infra failures do not burn an attempt.
  */
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -254,7 +254,9 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
     const { repo } = makeGitRepo();
     // A remote whose transport hangs forever (an unresponsive host, a credential prompt).
     const hang = join(repo, '..', 'hang.sh');
-    writeFileSync(hang, '#!/bin/sh\nsleep 600\n', { mode: 0o755 });
+    const pidFile = join(repo, '..', 'hang.pids');
+    // The transport records its own pid and its child's (the real leaf), then waits on the child forever.
+    writeFileSync(hang, `#!/bin/sh\necho $$ >> '${pidFile}'\nsleep 600 &\necho $! >> '${pidFile}'\nwait\n`, { mode: 0o755 });
     execFileSync('git', ['-C', repo, 'remote', 'set-url', 'origin', 'ext::' + hang]);
     execFileSync('git', ['-C', repo, 'config', 'protocol.ext.allow', 'always']);
     writeFileSync(join(repo, 'partial.txt'), 'unfinished');
@@ -263,10 +265,13 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
     expect(Date.now() - started).toBeLessThan(15_000);
     expect(details).toContain('WIP branch wip/hang/mol-h committed locally; push failed');
     expect(execFileSync('git', ['-C', repo, 'rev-parse', '--verify', 'wip/hang/mol-h'], { encoding: 'utf8' }).trim()).toMatch(/^[0-9a-f]{40}$/);
-    // Nothing the push started is left running.
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    const bracketed = hang.replace(/hang\.sh$/, '[h]ang.sh');
-    expect(execFileSync('sh', ['-c', `pgrep -f '${bracketed}' || true`], { encoding: 'utf8' }).trim()).toBe('');
+    // Nothing the push started is left running: every recorded pid fails a kill -0 probe.
+    const pids = readFileSync(pidFile, 'utf8').trim().split('\n').map(Number);
+    expect(pids).toHaveLength(2);
+    const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    const deadline = Date.now() + 2_000;
+    while (pids.some(alive) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(pids.filter(alive)).toEqual([]);
   }, 30_000);
 
   it('both production bead stores post the WIP record with the real bd comment command', async () => {
@@ -277,6 +282,26 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
     const engineCalls: string[][] = [];
     await new BdMoleculeWriter(async (args) => { engineCalls.push([...args]); return ''; }, { getBead: async () => null } as never).addCommentToBead('vibesync-9', record);
     expect(engineCalls).toEqual([['comments', 'add', 'vibesync-9', record]]);
+  });
+
+  it('a run with no workdir reports that its worktree was not checked, not that it was clean', async () => {
+    const store = new InMemoryDoltClient();
+    const comments: string[] = [];
+    const driven = newDriven(store, {
+      idPrefix: 'mol', provider: newFakeProvider({ kind: 'fake-runtime', script: () => (async function* () {
+        const ts = new Date().toISOString();
+        yield { kind: 'started', ts };
+        yield { kind: 'error', ts, code: 'turn_timeout', message: 'timeout' };
+        yield { kind: 'turn-done', ts };
+      })() }), walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }),
+      turnLimitRecordStore: { async appendNoteToBead() {}, async addCommentToBead(_id, comment) { comments.push(comment); } },
+    });
+    const error = await driven.run({ formula: formula(worker()), pack: pack(), input: 'go', motivatingBeadId: 'work-n' })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(FormulaEscalationError);
+    expect(String((error as Error).message)).toContain('WIP not checked');
+    expect(String((error as Error).message)).not.toContain('no uncommitted work');
+    expect(comments).toEqual([]);
   });
 
   it('a staged-only edit is in the WIP branch (staged, then the working copy restored)', async () => {
