@@ -18,19 +18,35 @@ export const ENGINE_LAYERS = [
   ['scheduler'],
 ];
 
+/**
+ * no-restricted-imports matches the import string, not the file it resolves to,
+ * so a pattern written for one folder depth misses an importer one folder
+ * deeper (`../beads/**` does not match `../../beads/x.js` from
+ * src/engine/runtime/iroh/). Every pattern is therefore generated for each depth
+ * a package's files can sit at: one folder for every level of nesting.
+ */
+export const ENGINE_MAX_NESTING = 3;
+const upTo = (depth) => '../'.repeat(depth);
+
 const engineLayerRules = ENGINE_LAYERS.flatMap((packages, layer) => {
   const higher = ENGINE_LAYERS.slice(layer + 1).flat();
-  return packages.map((pkg) => ({
-    files: [`src/engine/${pkg}/**/*.ts`],
-    rules: {
-      'no-restricted-imports': ['error', {
-        patterns: [{
-          group: [...higher.map((h) => `../${h}/**`), '../boot', '../boot.js', '../../app/**'],
-          message: `${pkg} is in engine layer ${layer}; it may not import ${higher.length ? higher.join(', ') + ', ' : ''}boot or src/app. See ENGINE_LAYERS in eslint.config.js.`,
+  return packages.map((pkg) => {
+    const group = [];
+    for (let depth = 1; depth <= ENGINE_MAX_NESTING; depth++) {
+      group.push(...higher.map((h) => `${upTo(depth)}${h}/**`), `${upTo(depth)}boot`, `${upTo(depth)}boot.js`, `${upTo(depth + 1)}app/**`);
+    }
+    return {
+      files: [`src/engine/${pkg}/**/*.ts`],
+      rules: {
+        'no-restricted-imports': ['error', {
+          patterns: [{
+            group,
+            message: `${pkg} is in engine layer ${layer}; it may not import ${higher.length ? higher.join(', ') + ', ' : ''}boot or src/app. See ENGINE_LAYERS in eslint.config.js.`,
+          }],
         }],
-      }],
-    },
-  }));
+      },
+    };
+  });
 });
 
 export default [
