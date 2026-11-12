@@ -564,14 +564,17 @@ export class DoltClient {
   ): Promise<DoltClient | { readonly lastPort: number }> {
     // Never below 50 ms: a zero interval would not advance the budget.
     const pollIntervalMs = Math.max(options.pollIntervalMs ?? 500, 50);
+    // ONE budget for the whole wait: every sleep counts, including the ones
+    // the port-file wait makes, so a port file that reappears late cannot
+    // restart the clock. Time is the injected sleep's, as in resolveDoltPort.
+    let spentMs = 0;
+    const deps: DoltBootDeps = { ...bootDeps, sleep: async (ms: number) => { spentMs += ms; await bootDeps.sleep(ms); } };
     let lastPort = 0;
-    for (let waitedMs = 0; waitedMs <= RESTART_ACCEPT_BUDGET_MS; waitedMs += pollIntervalMs) {
-      // The port-file wait gets the same floor and only what is left of this
-      // budget: a missing port file must not stretch the restart past it.
-      lastPort = await resolveDoltPort(cfg, bootDeps, {
+    while (spentMs <= RESTART_ACCEPT_BUDGET_MS) {
+      lastPort = await resolveDoltPort(cfg, deps, {
         ...options,
         pollIntervalMs,
-        timeoutMs: Math.max(RESTART_ACCEPT_BUDGET_MS - waitedMs, pollIntervalMs),
+        timeoutMs: Math.max(RESTART_ACCEPT_BUDGET_MS - spentMs, pollIntervalMs),
         startServerIfMissing: false,
       });
       try {
@@ -579,7 +582,7 @@ export class DoltClient {
       } catch (err) {
         if (!isConnectionRefused(err)) throw err;
       }
-      await bootDeps.sleep(pollIntervalMs);
+      await deps.sleep(pollIntervalMs);
     }
     return { lastPort };
   }
