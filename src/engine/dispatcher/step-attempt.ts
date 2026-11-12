@@ -115,7 +115,7 @@ export class StepAttemptRunner {
 
   private handleStepAttemptEvent(event: SessionEvent, agentActed: boolean): void {
     if (event.kind === 'error') {
-      throw new AttemptFailure(event.message, { origin: 'event', code: event.code, producedOutput: agentActed });
+      throw new AttemptFailure(event.message, { origin: 'event', code: event.code, producedOutput: agentActed }, event.code);
     }
     if (event.kind === 'stopped') {
       throw new AttemptFailure('runtime stopped before turn completion', { origin: 'stopped' });

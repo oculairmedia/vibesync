@@ -7,6 +7,7 @@ const ACTOR = 'orchestration-daemon';
 export interface ProjectBeadStore {
   getBead(id: string): Promise<BeadRow | null>;
   appendNoteToBead(beadId: string, note: string): Promise<void>;
+  addCommentToBead(beadId: string, comment: string): Promise<void>;
 }
 
 function isNotFound(error: unknown, id: string): boolean {
@@ -70,6 +71,9 @@ export function createBdProjectBeadStore(bd: CommandRunner): ProjectBeadStore {
       if (!bead) throw new Error(`appendNoteToBead: bead ${beadId} not found`);
       const separator = bead.notes && bead.notes.length > 0 ? '\n' : '';
       await bd(['update', beadId, '--append-notes', `${separator}${note}`, '--actor', ACTOR]);
+    },
+    async addCommentToBead(beadId, comment) {
+      await bd(['comments', 'add', beadId, comment]);
     },
   };
 }

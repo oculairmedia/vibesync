@@ -26,6 +26,7 @@ import {
 } from './types.js';
 import { StepAttemptRunner } from './step-attempt.js';
 import { StepVerdictReader } from './step-verdict.js';
+import { GitTurnLimitPreserver, NO_UNCOMMITTED_WORK, WIP_NOT_CHECKED, turnLimitRecord, type TurnLimitPreserver, type TurnLimitRecordStore } from './turn-limit.js';
 import { readStepName, sleep, softFailMarker, stringifyError } from './util.js';
 
 export interface StepTurnDeps {
@@ -34,6 +35,9 @@ export interface StepTurnDeps {
   readonly stepAttempt: StepAttemptRunner;
   readonly stepVerdict: StepVerdictReader;
   readonly projectMemory: ProjectMemorySource | null;
+  readonly turnLimitPreserver?: TurnLimitPreserver;
+  /** The tracker a run's work bead lives in (its project's bd, or the engine's store). */
+  readonly turnLimitRecordStore: (projectIdentifier: string | undefined) => Pick<TurnLimitRecordStore, 'addCommentToBead'>;
 }
 
 export class StepTurnRunner {
@@ -94,7 +98,7 @@ export class StepTurnRunner {
         ...((stepSpec.turnTimeoutMs ?? args.input.stepTimeoutMs) !== undefined
           ? { turnTimeoutMs: stepSpec.turnTimeoutMs ?? args.input.stepTimeoutMs }
           : {}),
-        ...(args.input.workdir !== undefined ? { workdir: args.input.workdir } : {}),
+        ...(args.workdir !== undefined ? { workdir: args.workdir } : {}),
       });
       return { output, failure: null };
     } catch (error) {
@@ -105,6 +109,7 @@ export class StepTurnRunner {
           signal: error instanceof AttemptFailure ? error.signal : { origin: 'call' },
           error,
           failureClass: bead ? readFailureClass(bead.metadata) : null,
+          ...(error instanceof AttemptFailure && error.code ? { code: error.code } : {}),
         },
       };
     }
@@ -257,6 +262,7 @@ export class StepTurnRunner {
     state: RetryState,
     failure: StepRunFailure,
   ): Promise<void> {
+    if (failure.code === 'turn_timeout') await this.escalateTurnLimit(context, state, failure);
     // A failure_class means the agent ran and declared it; cancel/stop still wins.
     const classified = classifyFailure(failure.signal);
     const kind = failure.failureClass !== null && classified !== 'terminal' ? 'agent' : classified;
@@ -274,6 +280,53 @@ export class StepTurnRunner {
       return;
     }
     await this.finishStepFailure(failureContext, decision);
+  }
+
+  /**
+   * vibesync-9lzk.57: a step that ends on its turn limit is never retried. Its
+   * uncommitted work goes to a WIP branch (the checkout is not moved), the
+   * complete record is posted on the work bead, and the run escalates.
+   */
+  private async escalateTurnLimit(context: StepRunContext, state: RetryState, failure: StepRunFailure): Promise<never> {
+    const { args } = context;
+    const workBeadId = args.input.motivatingBeadId;
+    const work = workBeadId && args.workdir
+      ? await (this.deps.turnLimitPreserver ?? new GitTurnLimitPreserver())
+        .preserve({ workdir: args.workdir, workBeadId, moleculeId: args.moleculeId })
+        .catch((error: unknown) => `WIP preservation failed: ${stringifyError(error)}`)
+      : WIP_NOT_CHECKED;
+    const recorded = workBeadId && work !== NO_UNCOMMITTED_WORK && work !== WIP_NOT_CHECKED
+      ? await this.postTurnLimitRecord(args.input.projectIdentifier, workBeadId, turnLimitRecord(work, args.moleculeId))
+      : '';
+    const reported = `${work}${recorded}`;
+    await this.recordTurnLimitFailure(context, state, failure, reported);
+    throw new FormulaEscalationError(`FormulaDispatcher: step "${context.stepName}" escalated after turn limit: ${reported}`, args.moleculeId, { cause: failure.error });
+  }
+
+  /** Post the WIP record on the work bead. A failure is reported, never thrown: the escalation must still happen. */
+  private async postTurnLimitRecord(projectIdentifier: string | undefined, workBeadId: string, record: string): Promise<string> {
+    try {
+      await this.deps.turnLimitRecordStore(projectIdentifier).addCommentToBead(workBeadId, record);
+      return '';
+    } catch (error) {
+      return `; posting the WIP record on ${workBeadId} failed: ${stringifyError(error)}`;
+    }
+  }
+
+  private async recordTurnLimitFailure(
+    context: StepRunContext,
+    state: RetryState,
+    failure: StepRunFailure,
+    work: string,
+  ): Promise<void> {
+    const reason = `turn limit reached; ${work}`;
+    const trace = reason;
+    const { args, stepSpec, stepName } = context;
+    await this.deps.walker.failStep(args.step.id, trace, 'not_retryable');
+    this.deps.emit('dispatcher/step.failed', args.moleculeId, args.step.id, {
+      stepName, role: stepSpec.role, stepId: args.step.id, error: trace, attempts: state.attempt,
+      retryOutcome: 'not_retryable', failureCode: failure.code,
+    });
   }
 
   private async finishStepFailure(
