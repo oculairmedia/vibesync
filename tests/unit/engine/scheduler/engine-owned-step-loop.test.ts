@@ -1,12 +1,13 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { bootOrchestrationPlane, type OrchestrationHandle } from '../../../../src/engine/boot.js';
 import type { Formula } from '../../../../src/engine/formula/index.js';
 import type { Pack } from '../../../../src/engine/packs/index.js';
 import type { BootSchedulerOptions } from '../../../../src/engine/scheduler/boot-scheduler.js';
+import { StepDispatcher } from '../../../../src/engine/scheduler/step-dispatcher.js';
 import type { SessionEvent, SessionSpec } from '../../../../src/engine/runtime/index.js';
 import { newFakeProvider } from '../../../_fixtures/fake-provider.js';
 import { InMemoryDoltClient } from '../../../_fixtures/in-memory-dolt-client.js';
@@ -77,7 +78,10 @@ afterEach(async () => {
 
 describe('engine-owned step loop', () => {
   it('starts a cooked molecule step without waiting for a daemon tick', async () => {
+    const stepStart = vi.spyOn(StepDispatcher.prototype, 'start');
     const { handle, provider } = await boot({ scheduler: schedulerOptions('proj') });
+    expect(stepStart).toHaveBeenCalledTimes(1);
+    stepStart.mockRestore();
     const run = handle.dispatcher.run({ formula: formula(), pack: pack(), input: 'go', projectIdentifier: 'proj' });
     await waitFor(() => provider.recorder.starts.length > 0, 'first formula step did not start');
     expect(provider.recorder.starts[0]?.role).toBe('reviewer');

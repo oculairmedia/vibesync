@@ -1,7 +1,6 @@
 /**
- * vibesync-efee — formula steps are dispatched by the scheduler loop (or, with
- * the scheduler off, by the step loop boot starts), never by the dispatcher's
- * own in-process "what runs next" loop.
+ * vibesync-efee — formula steps are dispatched by the engine-owned step loop,
+ * never by the dispatcher's own in-process "what runs next" loop.
  *
  * Everything goes through the REAL boot path (`bootOrchestrationPlane`). FALSE
  * PASS this suite avoids: walking steps through the old walker/dispatcher loop.
@@ -152,10 +151,12 @@ describe('the dispatcher no longer drives its own molecules (vibesync-efee)', ()
 describe('scheduler ON: the engine owns the step loop', () => {
   it('a formula run completes through the engine step loop, independently of daemon ticks', async () => {
     const bd = fakeBd();
-    // Spy BEFORE boot: boot is what would start the fallback timer.
+    // Spy BEFORE boot: boot starts the engine-owned step timer.
     const selfTick = vi.spyOn(StepDispatcher.prototype, 'start');
     const { handle, store, provider, events } = await boot({ scheduler: schedulerOptions(bd) });
     expect(handle.scheduler).not.toBeNull();
+    expect(selfTick).toHaveBeenCalledTimes(1);
+    selfTick.mockRestore();
 
     const result = await handle.dispatcher.run({ formula: formula(), pack: pack(), input: 'go' });
 
@@ -165,8 +166,6 @@ describe('scheduler ON: the engine owns the step loop', () => {
       expect((await store.getBead(newMoleculeStepId(result.moleculeId, name)))?.status).toBe('closed');
     }
     expect((await store.getBead(result.moleculeId))?.metadata).toMatchObject({ exec: { outcome: 'completed' } });
-    expect(selfTick).toHaveBeenCalledTimes(1); // boot always starts the engine-owned loop
-    selfTick.mockRestore();
     // The daemon's long interval did not need to fire for the engine loop to run steps.
     expect(events.filter((e) => e.kind === TICK)).toEqual([]);
     // Step readiness never touched `bd ready` (that source is for WORK beads only).
