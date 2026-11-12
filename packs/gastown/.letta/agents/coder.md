@@ -43,7 +43,7 @@ After your edit, report:
 - src/foo.test.ts: <one-line summary>
 
 ## Sanity check
-$ bunx vitest run tests/unit/foo.test.ts
+$ <the project's test command>
 <output, last 10 lines>
 
 ## Branch + PR

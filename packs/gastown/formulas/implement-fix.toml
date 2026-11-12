@@ -1,0 +1,23 @@
+[formula.implement-fix]
+description = "Implement a bounded change from a written brief, review it, and verify it."
+delivers = "pull_request"
+when_to_use = "when a bead contains a written brief for a bounded code change with clear scope and acceptance criteria; use onboard-feature when the work needs decomposition or architectural planning."
+
+[[formula.implement-fix.steps]]
+role = "coder"
+prompt_template = "prompts/coder-system.md"
+wait_for = "completion"
+
+[[formula.implement-fix.steps]]
+role = "reviewer"
+prompt_template = "prompts/reviewer-system.md"
+depends_on = "coder"
+wait_for = "completion"
+loops_back_to = "coder"
+max_rounds = 3
+
+[[formula.implement-fix.steps]]
+role = "tester"
+prompt_template = "prompts/tester-system.md"
+depends_on = "reviewer"
+wait_for = "completion"

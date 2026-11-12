@@ -34,7 +34,7 @@ Delivery is part of your job, not a later step. When the change is done:
 2. Commit on the task's branch. Never commit on or push to `main`.
 3. Push the branch.
 4. Open a pull request against `main` with `gh pr create`, unless the task
-   says not to. Put the work bead id (e.g. `vibesync-1234`) in the PR title,
+   says not to. Put the work bead id (e.g. `proj-1234`) in the PR title,
    and paste the full PR URL into your report.
 
 The run cannot complete without a real, open pull request: the engine checks

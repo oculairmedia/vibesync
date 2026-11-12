@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "projectId": "d9dbdbc9-08e9-4db8-8971-6302f2876dc0",
+  "key": "vibesync",
+  "name": "vibesync",
+  "engine": {
+    "ciChecks": [
+      "typecheck",
+      "test (20.x)",
+      "boot"
+    ]
+  }
+}

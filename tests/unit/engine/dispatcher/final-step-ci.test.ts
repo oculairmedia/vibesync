@@ -197,4 +197,9 @@ describe('gh PR checks reader', () => {
     expect(await settleCi(scriptedReader([{ typecheck: 'fail' }]), PR, opts)).toEqual({ kind: 'failed', failed: ['typecheck'] });
     expect(await settleCi(scriptedReader([all('pending')]), PR, opts)).toMatchObject({ kind: 'still_pending' });
   });
+
+  it('settleCi rejects an empty check-name list instead of returning green', async () => {
+    await expect(settleCi(scriptedReader([{}]), PR, { names: [], pollMs: 1, maxWaitMs: 1, sleep: async () => {}, now: () => 0 }))
+      .rejects.toThrow('settleCi needs at least one check name');
+  });
 });

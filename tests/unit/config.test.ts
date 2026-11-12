@@ -6,6 +6,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { loadConfig, getConfigSummary } from '../../src/app/config';
+import { resolveFromAppRoot } from '../../src/app/runtimePaths';
 
 describe('config', () => {
   // Store original environment variables
@@ -126,7 +127,7 @@ describe('config', () => {
         enabled: false,
         minIntervalMs: 1_800_000,
         backstopMs: 28_800_000,
-        statePath: '/opt/stacks/vibesync/logs/pm-wake-state.json',
+        statePath: resolveFromAppRoot('logs/pm-wake-state.json'),
         sink: 'log',
       });
     });

@@ -6,8 +6,7 @@ coder to iterate.
 
 ## Your responsibilities
 
-- Identify which test suite covers the change. (For VibeSync:
-  typically `bunx vitest run <pattern>`.)
+- Identify which test suite covers the change. Use the test commands the task gives; if it gives none, find the project's own test command (package.json scripts, a Makefile, the README).
 - Run the suite. Capture output.
 - Report:
   - PASS — all tests green, no diagnostics needed

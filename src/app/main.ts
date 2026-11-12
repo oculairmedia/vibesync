@@ -24,6 +24,7 @@ import { DoltClient, defaultDoltBootDeps } from '../engine/store/index.js';
 import { ProjectRegistry } from './registry/project-registry';
 import { resolveFromAppRoot } from './runtimePaths';
 import { parseShutdownGraceMs } from './shutdown-grace.js';
+import { createProjectSettings } from './project-settings.js';
 import type { DoltHubProvisionerApi } from './types/api.js';
 
 const config = loadConfig();
@@ -89,6 +90,7 @@ const checkoutRunners = {
   gh: (checkout: string) => createCheckoutGhRunner(checkout),
 };
 
+
 /**
  * vibesync-nl0l: a restart can race the Dolt fleet coming back up, so connect
  * resiliently and retry the whole plane boot with backoff.
@@ -98,6 +100,11 @@ async function bootEngine(db: Registry): Promise<OrchestrationHandle | null> {
     logger.info('Orchestration plane disabled (ENABLE_ORCHESTRATION is not true)');
     return null;
   }
+  const settings = createProjectSettings({
+    checkoutOf: (identifier) => db.getProject(identifier)?.filesystem_path,
+    releaseRoot: resolveFromAppRoot(),
+    warn: (obj, msg) => logger.warn(obj, msg),
+  });
   // Configuration first, before any I/O: a provider that does not exist must
   // stop the service, not be retried as if Dolt were still starting
   // (vibesync-9lzk.29). Throws UnsupportedProviderError to main()'s fatal handler.
@@ -118,6 +125,7 @@ async function bootEngine(db: Registry): Promise<OrchestrationHandle | null> {
           registry: db,
           runners: checkoutRunners,
           shared: { logger, pmWake: { lookupAgentId: registryPmAgentLookup(db) } },
+          settings: settings.forProject,
         }),
         waits: {
           config: config.waits,
@@ -130,8 +138,7 @@ async function bootEngine(db: Registry): Promise<OrchestrationHandle | null> {
         // vibesync-9lzk.39: reviewing/testing step replies are read by the Jev
         // decision model when a key is configured; without one, marker lines only.
         ...(stepJudge ? { stepJudge } : {}),
-        // vibesync-9lzk.46: fast checks a final step waits on (comma list); integration-bd is a merge gate, not here.
-        ...(process.env['VIBESYNC_STEP_CI_CHECKS'] ? { stepCiChecks: process.env['VIBESYNC_STEP_CI_CHECKS'].split(',').map((c) => c.trim()).filter((c) => c.length > 0) } : {}),
+        projectCiChecks: settings.ciChecks,
         projectMemory: createBdProjectMemorySource((projectIdentifier) => {
           const fsPath = db.getProject(projectIdentifier)?.filesystem_path;
           if (!fsPath) return null;
