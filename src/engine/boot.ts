@@ -282,6 +282,10 @@ function canonicalRoot(registered: string, projectIdentifier: string): string {
 }
 
 
+function withInboxAdapter<T>(adapter: T | undefined): { inboxAdapter?: T } {
+  return adapter ? { inboxAdapter: adapter } : {};
+}
+
 export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions): Promise<OrchestrationHandle> {
   // vibesync-efee: fail before any side effect when bd is too old for the
   // primitives formula steps depend on.
@@ -458,7 +462,8 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
       const handle = startSchedulerDaemon({
         ...scheduler,
         ...(scheduler.pmWake
-          ? { pmWake: { ...scheduler.pmWake, ...(inboxAdapter ? { inboxAdapter } : {}) } }
+          // A scheduler's own adapter wins; the shared one fills in only where none is set.
+          ? { pmWake: { ...scheduler.pmWake, ...withInboxAdapter(scheduler.pmWake.inboxAdapter ?? inboxAdapter) } }
           : {}),
         dispatcher,
         bus,

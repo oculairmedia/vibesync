@@ -107,6 +107,30 @@ describe('per-project schedulers (vibesync-9lzk.55.9)', () => {
     expect(bd.calls).toEqual([]);
   });
 
+  it('each project\'s PM wake uses its OWN inbox adapter when it has one', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'per-project-inbox-'));
+    dirs.push(dir);
+    const sent: string[] = [];
+    const adapter = (project: string) => ({
+      sendInboxMessage: async (input: { to: string; msgId: string }) => {
+        sent.push(`${project}:${input.to}`);
+        return { accepted: true, delivered: true, msgId: input.msgId };
+      },
+    });
+    const withInbox = (project: string) => scheduler(project, fakeBd().run, {
+      pmWake: { lookupAgentId: () => `pm-${project}`, inboxAdapter: adapter(project) } as never,
+    });
+    const configured = (project: string) => {
+      const opts = withInbox(project);
+      return { ...opts, config: { ...opts.config, pmWake: { enabled: true, minIntervalMs: 60_000, backstopMs: 3_600_000, statePath: join(dir, 'pm-wake-state.json'), sink: 'inbox' as const } } };
+    };
+    const { handle } = await boot([configured('alpha'), configured('beta')]);
+    const sinkOf = (project: string) => (handle.schedulers.get(project)!.pmWaker as unknown as { deps: { sink: { wake(i: unknown): Promise<unknown> } } }).deps.sink;
+    await sinkOf('alpha').wake({ agentId: 'pm-alpha', reason: 'test', detail: 'd', wakeId: 'w-alpha' });
+    await sinkOf('beta').wake({ agentId: 'pm-beta', reason: 'test', detail: 'd', wakeId: 'w-beta' });
+    expect(sent).toEqual(['alpha:pm-alpha', 'beta:pm-beta']);
+  });
+
   it('preserves both projects in the shared PM wake state file', () => {
     const dir = mkdtempSync(join(tmpdir(), 'pm-wake-projects-'));
     dirs.push(dir);
