@@ -175,6 +175,19 @@ function logWritebackFailure(
   console.error(`[writeback] ${msg}`, obj);
 }
 
+
+/**
+ * Where the run's motivating bead lives (vibesync-9lzk.55.2): the tracker of
+ * the run's own project, reached through that project's bd, or this engine's
+ * own store for a run with no project and for the home project. The molecule
+ * root and its writeback stamp always stay in the engine's store. A project
+ * the resolver does not know throws: the note is not written and nothing is
+ * stamped, so the writeback is retried.
+ */
+function workBeadStore(deps: WritebackHookDeps, root: BeadRow): Pick<WritebackStore, 'getBead' | 'appendNoteToBead'> {
+  return deps.projectBindings?.(readProjectIdentifier(root)).workBeads ?? deps.store;
+}
+
 async function handleEvent(event: Event, deps: WritebackHookDeps, now: () => Date): Promise<WritebackAction> {
   const moleculeId = event.molecule_id;
   if (!moleculeId) return 'skipped-no-molecule-id';
@@ -219,8 +232,7 @@ async function handleEvent(event: Event, deps: WritebackHookDeps, now: () => Dat
   //   2. Append the note. On failure: do NOT stamp, rethrow so the caller
   //      logs loudly and a later replay retries.
   //   3. Only after the note lands, stamp writeback_status for idempotency.
-  const projectIdentifier = readProjectIdentifier(view.root);
-  const projectStore = deps.projectBindings?.(projectIdentifier).workBeads ?? deps.store;
+  const projectStore = workBeadStore(deps, view.root);
   const motivatingBead = await projectStore.getBead(motivatingBeadId);
   if (!motivatingBead) {
     await deps.store.recordMoleculeWriteback(moleculeId, status);

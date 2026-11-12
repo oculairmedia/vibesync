@@ -166,10 +166,13 @@ async function boot(args: BootArgs) {
   const run = (projectIdentifier?: string, formula: Formula = ship) => handle.dispatcher.run({
     formula, pack: pack(), input: 'go', motivatingBeadId: BEAD, ...(projectIdentifier ? { projectIdentifier } : {}),
   });
+  /** Polls until `done()`; a condition that never holds is a failure, not a quiet return. */
   const waitForNote = async (done: () => boolean): Promise<void> => {
-    for (let attempt = 0; attempt < 100 && !done(); attempt++) {
+    for (let attempt = 0; attempt < 200; attempt++) {
+      if (done()) return;
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
+    throw new Error('waitForNote: the writeback did not reach the expected state within 1 s');
   };
   const roles = (): string[] => provider.recorder.starts.map((start) => start.role);
   return { run, roles, registry, homeRoot, engineRoot, otherRoot, homeGh, otherGh, ghRoots, ghByRoot, bdRoots, completionNotes, waitForNote, engineStore };
@@ -191,10 +194,11 @@ describe('project bindings built at boot (vibesync-9lzk.55.1)', () => {
     });
     const run = await h.run('other');
     const root = run.moleculeId;
-    await h.waitForNote(() => work.notes.includes('formula ship completed') && h.completionNotes.length === 0 &&
-      h.engineStore.beads.get(root)?.metadata.exec?.['writeback_status'] === 'completed');
-    expect(work.notes).toContain('formula ship completed');
-    expect(h.completionNotes).toEqual([]);
+    const stamp = (): unknown => (h.engineStore.beads.get(root)?.metadata['exec'] as Record<string, unknown> | undefined)?.['writeback_status'];
+    await h.waitForNote(() => stamp() !== undefined);
+    expect(work.notes).toContain('formula ship completed'); // the note is in the OTHER project's tracker
+    expect(stamp()).toBe('completed'); // the stamp is on the root, in the engine's own store
+    expect(h.completionNotes).toEqual([]); // and no note went to the engine's own tracker
     expect(calls.map((call) => call.split(':').at(-1))).toEqual(['show', 'show', 'update']);
     expect(h.bdRoots).toEqual([h.otherRoot]);
   });
@@ -217,7 +221,7 @@ describe('project bindings built at boot (vibesync-9lzk.55.1)', () => {
     h.ghByRoot.set(moved, repoGh('acme/other', [OTHER_PR]));
     h.registry!['other'] = moved;
     await expect(h.run('other')).resolves.toBeDefined();
-    for (let attempt = 0; attempt < 100 && noted.length === 0; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
+    await h.waitForNote(() => noted.length > 0);
     expect(noted).toEqual([moved]);
   });
 
