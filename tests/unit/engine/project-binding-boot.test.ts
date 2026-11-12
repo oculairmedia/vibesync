@@ -110,6 +110,7 @@ interface BootArgs {
   readonly engineRoot?: (homeRoot: string) => string;
   /** A gh handed to boot as the scheduler's (the scheduler itself stays off). */
   readonly schedulerGh?: FakeGh;
+  readonly projectBd?: (root: string) => (args: readonly string[]) => Promise<string>;
 }
 
 async function boot(args: BootArgs) {
@@ -118,11 +119,13 @@ async function boot(args: BootArgs) {
   const homeGh = repoGh('acme/home', args.homePrs);
   const otherGh = repoGh('acme/other', args.otherPrs);
   const ghRoots: string[] = [];
+  const bdRoots: string[] = [];
   /** Which fake gh a checkout path gets; a test can add a checkout that is its own repository. */
   const ghByRoot = new Map<string, FakeGh>();
   const engineRoot = args.engineRoot?.(homeRoot) ?? homeRoot;
   ghByRoot.set(homeRoot, homeGh).set(engineRoot, homeGh).set(otherRoot, otherGh);
   const store = Object.assign(new InMemoryDoltClient(), { beadsRoot: engineRoot });
+  const completionNotes: string[] = [];
   const registry = args.registry === false ? null : (args.registry ?? (({ homeRoot: h, otherRoot: o }) => ({ home: h, other: o })))({ homeRoot, otherRoot });
   const provider = newFakeProvider({ kind: 'fake', script: (spec: SessionSpec) => reply(spec.role === 'coder' ? `PR ${args.prUrl}` : spec.role === 'mayor' ? 'planned' : 'PASS') });
   const handle = await bootOrchestrationPlane({
@@ -133,20 +136,95 @@ async function boot(args: BootArgs) {
     runDriftAuditOnBoot: false,
     stepTickIntervalMs: 10,
     projectGh: (root) => { ghRoots.push(root); return ghByRoot.get(root) ?? otherGh; },
+    projectBd: (root) => {
+      bdRoots.push(root);
+      return args.projectBd?.(root) ?? (async (commandArgs: readonly string[]) => {
+        if (commandArgs[0] === 'show') throw new Error(`Issue ${commandArgs[1]} not found`);
+        return '';
+      });
+    },
     ...(registry ? { projectRoot: (id: string) => registry[id] ?? null } : {}),
     ...(args.homeVerifier ? { deliveryVerifier: args.homeVerifier } : {}),
     ...(args.judge ? { stepJudge: args.judge } : {}),
     ...(args.schedulerGh ? { scheduler: { config: { enabled: false }, gh: args.schedulerGh } as never } : {}),
   });
+  const originalAppend = store.appendNoteToBead.bind(store);
+  store.appendNoteToBead = async (id: string, note: string) => {
+    completionNotes.push(`${id}:${note}`);
+    await originalAppend(id, note);
+  };
+  const originalRoot = store.insertMoleculeRoot.bind(store);
+  store.insertMoleculeRoot = async (rootArgs) => {
+    await originalRoot(rootArgs);
+    if (rootArgs.projectIdentifier) {
+      const row = store.beads.get(rootArgs.id)!;
+      store.beads.set(rootArgs.id, { ...row, metadata: { ...row.metadata, projectIdentifier: rootArgs.projectIdentifier } });
+    }
+  };
+  const engineStore = store;
   handles.push(handle);
   const run = (projectIdentifier?: string, formula: Formula = ship) => handle.dispatcher.run({
     formula, pack: pack(), input: 'go', motivatingBeadId: BEAD, ...(projectIdentifier ? { projectIdentifier } : {}),
   });
+  /** Polls until `done()`; a condition that never holds is a failure, not a quiet return. */
+  const waitForNote = async (done: () => boolean): Promise<void> => {
+    for (let attempt = 0; attempt < 200; attempt++) {
+      if (done()) return;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error('waitForNote: the writeback did not reach the expected state within 1 s');
+  };
   const roles = (): string[] => provider.recorder.starts.map((start) => start.role);
-  return { run, roles, registry, homeRoot, engineRoot, otherRoot, homeGh, otherGh, ghRoots, ghByRoot };
+  return { run, roles, registry, homeRoot, engineRoot, otherRoot, homeGh, otherGh, ghRoots, ghByRoot, bdRoots, completionNotes, waitForNote, engineStore };
 }
 
 describe('project bindings built at boot (vibesync-9lzk.55.1)', () => {
+  it('writes a foreign outcome through that checkout bd and stamps only the engine store', async () => {
+    const work = { notes: '' };
+    const calls: string[] = [];
+    const h = await boot({
+      prUrl: OTHER_PR,
+      otherPrs: [OTHER_PR],
+      projectBd: (root) => async (bdArgs) => {
+        calls.push(`${root}:${bdArgs[0]}`);
+        if (bdArgs[0] === 'show') return JSON.stringify([{ id: BEAD, title: 'work', status: 'open', notes: work.notes }]);
+        if (bdArgs[0] === 'update') { work.notes += bdArgs[bdArgs.indexOf('--append-notes') + 1]!; return ''; }
+        throw new Error(`unexpected bd ${bdArgs.join(' ')}`);
+      },
+    });
+    const run = await h.run('other');
+    const root = run.moleculeId;
+    const stamp = (): unknown => (h.engineStore.beads.get(root)?.metadata['exec'] as Record<string, unknown> | undefined)?.['writeback_status'];
+    await h.waitForNote(() => stamp() !== undefined);
+    expect(work.notes).toContain('formula ship completed'); // the note is in the OTHER project's tracker
+    expect(stamp()).toBe('completed'); // the stamp is on the root, in the engine's own store
+    expect(h.completionNotes).toEqual([]); // and no note went to the engine's own tracker
+    expect(calls.map((call) => call.split(':').at(-1))).toEqual(['show', 'show', 'update']);
+    expect(h.bdRoots).toEqual([h.otherRoot]);
+  });
+
+  it("resolves the project's replacement checkout for the next writeback", async () => {
+    const noted: string[] = [];
+    const h = await boot({
+      prUrl: OTHER_PR,
+      otherPrs: [OTHER_PR],
+      projectBd: (root) => async (args) => {
+        if (args[0] === 'show') return JSON.stringify([{ id: BEAD, title: 'work', status: 'open', notes: '' }]);
+        if (args[0] === 'update') { noted.push(root); return ''; }
+        throw new Error(`unexpected bd ${args.join(' ')}`);
+      },
+    });
+    await expect(h.run('other')).resolves.toBeDefined();
+    await h.waitForNote(() => noted.length > 0);
+    noted.splice(0);
+    const moved = mkdtempSync(join(tmpdir(), 'vibesync-binding-moved-bd-'));
+    h.ghByRoot.set(moved, repoGh('acme/other', [OTHER_PR]));
+    h.registry!['other'] = moved;
+    await expect(h.run('other')).resolves.toBeDefined();
+    await h.waitForNote(() => noted.length > 0);
+    expect(noted).toEqual([moved]);
+  });
+
   it('a run for another registered project is verified through gh in that project\'s checkout', async () => {
     const h = await boot({ prUrl: OTHER_PR, otherPrs: [OTHER_PR] });
     await expect(h.run('other')).resolves.toBeDefined();

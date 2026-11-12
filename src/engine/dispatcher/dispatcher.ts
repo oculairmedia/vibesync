@@ -155,6 +155,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
     this.maxConcurrentMolecules = normalizeMaxConcurrentMolecules(opts.maxConcurrentMolecules);
     this.providerResolver = opts.providerResolver ?? null;
     const defaultBinding: ProjectBinding = {
+      workBeads: null,
       deliveryVerifier: opts.deliveryVerifier ?? null,
       shippedWorkProbe: opts.shippedWorkProbe ?? null,
       prChecks: opts.prChecks ?? null,

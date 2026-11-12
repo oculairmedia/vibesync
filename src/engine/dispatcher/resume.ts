@@ -13,7 +13,7 @@ import {
   type RuntimeSessionEventContext,
   type DispatchInput,
 } from './types.js';
-import { readExec, readStepName, readStepRole, readString, softFailMarker, stringifyError } from './util.js';
+import { readExec, readProjectIdentifier, readStepName, readStepRole, readString, softFailMarker, stringifyError } from './util.js';
 
 export interface ResumeCoordinatorDeps {
   readonly walker: MoleculeWalker;
@@ -342,6 +342,3 @@ function readMotivatingBead(row: BeadRow): string | null {
   return readString(readExec(row)['motivating_bead']);
 }
 
-function readProjectIdentifier(row: BeadRow): string | undefined {
-  return readString(row.metadata['projectIdentifier']) ?? readString(readExec(row)['projectIdentifier']) ?? undefined;
-}

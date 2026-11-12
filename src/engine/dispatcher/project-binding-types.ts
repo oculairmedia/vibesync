@@ -1,8 +1,14 @@
 import type { DeliveryVerifier, ShippedWorkProbe } from './delivery.js';
 import type { PrChecksOptions } from './types.js';
+import type { BeadRow } from '../store/index.js';
 
 /** Everything a run needs that is bound to ONE repository (vibesync-9lzk.55.1). */
 export interface ProjectBinding {
+  /** Null means the engine's own tracker; otherwise use this project's bd for work beads. */
+  readonly workBeads: {
+    getBead(id: string): Promise<BeadRow | null>;
+    appendNoteToBead(beadId: string, note: string): Promise<void>;
+  } | null;
   readonly deliveryVerifier: DeliveryVerifier | null;
   readonly shippedWorkProbe: ShippedWorkProbe | null;
   readonly prChecks: PrChecksOptions | null;

@@ -25,6 +25,7 @@ import { startSchedulerDaemon, SCHEDULER_START_FAILED_EVENT } from './scheduler/
 import { StepDispatcher, StoreReadyStepSource } from './scheduler/step-dispatcher.js';
 import { assertBdVersion } from './bd-version.js';
 import { BeadsStore, createCheckoutGhRunner, createCliRunner, type CommandRunner } from './beads/index.js';
+import { createBdProjectBeadStore } from './beads/project-bead-store.js';
 import type { MoleculeStore } from './molecule/molecule.js';
 import type { WritebackStore } from './dispatcher/writeback-hook.js';
 import { createInboxCliAdapter } from './pm-wake/inbox-cli-adapter.js';
@@ -94,6 +95,8 @@ export interface BootOrchestrationPlaneOptions {
   readonly projectRoot?: (projectIdentifier: string) => string | null;
   /** The gh bound to a checkout (the home one included). Tests inject a fake; production runs the real CLI there. */
   readonly projectGh?: (root: string) => CommandRunner;
+  /** The bd bound to a project checkout. Tests inject a fake; production uses bd in that root. */
+  readonly projectBd?: (root: string) => CommandRunner;
   /**
    * Codebase memories injected into step prompts (vibesync-9lzk.25), keyed by
    * the step's project. Supplied by the app, which can resolve a project's
@@ -220,9 +223,10 @@ export async function releaseDoltAfterFailedBoot(
 export const DEFAULT_STEP_CI_CHECKS: readonly string[] = ['typecheck', 'test (20.x)', 'boot'];
 
 /** Repository-bound collaborators for one checkout, all built from the gh that runs there. */
-function createRepositoryBinding(gh: CommandRunner, ciCheckNames: readonly string[]): ProjectBinding {
+function createRepositoryBinding(gh: CommandRunner, ciCheckNames: readonly string[], workBeads: ProjectBinding['workBeads'] = null): ProjectBinding {
   const repositoryTarget = ghRepositoryTarget(gh);
   return {
+    workBeads,
     deliveryVerifier: createGhDeliveryVerifier(gh, repositoryTarget),
     shippedWorkProbe: createGhShippedWorkProbe(gh, repositoryTarget),
     prChecks: { reader: createGhPrChecksReader(gh), names: ciCheckNames },
@@ -247,6 +251,7 @@ function buildProjectBindings(args: {
   readonly homeBinding: ProjectBinding;
   readonly projectRoot: ((projectIdentifier: string) => string | null) | undefined;
   readonly ghFor: (root: string) => CommandRunner;
+  readonly bdFor: (root: string) => CommandRunner;
   readonly ciCheckNames: readonly string[];
 }): ProjectBindingResolver {
   // Resolved on first use, not at boot: an engine that is never asked about a
@@ -261,7 +266,11 @@ function buildProjectBindings(args: {
     const cached = byProject.get(projectIdentifier);
     if (cached?.root === root) return cached.binding;
     homeRoot ??= realpathSync(args.homeRoot);
-    const binding = root === homeRoot ? args.homeBinding : createRepositoryBinding(args.ghFor(root), args.ciCheckNames);
+    const binding = root === homeRoot ? args.homeBinding : createRepositoryBinding(
+      args.ghFor(root),
+      args.ciCheckNames,
+      createBdProjectBeadStore(args.bdFor(root)),
+    );
     byProject.set(projectIdentifier, { root, binding });
     return binding;
   };
@@ -346,10 +355,14 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   // the scheduler's gh: that one belongs to the SCHEDULED project, which can be
   // unset (scheduler off) or a different checkout.
   const ghFor = opts.projectGh ?? createCheckoutGhRunner;
+  const bdFor = opts.projectBd ?? ((root: string) => createCliRunner({
+    binary: 'bd', cwd: root, env: { BEADS_DIR: `${root}/.beads`, BEADS_ACTOR: 'orchestration-daemon' },
+  }));
   const ciCheckNames = opts.stepCiChecks ?? DEFAULT_STEP_CI_CHECKS;
   const homeRepository = createRepositoryBinding(ghFor(opts.dolt.beadsRoot), ciCheckNames);
   // A verifier or probe passed to boot replaces the HOME project's only.
   const homeBinding: ProjectBinding = {
+    workBeads: null,
     deliveryVerifier: opts.deliveryVerifier ?? homeRepository.deliveryVerifier,
     shippedWorkProbe: opts.shippedWorkProbe ?? homeRepository.shippedWorkProbe,
     prChecks: homeRepository.prChecks,
@@ -360,6 +373,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     homeBinding,
     projectRoot: opts.projectRoot,
     ghFor,
+    bdFor,
     ciCheckNames,
   });
   const dispatcher = new FormulaDispatcher({
@@ -387,6 +401,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     bus,
     walker,
     store: beads,
+    projectBindings,
     // vibesync-er21: writeback failures must be loud, never silent — a
     // dropped writeback is a broken loop-back to human-tracked work.
     // The `info` channel (vibesync-er21 hook-wiring) carries the
