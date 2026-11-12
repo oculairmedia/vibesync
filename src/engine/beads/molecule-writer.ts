@@ -205,6 +205,10 @@ export class BdMoleculeWriter {
     await this.bd(['update', beadId, '--append-notes', `${separator}${note}`, '--actor', ACTOR]);
   }
 
+  async addCommentToBead(beadId: string, comment: string): Promise<void> {
+    await this.bd(['comments', 'add', beadId, comment]);
+  }
+
   /** Stamp writeback status on a root; returns the previous stamp for replay dedupe. */
   async recordMoleculeWriteback(rootId: string, status: 'completed' | 'failed' | 'interrupted'): Promise<string | undefined> {
     const bead = await this.reader.getBead(rootId);
