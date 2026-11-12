@@ -27,7 +27,7 @@ import { assertBdVersion } from './bd-version.js';
 import { BeadsStore, createCheckoutGhRunner, createCliRunner, type CommandRunner } from './beads/index.js';
 import { createBdProjectBeadStore } from './beads/project-bead-store.js';
 import type { MoleculeStore } from './molecule/molecule.js';
-import type { WritebackStore } from './dispatcher/writeback-hook.js';
+import type { WritebackStore } from './molecule/index.js';
 import { createInboxCliAdapter } from './pm-wake/inbox-cli-adapter.js';
 import type { BootSchedulerOptions, SchedulerHandle } from './scheduler/boot-scheduler.js';
 import type { DoltClient } from './store/index.js';
