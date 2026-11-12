@@ -441,6 +441,25 @@ export function assertFingerprintMatch(args: {
   }
 }
 
+/** How long a freshly started Dolt server is given to accept its first connection. */
+const RESTART_ACCEPT_BUDGET_MS = 10_000;
+
+/** True when nothing is listening on the port we dialled (the server is down, as opposed to wrong or broken). */
+function isConnectionRefused(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException | null)?.code === 'ECONNREFUSED';
+}
+
+/**
+ * Whether a failed first connection may be answered by starting the server
+ * (vibesync-9lzk.55.7). Only a refused connection qualifies: a wrong database
+ * (fingerprint mismatch), a schema error or any other failure must surface
+ * unchanged. An explicit port names a server someone else manages, and
+ * `startServerIfMissing: false` says the same about the whole lifecycle.
+ */
+function canRestartDeadServer(err: unknown, cfg: DoltClientConfig, options: ResolveDoltPortOptions): boolean {
+  return isConnectionRefused(err) && cfg.port === undefined && options.startServerIfMissing !== false;
+}
+
 /**
  * The direct-SQL client. Owns a connection pool to the local Dolt
  * server. All operations are typed and parameterized; raw SQL is not
@@ -472,6 +491,16 @@ export class DoltClient {
     // Fail closed before polling or starting a server when metadata is invalid.
     const database = readDatabase(cfg);
     const port = await resolveDoltPort(cfg, bootDeps, options);
+    try {
+      return await DoltClient.openVerified(cfg, port, database);
+    } catch (err) {
+      if (!canRestartDeadServer(err, cfg, options)) throw err;
+      return await DoltClient.restartAndConnect(cfg, { database, refusedPort: port }, bootDeps, options);
+    }
+  }
+
+  /** A pool on `port`, returned only once the database behind it is proven to be ours. */
+  private static async openVerified(cfg: DoltClientConfig, port: number, database: string): Promise<DoltClient> {
     const client = new DoltClient({ ...cfg, port, database });
     try {
       await client.verifyFingerprint();
@@ -481,6 +510,81 @@ export class DoltClient {
       await client.close().catch(() => {});
       throw err;
     }
+  }
+
+  /**
+   * vibesync-9lzk.55.7: the port file can outlive its server. A service
+   * restart kills the Dolt server (it lives in the service's cgroup) and
+   * leaves `.beads/dolt-server.port` behind, so the port resolves at once and
+   * every connection is refused. Start the server once, re-read the port file
+   * (the server may come back on another port), and connect again, waiting a
+   * bounded time for it to accept. The server is started ONCE; if it still
+   * refuses after that, the error says what was tried.
+   */
+  private static async restartAndConnect(
+    cfg: ResolvedConfig,
+    dead: { readonly database: string; readonly refusedPort: number },
+    bootDeps: DoltBootDeps,
+    options: ResolveDoltPortOptions,
+  ): Promise<DoltClient> {
+    const beadsRoot = resolvedBeadsRoot(cfg);
+    const refused = `DoltClient: connection refused on port ${dead.refusedPort} (from ${portFilePath(cfg)})`;
+    bootDeps.log?.(
+      'warn',
+      { port: dead.refusedPort, portPath: portFilePath(cfg), beadsRoot },
+      'DoltClient: connection refused on the port from the port file — the Dolt server is down; starting it via `bd dolt start`',
+    );
+    try {
+      await bootDeps.startDoltServer(beadsRoot);
+    } catch (err) {
+      throw new Error(`${refused} and \`bd dolt start\` in ${beadsRoot} failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    const outcome = await DoltClient.awaitRestartedServer(cfg, dead.database, bootDeps, options);
+    if (outcome instanceof DoltClient) {
+      bootDeps.log?.('info', { port: outcome.port, previousPort: dead.refusedPort }, 'DoltClient: Dolt server restarted and verified');
+      return outcome;
+    }
+    throw new Error(
+      `${refused}; ran \`bd dolt start\` in ${beadsRoot}, and the server still refuses connections on port ${outcome.lastPort} after ${RESTART_ACCEPT_BUDGET_MS}ms`,
+    );
+  }
+
+  /**
+   * `bd dolt start` returning does not promise the server accepts connections
+   * yet. Poll for a bounded time, re-reading the port file each round (the
+   * server may come back on another port). Returns the verified client, or
+   * the last port tried when the budget runs out; any failure other than a
+   * refused connection is thrown as it is.
+   */
+  private static async awaitRestartedServer(
+    cfg: ResolvedConfig,
+    database: string,
+    bootDeps: DoltBootDeps,
+    options: ResolveDoltPortOptions,
+  ): Promise<DoltClient | { readonly lastPort: number }> {
+    // Never below 50 ms: a zero interval would not advance the budget.
+    const pollIntervalMs = Math.max(options.pollIntervalMs ?? 500, 50);
+    // ONE budget for the whole wait: every sleep counts, including the ones
+    // the port-file wait makes, so a port file that reappears late cannot
+    // restart the clock. Time is the injected sleep's, as in resolveDoltPort.
+    let spentMs = 0;
+    const deps: DoltBootDeps = { ...bootDeps, sleep: async (ms: number) => { spentMs += ms; await bootDeps.sleep(ms); } };
+    let lastPort = 0;
+    while (spentMs <= RESTART_ACCEPT_BUDGET_MS) {
+      lastPort = await resolveDoltPort(cfg, deps, {
+        ...options,
+        pollIntervalMs,
+        timeoutMs: Math.max(RESTART_ACCEPT_BUDGET_MS - spentMs, pollIntervalMs),
+        startServerIfMissing: false,
+      });
+      try {
+        return await DoltClient.openVerified(cfg, lastPort, database);
+      } catch (err) {
+        if (!isConnectionRefused(err)) throw err;
+      }
+      await deps.sleep(pollIntervalMs);
+    }
+    return { lastPort };
   }
 
   constructor(cfg: DoltClientConfig = {}) {
