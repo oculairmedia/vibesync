@@ -8,6 +8,7 @@ import type { DeliveryVerifier, ShippedWorkProbe } from './delivery.js';
 import type { StepReplyJudge } from '../verdict/index.js';
 import type { ProjectMemorySource } from './project-memory.js';
 import { StepTurnRunner } from './step-turn.js';
+import type { TurnLimitRecordStore, TurnLimitPreserver } from './turn-limit.js';
 import {
   readFailureClass,
   readRetryState,
@@ -109,6 +110,8 @@ export interface FormulaDispatcherOptions {
    */
   readonly prChecks?: PrChecksOptions;
   readonly projectBindings?: ProjectBindingResolver;
+  readonly turnLimitPreserver?: TurnLimitPreserver;
+  readonly turnLimitRecordStore?: TurnLimitRecordStore;
   /**
    * Called (never throws) right after a molecule is cooked and registered, so
    * the step loop can pick up its first ready steps promptly instead of waiting
@@ -175,6 +178,11 @@ export class FormulaDispatcher implements ReadyStepRunner {
       stepAttempt: this.stepAttempt,
       stepVerdict: this.stepVerdict,
       projectMemory: this.projectMemory,
+      ...(opts.turnLimitPreserver ? { turnLimitPreserver: opts.turnLimitPreserver } : {}),
+      // vibesync-9lzk.57: the WIP record goes to the run's OWN tracker (a foreign project's
+      // work bead lives in that project's bd), the engine's store only for its own runs.
+      turnLimitRecordStore: (projectIdentifier) =>
+        opts.turnLimitRecordStore ?? this.projectBindings(projectIdentifier).workBeads ?? this.walker,
     });
     this.settler = new MoleculeSettler({
       walker: this.walker,
@@ -367,6 +375,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
         outputs: run.outputs,
         rolesByName: run.rolesByName,
         provider: run.provider,
+        ...(run.input.workdir !== undefined ? { workdir: run.input.workdir } : {}),
       });
     } catch (error) {
       if (!run.failed) {

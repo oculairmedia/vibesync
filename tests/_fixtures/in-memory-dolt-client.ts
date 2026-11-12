@@ -218,6 +218,11 @@ export class InMemoryDoltClient {
     this.notes.push({ beadId, note });
   }
 
+  async addCommentToBead(beadId: string, comment: string): Promise<void> {
+    if (!this.beads.has(beadId)) throw new Error(`InMemoryDoltClient: unknown bead ${beadId}`);
+    this.notes.push({ beadId, note: comment });
+  }
+
   async recordMoleculeWriteback(rootId: string, status: 'completed' | 'failed' | 'interrupted'): Promise<string | undefined> {
     const row = this.requireBead(rootId);
     const exec = (row.metadata.exec && typeof row.metadata.exec === 'object'

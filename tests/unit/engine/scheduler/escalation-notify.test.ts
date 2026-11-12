@@ -51,4 +51,5 @@ describe('escalation notifier', () => {
     expect(comments[0]!.length).toBeLessThan(1800);
     expect(comments[0]).toContain('[truncated]');
   });
+
 });
