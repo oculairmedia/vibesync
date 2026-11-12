@@ -165,6 +165,12 @@ jobs:
           "$dolt_binary" version
           echo "$(dirname "$dolt_binary")" >> "$GITHUB_PATH"
 
+      # vibesync-9lzk.55.7: scripts/ci/boot-check.sh runs with orchestration off and
+      # never opens the database. This boots the real entry point with the engine ON
+      # against a tracker whose Dolt server was stopped; it must restart the server.
+      - name: Engine boot check (orchestration on, Dolt server stopped)
+        run: scripts/ci/engine-boot-check.sh "$VIBESYNC_BD_BINARY" 120
+
       - name: Run bd-backed integration suites
         env:
           VIBESYNC_TEST_BD: ${{ env.VIBESYNC_BD_BINARY }}

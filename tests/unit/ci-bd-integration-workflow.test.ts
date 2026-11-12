@@ -48,4 +48,17 @@ describe('bd-backed integration CI', () => {
     expect(integration).toContain('VIBESYNC_TEST_BD_WAKES: ${{ env.VIBESYNC_BD_BINARY }}');
     expect(integration).toContain('vitest run tests/integration');
   });
+
+  it('boots the engine against a stopped Dolt server, after the pinned tools are installed and before the long suites', () => {
+    // vibesync-9lzk.55.7: the required boot check runs with orchestration off, so only this step opens the database.
+    const integration = job('integration-bd');
+    const doltInstall = integration.indexOf('name: Install pinned Dolt for isolated integration suites');
+    const engineBoot = integration.indexOf('scripts/ci/engine-boot-check.sh "$VIBESYNC_BD_BINARY"');
+    const suites = integration.indexOf('name: Run bd-backed integration suites');
+    expect(engineBoot).toBeGreaterThan(doltInstall);
+    expect(suites).toBeGreaterThan(engineBoot);
+    const script = readFileSync(resolve(process.cwd(), 'scripts/ci/engine-boot-check.sh'), 'utf8');
+    expect(script).toContain('export ENABLE_ORCHESTRATION=true');
+    expect(script).toContain("grep -q 'the Dolt server is down'"); // fails if the restart path was never taken
+  });
 });
