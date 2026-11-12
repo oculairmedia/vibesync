@@ -172,6 +172,18 @@ describe('scheduler ON: the engine owns the step loop', () => {
     expect(bd.calls.filter((c) => c[0] === 'ready' && c.includes('--mol'))).toEqual([]);
   });
 
+  it('a daemon tick has no step phase: it never ticks the step loop', async () => {
+    // The engine's own step timer is set far out, so any step tick seen here came from the daemon.
+    const stepTick = vi.spyOn(StepDispatcher.prototype, 'tick');
+    const bd = fakeBd();
+    const { handle } = await boot({ scheduler: schedulerOptions(bd), stepTickIntervalMs: 600_000 });
+    expect(handle.scheduler).not.toBeNull();
+    stepTick.mockClear();
+    await handle.scheduler!.daemon.tick();
+    expect(stepTick).not.toHaveBeenCalled();
+    stepTick.mockRestore();
+  });
+
   it('a paused scheduler dispatches no steps either', async () => {
     const bd = fakeBd();
     const opts = schedulerOptions(bd);
