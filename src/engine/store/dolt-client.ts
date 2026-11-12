@@ -60,6 +60,8 @@ export interface DoltClientConfig {
   readonly host?: string;
   /** Connection-pool size. */
   readonly poolSize?: number;
+  /** Per-query deadline for the connection and schema verification probes. */
+  readonly verifyTimeoutMs?: number;
   /** Override expected repo_id; otherwise use the canonical Beads root's remote/path.
    * With explicit port and database, a nonempty identity bypasses filesystem discovery.
    */
@@ -443,6 +445,15 @@ export function assertFingerprintMatch(args: {
 
 /** How long a freshly started Dolt server is given to accept its first connection. */
 const RESTART_ACCEPT_BUDGET_MS = 10_000;
+export const DOLT_QUERY_TIMEOUT_MS = 10_000;
+
+function verificationQueryError(err: unknown, port: number, timeoutMs: number): unknown {
+  if ((err as NodeJS.ErrnoException | null)?.code !== 'PROTOCOL_SEQUENCE_TIMEOUT') return err;
+  return new Error(
+    `DoltClient: the Dolt server on port ${port} accepted the connection but did not answer the verification query within ${timeoutMs}ms`,
+    { cause: err },
+  );
+}
 
 /** True when nothing is listening on the port we dialled (the server is down, as opposed to wrong or broken). */
 function isConnectionRefused(err: unknown): boolean {
@@ -472,6 +483,7 @@ export class DoltClient {
   /** Canonical repository root that owns this database's `.beads/`. bd writes must target the same root. */
   readonly beadsRoot: string;
   private readonly expectedRepoId: string | null;
+  private readonly verifyTimeoutMs: number;
   private fingerprintVerified = false;
   private schemaVerified = false;
 
@@ -593,6 +605,7 @@ export class DoltClient {
     const port = readPort(cfg);
     this.database = database;
     this.port = port;
+    this.verifyTimeoutMs = cfg.verifyTimeoutMs ?? DOLT_QUERY_TIMEOUT_MS;
     this.beadsRoot = resolvedBeadsRoot(cfg);
     this.expectedRepoId =
       cfg.expectedRepoId ??
@@ -616,6 +629,28 @@ export class DoltClient {
     await this.pool.end();
   }
 
+
+  /**
+   * One verification query with a deadline (vibesync-9lzk.55.8), on a
+   * connection of its own. Two facts of mysql2 3.20 shape this: its per-call
+   * `timeout` is armed for `query` but not for `execute` (an `execute` against a
+   * server that never answers the prepare step hangs), and a connection whose
+   * query timed out must be destroyed, not returned to the pool, or `pool.end()`
+   * waits on it forever. A refused connection surfaces from `getConnection`
+   * unchanged, so the restart path still recognises it.
+   */
+  private async verificationQuery(sql: string, values: readonly unknown[] = []): Promise<unknown> {
+    const connection = await this.pool.getConnection();
+    try {
+      const [rows] = await connection.query({ sql, values: [...values], timeout: this.verifyTimeoutMs });
+      connection.release();
+      return rows;
+    } catch (err) {
+      connection.destroy();
+      throw verificationQueryError(err, this.port, this.verifyTimeoutMs);
+    }
+  }
+
   /**
    * Verify the connected Dolt database is actually the one we expect.
    * Compares the DB's `metadata.repo_id` row against the fingerprint
@@ -635,9 +670,7 @@ export class DoltClient {
       this.fingerprintVerified = true;
       return;
     }
-    const [rows] = await this.pool.execute('SELECT value FROM metadata WHERE `key` = ? LIMIT 1', [
-      'repo_id',
-    ]);
+    const rows = await this.verificationQuery('SELECT value FROM metadata WHERE `key` = ? LIMIT 1', ['repo_id']);
     const actualRepoId = (rows as { value?: string }[])[0]?.value ?? '';
     assertFingerprintMatch({
       expectedRepoId: this.expectedRepoId,
@@ -664,9 +697,7 @@ export class DoltClient {
     if (this.schemaVerified) return;
     const rows: TableSchemaRow[] = [];
     for (const table of BD_FINGERPRINT_TABLES) {
-      const [result] = await this.pool.query<mysql.RowDataPacket[]>(
-        `SHOW CREATE TABLE \`${table}\``,
-      );
+      const result = (await this.verificationQuery(`SHOW CREATE TABLE \`${table}\``)) as mysql.RowDataPacket[];
       const createTableSql = String(result[0]?.['Create Table'] ?? '');
       if (!createTableSql) {
         throw new WrongBdSchemaError({

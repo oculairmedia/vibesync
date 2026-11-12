@@ -5,15 +5,23 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import mysql from 'mysql2/promise';
 import {
+  DOLT_QUERY_TIMEOUT_MS,
   DoltClient,
   resolveDoltPort,
   type DoltBootDeps,
 } from '../../../../src/engine/store/dolt-client.js';
 
-vi.mock('mysql2/promise', () => ({ default: { createPool: vi.fn(() => ({
-  end: vi.fn(async () => {}),
-  execute: vi.fn(async () => [[]]),
-})) } }));
+vi.mock('mysql2/promise', () => ({ default: { createPool: vi.fn(() => fakePool(vi.fn(async () => [[]]))) } }));
+
+/**
+ * A pool whose verification queries run through one acquired connection, as
+ * DoltClient does (vibesync-9lzk.55.8: mysql2 only honours a query deadline on
+ * `query`, and a timed-out connection is destroyed rather than released).
+ */
+function fakePool(query: ReturnType<typeof vi.fn>, end: ReturnType<typeof vi.fn> = vi.fn(async () => undefined)) {
+  const connection = { query, release: vi.fn(), destroy: vi.fn() };
+  return { end, getConnection: vi.fn(async () => connection), connection };
+}
 
 const fixtures: string[] = [];
 afterEach(() => {
@@ -63,14 +71,14 @@ function bootDeps(): DoltBootDeps {
 describe('canonical Dolt discovery', () => {
   it.each(['mismatch', 'query failure', 'cleanup failure'])('closes an unverified pool on %s', async (kind) => {
     const failure = new Error('identity query failed');
-    const pool = {
-      execute: kind === 'query failure'
+    const pool = fakePool(
+      kind === 'query failure'
         ? vi.fn().mockRejectedValue(failure)
         : vi.fn().mockResolvedValue([[{ value: 'wrong' }]]),
-      end: kind === 'cleanup failure'
+      kind === 'cleanup failure'
         ? vi.fn().mockRejectedValue(new Error('cleanup failed'))
         : vi.fn().mockResolvedValue(undefined),
-    };
+    );
     vi.mocked(mysql.createPool).mockReturnValueOnce(pool as never);
     await expect(DoltClient.connect({ port: 33123, database: 'explicit', expectedRepoId: 'test' }))
       .rejects.toThrow(kind === 'query failure' ? failure : /WrongDoltDatabase/);
@@ -78,14 +86,15 @@ describe('canonical Dolt discovery', () => {
   });
 
   it('verifies before returning a client and caches successful verification', async () => {
-    const pool = { execute: vi.fn().mockResolvedValue([[{ value: 'test' }]]), end: vi.fn() };
+    const pool = fakePool(vi.fn().mockResolvedValue([[{ value: 'test' }]]), vi.fn());
     vi.mocked(mysql.createPool).mockReturnValueOnce(pool as never);
     const client = await DoltClient.connect({ port: 33123, database: 'explicit', expectedRepoId: 'test' });
-    expect(pool.execute).toHaveBeenCalledWith(
-      'SELECT value FROM metadata WHERE `key` = ? LIMIT 1', ['repo_id'],
-    );
+    expect(pool.connection.query).toHaveBeenCalledWith({
+      sql: 'SELECT value FROM metadata WHERE `key` = ? LIMIT 1', values: ['repo_id'], timeout: DOLT_QUERY_TIMEOUT_MS,
+    });
+    expect(pool.connection.release).toHaveBeenCalledTimes(1);
     await client.verifyFingerprint();
-    expect(pool.execute).toHaveBeenCalledTimes(1);
+    expect(pool.connection.query).toHaveBeenCalledTimes(1);
     expect(pool.end).not.toHaveBeenCalled();
     await client.close();
   });
