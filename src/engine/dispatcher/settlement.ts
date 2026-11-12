@@ -3,7 +3,7 @@ import type { BeadRow } from '../store/index.js';
 import type { RuntimeProvider } from '../runtime/index.js';
 import type { ProjectBindingResolver } from './project-binding-types.js';
 import { FormulaCancellationConflictError, FormulaDispatchError, type CancelResult, type DispatchInput, type MoleculeRun, type ProviderResolver } from './types.js';
-import { readExec, readStepName, readStepRole, readString, stringifyError } from './util.js';
+import { readExec, readProjectIdentifier, readStepName, readStepRole, readString, stringifyError } from './util.js';
 
 export interface MoleculeSettlerDeps {
   readonly walker: MoleculeWalker;
@@ -177,7 +177,7 @@ export class MoleculeSettler {
   }
 
   private async resolveProvider(root: BeadRow): Promise<RuntimeProvider> {
-    const projectIdentifier = readString(root.metadata['projectIdentifier']) ?? readString(readExec(root)['projectIdentifier']);
+    const projectIdentifier = readProjectIdentifier(root);
     if (!this.deps.providerResolver || !projectIdentifier) return this.deps.defaultProvider;
     const input = { projectIdentifier } as DispatchInput;
     return await this.deps.providerResolver.resolve(input) ?? this.deps.defaultProvider;

@@ -34,6 +34,8 @@ import { INTERRUPTED_EVENT } from '../molecule/recovery.js';
 import type { Event, EventBus } from '../events/index.js';
 import type { MoleculeWalker } from '../molecule/index.js';
 import type { BeadRow } from '../store/index.js';
+import type { ProjectBindingResolver } from './project-binding-types.js';
+import { readProjectIdentifier } from './util.js';
 
 const OUTPUT_EXCERPT_LIMIT = 400;
 
@@ -86,6 +88,7 @@ export interface WritebackHookDeps {
   readonly bus: EventBus;
   readonly walker: MoleculeWalker;
   readonly store: WritebackStore;
+  readonly projectBindings?: ProjectBindingResolver;
   /** Injectable so tests can pin the timestamp. Defaults to Date.now. */
   readonly now?: () => Date;
   /** Optional logger for swallowed errors and subscription/invocation traces. */
@@ -216,7 +219,9 @@ async function handleEvent(event: Event, deps: WritebackHookDeps, now: () => Dat
   //   2. Append the note. On failure: do NOT stamp, rethrow so the caller
   //      logs loudly and a later replay retries.
   //   3. Only after the note lands, stamp writeback_status for idempotency.
-  const motivatingBead = await deps.store.getBead(motivatingBeadId);
+  const projectIdentifier = readProjectIdentifier(view.root);
+  const projectStore = deps.projectBindings?.(projectIdentifier).workBeads ?? deps.store;
+  const motivatingBead = await projectStore.getBead(motivatingBeadId);
   if (!motivatingBead) {
     await deps.store.recordMoleculeWriteback(moleculeId, status);
     deps.logger?.warn(
@@ -226,7 +231,7 @@ async function handleEvent(event: Event, deps: WritebackHookDeps, now: () => Dat
     return 'skipped-motivating-bead-gc';
   }
 
-  await deps.store.appendNoteToBead(motivatingBeadId, note);
+  await projectStore.appendNoteToBead(motivatingBeadId, note);
   await deps.store.recordMoleculeWriteback(moleculeId, status);
   return 'posted';
 }

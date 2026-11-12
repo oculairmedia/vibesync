@@ -93,11 +93,13 @@ function harness(args: {
   const homeVerifier = createGhDeliveryVerifier(homeGh, async () => ({ repository: 'oculairmedia/vibesync' }));
   const otherVerifier = createGhDeliveryVerifier(otherGh, async () => ({ repository: 'oculairmedia/other-project' }));
   const homeBinding: ProjectBinding = {
+    workBeads: null,
     deliveryVerifier: homeVerifier,
     shippedWorkProbe: args.homeProbe ?? null,
     prChecks: args.homeReader ? { reader: args.homeReader, names: CHECKS, pollMs: 1, maxWaitMs: 10 } : null,
   };
   const otherBinding: ProjectBinding = {
+    workBeads: null,
     deliveryVerifier: otherVerifier,
     shippedWorkProbe: args.otherProbe ?? null,
     prChecks: args.otherReader ? { reader: args.otherReader, names: CHECKS, pollMs: 1, maxWaitMs: 10 } : null,

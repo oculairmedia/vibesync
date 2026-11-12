@@ -34,6 +34,10 @@ export function readString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
+export function readProjectIdentifier(row: BeadRow): string | undefined {
+  return readString(row.metadata['projectIdentifier']) ?? readString(readExec(row)['projectIdentifier']) ?? undefined;
+}
+
 /** What a dependent's prompt sees in place of the output of a step that soft-failed. */
 export function softFailMarker(stepName: string, errorTrace: string): string {
   return `[step "${stepName}" soft-failed and produced no output: ${errorTrace}]`;
