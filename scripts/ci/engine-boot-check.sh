@@ -11,7 +11,9 @@
 # What it does: makes a scratch server-mode tracker with the given bd, stops its
 # Dolt server (the port file stays), starts the service from that directory, and
 # requires the log line "Orchestration plane initialized" plus /health reporting
-# orchestration ready. Nothing outside the scratch directory is read or written.
+# orchestration ready. Nothing outside the scratch directory is read or written:
+# HOME, the registry, the stacks dir, the tracker and the Iroh address all point
+# into it, and no agent is ever dialled.
 #
 # Needs: bun, git, a `bd` binary (first argument or $VIBESYNC_TEST_BD) and
 # `dolt` on PATH. Usage: scripts/ci/engine-boot-check.sh [/abs/path/to/bd] [budget_s]
@@ -90,6 +92,13 @@ fi
 export ENABLE_ORCHESTRATION=true
 export ORCHESTRATION_BOOT_ATTEMPTS=1
 export VIBESYNC_LETTA_CODE_PARENT_AGENT_ID="agent-00000000-0000-0000-0000-000000000000"
+# Boot parses the Iroh host address but dials nothing until a step runs. Give it
+# a syntactically valid address on a closed port and a key path that does not
+# exist, so the check reads no address book or key from the machine it runs on
+# (the first CI run failed here: "iroh address file not found: /root/.letta/...").
+export VIBESYNC_IROH_HOST_ADDR="$(printf '0%.0s' $(seq 1 64))@127.0.0.1:9"
+export VIBESYNC_IROH_SECRET_KEY_PATH="$WORK/no-such-iroh-key"
+export VIBESYNC_IROH_PEER_NAME="engine-boot-check"
 export VIBESYNC_SCHEDULER_ENABLED=false VIBESYNC_PM_WAKE_ENABLED=false VIBESYNC_WAITS_ENABLED=false
 export HEALTH_PORT="$PORT" STACKS_DIR="$WORK/stacks" VIBESYNC_DB_PATH="$WORK/registry.db"
 export VIBESYNC_PORT_SWEEP_INTERVAL_MS=0 NO_PRETTY_LOGS=1 LOG_LEVEL="${LOG_LEVEL:-info}"
