@@ -149,8 +149,8 @@ describe('the dispatcher no longer drives its own molecules (vibesync-efee)', ()
   });
 });
 
-describe('scheduler ON: all three steps are dispatched by the scheduler loop', () => {
-  it('a formula run completes through daemon ticks; the step loop never ticks on its own', async () => {
+describe('scheduler ON: the engine owns the step loop', () => {
+  it('a formula run completes through the engine step loop, independently of daemon ticks', async () => {
     const bd = fakeBd();
     // Spy BEFORE boot: boot is what would start the fallback timer.
     const selfTick = vi.spyOn(StepDispatcher.prototype, 'start');
@@ -165,12 +165,10 @@ describe('scheduler ON: all three steps are dispatched by the scheduler loop', (
       expect((await store.getBead(newMoleculeStepId(result.moleculeId, name)))?.status).toBe('closed');
     }
     expect((await store.getBead(result.moleculeId))?.metadata).toMatchObject({ exec: { outcome: 'completed' } });
-    expect(selfTick).not.toHaveBeenCalled(); // the scheduler owns the loop
+    expect(selfTick).toHaveBeenCalledTimes(1); // boot always starts the engine-owned loop
     selfTick.mockRestore();
-    // The steps were run by daemon ticks, woken by the cook / step settle - not by the 600 s interval.
-    const ticks = events.filter((e) => e.kind === TICK);
-    expect(ticks.length).toBeGreaterThanOrEqual(3);
-    expect(ticks.every((t) => t.payload['reason'] !== 'interval')).toBe(true);
+    // The daemon's long interval did not need to fire for the engine loop to run steps.
+    expect(events.filter((e) => e.kind === TICK)).toEqual([]);
     // Step readiness never touched `bd ready` (that source is for WORK beads only).
     expect(bd.calls.filter((c) => c[0] === 'ready' && c.includes('--mol'))).toEqual([]);
   });
@@ -179,8 +177,9 @@ describe('scheduler ON: all three steps are dispatched by the scheduler loop', (
     const bd = fakeBd();
     const opts = schedulerOptions(bd);
     const { handle, provider } = await boot({ scheduler: { ...opts, config: { ...opts.config, paused: true } } });
+    // The engine consults the scheduler's project pause state before asking the store for ready steps.
     let settled = false;
-    const run = handle.dispatcher.run({ formula: formula(), pack: pack(), input: 'go' });
+    const run = handle.dispatcher.run({ formula: formula(), pack: pack(), input: 'go', projectIdentifier: 'proj' });
     run.then(() => { settled = true; }, () => { settled = true; });
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(settled).toBe(false);

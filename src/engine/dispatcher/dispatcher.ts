@@ -244,6 +244,10 @@ export class FormulaDispatcher implements ReadyStepRunner {
     return [...this.live.keys()];
   }
 
+  projectOfLiveMolecule(moleculeId: string): string | undefined {
+    return this.live.get(moleculeId)?.input.projectIdentifier;
+  }
+
   /**
    * Cook the molecule and wait for it to settle. Nothing here runs a step: the
    * StepDispatcher does, as the bead graph makes steps ready, and the last step
