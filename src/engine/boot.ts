@@ -107,7 +107,7 @@ export interface BootOrchestrationPlaneOptions {
    * vibesync-9lzk.46: the fast PR checks the final step waits on (the engine's
    * inner loop). Slow merge gates (integration-bd) are deliberately not here.
    */
-  readonly stepCiChecks?: readonly string[];
+  readonly projectCiChecks?: (projectIdentifier: string | undefined) => readonly string[];
   /**
    * Durable wait-on-beads watcher (vibesync-9g24, invariant 4). Absent or
    * `config.enabled === false` => nothing is constructed: no watcher, no timer,
@@ -215,9 +215,6 @@ export async function releaseDoltAfterFailedBoot(
   }
 }
 
-/** vibesync-9lzk.46: the fast checks a final step waits on; integration-bd gates the merge only. */
-export const DEFAULT_STEP_CI_CHECKS: readonly string[] = ['typecheck', 'test (20.x)', 'boot'];
-
 /** Repository-bound collaborators for one checkout, all built from the gh that runs there. */
 function createRepositoryBinding(gh: CommandRunner, ciCheckNames: readonly string[], workBeads: ProjectBinding['workBeads'] = null): ProjectBinding {
   const repositoryTarget = ghRepositoryTarget(gh);
@@ -225,6 +222,8 @@ function createRepositoryBinding(gh: CommandRunner, ciCheckNames: readonly strin
     workBeads,
     deliveryVerifier: createGhDeliveryVerifier(gh, repositoryTarget),
     shippedWorkProbe: createGhShippedWorkProbe(gh, repositoryTarget),
+    // Always a reader: a project that names no checks must fail closed at the final step, which
+    // `null` (no reader at all, e.g. an embedder) would not: an approving reply would stand.
     prChecks: { reader: createGhPrChecksReader(gh), names: ciCheckNames },
     repository: async () => (await repositoryTarget()).repository,
   };
@@ -248,7 +247,7 @@ function buildProjectBindings(args: {
   readonly projectRoot: ((projectIdentifier: string) => string | null) | undefined;
   readonly ghFor: (root: string) => CommandRunner;
   readonly bdFor: (root: string) => CommandRunner;
-  readonly ciCheckNames: readonly string[];
+  readonly projectCiChecks: (projectIdentifier: string) => readonly string[];
 }): ProjectBindingResolver {
   // Resolved on first use, not at boot: an engine that is never asked about a
   // project (single-repository use) needs no home checkout on disk.
@@ -264,7 +263,7 @@ function buildProjectBindings(args: {
     homeRoot ??= realpathSync(args.homeRoot);
     const binding = root === homeRoot ? args.homeBinding : createRepositoryBinding(
       args.ghFor(root),
-      args.ciCheckNames,
+      args.projectCiChecks(projectIdentifier),
       createBdProjectBeadStore(args.bdFor(root)),
     );
     byProject.set(projectIdentifier, { root, binding });
@@ -367,8 +366,8 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   const bdFor = opts.projectBd ?? ((root: string) => createCliRunner({
     binary: 'bd', cwd: root, env: { BEADS_DIR: `${root}/.beads`, BEADS_ACTOR: 'orchestration-daemon' },
   }));
-  const ciCheckNames = opts.stepCiChecks ?? DEFAULT_STEP_CI_CHECKS;
-  const homeRepository = createRepositoryBinding(ghFor(opts.dolt.beadsRoot), ciCheckNames);
+  const projectCiChecks = (projectIdentifier: string | undefined) => opts.projectCiChecks?.(projectIdentifier) ?? [];
+  const homeRepository = createRepositoryBinding(ghFor(opts.dolt.beadsRoot), projectCiChecks(undefined));
   // A verifier or probe passed to boot replaces the HOME project's only.
   const homeBinding: ProjectBinding = {
     workBeads: null,
@@ -383,7 +382,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     projectRoot: opts.projectRoot,
     ghFor,
     bdFor,
-    ciCheckNames,
+    projectCiChecks: (projectIdentifier) => projectCiChecks(projectIdentifier),
   });
   const dispatcher = new FormulaDispatcher({
     provider,

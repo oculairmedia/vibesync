@@ -114,6 +114,10 @@ export class StepVerdictReader {
     }
     if (this.canApproveWithoutReadableCi(args.from, prUrl, cfg)) return { kind: 'approve' };
     if (!cfg || !prUrl) return this.unreadableCiVerdict(args, prUrl);
+    // vibesync-9lzk.55.4: a project that names no checks has no definition of green.
+    if (cfg.names.length === 0) {
+      return { kind: 'unsettled', reason: `${args.reason}, but the project names no CI checks (no CI checks configured in .meridian/project.json): ${args.summary}` };
+    }
     return this.readFinalStepCi({
       step: args.step, moleculeId: args.moleculeId, stepName: args.stepName,
       prUrl, reason: args.reason, summary: args.summary, cfg,

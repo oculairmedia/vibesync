@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { configSchema, type AppConfig } from './configSchema';
 import { schedulerProjectsFromEnv } from './scheduler-projects.js';
+import { resolveFromAppRoot } from './runtimePaths.js';
 
 
 /**
@@ -66,7 +67,7 @@ export function loadConfig(): AppConfig {
         enabled: process.env.VIBESYNC_PM_WAKE_ENABLED === 'true',
         minIntervalMs: parseCappedMs(process.env.VIBESYNC_PM_WAKE_MIN_INTERVAL_MS, 1_800_000),
         backstopMs: parseCappedMs(process.env.VIBESYNC_PM_WAKE_BACKSTOP_MS, 28_800_000),
-        statePath: process.env.VIBESYNC_PM_WAKE_STATE_PATH || '/opt/stacks/vibesync/logs/pm-wake-state.json',
+        statePath: process.env.VIBESYNC_PM_WAKE_STATE_PATH || resolveFromAppRoot('logs/pm-wake-state.json'),
         // vibesync-2bgv: whole-string enum; anything else fails validation.
         sink: (process.env.VIBESYNC_PM_WAKE_SINK || 'log') as 'log' | 'inbox',
         ...(process.env.VIBESYNC_PM_WAKE_CLI_EXECUTABLE !== undefined ? {

@@ -111,6 +111,7 @@ interface BootArgs {
   /** A gh handed to boot as the scheduler's (the scheduler itself stays off). */
   readonly schedulerGh?: FakeGh;
   readonly projectBd?: (root: string) => (args: readonly string[]) => Promise<string>;
+  readonly projectCiChecks?: (projectIdentifier: string | undefined) => readonly string[];
 }
 
 async function boot(args: BootArgs) {
@@ -143,6 +144,7 @@ async function boot(args: BootArgs) {
         return '';
       });
     },
+    ...(args.projectCiChecks ? { projectCiChecks: args.projectCiChecks } : {}),
     ...(registry ? { projectRoot: (id: string) => registry[id] ?? null } : {}),
     ...(args.homeVerifier ? { deliveryVerifier: args.homeVerifier } : {}),
     ...(args.judge ? { stepJudge: args.judge } : {}),
@@ -366,7 +368,7 @@ describe('project bindings built at boot (vibesync-9lzk.55.1)', () => {
 
   it('the final step does not read CI from a pull request in another repository', async () => {
     // The reply names a PR that exists and is green, but in the OTHER repository; this run is the home project's.
-    const h = await boot({ prUrl: OTHER_PR, otherPrs: [OTHER_PR], judge: approvingJudge });
+    const h = await boot({ prUrl: OTHER_PR, otherPrs: [OTHER_PR], judge: approvingJudge, projectCiChecks: () => ['typecheck', 'test (20.x)', 'boot'] });
     const error = await h.run('home', review).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(FormulaEscalationError);
     expect(String((error as Error).message)).toContain('is not in the project repository acme/home');
@@ -375,10 +377,30 @@ describe('project bindings built at boot (vibesync-9lzk.55.1)', () => {
   });
 
   it('the final step reads CI for a pull request in the run\'s own repository', async () => {
-    const h = await boot({ prUrl: OTHER_PR, otherPrs: [OTHER_PR], judge: approvingJudge });
+    const h = await boot({ prUrl: OTHER_PR, otherPrs: [OTHER_PR], judge: approvingJudge, projectCiChecks: () => ['typecheck', 'test (20.x)', 'boot'] });
     await expect(h.run('other', review)).resolves.toBeDefined();
     expect(prChecks(h.otherGh)).toEqual([OTHER_PR]);
     expect(prChecks(h.homeGh)).toEqual([]);
+  });
+
+  it('a project that names no CI checks is never approved without reading CI', async () => {
+    // The reply approves and names a PR in the run's own repository, but the project lists no checks:
+    // the engine cannot know what "green" means for it, so the step must not approve.
+    const h = await boot({ prUrl: OTHER_PR, otherPrs: [OTHER_PR], judge: approvingJudge, projectCiChecks: () => [] });
+    const error = await h.run('other', review).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(FormulaEscalationError);
+    expect(String((error as Error).message)).toContain('no CI checks configured');
+    expect(prChecks(h.otherGh)).toEqual([]);
+  });
+
+  it('project check lookup reaches the binding for that project', async () => {
+    const checked: Array<string | undefined> = [];
+    const h = await boot({
+      prUrl: OTHER_PR, otherPrs: [OTHER_PR], judge: approvingJudge,
+      projectCiChecks: (project) => { checked.push(project); return ['typecheck', 'test (20.x)', 'boot']; },
+    });
+    await expect(h.run('other', review)).resolves.toBeDefined();
+    expect(checked).toContain('other');
   });
 
   it('a plan-only step of a project the registry does not know is blocked; the coder never starts', async () => {

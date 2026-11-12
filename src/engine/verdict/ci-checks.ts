@@ -54,6 +54,7 @@ export type CiOutcome =
 
 /** Poll the named checks until all pass, one fails, or the wait cap is reached. */
 export async function settleCi(reader: PrChecksReader, prUrl: string, opts: SettleCiOptions): Promise<CiOutcome> {
+  if (opts.names.length === 0) throw new Error('settleCi needs at least one check name');
   const deadline = opts.now() + opts.maxWaitMs;
   for (;;) {
     const states = await reader.read(prUrl, opts.names);

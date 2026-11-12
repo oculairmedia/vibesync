@@ -5,7 +5,9 @@
  * and `gh` in THAT project's own checkout, never in another project's.
  */
 import type { BootSchedulerOptions } from '../engine/scheduler/boot-scheduler.js';
+import type { DaemonLogger } from '../engine/scheduler/daemon.js';
 import type { CommandRunner } from '../engine/beads/cli.js';
+import type { ProjectEngineSettings, ProjectSettingsSource } from './project-settings.js';
 
 /** What the wiring needs from the registry. */
 export interface SchedulerRegistry {
@@ -44,13 +46,26 @@ export function buildSchedulerOptions(args: {
   readonly registry: SchedulerRegistry;
   readonly runners: CheckoutRunners;
   readonly shared: Pick<BootSchedulerOptions, 'logger' | 'pmWake'>;
+  readonly settings?: ProjectSettingsSource;
 }): BootSchedulerOptions[] {
   const { projectIdentifiers, ...config } = args.config;
-  return projectIdentifiers.map((projectIdentifier) => ({
-    ...args.shared,
-    config: { ...config, projectIdentifier },
-    listPoolMembers: (id: string) => args.registry.listRoleAgents(id).map((row) => ({ agentId: row.agentId, role: row.roleName })),
-    bd: projectRunner(args.registry, args.runners, 'bd', 'vibesync-scheduler', projectIdentifier),
-    gh: projectRunner(args.registry, args.runners, 'gh', 'vibesync-scheduler', projectIdentifier),
-  }));
+  return projectIdentifiers.flatMap((projectIdentifier) => {
+    let settings: ProjectEngineSettings;
+    try {
+      settings = args.settings?.(projectIdentifier) ?? {};
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      const warning = { project: projectIdentifier, error };
+      const logger = args.shared.logger as DaemonLogger | undefined;
+      logger?.warn?.(warning, 'Project settings are invalid; scheduler will not start');
+      return [];
+    }
+    return [{
+      ...args.shared,
+      config: { ...config, ...settings, projectIdentifier },
+      listPoolMembers: (id: string) => args.registry.listRoleAgents(id).map((row) => ({ agentId: row.agentId, role: row.roleName })),
+      bd: projectRunner(args.registry, args.runners, 'bd', 'vibesync-scheduler', projectIdentifier),
+      gh: projectRunner(args.registry, args.runners, 'gh', 'vibesync-scheduler', projectIdentifier),
+    }];
+  });
 }

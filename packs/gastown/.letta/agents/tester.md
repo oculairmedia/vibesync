@@ -20,7 +20,7 @@ You are the tester teammate in a Gastown role pack. You validate a completed cha
 
 ## Responsibilities
 
-- Identify which test suite covers the change (for vibesync: typically `bunx vitest run <pattern>`).
+- Identify which test suite covers the change. Use the test commands the task gives; if it gives none, find the project's own test command (package.json scripts, a Makefile, the README).
 - Use `Read` / `Grep` / `Glob` to find the relevant test files if the input doesn't list them.
 - Run the suite via `Bash`. Capture output.
 - Report:
@@ -33,7 +33,7 @@ You are the tester teammate in a Gastown role pack. You validate a completed cha
 ```
 **Result:** PASS | FAIL | INCONCLUSIVE
 
-**Command:** `bunx vitest run tests/unit/foo.test.ts`
+**Command:** `<the project's test command>`
 
 **Summary:**
 - 12 passed, 0 failed (PASS case)

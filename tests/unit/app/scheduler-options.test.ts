@@ -64,6 +64,30 @@ describe('per-project scheduler wiring', () => {
     expect(b!.listPoolMembers('beta')).toEqual([{ agentId: 'agent-beta', role: 'coder' }]);
   });
 
+  it('overrides the project settings, preserves absent global values and skips only invalid projects', () => {
+    const warnings: unknown[] = [];
+    const options = buildSchedulerOptions({
+      config: { ...baseConfig, projectIdentifiers: ['alpha', 'beta'] },
+      registry: registry({ alpha: '/a', beta: '/b' }), runners: recordingRunners(),
+      shared: { logger: { warn: (...args: unknown[]) => warnings.push(args) } as never },
+      settings: (project) => project === 'alpha'
+        ? { formula: 'implement-fix', readyLabel: 'ready:now', poolSize: 3 }
+        : (() => { throw new Error('engine.poolSize must be an integer from 1 to 8'); })(),
+    });
+    expect(options).toHaveLength(1);
+    expect(options[0]!.config).toMatchObject({ formula: 'implement-fix', readyLabel: 'ready:now', poolSize: 3 });
+    expect(warnings).toHaveLength(1);
+    expect(JSON.stringify(warnings[0])).toContain('Project settings are invalid');
+  });
+
+  it('leaves global settings unchanged when the project file omits fields', () => {
+    const [option] = buildSchedulerOptions({
+      config: { ...baseConfig, projectIdentifiers: ['alpha'] },
+      registry: registry({ alpha: '/a' }), runners: recordingRunners(), shared: {}, settings: () => ({}),
+    });
+    expect(option!.config).toMatchObject({ formula: 'onboard-feature', readyLabel: 'scheduler:eligible', poolSize: 1 });
+  });
+
   it('a runner follows a project whose checkout moves, and names a project with none', async () => {
     const reg = registry({ alpha: '/stacks/alpha', gone: null });
     const runners = recordingRunners();
