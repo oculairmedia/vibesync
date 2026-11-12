@@ -24,6 +24,8 @@ import type { SchedulerContextStore } from '../../../../src/engine/scheduler/ind
 import { createEscalationNotifier } from '../../../../src/engine/scheduler/escalation-notify.js';
 import type { SlingContextRecord } from '../../../../src/engine/scheduler/sling-context.js';
 import { EscalatedRunError, SchedulerLoop } from '../../../../src/engine/scheduler/scheduler-loop.js';
+import { createBdProjectBeadStore } from '../../../../src/engine/beads/project-bead-store.js';
+import { BdMoleculeWriter } from '../../../../src/engine/beads/molecule-writer.js';
 
 const worker = (retry?: StepSpec['retry']): StepSpec => ({ name: 'worker', role: 'worker', promptTemplate: 'prompts/p.md', waitFor: 'completion', ...(retry ? { retry } : {}) });
 const after: StepSpec = { name: 'after', role: 'after', promptTemplate: 'prompts/p.md', dependsOn: ['worker'], waitFor: 'completion' };
@@ -195,6 +197,100 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]).toContain('src/file-499.ts');
     expect(comments[0]).toContain('WIP branch wip/work-large/mol-large');
+  });
+
+  it('the WIP record goes to the run\'s own project tracker, not the engine\'s', async () => {
+    const { repo } = makeGitRepo();
+    const store = new InMemoryDoltClient();
+    const engineComments: string[] = [];
+    const projectComments: string[] = [];
+    store.addCommentToBead = async (id: string, comment: string) => { engineComments.push(`${id}: ${comment}`); };
+    const projectStore = {
+      async getBead() { return null; },
+      async appendNoteToBead() {},
+      async addCommentToBead(id: string, comment: string) { projectComments.push(`${id}: ${comment}`); },
+    };
+    const homeBinding = { workBeads: null, deliveryVerifier: null, shippedWorkProbe: null, prChecks: null };
+    const driven = newDriven(store, {
+      idPrefix: 'mol', provider: newFakeProvider({ kind: 'fake-runtime', script: () => (async function* () {
+        writeFileSync(join(repo, 'partial.txt'), 'unfinished');
+        const ts = new Date().toISOString();
+        yield { kind: 'started', ts };
+        yield { kind: 'error', ts, code: 'turn_timeout', message: 'timeout' };
+        yield { kind: 'turn-done', ts };
+      })() }), walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }),
+      turnLimitPreserver: new GitTurnLimitPreserver(),
+      projectBindings: (project) => (project === 'other' ? { ...homeBinding, workBeads: projectStore } : homeBinding),
+    });
+    await expect(driven.run({ formula: formula(worker()), pack: pack(), input: 'go', motivatingBeadId: 'other-1', workdir: repo, projectIdentifier: 'other' }))
+      .rejects.toBeInstanceOf(FormulaEscalationError);
+    expect(projectComments.join('\n')).toContain('other-1: TURN-LIMIT WIP RECORD');
+    expect(projectComments.join('\n')).toContain('partial.txt');
+    expect(engineComments).toEqual([]);
+  });
+
+  it('a failed WIP comment still escalates the run and names the failure', async () => {
+    const { repo } = makeGitRepo();
+    const store = new InMemoryDoltClient();
+    const driven = newDriven(store, {
+      idPrefix: 'mol', provider: newFakeProvider({ kind: 'fake-runtime', script: () => (async function* () {
+        writeFileSync(join(repo, 'partial.txt'), 'unfinished');
+        const ts = new Date().toISOString();
+        yield { kind: 'started', ts };
+        yield { kind: 'error', ts, code: 'turn_timeout', message: 'timeout' };
+        yield { kind: 'turn-done', ts };
+      })() }), walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }),
+      turnLimitPreserver: new GitTurnLimitPreserver(),
+      turnLimitRecordStore: { async appendNoteToBead() {}, async addCommentToBead() { throw new Error('bd comments add: database is locked'); } },
+    });
+    const error = await driven.run({ formula: formula(worker()), pack: pack(), input: 'go', motivatingBeadId: 'work-x', workdir: repo })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(FormulaEscalationError);
+    expect(String((error as Error).message)).toContain('WIP branch wip/work-x/');
+    expect(String((error as Error).message)).toContain('posting the WIP record on work-x failed: bd comments add: database is locked');
+  });
+
+  it('a push to a remote that never answers is cut off; the WIP stays committed locally and the step still escalates', async () => {
+    const { repo } = makeGitRepo();
+    // A remote whose transport hangs forever (an unresponsive host, a credential prompt).
+    const hang = join(repo, '..', 'hang.sh');
+    writeFileSync(hang, '#!/bin/sh\nsleep 600\n', { mode: 0o755 });
+    execFileSync('git', ['-C', repo, 'remote', 'set-url', 'origin', 'ext::' + hang]);
+    execFileSync('git', ['-C', repo, 'config', 'protocol.ext.allow', 'always']);
+    writeFileSync(join(repo, 'partial.txt'), 'unfinished');
+    const started = Date.now();
+    const details = await new GitTurnLimitPreserver({ gitTimeoutMs: 2_000 }).preserve({ workdir: repo, workBeadId: 'hang', moleculeId: 'mol-h' });
+    expect(Date.now() - started).toBeLessThan(15_000);
+    expect(details).toContain('WIP branch wip/hang/mol-h committed locally; push failed');
+    expect(execFileSync('git', ['-C', repo, 'rev-parse', '--verify', 'wip/hang/mol-h'], { encoding: 'utf8' }).trim()).toMatch(/^[0-9a-f]{40}$/);
+    // Nothing the push started is left running.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const bracketed = hang.replace(/hang\.sh$/, '[h]ang.sh');
+    expect(execFileSync('sh', ['-c', `pgrep -f '${bracketed}' || true`], { encoding: 'utf8' }).trim()).toBe('');
+  }, 30_000);
+
+  it('both production bead stores post the WIP record with the real bd comment command', async () => {
+    const record = 'TURN-LIMIT WIP RECORD (mol-1):\nWIP branch wip/w/mol-1; changed files:\na.ts';
+    const projectCalls: string[][] = [];
+    await createBdProjectBeadStore(async (args) => { projectCalls.push([...args]); return ''; }).addCommentToBead('proj-7', record);
+    expect(projectCalls).toEqual([['comments', 'add', 'proj-7', record]]);
+    const engineCalls: string[][] = [];
+    await new BdMoleculeWriter(async (args) => { engineCalls.push([...args]); return ''; }, { getBead: async () => null } as never).addCommentToBead('vibesync-9', record);
+    expect(engineCalls).toEqual([['comments', 'add', 'vibesync-9', record]]);
+  });
+
+  it('a staged-only edit is in the WIP branch (staged, then the working copy restored)', async () => {
+    const { repo, bare } = makeGitRepo();
+    writeFileSync(join(repo, 'tracked.txt'), 'staged edit');
+    execFileSync('git', ['-C', repo, 'add', 'tracked.txt']);
+    writeFileSync(join(repo, 'tracked.txt'), 'clean'); // working copy back to HEAD; the edit lives only in the index
+    const details = await new GitTurnLimitPreserver().preserve({ workdir: repo, workBeadId: 'staged', moleculeId: 'mol-s' });
+    expect(details).toContain('tracked.txt');
+    const log = execFileSync('git', ['--git-dir', bare, 'log', '--format=%s', 'wip/staged/mol-s'], { encoding: 'utf8' });
+    expect(log).toContain('(staged)');
+    const stagedCommit = execFileSync('git', ['--git-dir', bare, 'log', '--format=%H', '--grep=(staged)', '--fixed-strings', 'wip/staged/mol-s'], { encoding: 'utf8' }).trim();
+    expect(execFileSync('git', ['--git-dir', bare, 'show', `${stagedCommit}:tracked.txt`], { encoding: 'utf8' })).toBe('staged edit');
+    expect(execFileSync('git', ['-C', repo, 'diff', '--cached', '--name-only'], { encoding: 'utf8' }).trim()).toBe('tracked.txt'); // the real index is untouched
   });
 
   it('clean turn timeout escalates through the scheduler without a WIP branch', async () => {

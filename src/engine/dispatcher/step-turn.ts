@@ -36,7 +36,8 @@ export interface StepTurnDeps {
   readonly stepVerdict: StepVerdictReader;
   readonly projectMemory: ProjectMemorySource | null;
   readonly turnLimitPreserver?: TurnLimitPreserver;
-  readonly turnLimitRecordStore: TurnLimitRecordStore;
+  /** The tracker a run's work bead lives in (its project's bd, or the engine's store). */
+  readonly turnLimitRecordStore: (projectIdentifier: string | undefined) => Pick<TurnLimitRecordStore, 'addCommentToBead'>;
 }
 
 export class StepTurnRunner {
@@ -294,11 +295,22 @@ export class StepTurnRunner {
         .preserve({ workdir: args.workdir, workBeadId, moleculeId: args.moleculeId })
         .catch((error: unknown) => `WIP preservation failed: ${stringifyError(error)}`)
       : NO_UNCOMMITTED_WORK;
-    if (workBeadId && work !== NO_UNCOMMITTED_WORK) {
-      await this.deps.turnLimitRecordStore.addCommentToBead(workBeadId, turnLimitRecord(work, args.moleculeId));
+    const recorded = workBeadId && work !== NO_UNCOMMITTED_WORK
+      ? await this.postTurnLimitRecord(args.input.projectIdentifier, workBeadId, turnLimitRecord(work, args.moleculeId))
+      : '';
+    const reported = `${work}${recorded}`;
+    await this.recordTurnLimitFailure(context, state, failure, reported);
+    throw new FormulaEscalationError(`FormulaDispatcher: step "${context.stepName}" escalated after turn limit: ${reported}`, args.moleculeId, { cause: failure.error });
+  }
+
+  /** Post the WIP record on the work bead. A failure is reported, never thrown: the escalation must still happen. */
+  private async postTurnLimitRecord(projectIdentifier: string | undefined, workBeadId: string, record: string): Promise<string> {
+    try {
+      await this.deps.turnLimitRecordStore(projectIdentifier).addCommentToBead(workBeadId, record);
+      return '';
+    } catch (error) {
+      return `; posting the WIP record on ${workBeadId} failed: ${stringifyError(error)}`;
     }
-    await this.recordTurnLimitFailure(context, state, failure, work);
-    throw new FormulaEscalationError(`FormulaDispatcher: step "${context.stepName}" escalated after turn limit: ${work}`, args.moleculeId, { cause: failure.error });
   }
 
   private async recordTurnLimitFailure(

@@ -8,6 +8,7 @@ export interface ProjectBinding {
   readonly workBeads: {
     getBead(id: string): Promise<BeadRow | null>;
     appendNoteToBead(beadId: string, note: string): Promise<void>;
+    addCommentToBead(beadId: string, comment: string): Promise<void>;
   } | null;
   readonly deliveryVerifier: DeliveryVerifier | null;
   readonly shippedWorkProbe: ShippedWorkProbe | null;

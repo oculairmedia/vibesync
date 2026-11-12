@@ -135,7 +135,6 @@ export class FormulaDispatcher implements ReadyStepRunner {
   private readonly maxConcurrentMolecules: number;
   private readonly providerResolver: ProviderResolver | null;
   private readonly projectBindings: ProjectBindingResolver;
-  private readonly turnLimitRecordStore: TurnLimitRecordStore;
   private readonly projectMemory: ProjectMemorySource | null;
   private readonly stepJudge: StepReplyJudge | null;
   private readonly onMoleculeCooked: ((moleculeId: string) => void) | null;
@@ -165,7 +164,6 @@ export class FormulaDispatcher implements ReadyStepRunner {
       prChecks: opts.prChecks ?? null,
     };
     this.projectBindings = opts.projectBindings ?? createProjectBindingResolver(defaultBinding);
-    this.turnLimitRecordStore = opts.turnLimitRecordStore ?? opts.walker;
     this.projectMemory = opts.projectMemory ?? null;
     this.stepJudge = opts.stepJudge ?? null;
     this.stepVerdict = new StepVerdictReader({
@@ -181,7 +179,10 @@ export class FormulaDispatcher implements ReadyStepRunner {
       stepVerdict: this.stepVerdict,
       projectMemory: this.projectMemory,
       ...(opts.turnLimitPreserver ? { turnLimitPreserver: opts.turnLimitPreserver } : {}),
-      turnLimitRecordStore: this.turnLimitRecordStore,
+      // vibesync-9lzk.57: the WIP record goes to the run's OWN tracker (a foreign project's
+      // work bead lives in that project's bd), the engine's store only for its own runs.
+      turnLimitRecordStore: (projectIdentifier) =>
+        opts.turnLimitRecordStore ?? this.projectBindings(projectIdentifier).workBeads ?? this.walker,
     });
     this.settler = new MoleculeSettler({
       walker: this.walker,
