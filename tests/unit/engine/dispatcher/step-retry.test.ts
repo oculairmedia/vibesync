@@ -12,7 +12,6 @@ import { describe, expect, it } from 'vitest';
 import { EventBus, type Event } from '../../../../src/engine/events/index.js';
 import type { Formula } from '../../../../src/engine/formula/index.js';
 import { FormulaDispatchError } from '../../../../src/engine/dispatcher/index.js';
-import { FormulaEscalationError } from '../../../../src/engine/dispatcher/index.js';
 import { GitTurnLimitPreserver } from '../../../../src/engine/dispatcher/turn-limit.js';
 import { MoleculeWalker, newMoleculeStepId, type StepSpec } from '../../../../src/engine/molecule/index.js';
 import type { Pack } from '../../../../src/engine/packs/index.js';
@@ -236,7 +235,7 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
     const store = new InMemoryDoltClient();
     let afterStartedDuringTurn = -1;
     let turn = 0;
-    let steps: { tick(): Promise<unknown> } | undefined;
+    const steps: { current?: { tick(): Promise<unknown> } } = {};
     const provider = newFakeProvider({
       kind: 'fake-runtime',
       script: (spec) => (async function* () {
@@ -246,7 +245,7 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
           // The agent closes its own step, declaring a failure, and the scheduler ticks while that is on the bead.
           store.setStepMetadata(String(spec.extra?.['stepId']), { failure_class: 'bad' });
           await store.markStepDone(String(spec.extra?.['stepId']), { output: 'closed by agent' });
-          await steps!.tick();
+          await steps.current!.tick();
           afterStartedDuringTurn = provider.recorder.starts.filter((st) => st.role === 'after').length;
         }
         yield { kind: 'message-delta', ts, text: `${spec.role} ok` };
@@ -254,7 +253,7 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
       })(),
     });
     const driven = newDriven(store, { idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }) });
-    steps = driven.steps;
+    steps.current = driven.steps;
     const result = await driven.run({ formula: formula(worker({ maxAttempts: 2, onExhausted: 'fail', backoffMs: 0 }), after), pack: pack(), input: 'go' });
     expect(afterStartedDuringTurn).toBe(0); // the closed-but-unruled blocker held its dependent back
     const step = await meta(store, result.moleculeId, 'worker');
