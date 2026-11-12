@@ -566,7 +566,14 @@ export class DoltClient {
     const pollIntervalMs = Math.max(options.pollIntervalMs ?? 500, 50);
     let lastPort = 0;
     for (let waitedMs = 0; waitedMs <= RESTART_ACCEPT_BUDGET_MS; waitedMs += pollIntervalMs) {
-      lastPort = await resolveDoltPort(cfg, bootDeps, { ...options, startServerIfMissing: false });
+      // The port-file wait gets the same floor and only what is left of this
+      // budget: a missing port file must not stretch the restart past it.
+      lastPort = await resolveDoltPort(cfg, bootDeps, {
+        ...options,
+        pollIntervalMs,
+        timeoutMs: Math.max(RESTART_ACCEPT_BUDGET_MS - waitedMs, pollIntervalMs),
+        startServerIfMissing: false,
+      });
       try {
         return await DoltClient.openVerified(cfg, lastPort, database);
       } catch (err) {

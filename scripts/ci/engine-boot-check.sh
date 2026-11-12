@@ -107,13 +107,20 @@ unset VIBESYNC_ORCHESTRATION_PROVIDER TYPESAFE_API_KEY
 (cd "$ROOT" && exec bun "$REPO/src/index.ts") >"$LOG" 2>&1 &
 PID=$!
 
+LAST_HEALTH=""
 START=$SECONDS
 while (( SECONDS - START < BUDGET_S )); do
   if grep -q 'Orchestration plane initialized' "$LOG"; then
     kill -0 "$PID" 2>/dev/null || fail "the engine logged that it started but the process is gone"
     # /health is pretty-printed; compare with whitespace removed.
+    # The engine logs this line before the HTTP listener binds: keep asking
+    # until /health answers ready or the budget runs out (the loop fails then).
     HEALTH="$(curl -fsS --max-time 3 "http://127.0.0.1:$PORT/health" 2>/dev/null | tr -d '[:space:]' || true)"
-    [[ "$HEALTH" == *'"orchestration":{"ready":true}'* ]] || fail "the engine logged that it started but /health says: ${HEALTH:-no answer}"
+    if [[ "$HEALTH" != *'"orchestration":{"ready":true}'* ]]; then
+      LAST_HEALTH="$HEALTH"
+      sleep 1
+      continue
+    fi
     grep -q 'the Dolt server is down' "$LOG" || fail "the engine started without ever finding the server down: this check did not test the restart"
     NOW="$(tr -d '[:space:]' <"$PORT_FILE")"
     listening "$NOW" || fail "the port file says $NOW but nothing listens there"
@@ -126,4 +133,4 @@ while (( SECONDS - START < BUDGET_S )); do
   kill -0 "$PID" 2>/dev/null || fail "the process exited before the engine started"
   sleep 1
 done
-fail "the engine did not start within ${BUDGET_S}s"
+fail "the engine did not start within ${BUDGET_S}s${LAST_HEALTH:+ (last /health: $LAST_HEALTH)}"

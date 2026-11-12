@@ -177,6 +177,24 @@ describe('DoltClient.connect when the port file points at a dead server (vibesyn
     expect(sleeps).toBeLessThanOrEqual(201); // 10 s budget at the 50 ms floor
   });
 
+  it('a port file that vanishes after the start is waited for within the restart budget, not forever', async () => {
+    const dead = await freePort();
+    const root = trackerRoot(dead);
+    const start = vi.fn(async () => { rmSync(portFile(root)); }); // the restarted server never writes one
+    const d = deps(root, start);
+    let slept = 0;
+    d.sleep = async (ms: number) => { slept += ms; };
+
+    const error = await DoltClient.connect({ beadsRoot: root, expectedRepoId: 'any' }, d, { pollIntervalMs: 0 })
+      .catch((err: unknown) => err as Error);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('never appeared');
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(slept).toBeGreaterThan(0); // a 0 ms interval still advances the budget (50 ms floor)
+    expect(slept).toBeLessThanOrEqual(10_050); // bounded by the 10 s restart budget, not resolveDoltPort's 30 s
+  });
+
   it('a failing `bd dolt start` is reported with the refused port, not swallowed', async () => {
     const dead = await freePort();
     const root = trackerRoot(dead);
