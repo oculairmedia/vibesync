@@ -72,7 +72,7 @@ export type StepRunArgs = {
   readonly provider: RuntimeProvider;
 };
 
-export type StepRunFailure = { readonly signal: FailureSignal; readonly error: unknown; readonly failureClass: string | null };
+export type StepRunFailure = { readonly signal: FailureSignal; readonly error: unknown; readonly failureClass: string | null; readonly code?: string };
 
 export interface StepFailureContext {
   readonly stepRun: StepRunContext;
@@ -166,7 +166,7 @@ export class StepBlockedError extends Error {
 }
 
 export class AttemptFailure extends Error {
-  constructor(message: string, readonly signal: FailureSignal) {
+  constructor(message: string, readonly signal: FailureSignal, readonly code?: string) {
     super(message);
     this.name = 'AttemptFailure';
   }

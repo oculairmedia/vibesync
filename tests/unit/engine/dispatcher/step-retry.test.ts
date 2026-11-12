@@ -4,6 +4,7 @@
  * failure_class on that bead, and infra failures do not burn an attempt.
  */
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -11,6 +12,8 @@ import { describe, expect, it } from 'vitest';
 import { EventBus, type Event } from '../../../../src/engine/events/index.js';
 import type { Formula } from '../../../../src/engine/formula/index.js';
 import { FormulaDispatchError } from '../../../../src/engine/dispatcher/index.js';
+import { FormulaEscalationError } from '../../../../src/engine/dispatcher/index.js';
+import { GitTurnLimitPreserver } from '../../../../src/engine/dispatcher/turn-limit.js';
 import { MoleculeWalker, newMoleculeStepId, type StepSpec } from '../../../../src/engine/molecule/index.js';
 import type { Pack } from '../../../../src/engine/packs/index.js';
 import { INFRA_RETRY_CAP } from '../../../../src/engine/retry/index.js';
@@ -71,6 +74,45 @@ function harness(turnsByRole: Record<string, readonly Turn[]>) {
 const meta = async (store: InMemoryDoltClient, rootId: string, name: string) => (await store.getBead(newMoleculeStepId(rootId, name)))!;
 
 describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
+  it('turn limit commits and pushes dirty work to a WIP branch then escalates without retrying', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'turn-limit-'));
+    const repo = join(root, 'repo');
+    const bare = join(root, 'remote.git');
+    mkdirSync(repo);
+    execFileSync('git', ['init', '-q', '--bare', bare]);
+    execFileSync('git', ['init', '-q', '-b', 'work', repo]);
+    execFileSync('git', ['-C', repo, 'config', 'user.name', 'fixture']);
+    execFileSync('git', ['-C', repo, 'config', 'user.email', 'fixture@example.test']);
+    writeFileSync(join(repo, 'initial.txt'), 'initial');
+    execFileSync('git', ['-C', repo, 'add', 'initial.txt']);
+    execFileSync('git', ['-C', repo, 'commit', '-qm', 'initial']);
+    execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', bare]);
+    execFileSync('git', ['-C', repo, 'push', '-qu', 'origin', 'work']);
+    writeFileSync(join(repo, 'partial.txt'), 'unfinished');
+    const preserver = new GitTurnLimitPreserver();
+    const details = await preserver.preserve({ workdir: repo, workBeadId: 'bead-1', moleculeId: 'mol-1' });
+    expect(details).toContain('wip/bead-1/mol-1');
+    expect(details).toContain('partial.txt');
+    expect(execFileSync('git', ['--git-dir', bare, 'show-ref', '--verify', 'refs/heads/wip/bead-1/mol-1'], { encoding: 'utf8' })).toContain('refs/heads/wip/bead-1/mol-1');
+    expect(await preserver.preserve({ workdir: repo, workBeadId: 'bead-1', moleculeId: 'mol-2' })).toBe('no uncommitted work');
+  });
+
+  it('a clean turn-limit worktree has no WIP branch', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'turn-limit-clean-'));
+    const repo = join(root, 'repo');
+    const bare = join(root, 'remote.git');
+    mkdirSync(repo);
+    execFileSync('git', ['init', '-q', '--bare', bare]);
+    execFileSync('git', ['init', '-q', '-b', 'work', repo]);
+    writeFileSync(join(repo, 'tracked.txt'), 'clean');
+    execFileSync('git', ['-C', repo, 'add', 'tracked.txt']);
+    execFileSync('git', ['-C', repo, '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.test', 'commit', '-qm', 'initial']);
+    execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', bare]);
+    execFileSync('git', ['-C', repo, 'push', '-qu', 'origin', 'work']);
+    expect(await new GitTurnLimitPreserver().preserve({ workdir: repo, workBeadId: 'bead-2', moleculeId: 'mol-2' })).toBe('no uncommitted work');
+    expect(execFileSync('git', ['-C', repo, 'branch', '--list', 'wip/bead-2/mol-2'], { encoding: 'utf8' }).trim()).toBe('');
+  });
+
   it('1. fails twice (agent failure_class) then passes: bead gc.retry_attempt == 3, step closed, molecule continues', async () => {
     const h = harness({ worker: [{ kind: 'agent-fail', failureClass: 'flaky' }, { kind: 'agent-fail', failureClass: 'flaky' }, { kind: 'ok', text: 'finally' }] });
     const result = await h.dispatcher.run({ formula: formula(worker({ maxAttempts: 3, onExhausted: 'fail', backoffMs: 0 }), after), pack: pack(), input: 'go' });
@@ -101,7 +143,7 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
 
   it.each([
     ['iroh_error', 'infra'], ['IrohRefusedError', 'infra'], ['IrohTimeoutError', 'infra'], ['sse_read_error', 'infra'],
-    ['turn_timeout', 'infra'], ['stop_reason', 'infra'],       // no output yet: the agent never ran
+    ['stop_reason', 'infra'],       // no output yet: the agent never ran
     ['empty_output', 'agent'], ['something_new', 'agent'],     // unclassified burns an attempt (bounded by max_attempts)
   ])('2b. classification from the error code: %s -> %s', async (code, kind) => {
     const h = harness({ worker: [{ kind: 'error', code }, { kind: 'ok' }] });
@@ -112,7 +154,7 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
   });
 
   it('2c. a turn that died AFTER the agent produced output is an agent failure (burns an attempt)', async () => {
-    const h = harness({ worker: [{ kind: 'error', code: 'turn_timeout', text: 'partial work' }, { kind: 'ok' }] });
+    const h = harness({ worker: [{ kind: 'error', code: 'turn_failed', text: 'partial work' }, { kind: 'ok' }] });
     const result = await h.dispatcher.run({ formula: formula(worker({ maxAttempts: 3, onExhausted: 'fail', backoffMs: 0 })), pack: pack(), input: 'go' });
     expect((await meta(h.store, result.moleculeId, 'worker')).metadata['gc.retry_attempt']).toBe(2);
   });

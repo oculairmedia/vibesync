@@ -26,6 +26,7 @@ import {
 } from './types.js';
 import { StepAttemptRunner } from './step-attempt.js';
 import { StepVerdictReader } from './step-verdict.js';
+import { GitTurnLimitPreserver, type TurnLimitPreserver } from './turn-limit.js';
 import { readStepName, sleep, softFailMarker, stringifyError } from './util.js';
 
 export interface StepTurnDeps {
@@ -34,6 +35,7 @@ export interface StepTurnDeps {
   readonly stepAttempt: StepAttemptRunner;
   readonly stepVerdict: StepVerdictReader;
   readonly projectMemory: ProjectMemorySource | null;
+  readonly turnLimitPreserver?: TurnLimitPreserver;
 }
 
 export class StepTurnRunner {
@@ -105,6 +107,7 @@ export class StepTurnRunner {
           signal: error instanceof AttemptFailure ? error.signal : { origin: 'call' },
           error,
           failureClass: bead ? readFailureClass(bead.metadata) : null,
+          ...(error instanceof AttemptFailure && error.code ? { code: error.code } : {}),
         },
       };
     }
@@ -257,6 +260,25 @@ export class StepTurnRunner {
     state: RetryState,
     failure: StepRunFailure,
   ): Promise<void> {
+    if (failure.code === 'turn_timeout' && context.args.input.workdir) {
+      const { args } = context;
+      const workBeadId = args.input.motivatingBeadId;
+      const work = workBeadId
+        ? await (this.deps.turnLimitPreserver ?? new GitTurnLimitPreserver()).preserve({
+          workdir: args.input.workdir!,
+          workBeadId,
+          moleculeId: args.moleculeId,
+        }).catch((error: unknown) => `WIP preservation failed: ${stringifyError(error)}`)
+        : 'no uncommitted work';
+      await this.recordTurnLimitFailure(context, state, failure, work);
+      throw new FormulaEscalationError(`FormulaDispatcher: step "${context.stepName}" escalated after turn limit: ${work}`, args.moleculeId, { cause: failure.error });
+    }
+    if (failure.code === 'turn_timeout') {
+      const { args } = context;
+      const work = 'no uncommitted work';
+      await this.recordTurnLimitFailure(context, state, failure, work);
+      throw new FormulaEscalationError(`FormulaDispatcher: step "${context.stepName}" escalated after turn limit: ${work}`, args.moleculeId, { cause: failure.error });
+    }
     // A failure_class means the agent ran and declared it; cancel/stop still wins.
     const classified = classifyFailure(failure.signal);
     const kind = failure.failureClass !== null && classified !== 'terminal' ? 'agent' : classified;
@@ -274,6 +296,22 @@ export class StepTurnRunner {
       return;
     }
     await this.finishStepFailure(failureContext, decision);
+  }
+
+  private async recordTurnLimitFailure(
+    context: StepRunContext,
+    state: RetryState,
+    failure: StepRunFailure,
+    work: string,
+  ): Promise<void> {
+    const reason = `turn limit reached; ${work}`;
+    const trace = reason;
+    const { args, stepSpec, stepName } = context;
+    await this.deps.walker.failStep(args.step.id, trace, 'not_retryable');
+    this.deps.emit('dispatcher/step.failed', args.moleculeId, args.step.id, {
+      stepName, role: stepSpec.role, stepId: args.step.id, error: trace, attempts: state.attempt,
+      retryOutcome: 'not_retryable', failureCode: failure.code,
+    });
   }
 
   private async finishStepFailure(
