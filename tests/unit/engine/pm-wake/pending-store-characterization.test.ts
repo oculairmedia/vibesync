@@ -156,6 +156,20 @@ describe('BdPendingWakeStore: claiming', () => {
     expect(bd.calls.some((c) => c[0] === 'reclaim')).toBe(false);
   });
 
+  it('a held wake with no lease expiry counts as still held: not stolen, no reclaim', async () => {
+    const bd = fakeBd([{ id: 'pw-1', status: 'in_progress', assignee: 'other', metadata: { payload: payload() } }]);
+    const claim = await store(bd).claim('pw-1');
+    expect(claim.authorized).toBe(false);
+    expect(bd.calls.some((c) => c[0] === 'reclaim')).toBe(false);
+  });
+
+  it('does not claim a deferred wake', async () => {
+    const bd = fakeBd([{ id: 'pw-1', status: 'deferred', metadata: { payload: payload() } }]);
+    const claim = await store(bd).claim('pw-1');
+    expect(claim.authorized).toBe(false);
+    expect(bd.calls.some((c) => c[0] === 'update' && c.includes('--claim'))).toBe(false);
+  });
+
   it('reclaims a wake whose lease expired, then claims it', async () => {
     const bd = fakeBd([{ id: 'pw-1', status: 'in_progress', assignee: 'other', lease_expires_at: new Date(NOW - 1).toISOString(), metadata: { payload: payload() } }]);
     const claim = await store(bd).claim('pw-1');
@@ -190,6 +204,15 @@ describe('BdPendingWakeStore: sending', () => {
     expect(claim.authorized).toBe(true);
     return claim.record!;
   }
+
+  it('a delivered receipt for a different message is not treated as already delivered: the wake is sent', async () => {
+    const stale = { accepted: true, applicationDelivered: true, msgId: 'an-older-wake', observedAt: new Date(0).toISOString() };
+    const bd = fakeBd([{ id: 'pw-1', status: 'open', metadata: { payload: payload(), receipt: stale } }]);
+    const record = await claimed(bd);
+    let sent = 0;
+    await store(bd).sendClaimed(record, { wake: async () => { sent += 1; return { ok: true, accepted: true, applicationDelivered: true }; } }, NOW);
+    expect(sent).toBe(1);
+  });
 
   it('records a delivered wake and closes it', async () => {
     const bd = fakeBd([{ id: 'pw-1', status: 'open', metadata: { payload: payload({ correlation: { bead: 'b-1' } }), attempts: 2 } }]);
