@@ -48,7 +48,7 @@ function schedulerOptions(projectIdentifier: string, paused = false): BootSchedu
 }
 
 const handles: OrchestrationHandle[] = [];
-async function boot(opts: { scheduler?: BootSchedulerOptions; stepTickIntervalMs?: number } = {}) {
+async function boot(opts: { schedulers?: readonly BootSchedulerOptions[]; stepTickIntervalMs?: number } = {}) {
   const store = new InMemoryDoltClient();
   const provider = newFakeProvider({ kind: 'fake', script: (spec: SessionSpec) => (async function* () {
     const ts = new Date().toISOString();
@@ -58,7 +58,7 @@ async function boot(opts: { scheduler?: BootSchedulerOptions; stepTickIntervalMs
   })() });
   const handle = await bootOrchestrationPlane({
     dolt: store as never, beadsStore: store as never, provider, persistEvents: false, runDriftAuditOnBoot: false,
-    stepTickIntervalMs: 10, ...opts,
+    ...(opts.schedulers ? { schedulers: opts.schedulers } : {}), stepTickIntervalMs: opts.stepTickIntervalMs ?? 10,
   });
   handles.push(handle);
   return { handle, store, provider };
@@ -79,7 +79,7 @@ afterEach(async () => {
 describe('engine-owned step loop', () => {
   it('starts a cooked molecule step without waiting for a daemon tick', async () => {
     const stepStart = vi.spyOn(StepDispatcher.prototype, 'start');
-    const { handle, provider } = await boot({ scheduler: schedulerOptions('proj') });
+    const { handle, provider } = await boot({ schedulers: [schedulerOptions('proj')] });
     expect(stepStart).toHaveBeenCalledTimes(1);
     stepStart.mockRestore();
     const run = handle.dispatcher.run({ formula: formula(), pack: pack(), input: 'go', projectIdentifier: 'proj' });
@@ -89,7 +89,7 @@ describe('engine-owned step loop', () => {
   });
 
   it('blocks only molecules of the paused project', async () => {
-    const { handle, provider } = await boot({ scheduler: schedulerOptions('paused', true) });
+    const { handle, provider } = await boot({ schedulers: [schedulerOptions('paused', true)] });
     let pausedSettled = false;
     const pausedRun = handle.dispatcher.run({ formula: formula(), pack: pack(), input: 'paused', projectIdentifier: 'paused' });
     pausedRun.then(() => { pausedSettled = true; }, () => { pausedSettled = true; });
@@ -100,8 +100,21 @@ describe('engine-owned step loop', () => {
     await liveRun;
   });
 
+  it('pausing project A does not block project B molecules', async () => {
+    const stepStart = vi.spyOn(StepDispatcher.prototype, 'start');
+    const { handle, provider } = await boot({ schedulers: [schedulerOptions('a', true), schedulerOptions('b')] });
+    stepStart.mockRestore();
+    const aRun = handle.dispatcher.run({ formula: formula(), pack: pack(), input: 'a', projectIdentifier: 'a' });
+    const bRun = handle.dispatcher.run({ formula: formula(), pack: pack(), input: 'b', projectIdentifier: 'b' });
+    await waitFor(() => provider.recorder.starts.some((start) => start.extra?.['projectIdentifier'] === 'b'), 'project B step did not start');
+    expect(provider.recorder.starts.some((start) => start.extra?.['projectIdentifier'] === 'a')).toBe(false);
+    await handle.shutdown();
+    void aRun;
+    void bRun;
+  });
+
   it('runs molecules without a project when the scheduler is paused', async () => {
-    const { handle, provider } = await boot({ scheduler: schedulerOptions('paused', true) });
+    const { handle, provider } = await boot({ schedulers: [schedulerOptions('paused', true)] });
     const run = handle.dispatcher.run({ formula: formula(), pack: pack(), input: 'unscoped' });
     await run;
     expect(provider.recorder.starts.map((start) => start.role)).toEqual(['reviewer', 'coder']);
@@ -110,7 +123,7 @@ describe('engine-owned step loop', () => {
   it('lets a held molecule proceed after the scheduler is unpaused', async () => {
     let paused = true;
     const options = schedulerOptions('proj', true);
-    const { handle, provider } = await boot({ scheduler: { ...options, config: { ...options.config, get paused() { return paused; } } } });
+    const { handle, provider } = await boot({ schedulers: [{ ...options, config: { ...options.config, get paused() { return paused; } } }] });
     const run = handle.dispatcher.run({ formula: formula(), pack: pack(), input: 'go', projectIdentifier: 'proj' });
     await new Promise((resolve) => setTimeout(resolve, 40));
     expect(provider.recorder.starts).toHaveLength(0);
@@ -140,7 +153,7 @@ describe('engine-owned step loop', () => {
     const scheduledConfig = { ...options.config, get paused() { return paused; } };
     const handle = await bootOrchestrationPlane({
       dolt: store as never, beadsStore: store as never, provider,
-      scheduler: { ...options, config: scheduledConfig }, persistEvents: false,
+      schedulers: [{ ...options, config: scheduledConfig }], persistEvents: false,
       runDriftAuditOnBoot: false, stepTickIntervalMs: 10,
     });
     handles.push(handle);

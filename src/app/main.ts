@@ -19,6 +19,7 @@ import { createCliRunner } from '../engine/scheduler/bd-adapters.js';
 import { createCheckoutGhRunner } from '../engine/beads/index.js';
 import { registryProjectRoot } from '../engine/dispatcher/project-binding.js';
 import { registryPmAgentLookup } from '../engine/pm-wake/waker.js';
+import { buildSchedulerOptions, projectRunner } from './scheduler-options.js';
 import { DoltClient, defaultDoltBootDeps } from '../engine/store/index.js';
 import { ProjectRegistry } from './registry/project-registry';
 import { resolveFromAppRoot } from './runtimePaths';
@@ -82,18 +83,11 @@ function createProvisioner(db: Registry): DoltHubProvisionerApi | null {
   }
 }
 
-/** bd or gh bound to the scheduled project's own checkout, resolved per call. */
-function projectCli(db: Registry, binary: 'bd' | 'gh', actor: string) {
-  return async (args: readonly string[]): Promise<string> => {
-    const project = db.getProject(config.scheduler.projectIdentifier);
-    const fsPath = project?.filesystem_path;
-    if (!fsPath) {
-      throw new Error(`project "${config.scheduler.projectIdentifier}" has no filesystem_path`);
-    }
-    if (binary === 'gh') return createCheckoutGhRunner(fsPath)(args);
-    return createCliRunner({ binary, cwd: fsPath, env: { BEADS_DIR: `${fsPath}/.beads`, BEADS_ACTOR: actor } })(args);
-  };
-}
+/** `bd` and `gh` bound to a project checkout, as the scheduler and the waits watcher run them. */
+const checkoutRunners = {
+  bd: (checkout: string, actor: string) => createCliRunner({ binary: 'bd', cwd: checkout, env: { BEADS_DIR: `${checkout}/.beads`, BEADS_ACTOR: actor } }),
+  gh: (checkout: string) => createCheckoutGhRunner(checkout),
+};
 
 /**
  * vibesync-nl0l: a restart can race the Dolt fleet coming back up, so connect
@@ -119,16 +113,17 @@ async function bootEngine(db: Registry): Promise<OrchestrationHandle | null> {
       const handle = await bootOrchestrationPlane({
         dolt,
         bdVersion: probeBdVersion,
-        scheduler: {
+        schedulers: buildSchedulerOptions({
           config: config.scheduler,
+          registry: db,
+          runners: checkoutRunners,
+          shared: { logger, pmWake: { lookupAgentId: registryPmAgentLookup(db) } },
+        }),
+        waits: {
+          config: config.waits,
           logger,
-          listPoolMembers: (projectIdentifier) =>
-            db.listRoleAgents(projectIdentifier).map((row) => ({ agentId: row.agentId, role: row.roleName })),
-          pmWake: { lookupAgentId: registryPmAgentLookup(db) },
-          bd: projectCli(db, 'bd', 'vibesync-scheduler'),
-          gh: projectCli(db, 'gh', 'vibesync-scheduler'),
+          bd: projectRunner(db, checkoutRunners, 'bd', 'vibesync-waits', config.scheduler.projectIdentifiers[0] ?? ''),
         },
-        waits: { config: config.waits, logger, bd: projectCli(db, 'bd', 'vibesync-waits') },
         projectRoot: registryProjectRoot(db),
         // vibesync-9lzk.25: each step reads ITS project's codebase memories,
         // through that project's own checkout; memories never cross projects.

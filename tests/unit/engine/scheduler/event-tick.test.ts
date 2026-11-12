@@ -117,12 +117,12 @@ async function boot(opts: Partial<BootSchedulerOptions> & { bd: BootSchedulerOpt
     irohConnectionFactory: neverDialIroh,
     persistEvents: false,
     runDriftAuditOnBoot: false,
-    scheduler: {
+    schedulers: [{
       config: schedulerConfig(),
       listPoolMembers: () => POOL,
       appRoot: process.cwd(),
       ...opts,
-    },
+    }],
   });
 }
 
@@ -283,7 +283,7 @@ describe('SchedulerDaemon — event-driven ticks (vibesync-p489)', () => {
     const info = vi.fn();
     const handle = await boot({ bd: bd.run, logger: { info, warn: vi.fn() } });
     const ticks = recordTicks(handle);
-    const daemon = handle.scheduler!.daemon;
+    const daemon = handle.schedulers.get('proj-x')!.daemon;
 
     expect(daemon.requestTick('bead-status')).toBe('started'); // tick 1 blocks inside `bd ready`
     await vi.advanceTimersByTimeAsync(10);
@@ -349,7 +349,7 @@ describe('SchedulerDaemon — event-driven ticks (vibesync-p489)', () => {
     const handle = await boot({ bd: bd.run, logger: { info, warn: vi.fn() } });
     const ticks = recordTicks(handle);
 
-    expect(handle.scheduler!.daemon.requestTick('webhook')).toBe('started');
+    expect(handle.schedulers.get('proj-x')!.daemon.requestTick('webhook')).toBe('started');
     await vi.advanceTimersByTimeAsync(10);
     expect(reasons(ticks)).toEqual(['webhook']);
     expect(info).toHaveBeenCalledWith(expect.objectContaining({ reason: 'webhook' }), 'SchedulerDaemon tick');
@@ -374,8 +374,8 @@ describe('SchedulerDaemon — event-driven ticks (vibesync-p489)', () => {
 
     statusChanged(handle, 'ready');
     statusChanged(handle, 'closed');
-    expect(handle.scheduler!.daemon.requestTick('webhook')).toBe('inactive');
-    expect(handle.scheduler!.daemon.requestTick('run-finished')).toBe('inactive');
+    expect(handle.schedulers.get('proj-x')!.daemon.requestTick('webhook')).toBe('inactive');
+    expect(handle.schedulers.get('proj-x')!.daemon.requestTick('run-finished')).toBe('inactive');
     expect(vi.getTimerCount()).toBe(0);
     await vi.advanceTimersByTimeAsync(2 * INTERVAL);
     expect(ticks).toHaveLength(1);

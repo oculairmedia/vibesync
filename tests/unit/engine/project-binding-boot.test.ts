@@ -146,7 +146,7 @@ async function boot(args: BootArgs) {
     ...(registry ? { projectRoot: (id: string) => registry[id] ?? null } : {}),
     ...(args.homeVerifier ? { deliveryVerifier: args.homeVerifier } : {}),
     ...(args.judge ? { stepJudge: args.judge } : {}),
-    ...(args.schedulerGh ? { scheduler: { config: { enabled: false }, gh: args.schedulerGh } as never } : {}),
+    ...(args.schedulerGh ? { schedulers: [{ config: { enabled: false }, gh: args.schedulerGh } as never] } : {}),
   });
   const originalAppend = store.appendNoteToBead.bind(store);
   store.appendNoteToBead = async (id: string, note: string) => {

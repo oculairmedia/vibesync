@@ -8,7 +8,7 @@ import { configSchema } from '../../src/app/configSchema';
 function schedulerDefaults(overrides = {}) {
   return {
     enabled: false,
-    projectIdentifier: '',
+    projectIdentifiers: [],
     intervalMs: 30000,
     eventDebounceMs: 5000,
     runDeadlineMs: 3600000,
@@ -96,12 +96,12 @@ describe('configSchema', () => {
     it('rejects enabled without a project', () => {
       const result = configSchema.safeParse(validConfig({ scheduler: schedulerDefaults({ enabled: true }) }));
       expect(result.success).toBe(false);
-      expect(result.error.issues[0].message).toContain('VIBESYNC_SCHEDULER_PROJECT');
+      expect(result.error.issues[0].message).toContain('VIBESYNC_SCHEDULER_PROJECTS');
     });
 
     it('rejects autoMerge without required checks', () => {
       const result = configSchema.safeParse(
-        validConfig({ scheduler: schedulerDefaults({ enabled: true, projectIdentifier: 'p', autoMerge: true }) }),
+        validConfig({ scheduler: schedulerDefaults({ enabled: true, projectIdentifiers: ['p'], autoMerge: true }) }),
       );
       expect(result.success).toBe(false);
       expect(result.error.issues[0].message).toContain('VIBESYNC_SCHEDULER_REQUIRED_CHECKS');
@@ -110,7 +110,7 @@ describe('configSchema', () => {
     it('rejects autoMerge with an empty allowedRepos (vibesync-5c8y)', () => {
       const result = configSchema.safeParse(
         validConfig({
-          scheduler: schedulerDefaults({ enabled: true, projectIdentifier: 'p', autoMerge: true, requiredChecks: ['ci'] }),
+          scheduler: schedulerDefaults({ enabled: true, projectIdentifiers: ['p'], autoMerge: true, requiredChecks: ['ci'] }),
         }),
       );
       expect(result.success).toBe(false);
@@ -124,7 +124,7 @@ describe('configSchema', () => {
         configSchema.safeParse(
           validConfig({
             scheduler: schedulerDefaults({
-              enabled: true, projectIdentifier: 'p', autoMerge: true, requiredChecks: ['ci'], allowedRepos: ['o/r'],
+              enabled: true, projectIdentifiers: ['p'], autoMerge: true, requiredChecks: ['ci'], allowedRepos: ['o/r'],
             }),
           }),
         ).success,

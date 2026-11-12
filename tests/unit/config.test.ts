@@ -68,7 +68,7 @@ describe('config', () => {
 
     it('VIBESYNC_SCHEDULER_ENABLED=true turns it on and env keys map through', () => {
       process.env.VIBESYNC_SCHEDULER_ENABLED = 'true';
-      process.env.VIBESYNC_SCHEDULER_PROJECT = 'vibesync';
+      process.env.VIBESYNC_SCHEDULER_PROJECTS = 'vibesync';
       process.env.VIBESYNC_SCHEDULER_INTERVAL_MS = '5000';
       process.env.VIBESYNC_SCHEDULER_POOL_SIZE = '3';
       process.env.VIBESYNC_SCHEDULER_BATCH_SIZE = '2';
@@ -76,7 +76,7 @@ describe('config', () => {
       const { scheduler } = loadConfig();
       expect(scheduler).toMatchObject({
         enabled: true,
-        projectIdentifier: 'vibesync',
+        projectIdentifiers: ['vibesync'],
         intervalMs: 5000,
         poolSize: 3,
         batchSize: 2,
@@ -233,12 +233,33 @@ describe('config', () => {
 
     it('enabled without a project fails config validation', () => {
       process.env.VIBESYNC_SCHEDULER_ENABLED = 'true';
-      expect(() => loadConfig()).toThrow('VIBESYNC_SCHEDULER_PROJECT');
+      expect(() => loadConfig()).toThrow('VIBESYNC_SCHEDULER_PROJECTS');
+    });
+
+    it('parses a trimmed project list and rejects empty or duplicate entries', () => {
+      process.env.VIBESYNC_SCHEDULER_PROJECTS = ' alpha, beta ';
+      expect(loadConfig().scheduler.projectIdentifiers).toEqual(['alpha', 'beta']);
+      for (const projects of ['alpha,,beta', 'alpha, ', 'alpha,alpha']) {
+        process.env.VIBESYNC_SCHEDULER_PROJECTS = projects;
+        expect(() => loadConfig()).toThrow('VIBESYNC_SCHEDULER_PROJECTS');
+      }
+    });
+
+    it('rejects the removed singular project key with both names', () => {
+      process.env.VIBESYNC_SCHEDULER_PROJECT = 'vibesync';
+      expect(() => loadConfig()).toThrow(/VIBESYNC_SCHEDULER_PROJECT.*VIBESYNC_SCHEDULER_PROJECTS/);
+    });
+
+    it('names the old key even when the scheduler is enabled (the live config at upgrade)', () => {
+      process.env.VIBESYNC_SCHEDULER_ENABLED = 'true';
+      process.env.VIBESYNC_SCHEDULER_PROJECT = 'vibesync';
+      delete process.env.VIBESYNC_SCHEDULER_PROJECTS;
+      expect(() => loadConfig()).toThrow(/VIBESYNC_SCHEDULER_PROJECT was replaced by VIBESYNC_SCHEDULER_PROJECTS/);
     });
 
     it('autoMerge is only on with the explicit flag, and then needs required checks', () => {
       process.env.VIBESYNC_SCHEDULER_ENABLED = 'true';
-      process.env.VIBESYNC_SCHEDULER_PROJECT = 'vibesync';
+      process.env.VIBESYNC_SCHEDULER_PROJECTS = 'vibesync';
       process.env.VIBESYNC_SCHEDULER_AUTO_MERGE = 'true';
       expect(() => loadConfig()).toThrow('VIBESYNC_SCHEDULER_REQUIRED_CHECKS');
       process.env.VIBESYNC_SCHEDULER_REQUIRED_CHECKS = 'typecheck, test';

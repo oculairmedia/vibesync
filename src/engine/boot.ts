@@ -41,12 +41,8 @@ export interface OrchestrationHandle {
   readonly walker: MoleculeWalker;
   /** Ready-step loop (vibesync-efee). Engine-owned timer and event kicks. */
   readonly steps: StepDispatcher;
-  /**
-   * The running SchedulerDaemon (vibesync-z2ws), or null when
-   * `scheduler.config.enabled` is false / not supplied / failed to start.
-   * shutdown() stops it and awaits any in-flight tick.
-   */
-  readonly scheduler: SchedulerHandle | null;
+  /** Running scheduler daemons keyed by project identifier. */
+  readonly schedulers: ReadonlyMap<string, SchedulerHandle>;
   /**
    * The running durable-wait watcher (vibesync-9g24), or null when
    * `waits.config.enabled` is false / not supplied / failed to start.
@@ -85,7 +81,7 @@ export interface BootOrchestrationPlaneOptions {
    * daemon is never constructed: no timer, no `bd` call. Adapters (`bd`, `gh`,
    * pool-member lookup) are injected so this plane imports no database.
    */
-  readonly scheduler?: BootSchedulerOptions;
+  readonly schedulers?: readonly BootSchedulerOptions[];
   /**
    * Confirms declared formula deliveries (vibesync-9lzk.21). Defaults to the
    * `gh` CLI (the scheduler's gh runner when supplied, else `gh` on PATH).
@@ -319,12 +315,21 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     return irohProvider;
   };
   assertProviderKind();
-  const wakeCfg = opts.scheduler?.config.enabled ? opts.scheduler.config.pmWake : undefined;
-  let inboxAdapter = opts.scheduler?.pmWake?.inboxAdapter;
-  if (wakeCfg?.enabled && wakeCfg.sink === 'inbox' && !opts.scheduler?.pmWake?.sink && !inboxAdapter && wakeCfg.cli) {
+  const schedulerOptions = opts.schedulers ?? [];
+  const schedulerProjects = new Set<string>();
+  for (const scheduler of schedulerOptions) {
+    if (schedulerProjects.has(scheduler.config.projectIdentifier)) {
+      throw new Error(`Duplicate scheduler project identifier "${scheduler.config.projectIdentifier}"`);
+    }
+    schedulerProjects.add(scheduler.config.projectIdentifier);
+  }
+  const inboxScheduler = schedulerOptions.find((scheduler) => scheduler.config.enabled && scheduler.config.pmWake?.enabled);
+  const wakeCfg = inboxScheduler?.config.pmWake;
+  let inboxAdapter = inboxScheduler?.pmWake?.inboxAdapter;
+  if (wakeCfg?.enabled && wakeCfg.sink === 'inbox' && !inboxScheduler?.pmWake?.sink && !inboxAdapter && wakeCfg.cli) {
     inboxAdapter = createInboxCliAdapter(wakeCfg.cli);
   }
-  if (wakeCfg?.enabled && wakeCfg.sink === 'inbox' && opts.scheduler?.pmWake && !opts.scheduler.pmWake.sink && !inboxAdapter) {
+  if (wakeCfg?.enabled && wakeCfg.sink === 'inbox' && inboxScheduler?.pmWake && !inboxScheduler.pmWake.sink && !inboxAdapter) {
     throw new Error("scheduler.pmWake.sink='inbox' requires an approved MobileAgentMessageSender service adapter");
   }
   const provider = opts.provider ?? buildDefaultRuntimeProvider({
@@ -446,27 +451,28 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   // vibesync-z2ws: SchedulerDaemon. Started last so everything it dispatches
   // through (dispatcher, bus, writeback hook) is already wired. A start failure
   // (bad formula, no pool members) must not take the plane down with it.
-  let scheduler: SchedulerHandle | null = null;
-  if (opts.scheduler?.config.enabled) {
+  const schedulers = new Map<string, SchedulerHandle>();
+  for (const scheduler of schedulerOptions) {
+    if (!scheduler.config.enabled) continue;
     try {
-      scheduler = startSchedulerDaemon({
-        ...opts.scheduler,
-        ...(opts.scheduler.pmWake
-          ? { pmWake: { ...opts.scheduler.pmWake, ...(inboxAdapter ? { inboxAdapter } : {}) } }
+      const handle = startSchedulerDaemon({
+        ...scheduler,
+        ...(scheduler.pmWake
+          ? { pmWake: { ...scheduler.pmWake, ...(inboxAdapter ? { inboxAdapter } : {}) } }
           : {}),
         dispatcher,
         bus,
       });
+      schedulers.set(scheduler.config.projectIdentifier, handle);
+      const schedulerConfig = scheduler.config;
+      schedulerPauseReaders.set(schedulerConfig.projectIdentifier, () => schedulerConfig.paused);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      const project = scheduler.config.projectIdentifier;
       // eslint-disable-next-line no-console
-      console.error(`[orchestration:scheduler] SchedulerDaemon failed to start — continuing without it: ${message}`);
-      bus.emit({ layer: 'daemon', kind: SCHEDULER_START_FAILED_EVENT, payload: { error: message } });
+      console.error(`[orchestration:scheduler] SchedulerDaemon for project "${project}" failed to start — continuing without it: ${message}`);
+      bus.emit({ layer: 'daemon', kind: SCHEDULER_START_FAILED_EVENT, payload: { error: message, project } });
     }
-  }
-  if (scheduler && opts.scheduler) {
-    const schedulerConfig = opts.scheduler.config;
-    schedulerPauseReaders.set(schedulerConfig.projectIdentifier, () => schedulerConfig.paused);
   }
 
   // vibesync-9g24: durable waits. Independent of the scheduler (no shared code);
@@ -493,13 +499,13 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     bus,
     walker,
     steps,
-    scheduler,
+    schedulers,
     waits,
     async shutdown(): Promise<void> {
       if (shutDown) return;
       shutDown = true;
       // Scheduler first: its ticks dispatch through everything torn down below.
-      if (scheduler) {
+      for (const scheduler of schedulers.values()) {
         try {
           await scheduler.stop();
         } catch (err) {

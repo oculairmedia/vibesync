@@ -153,8 +153,8 @@ describe('scheduler ON: the engine owns the step loop', () => {
     const bd = fakeBd();
     // Spy BEFORE boot: boot starts the engine-owned step timer.
     const selfTick = vi.spyOn(StepDispatcher.prototype, 'start');
-    const { handle, store, provider, events } = await boot({ scheduler: schedulerOptions(bd) });
-    expect(handle.scheduler).not.toBeNull();
+    const { handle, store, provider, events } = await boot({ schedulers: [schedulerOptions(bd)] });
+    expect(handle.schedulers.get('proj')).not.toBeNull();
     expect(selfTick).toHaveBeenCalledTimes(1);
     selfTick.mockRestore();
 
@@ -176,10 +176,10 @@ describe('scheduler ON: the engine owns the step loop', () => {
     // The engine's own step timer is set far out, so any step tick seen here came from the daemon.
     const stepTick = vi.spyOn(StepDispatcher.prototype, 'tick');
     const bd = fakeBd();
-    const { handle } = await boot({ scheduler: schedulerOptions(bd), stepTickIntervalMs: 600_000 });
-    expect(handle.scheduler).not.toBeNull();
+    const { handle } = await boot({ schedulers: [schedulerOptions(bd)], stepTickIntervalMs: 600_000 });
+    expect(handle.schedulers.get('proj')).not.toBeNull();
     stepTick.mockClear();
-    await handle.scheduler!.daemon.tick();
+    await handle.schedulers.get('proj')!.daemon.tick();
     expect(stepTick).not.toHaveBeenCalled();
     stepTick.mockRestore();
   });
@@ -187,7 +187,7 @@ describe('scheduler ON: the engine owns the step loop', () => {
   it('a paused scheduler dispatches no steps either', async () => {
     const bd = fakeBd();
     const opts = schedulerOptions(bd);
-    const { handle, provider } = await boot({ scheduler: { ...opts, config: { ...opts.config, paused: true } } });
+    const { handle, provider } = await boot({ schedulers: [{ ...opts, config: { ...opts.config, paused: true } }] });
     // The engine consults the scheduler's project pause state before asking the store for ready steps.
     let settled = false;
     const run = handle.dispatcher.run({ formula: formula(), pack: pack(), input: 'go', projectIdentifier: 'proj' });
@@ -205,7 +205,7 @@ describe('scheduler OFF (the production default): formula runs still execute', (
     const { handle, store, provider } = await boot();
     expect(selfTick).toHaveBeenCalledTimes(1); // boot started the fallback timer
     selfTick.mockRestore();
-    expect(handle.scheduler).toBeNull();
+    expect(handle.schedulers.has('proj')).toBe(false);
 
     const result = await handle.dispatcher.run({ formula: formula(), pack: pack(), input: 'go' });
 
@@ -216,8 +216,8 @@ describe('scheduler OFF (the production default): formula runs still execute', (
   it('a scheduler that failed to start leaves the step loop running (formulas must not stall)', async () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const bd = fakeBd();
-    const { handle } = await boot({ scheduler: { ...schedulerOptions(bd), listPoolMembers: () => [] } });
-    expect(handle.scheduler).toBeNull();
+    const { handle } = await boot({ schedulers: [{ ...schedulerOptions(bd), listPoolMembers: () => [] }] });
+    expect(handle.schedulers.has('proj')).toBe(false);
     const result = await handle.dispatcher.run({ formula: formula(), pack: pack(), input: 'go' });
     expect(result.outputs['tester']).toBe('tester-out');
     errSpy.mockRestore();
@@ -255,6 +255,32 @@ describe('scheduler OFF (the production default): formula runs still execute', (
     }
     expect((await store.getBead(moleculeId))?.metadata).toMatchObject({ exec: { outcome: 'completed' } });
     expect(provider.recorder.starts.map((s) => s.role)).toEqual(['reviewer', 'coder', 'tester']);
+  });
+
+  it('takes an HTTP run slot only from its own project scheduler', async () => {
+    const a = fakeBd();
+    const b = fakeBd();
+    const { handle } = await boot({ schedulers: [schedulerOptions(a), { ...schedulerOptions(b), config: { ...schedulerOptions(b).config, projectIdentifier: 'project-b' } }] });
+    const aDaemon = handle.schedulers.get('proj')!.daemon;
+    const bDaemon = handle.schedulers.get('project-b')!.daemon;
+    const aStart = vi.spyOn(aDaemon, 'startExternalRun');
+    const bStart = vi.spyOn(bDaemon, 'startExternalRun');
+    const routes: Array<{ match(c: RouteContext): boolean; handle(c: HandleContext): Promise<void> }> = [];
+    const app: App = { registerRoute: (route) => { routes.push(route as never); } };
+    const sendJson = vi.fn();
+    const sendError = vi.fn();
+    registerFormulaRoutes(app, {
+      orchestration: handle as unknown as OrchestrationApi,
+      parseJsonBody: async () => ({ input: 'review', projectIdentifier: 'project-b' }) as never,
+      sendJson, sendError, sseManager: {} as never,
+      logger: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
+    });
+    const route = routes.find((candidate) => candidate.match({ method: 'POST', pathname: '/formulas/code-review/run' } as RouteContext))!;
+    delete process.env['VIBESYNC_ORCHESTRATION_TOKEN'];
+    await route.handle({ req: { headers: {} } as never, res: {} as never, url: new URL('http://x/formulas/code-review/run'), pathname: '/formulas/code-review/run' });
+    expect(aStart).not.toHaveBeenCalled();
+    expect(bStart).toHaveBeenCalledTimes(1);
+    expect(sendError).not.toHaveBeenCalled();
   });
 });
 

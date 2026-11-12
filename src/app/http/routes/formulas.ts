@@ -277,7 +277,7 @@ async function startRunAndCaptureMoleculeId(
     });
   });
   const start = () => orchestration.dispatcher.run(input);
-  const daemon = orchestration.scheduler?.daemon;
+  const daemon = input.projectIdentifier ? orchestration.schedulers.get(input.projectIdentifier)?.daemon : undefined;
   const runPromise = daemon ? daemon.startExternalRun(randomUUID(), start) : start();
   if (!runPromise) {
     subscription.unsubscribe();
