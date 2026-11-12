@@ -164,6 +164,7 @@ export interface MoleculeStore {
   markStepDone(stepId: string, output: unknown): Promise<void>;
   markStepFailed(stepId: string, errorTrace: string, retryOutcome?: string): Promise<void>;
   appendNoteToBead(beadId: string, note: string): Promise<void>;
+  addCommentToBead(beadId: string, comment: string): Promise<void>;
   // lcp-s0wi: mark a molecule root bead as terminal with an outcome.
   markMoleculeRootStatus(rootId: string, status: 'closed', outcome: MoleculeOutcome): Promise<void>;
 }
@@ -214,6 +215,10 @@ export class MoleculeWalker {
 
   async appendNoteToBead(beadId: string, note: string): Promise<void> {
     await this.store.appendNoteToBead(beadId, note);
+  }
+
+  async addCommentToBead(beadId: string, comment: string): Promise<void> {
+    await this.store.addCommentToBead(beadId, comment);
   }
 
   /**

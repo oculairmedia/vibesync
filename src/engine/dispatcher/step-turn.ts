@@ -272,7 +272,7 @@ export class StepTurnRunner {
         }).catch((error: unknown) => `WIP preservation failed: ${stringifyError(error)}`)
         : 'no uncommitted work';
       if (workBeadId && work !== 'no uncommitted work') {
-        await this.deps.turnLimitRecordStore.appendNoteToBead(workBeadId, turnLimitRecord(work, args.moleculeId)).catch(() => undefined);
+        await this.deps.turnLimitRecordStore.addCommentToBead(workBeadId, turnLimitRecord(work, args.moleculeId));
       }
       await this.recordTurnLimitFailure(context, state, failure, work);
       throw new FormulaEscalationError(`FormulaDispatcher: step "${context.stepName}" escalated after turn limit: ${work}`, args.moleculeId, { cause: failure.error });

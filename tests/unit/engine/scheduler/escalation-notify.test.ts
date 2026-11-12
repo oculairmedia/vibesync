@@ -5,7 +5,6 @@
 import { describe, expect, it } from 'vitest';
 
 import { createEscalationNotifier } from '../../../../src/engine/scheduler/escalation-notify.js';
-import { turnLimitRecord } from '../../../../src/engine/dispatcher/turn-limit.js';
 
 const D28L_REASON = 'FormulaDispatcher: step "reviewer" escalated: **Concerns:**\n- [block] `src/engine/molecule/recovery.ts:68` — Recovery resumes the running step but never reconstructs the molecule live run context. (review loop exhausted after 3 rounds; escalated)';
 
@@ -53,13 +52,4 @@ describe('escalation notifier', () => {
     expect(comments[0]).toContain('[truncated]');
   });
 
-  it('preserves the complete WIP branch and changed-file record on the bead', async () => {
-    const comments: string[] = [];
-    const record = turnLimitRecord(`WIP branch wip/b/m; changed files:\n${Array.from({ length: 500 }, (_, i) => `src/file-${i}.ts`).join('\n')}`, 'mol-1');
-    const commentOnBead = async (_id: string, text: string) => { comments.push(text); };
-    await createEscalationNotifier({ commentOnBead })({ workBeadId: 'b', contextId: 'c', reason: 'turn limit reached' });
-    await commentOnBead('b', record);
-    expect(comments[1]).toContain('src/file-499.ts');
-    expect(comments[1]).toContain('WIP branch wip/b/m');
-  });
 });

@@ -109,7 +109,10 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
     })() });
     const driven = newDriven(store, {
       idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }),
-      turnLimitPreserver: new GitTurnLimitPreserver(), turnLimitRecordStore: store,
+      turnLimitPreserver: new GitTurnLimitPreserver(), turnLimitRecordStore: {
+        appendNoteToBead: (id, note) => store.appendNoteToBead(id, note),
+        async addCommentToBead(id, comment) { beadComments.push(`${id}: ${comment}`); },
+      },
     });
     const contexts: SlingContextRecord[] = [{ id: 'ctx-work-1', status: 'open', params: {
       version: 1, work_bead_id: 'work-1', target_project: 'vibesync', formula: 'f', args: '', vars: '',
@@ -117,6 +120,7 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
     } }];
     const closed: string[] = [];
     const comments: string[] = [];
+    const beadComments: string[] = [];
     const wakes: string[] = [];
     const contextStore: SchedulerContextStore = {
       async queryPending() { return contexts.filter((c) => c.status === 'open'); },
@@ -151,12 +155,43 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
     expect(contexts[0]!.params.dispatch_failures).toBe(0);
     expect(comments.join('\n')).toContain('partial.txt');
     expect(comments.join('\n')).toContain('WIP branch');
+    expect(beadComments.join('\n')).toContain('partial.txt');
+    expect(beadComments.join('\n')).toContain('WIP branch wip/work-1/');
     expect(wakes.join('\n')).toContain('WIP branch');
-    expect(store.notes.some((note) => note.beadId === 'work-1' && note.note.includes('partial.txt'))).toBe(true);
     expect(execFileSync('git', ['-C', repo, 'branch', '--show-current'], { encoding: 'utf8' }).trim()).toContain('wip/work-1/');
     const wipBranch = execFileSync('git', ['-C', repo, 'branch', '--show-current'], { encoding: 'utf8' }).trim();
     expect(execFileSync('git', ['--git-dir', bare, 'show', `${wipBranch}:partial.txt`], { encoding: 'utf8' })).toBe('unfinished partial.txt');
     expect(execFileSync('git', ['-C', repo, 'rev-parse', 'work'], { encoding: 'utf8' }).trim()).toBe(initialHead);
+  });
+
+  it('posts the full large turn-limit file record as a bead comment', async () => {
+    const { repo } = makeGitRepo();
+    const store = new InMemoryDoltClient();
+    store.beads.set('work-large', {
+      id: 'work-large', title: 'work', description: '', status: 'open', priority: 2, issue_type: 'task',
+      created_at: new Date(), updated_at: new Date(), closed_at: null, metadata: {},
+    });
+    const comments: string[] = [];
+    const files = Array.from({ length: 500 }, (_, i) => `src/file-${i}.ts`);
+    const preserver = { async preserve() { return `WIP branch wip/work-large/mol-large; changed files:\n${files.join('\n')}`; } };
+    const driven = newDriven(store, {
+      idPrefix: 'mol', provider: newFakeProvider({ kind: 'fake-runtime', script: () => (async function* () {
+        const ts = new Date().toISOString();
+        yield { kind: 'started', ts };
+        yield { kind: 'error', ts, code: 'turn_timeout', message: 'timeout' };
+        yield { kind: 'turn-done', ts };
+      })() }), walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }),
+      turnLimitPreserver: preserver,
+      turnLimitRecordStore: {
+        appendNoteToBead: (id, note) => store.appendNoteToBead(id, note),
+        async addCommentToBead(_id, comment) { comments.push(comment); },
+      },
+    });
+    await expect(driven.run({ formula: formula(worker()), pack: pack(), input: 'go', motivatingBeadId: 'work-large', workdir: repo }))
+      .rejects.toBeInstanceOf(FormulaEscalationError);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toContain('src/file-499.ts');
+    expect(comments[0]).toContain('WIP branch wip/work-large/mol-large');
   });
 
   it('clean turn timeout escalates through the scheduler without a WIP branch', async () => {

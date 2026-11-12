@@ -9,6 +9,7 @@ export interface TurnLimitPreserver {
 
 export interface TurnLimitRecordStore {
   appendNoteToBead(beadId: string, note: string): Promise<void>;
+  addCommentToBead(beadId: string, comment: string): Promise<void>;
 }
 
 export function turnLimitRecord(work: string, moleculeId: string): string {
