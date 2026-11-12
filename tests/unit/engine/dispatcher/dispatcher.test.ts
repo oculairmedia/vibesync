@@ -643,6 +643,43 @@ describe('FormulaDispatcher', () => {
       expect(defaultProvider.recorder.stops).toHaveLength(0);
     });
 
+    it('cancels an orphan whose running steps have no session to stop without consulting the provider resolver', async () => {
+      // vibesync-mswv (CodeRabbit on #140): a resolver error must not abort a cancel that has nothing to stop.
+      const store = new InMemoryDoltClient();
+      const defaultProvider = newFakeProvider({ kind: 'default-runtime' });
+      const options = {
+        idPrefix: 'mol', provider: defaultProvider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }),
+        providerResolver: { resolve: () => newFakeProvider({ kind: 'fake-runtime' }) },
+      };
+      const originalDispatcher = newDriven(store, options);
+      let moleculeId = '';
+      const pending = originalDispatcher.run({
+        formula: singleStepFormula(), pack: singleStepPack(), input: 'go', projectIdentifier: 'vibesync',
+        onStarted: (id) => { moleculeId = id; },
+      });
+      await waitForCondition(() => moleculeId !== '');
+      const stepId = newMoleculeStepId(moleculeId, 'worker');
+      // The dispatcher may already have started the step and recorded a session: make this one running
+      // with NO persisted session, the case under test.
+      const step = (await store.getBead(stepId))!;
+      const exec = { ...((step.metadata['exec'] as Record<string, unknown>) ?? {}) };
+      delete exec['session_id'];
+      delete exec['provider_kind'];
+      delete exec['task_id'];
+      store.beads.set(stepId, { ...step, status: 'in_progress', metadata: { ...step.metadata, exec } });
+      let resolverCalls = 0;
+      const afterRestart = newDriven(store, {
+        ...options,
+        providerResolver: { resolve: () => { resolverCalls += 1; throw new Error('provider routing is broken'); } },
+      });
+
+      const result = await afterRestart.cancel(moleculeId);
+      await pending.catch(() => undefined);
+
+      expect(result.cancelledStepCount).toBe(1);
+      expect(resolverCalls).toBe(0);
+    });
+
     it('cancels a live run using the provider selected when it was dispatched', async () => {
       const store = new InMemoryDoltClient();
       const defaultProvider = newFakeProvider({ kind: 'default-runtime' });

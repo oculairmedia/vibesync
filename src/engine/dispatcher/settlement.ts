@@ -2,7 +2,7 @@ import type { MoleculeWalker } from '../molecule/index.js';
 import type { BeadRow } from '../store/index.js';
 import type { RuntimeProvider } from '../runtime/index.js';
 import type { ProjectBindingResolver } from './project-binding-types.js';
-import { FormulaCancellationConflictError, FormulaDispatchError, type CancelResult, type DispatchInput, type MoleculeRun, type ProviderResolver } from './types.js';
+import { FormulaCancellationConflictError, FormulaDispatchError, type CancelResult, type MoleculeRun, type ProviderResolver } from './types.js';
 import { readExec, readProjectIdentifier, readStepName, readStepRole, readString, stringifyError } from './util.js';
 
 export interface MoleculeSettlerDeps {
@@ -140,7 +140,7 @@ export class MoleculeSettler {
     // graph; mark the run so none of them is started.
     const liveRun = this.deps.live.get(moleculeId);
     if (liveRun) liveRun.cancelled = true;
-    const provider = liveRun?.provider ?? await this.resolveProvider(view.root);
+    const provider = await this.resolveCancelProvider(liveRun, view.root, running);
     const cancelledStepCount = await this.cancelRunningSteps(moleculeId, running, provider);
     await this.deps.walker.markMoleculeRootStatus(moleculeId, 'closed', 'cancelled');
     this.deps.emit('dispatcher/formula.cancelled', moleculeId, undefined, {
@@ -176,10 +176,15 @@ export class MoleculeSettler {
     return cancelledStepCount;
   }
 
+  private async resolveCancelProvider(liveRun: MoleculeRun | undefined, root: BeadRow, running: readonly BeadRow[]): Promise<RuntimeProvider> {
+    if (liveRun?.provider) return liveRun.provider;
+    const needsStop = running.some((s) => Boolean(readString(readExec(s).session_id) && readString(readExec(s).provider_kind)));
+    return needsStop ? this.resolveProvider(root) : this.deps.defaultProvider;
+  }
+
   private async resolveProvider(root: BeadRow): Promise<RuntimeProvider> {
     const projectIdentifier = readProjectIdentifier(root);
     if (!this.deps.providerResolver || !projectIdentifier) return this.deps.defaultProvider;
-    const input = { projectIdentifier } as DispatchInput;
-    return await this.deps.providerResolver.resolve(input) ?? this.deps.defaultProvider;
+    return await this.deps.providerResolver.resolve({ projectIdentifier }) ?? this.deps.defaultProvider;
   }
 }
