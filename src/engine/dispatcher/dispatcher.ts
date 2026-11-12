@@ -8,6 +8,7 @@ import type { DeliveryVerifier, ShippedWorkProbe } from './delivery.js';
 import type { StepReplyJudge } from '../verdict/index.js';
 import type { ProjectMemorySource } from './project-memory.js';
 import { StepTurnRunner } from './step-turn.js';
+import type { TurnLimitRecordStore, TurnLimitPreserver } from './turn-limit.js';
 import {
   readFailureClass,
   readRetryState,
@@ -109,6 +110,8 @@ export interface FormulaDispatcherOptions {
    */
   readonly prChecks?: PrChecksOptions;
   readonly projectBindings?: ProjectBindingResolver;
+  readonly turnLimitPreserver?: TurnLimitPreserver;
+  readonly turnLimitRecordStore?: TurnLimitRecordStore;
   /**
    * Called (never throws) right after a molecule is cooked and registered, so
    * the step loop can pick up its first ready steps promptly instead of waiting
@@ -132,6 +135,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
   private readonly maxConcurrentMolecules: number;
   private readonly providerResolver: ProviderResolver | null;
   private readonly projectBindings: ProjectBindingResolver;
+  private readonly turnLimitRecordStore: TurnLimitRecordStore;
   private readonly projectMemory: ProjectMemorySource | null;
   private readonly stepJudge: StepReplyJudge | null;
   private readonly onMoleculeCooked: ((moleculeId: string) => void) | null;
@@ -161,6 +165,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
       prChecks: opts.prChecks ?? null,
     };
     this.projectBindings = opts.projectBindings ?? createProjectBindingResolver(defaultBinding);
+    this.turnLimitRecordStore = opts.turnLimitRecordStore ?? opts.walker;
     this.projectMemory = opts.projectMemory ?? null;
     this.stepJudge = opts.stepJudge ?? null;
     this.stepVerdict = new StepVerdictReader({
@@ -175,6 +180,8 @@ export class FormulaDispatcher implements ReadyStepRunner {
       stepAttempt: this.stepAttempt,
       stepVerdict: this.stepVerdict,
       projectMemory: this.projectMemory,
+      ...(opts.turnLimitPreserver ? { turnLimitPreserver: opts.turnLimitPreserver } : {}),
+      turnLimitRecordStore: this.turnLimitRecordStore,
     });
     this.settler = new MoleculeSettler({
       walker: this.walker,
@@ -367,6 +374,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
         outputs: run.outputs,
         rolesByName: run.rolesByName,
         provider: run.provider,
+        ...(run.input.workdir !== undefined ? { workdir: run.input.workdir } : {}),
       });
     } catch (error) {
       if (!run.failed) {

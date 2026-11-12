@@ -163,6 +163,7 @@ export interface MoleculeStore {
   reopenStepForRound(stepId: string, args: { readonly round: number; readonly note: string }): Promise<void>;
   markStepDone(stepId: string, output: unknown): Promise<void>;
   markStepFailed(stepId: string, errorTrace: string, retryOutcome?: string): Promise<void>;
+  appendNoteToBead(beadId: string, note: string): Promise<void>;
   // lcp-s0wi: mark a molecule root bead as terminal with an outcome.
   markMoleculeRootStatus(rootId: string, status: 'closed', outcome: MoleculeOutcome): Promise<void>;
 }
@@ -210,6 +211,10 @@ function randomToken(length: number): string {
  */
 export class MoleculeWalker {
   constructor(private readonly store: MoleculeStore) {}
+
+  async appendNoteToBead(beadId: string, note: string): Promise<void> {
+    await this.store.appendNoteToBead(beadId, note);
+  }
 
   /**
    * Materialize a molecule from its root id. Reads the root, all step

@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
 
 import { EventBus, type Event } from '../../../../src/engine/events/index.js';
 import type { Formula } from '../../../../src/engine/formula/index.js';
-import { FormulaDispatchError } from '../../../../src/engine/dispatcher/index.js';
+import { FormulaDispatchError, FormulaEscalationError } from '../../../../src/engine/dispatcher/index.js';
 import { GitTurnLimitPreserver } from '../../../../src/engine/dispatcher/turn-limit.js';
 import { MoleculeWalker, newMoleculeStepId, type StepSpec } from '../../../../src/engine/molecule/index.js';
 import type { Pack } from '../../../../src/engine/packs/index.js';
@@ -20,6 +20,10 @@ import type { SessionEvent, SessionSpec } from '../../../../src/engine/runtime/i
 import { newFakeProvider } from '../../../_fixtures/fake-provider.js';
 import { InMemoryDoltClient } from '../../../_fixtures/in-memory-dolt-client.js';
 import { newDriven } from '../../../_fixtures/step-driver.js';
+import type { SchedulerContextStore } from '../../../../src/engine/scheduler/index.js';
+import { createEscalationNotifier } from '../../../../src/engine/scheduler/escalation-notify.js';
+import type { SlingContextRecord } from '../../../../src/engine/scheduler/sling-context.js';
+import { EscalatedRunError, SchedulerLoop } from '../../../../src/engine/scheduler/scheduler-loop.js';
 
 const worker = (retry?: StepSpec['retry']): StepSpec => ({ name: 'worker', role: 'worker', promptTemplate: 'prompts/p.md', waitFor: 'completion', ...(retry ? { retry } : {}) });
 const after: StepSpec = { name: 'after', role: 'after', promptTemplate: 'prompts/p.md', dependsOn: ['worker'], waitFor: 'completion' };
@@ -30,6 +34,22 @@ function pack(): Pack {
   mkdirSync(join(root, 'prompts'));
   writeFileSync(join(root, 'prompts', 'p.md'), 'Do ${input}. Prior: ${prior_outputs}');
   return { manifest: { name: 'p', version: '1' }, root, scope: 'project', roles: [{ name: 'worker', memoryBlocks: [] }, { name: 'after', memoryBlocks: [] }], formulas: [] };
+}
+
+function makeGitRepo(): { root: string; repo: string; bare: string; initialHead: string } {
+  const root = mkdtempSync(join(tmpdir(), 'turn-limit-e2e-'));
+  const repo = join(root, 'repo');
+  const bare = join(root, 'remote.git');
+  mkdirSync(repo);
+  execFileSync('git', ['init', '-q', '--bare', bare]);
+  execFileSync('git', ['init', '-q', '-b', 'work', repo]);
+  writeFileSync(join(repo, 'tracked.txt'), 'clean');
+  execFileSync('git', ['-C', repo, 'add', 'tracked.txt']);
+  execFileSync('git', ['-C', repo, '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.test', 'commit', '-qm', 'initial']);
+  execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', bare]);
+  execFileSync('git', ['-C', repo, 'push', '-qu', 'origin', 'work']);
+  const initialHead = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  return { root, repo, bare, initialHead };
 }
 
 type Turn = { readonly kind: 'ok'; readonly text?: string } | { readonly kind: 'agent-fail'; readonly failureClass: string } | { readonly kind: 'error'; readonly code: string; readonly text?: string };
@@ -55,7 +75,7 @@ function harness(turnsByRole: Record<string, readonly Turn[]>) {
         yield { kind: 'message-delta', ts, text: `attempt failed: ${turn.failureClass}` };
       } else if (turn.kind === 'error') {
         if (turn.text) yield { kind: 'message-delta', ts, text: turn.text };
-        yield { kind: 'error', ts, code: turn.code, message: `boom ${turn.code}` };
+        yield { kind: 'error', ts, code: turn.code, message: turn.code === 'turn_timeout' ? 'turn did not finish within 1000ms' : `boom ${turn.code}` };
       } else {
         yield { kind: 'message-delta', ts, text: turn.text ?? `${spec.role} ok` };
       }
@@ -73,6 +93,112 @@ function harness(turnsByRole: Record<string, readonly Turn[]>) {
 const meta = async (store: InMemoryDoltClient, rootId: string, name: string) => (await store.getBead(newMoleculeStepId(rootId, name)))!;
 
 describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
+  it('turn timeout preserves work through dispatch and closes scheduler context without retrying', async () => {
+    const { repo, bare, initialHead } = makeGitRepo();
+    const store = new InMemoryDoltClient();
+    store.beads.set('work-1', {
+      id: 'work-1', title: 'work', description: '', status: 'open', priority: 2, issue_type: 'task',
+      created_at: new Date(), updated_at: new Date(), closed_at: null, metadata: {},
+    });
+    const provider = newFakeProvider({ kind: 'fake-runtime', script: () => (async function* () {
+      writeFileSync(join(repo, 'partial.txt'), 'unfinished partial.txt');
+      const ts = new Date().toISOString();
+      yield { kind: 'started', ts };
+      yield { kind: 'error', ts, code: 'turn_timeout', message: 'turn did not finish within 1000ms' };
+      yield { kind: 'turn-done', ts };
+    })() });
+    const driven = newDriven(store, {
+      idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }),
+      turnLimitPreserver: new GitTurnLimitPreserver(), turnLimitRecordStore: store,
+    });
+    const contexts: SlingContextRecord[] = [{ id: 'ctx-work-1', status: 'open', params: {
+      version: 1, work_bead_id: 'work-1', target_project: 'vibesync', formula: 'f', args: '', vars: '',
+      enqueued_at: new Date().toISOString(), merge: 'direct', convoy: '', dispatch_failures: 0, last_failure: '',
+    } }];
+    const closed: string[] = [];
+    const comments: string[] = [];
+    const wakes: string[] = [];
+    const contextStore: SchedulerContextStore = {
+      async queryPending() { return contexts.filter((c) => c.status === 'open'); },
+      async closeContext(id, reason) { closed.push(reason); const context = contexts.find((c) => c.id === id); if (context) (context as { status: string }).status = 'closed'; },
+      async recordDispatchFailure() { throw new Error('escalation must not count as dispatch failure'); },
+    };
+    const notifier = createEscalationNotifier({ wakePm: (_id, detail) => { wakes.push(detail); }, commentOnBead: async (_id, text) => { comments.push(text); } });
+    let starts = 0;
+    const scheduler = new SchedulerLoop({
+      config: () => ({ poolSize: 2, batchSize: 1, paused: false }), capacity: { activeCount: 0 }, contextStore,
+      readyWork: { async readyWorkBeadIds() { return new Set(['work-1']); } },
+      candidateMetadata: { async metadataFor() { return { priority: 2, unblockCount: 0, files: [] }; } },
+      executor: { async execute() {
+        starts += 1;
+        const settled = driven.run({ formula: formula(worker()), pack: pack(), input: 'go', motivatingBeadId: 'work-1', workdir: repo })
+          .then(() => undefined, (error: unknown) => {
+            if (error instanceof FormulaEscalationError) throw new EscalatedRunError(error.message);
+            throw error;
+          });
+        return { settled };
+      } },
+      onRunEscalated: async ({ workBeadId, contextId, reason }) => notifier({ workBeadId, contextId, reason }),
+    });
+
+    const dispatched = await scheduler.runTick();
+    expect(dispatched.dispatched).toEqual(['work-1']);
+    await scheduler.drainRuns();
+    await scheduler.runTick();
+
+    expect(starts).toBe(1);
+    expect(closed).toEqual(['escalated']);
+    expect(contexts[0]!.params.dispatch_failures).toBe(0);
+    expect(comments.join('\n')).toContain('partial.txt');
+    expect(comments.join('\n')).toContain('WIP branch');
+    expect(wakes.join('\n')).toContain('WIP branch');
+    expect(store.notes.some((note) => note.beadId === 'work-1' && note.note.includes('partial.txt'))).toBe(true);
+    expect(execFileSync('git', ['-C', repo, 'branch', '--show-current'], { encoding: 'utf8' }).trim()).toContain('wip/work-1/');
+    const wipBranch = execFileSync('git', ['-C', repo, 'branch', '--show-current'], { encoding: 'utf8' }).trim();
+    expect(execFileSync('git', ['--git-dir', bare, 'show', `${wipBranch}:partial.txt`], { encoding: 'utf8' })).toBe('unfinished partial.txt');
+    expect(execFileSync('git', ['-C', repo, 'rev-parse', 'work'], { encoding: 'utf8' }).trim()).toBe(initialHead);
+  });
+
+  it('clean turn timeout escalates through the scheduler without a WIP branch', async () => {
+    const { repo, bare } = makeGitRepo();
+    const store = new InMemoryDoltClient();
+    const scriptProvider = newFakeProvider({ kind: 'fake-runtime', script: () => (async function* () {
+      const ts = new Date().toISOString();
+      yield { kind: 'started', ts };
+      yield { kind: 'error', ts, code: 'turn_timeout', message: 'turn did not finish within 1000ms' };
+      yield { kind: 'turn-done', ts };
+    })() });
+    const driven = newDriven(store, { idPrefix: 'mol', provider: scriptProvider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }) });
+    const context = { id: 'ctx-clean', status: 'open', params: {
+      version: 1 as const, work_bead_id: 'clean', target_project: 'vibesync', formula: 'f', args: '', vars: '', enqueued_at: new Date().toISOString(),
+      merge: 'direct', convoy: '', dispatch_failures: 0, last_failure: '',
+    } } satisfies SlingContextRecord;
+    let closeReason = '';
+    let failures = 0;
+    let starts = 0;
+    const scheduler = new SchedulerLoop({
+      config: () => ({ poolSize: 1, batchSize: 1, paused: false }), capacity: { activeCount: 0 },
+      contextStore: {
+        async queryPending() { return context.status === 'open' ? [context] : []; },
+        async closeContext(_id, reason) { closeReason = reason; (context as { status: string }).status = 'closed'; },
+        async recordDispatchFailure() { failures += 1; return failures; },
+      },
+      readyWork: { async readyWorkBeadIds() { return new Set(['clean']); } },
+      candidateMetadata: { async metadataFor() { return { priority: 1, unblockCount: 0, files: [] }; } },
+      executor: { async execute() { starts += 1; return { settled: driven.run({ formula: formula(worker()), pack: pack(), input: 'go', motivatingBeadId: 'clean', workdir: repo }).then(() => undefined).catch((e: unknown) => {
+        if (e instanceof FormulaEscalationError) throw new EscalatedRunError(e.message);
+        throw e;
+      }) }; } },
+    });
+    await scheduler.runTick();
+    await scheduler.drainRuns();
+    await scheduler.runTick();
+    expect(closeReason).toBe('escalated');
+    expect(failures).toBe(0);
+    expect(starts).toBe(1);
+    expect(execFileSync('git', ['--git-dir', bare, 'branch', '--list', 'wip/clean/*'], { encoding: 'utf8' }).trim()).toBe('');
+  });
+
   it('turn limit commits and pushes dirty work to a WIP branch then escalates without retrying', async () => {
     const root = mkdtempSync(join(tmpdir(), 'turn-limit-'));
     const repo = join(root, 'repo');

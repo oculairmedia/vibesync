@@ -65,6 +65,7 @@ export interface CancelResult {
 
 export type StepRunArgs = {
   readonly input: DispatchInput;
+  readonly workdir?: string;
   readonly step: BeadRow;
   readonly moleculeId: string;
   readonly outputs: Record<string, string>;

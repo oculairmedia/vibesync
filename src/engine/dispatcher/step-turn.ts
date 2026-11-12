@@ -26,7 +26,7 @@ import {
 } from './types.js';
 import { StepAttemptRunner } from './step-attempt.js';
 import { StepVerdictReader } from './step-verdict.js';
-import { GitTurnLimitPreserver, type TurnLimitPreserver } from './turn-limit.js';
+import { GitTurnLimitPreserver, turnLimitRecord, type TurnLimitPreserver, type TurnLimitRecordStore } from './turn-limit.js';
 import { readStepName, sleep, softFailMarker, stringifyError } from './util.js';
 
 export interface StepTurnDeps {
@@ -36,6 +36,7 @@ export interface StepTurnDeps {
   readonly stepVerdict: StepVerdictReader;
   readonly projectMemory: ProjectMemorySource | null;
   readonly turnLimitPreserver?: TurnLimitPreserver;
+  readonly turnLimitRecordStore: TurnLimitRecordStore;
 }
 
 export class StepTurnRunner {
@@ -96,7 +97,7 @@ export class StepTurnRunner {
         ...((stepSpec.turnTimeoutMs ?? args.input.stepTimeoutMs) !== undefined
           ? { turnTimeoutMs: stepSpec.turnTimeoutMs ?? args.input.stepTimeoutMs }
           : {}),
-        ...(args.input.workdir !== undefined ? { workdir: args.input.workdir } : {}),
+        ...(args.workdir !== undefined ? { workdir: args.workdir } : {}),
       });
       return { output, failure: null };
     } catch (error) {
@@ -260,16 +261,19 @@ export class StepTurnRunner {
     state: RetryState,
     failure: StepRunFailure,
   ): Promise<void> {
-    if (failure.code === 'turn_timeout' && context.args.input.workdir) {
+    if (failure.code === 'turn_timeout' && context.args.workdir) {
       const { args } = context;
       const workBeadId = args.input.motivatingBeadId;
       const work = workBeadId
         ? await (this.deps.turnLimitPreserver ?? new GitTurnLimitPreserver()).preserve({
-          workdir: args.input.workdir!,
+          workdir: args.workdir!,
           workBeadId,
           moleculeId: args.moleculeId,
         }).catch((error: unknown) => `WIP preservation failed: ${stringifyError(error)}`)
         : 'no uncommitted work';
+      if (workBeadId && work !== 'no uncommitted work') {
+        await this.deps.turnLimitRecordStore.appendNoteToBead(workBeadId, turnLimitRecord(work, args.moleculeId)).catch(() => undefined);
+      }
       await this.recordTurnLimitFailure(context, state, failure, work);
       throw new FormulaEscalationError(`FormulaDispatcher: step "${context.stepName}" escalated after turn limit: ${work}`, args.moleculeId, { cause: failure.error });
     }

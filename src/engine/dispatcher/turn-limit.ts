@@ -7,6 +7,14 @@ export interface TurnLimitPreserver {
   preserve(input: { readonly workdir: string; readonly workBeadId: string; readonly moleculeId: string }): Promise<string>;
 }
 
+export interface TurnLimitRecordStore {
+  appendNoteToBead(beadId: string, note: string): Promise<void>;
+}
+
+export function turnLimitRecord(work: string, moleculeId: string): string {
+  return `TURN-LIMIT WIP RECORD (${moleculeId}):\n${work}`;
+}
+
 export class GitTurnLimitPreserver implements TurnLimitPreserver {
   async preserve(input: { readonly workdir: string; readonly workBeadId: string; readonly moleculeId: string }): Promise<string> {
     const branch = `wip/${input.workBeadId}/${input.moleculeId}`;
