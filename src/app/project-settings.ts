@@ -87,12 +87,12 @@ const DEFAULT_BRANCH_CANDIDATES = ['refs/remotes/origin/main', 'refs/remotes/ori
 
 /**
  * The commit that stands for a checkout's default branch: `origin/HEAD` when
- * the clone recorded it, else origin/main, origin/master, main or master, and
- * only when none exists the checked-out HEAD. A checkout sitting on a feature
- * branch (common on this host: 17 of 37 sampled checkouts have no origin/HEAD)
- * must not have its settings read from that branch.
+ * the clone recorded it, else origin/main, origin/master, main or master.
+ * Never the checked-out HEAD: a checkout sitting on a feature branch must not
+ * have its settings read from that branch, so an unresolvable default branch
+ * is an error (the project is then skipped with a warning).
  */
-function defaultBranchRef(git: (args: readonly string[]) => string): string {
+function defaultBranchRef(checkout: string, git: (args: readonly string[]) => string): string {
   try {
     const remoteHead = git(['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD']).trim();
     if (remoteHead) return remoteHead;
@@ -107,7 +107,7 @@ function defaultBranchRef(git: (args: readonly string[]) => string): string {
       // not present: next candidate
     }
   }
-  return 'HEAD';
+  throw new Error(`cannot tell the default branch of ${checkout}: no origin/HEAD and none of ${DEFAULT_BRANCH_CANDIDATES.join(', ')} (run \`git remote set-head origin --auto\`)`);
 }
 
 /**
@@ -118,18 +118,19 @@ function defaultBranchRef(git: (args: readonly string[]) => string): string {
  */
 export function readDefaultBranchCommittedFile(checkout: string, filePath: string): string | null {
   const git = (args: readonly string[]) => execFileSync('git', ['-C', checkout, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  return readCommittedFileAt(checkout, defaultBranchRef(git), filePath);
+  return readCommittedFileAt(checkout, defaultBranchRef(checkout, git), filePath);
 }
 
-/** A file as committed at `ref` in `checkout`; null when that commit does not have it. */
+/**
+ * A file as committed at `ref` in `checkout`; null only when that commit
+ * exists and does not have the file. Any other failure (not a repository, an
+ * unreadable repository, a ref that does not resolve) throws.
+ */
 export function readCommittedFileAt(checkout: string, ref: string, filePath: string): string | null {
   const git = (args: readonly string[]) => execFileSync('git', ['-C', checkout, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  try {
-    git(['cat-file', '-e', `${ref}:${filePath}`]);
-  } catch {
-    return null;
-  }
-  return git(['show', `${ref}:${filePath}`]);
+  const commit = git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]).trim();
+  const listed = git(['ls-tree', '--name-only', commit, '--', filePath]).trim();
+  return listed === '' ? null : git(['show', `${commit}:${filePath}`]);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

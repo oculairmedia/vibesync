@@ -393,6 +393,20 @@ describe('project bindings built at boot (vibesync-9lzk.55.1)', () => {
     expect(prChecks(h.otherGh)).toEqual([]);
   });
 
+  it('a project that names no CI checks is not approved when the reply names no PR either', async () => {
+    const h = await boot({ prUrl: 'no pull request here', judge: approvingJudge, projectCiChecks: () => [] });
+    const error = await h.run('other', review).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(FormulaEscalationError);
+    expect(String((error as Error).message)).toContain('no CI checks configured');
+  });
+
+  it('a project that names no CI checks is not approved with no step judge (marker-only mode)', async () => {
+    const h = await boot({ prUrl: OTHER_PR, otherPrs: [OTHER_PR], projectCiChecks: () => [] });
+    const error = await h.run('other', review).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(FormulaEscalationError);
+    expect(String((error as Error).message)).toContain('no CI checks configured');
+  });
+
   it('project check lookup reaches the binding for that project', async () => {
     const checked: Array<string | undefined> = [];
     const h = await boot({

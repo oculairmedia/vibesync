@@ -42,6 +42,13 @@ export class StepVerdictReader {
     const steps = args.input.formula.steps;
     const finalStep = isFinalFormulaStep(steps, args.stepName);
     const judges = args.stepSpec.loopsBackTo !== undefined || finalStep;
+    // vibesync-9lzk.55.4: a project that names no CI checks has no definition of green, so its
+    // final step never completes, whether or not a judge is configured and whether or not the
+    // reply names a PR.
+    if (finalStep && !marker) {
+      const noChecks = this.noChecksConfigured(args.input.projectIdentifier);
+      if (noChecks) return noChecks;
+    }
     if (!this.deps.stepJudge || !judges) return marker;
     return this.judgeStepBlocker({
       step: args.step,
@@ -54,6 +61,19 @@ export class StepVerdictReader {
       marker,
       finalStep,
     });
+  }
+
+  /** The blocker for a project whose binding names no CI checks, or null when it names some (or has no reader at all). */
+  private noChecksConfigured(projectIdentifier: string | undefined): string | null {
+    let cfg: PrChecksOptions | null;
+    try {
+      cfg = this.deps.projectBindings(projectIdentifier).prChecks;
+    } catch {
+      return null; // the binding error is reported by the CI settlement, on the judge path
+    }
+    return cfg && cfg.names.length === 0
+      ? 'the project names no CI checks (no CI checks configured in .meridian/project.json), so the final step cannot be confirmed'
+      : null;
   }
 
   private async judgeStepBlocker(args: {
@@ -114,10 +134,6 @@ export class StepVerdictReader {
     }
     if (this.canApproveWithoutReadableCi(args.from, prUrl, cfg)) return { kind: 'approve' };
     if (!cfg || !prUrl) return this.unreadableCiVerdict(args, prUrl);
-    // vibesync-9lzk.55.4: a project that names no checks has no definition of green.
-    if (cfg.names.length === 0) {
-      return { kind: 'unsettled', reason: `${args.reason}, but the project names no CI checks (no CI checks configured in .meridian/project.json): ${args.summary}` };
-    }
     return this.readFinalStepCi({
       step: args.step, moleculeId: args.moleculeId, stepName: args.stepName,
       prUrl, reason: args.reason, summary: args.summary, cfg,

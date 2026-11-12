@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
-import { createProjectFileSettingsSource, readDefaultBranchCommittedFile } from '../../../src/app/project-settings.js';
+import { createProjectFileSettingsSource, readCommittedFileAt, readDefaultBranchCommittedFile } from '../../../src/app/project-settings.js';
 
 function source(content: string | null) {
   const reads: Array<{ checkout: string; path: string }> = [];
@@ -100,6 +100,32 @@ describe('readDefaultBranchCommittedFile against a real repository', () => {
     writeFileSync(join(clone, '.meridian/project.json'), '{"key":"local-main"}');
     git(clone, 'commit', '-qam', 'local change, not pushed');
     expect(readDefaultBranchCommittedFile(clone, '.meridian/project.json')).toBe('{"key":"upstream"}');
+  });
+
+  it('refuses to guess when the default branch has another name and there is no origin/HEAD', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'project-settings-trunk-'));
+    git(dir, 'init', '-q', '-b', 'trunk');
+    mkdirSync(join(dir, '.meridian'));
+    writeFileSync(join(dir, '.meridian/project.json'), '{"key":"on-trunk"}');
+    git(dir, 'add', '.');
+    git(dir, 'commit', '-qm', 'trunk');
+    git(dir, 'checkout', '-q', '-b', 'feature');
+    writeFileSync(join(dir, '.meridian/project.json'), '{"key":"on-feature"}');
+    git(dir, 'commit', '-qam', 'feature');
+    expect(() => readDefaultBranchCommittedFile(dir, '.meridian/project.json')).toThrow(/cannot tell the default branch/);
+  });
+
+  it('a path that is not a git repository is an error, not "no project file"', () => {
+    const notRepo = mkdtempSync(join(tmpdir(), 'project-settings-norepo-'));
+    expect(() => readDefaultBranchCommittedFile(notRepo, '.meridian/project.json')).toThrow();
+  });
+
+  it('readCommittedFileAt (the release reader) throws on a non-repository or a ref that does not resolve', () => {
+    const notRepo = mkdtempSync(join(tmpdir(), 'project-settings-norepo-at-'));
+    expect(() => readCommittedFileAt(notRepo, 'HEAD', '.meridian/project.json')).toThrow();
+    const dir = repo();
+    expect(() => readCommittedFileAt(dir, 'refs/heads/no-such-branch', '.meridian/project.json')).toThrow();
+    expect(readCommittedFileAt(dir, 'HEAD', '.meridian/project.json')).toBeNull(); // a real commit without the file
   });
 
   it('returns the committed content, not an uncommitted edit', () => {

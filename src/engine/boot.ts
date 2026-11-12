@@ -216,15 +216,18 @@ export async function releaseDoltAfterFailedBoot(
 }
 
 /** Repository-bound collaborators for one checkout, all built from the gh that runs there. */
-function createRepositoryBinding(gh: CommandRunner, ciCheckNames: readonly string[], workBeads: ProjectBinding['workBeads'] = null): ProjectBinding {
+/**
+ * `ciCheckNames` null = this engine was given no check lookup at all (an embedder, a test): no
+ * PR checks reader, the behaviour before per-project checks. An array, even empty, is what the
+ * project names; an empty one makes its final step fail closed (step-verdict).
+ */
+function createRepositoryBinding(gh: CommandRunner, ciCheckNames: readonly string[] | null, workBeads: ProjectBinding['workBeads'] = null): ProjectBinding {
   const repositoryTarget = ghRepositoryTarget(gh);
   return {
     workBeads,
     deliveryVerifier: createGhDeliveryVerifier(gh, repositoryTarget),
     shippedWorkProbe: createGhShippedWorkProbe(gh, repositoryTarget),
-    // Always a reader: a project that names no checks must fail closed at the final step, which
-    // `null` (no reader at all, e.g. an embedder) would not: an approving reply would stand.
-    prChecks: { reader: createGhPrChecksReader(gh), names: ciCheckNames },
+    prChecks: ciCheckNames === null ? null : { reader: createGhPrChecksReader(gh), names: ciCheckNames },
     repository: async () => (await repositoryTarget()).repository,
   };
 }
@@ -247,7 +250,7 @@ function buildProjectBindings(args: {
   readonly projectRoot: ((projectIdentifier: string) => string | null) | undefined;
   readonly ghFor: (root: string) => CommandRunner;
   readonly bdFor: (root: string) => CommandRunner;
-  readonly projectCiChecks: (projectIdentifier: string) => readonly string[];
+  readonly projectCiChecks: (projectIdentifier: string) => readonly string[] | null;
 }): ProjectBindingResolver {
   // Resolved on first use, not at boot: an engine that is never asked about a
   // project (single-repository use) needs no home checkout on disk.
@@ -366,7 +369,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
   const bdFor = opts.projectBd ?? ((root: string) => createCliRunner({
     binary: 'bd', cwd: root, env: { BEADS_DIR: `${root}/.beads`, BEADS_ACTOR: 'orchestration-daemon' },
   }));
-  const projectCiChecks = (projectIdentifier: string | undefined) => opts.projectCiChecks?.(projectIdentifier) ?? [];
+  const projectCiChecks = (projectIdentifier: string | undefined) => (opts.projectCiChecks ? opts.projectCiChecks(projectIdentifier) : null);
   const homeRepository = createRepositoryBinding(ghFor(opts.dolt.beadsRoot), projectCiChecks(undefined));
   // A verifier or probe passed to boot replaces the HOME project's only.
   const homeBinding: ProjectBinding = {
