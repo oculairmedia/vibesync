@@ -26,7 +26,7 @@ import {
 } from './types.js';
 import { StepAttemptRunner } from './step-attempt.js';
 import { StepVerdictReader } from './step-verdict.js';
-import { GitTurnLimitPreserver, turnLimitRecord, type TurnLimitPreserver, type TurnLimitRecordStore } from './turn-limit.js';
+import { GitTurnLimitPreserver, NO_UNCOMMITTED_WORK, turnLimitRecord, type TurnLimitPreserver, type TurnLimitRecordStore } from './turn-limit.js';
 import { readStepName, sleep, softFailMarker, stringifyError } from './util.js';
 
 export interface StepTurnDeps {
@@ -261,28 +261,7 @@ export class StepTurnRunner {
     state: RetryState,
     failure: StepRunFailure,
   ): Promise<void> {
-    if (failure.code === 'turn_timeout' && context.args.workdir) {
-      const { args } = context;
-      const workBeadId = args.input.motivatingBeadId;
-      const work = workBeadId
-        ? await (this.deps.turnLimitPreserver ?? new GitTurnLimitPreserver()).preserve({
-          workdir: args.workdir!,
-          workBeadId,
-          moleculeId: args.moleculeId,
-        }).catch((error: unknown) => `WIP preservation failed: ${stringifyError(error)}`)
-        : 'no uncommitted work';
-      if (workBeadId && work !== 'no uncommitted work') {
-        await this.deps.turnLimitRecordStore.addCommentToBead(workBeadId, turnLimitRecord(work, args.moleculeId));
-      }
-      await this.recordTurnLimitFailure(context, state, failure, work);
-      throw new FormulaEscalationError(`FormulaDispatcher: step "${context.stepName}" escalated after turn limit: ${work}`, args.moleculeId, { cause: failure.error });
-    }
-    if (failure.code === 'turn_timeout') {
-      const { args } = context;
-      const work = 'no uncommitted work';
-      await this.recordTurnLimitFailure(context, state, failure, work);
-      throw new FormulaEscalationError(`FormulaDispatcher: step "${context.stepName}" escalated after turn limit: ${work}`, args.moleculeId, { cause: failure.error });
-    }
+    if (failure.code === 'turn_timeout') await this.escalateTurnLimit(context, state, failure);
     // A failure_class means the agent ran and declared it; cancel/stop still wins.
     const classified = classifyFailure(failure.signal);
     const kind = failure.failureClass !== null && classified !== 'terminal' ? 'agent' : classified;
@@ -300,6 +279,26 @@ export class StepTurnRunner {
       return;
     }
     await this.finishStepFailure(failureContext, decision);
+  }
+
+  /**
+   * vibesync-9lzk.57: a step that ends on its turn limit is never retried. Its
+   * uncommitted work goes to a WIP branch (the checkout is not moved), the
+   * complete record is posted on the work bead, and the run escalates.
+   */
+  private async escalateTurnLimit(context: StepRunContext, state: RetryState, failure: StepRunFailure): Promise<never> {
+    const { args } = context;
+    const workBeadId = args.input.motivatingBeadId;
+    const work = workBeadId && args.workdir
+      ? await (this.deps.turnLimitPreserver ?? new GitTurnLimitPreserver())
+        .preserve({ workdir: args.workdir, workBeadId, moleculeId: args.moleculeId })
+        .catch((error: unknown) => `WIP preservation failed: ${stringifyError(error)}`)
+      : NO_UNCOMMITTED_WORK;
+    if (workBeadId && work !== NO_UNCOMMITTED_WORK) {
+      await this.deps.turnLimitRecordStore.addCommentToBead(workBeadId, turnLimitRecord(work, args.moleculeId));
+    }
+    await this.recordTurnLimitFailure(context, state, failure, work);
+    throw new FormulaEscalationError(`FormulaDispatcher: step "${context.stepName}" escalated after turn limit: ${work}`, args.moleculeId, { cause: failure.error });
   }
 
   private async recordTurnLimitFailure(

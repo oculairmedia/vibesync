@@ -158,8 +158,11 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
     expect(beadComments.join('\n')).toContain('partial.txt');
     expect(beadComments.join('\n')).toContain('WIP branch wip/work-1/');
     expect(wakes.join('\n')).toContain('WIP branch');
-    expect(execFileSync('git', ['-C', repo, 'branch', '--show-current'], { encoding: 'utf8' }).trim()).toContain('wip/work-1/');
-    const wipBranch = execFileSync('git', ['-C', repo, 'branch', '--show-current'], { encoding: 'utf8' }).trim();
+    // The worktree stays on its work branch with its files as they were; the WIP is a branch beside it.
+    expect(execFileSync('git', ['-C', repo, 'branch', '--show-current'], { encoding: 'utf8' }).trim()).toBe('work');
+    expect(execFileSync('git', ['-C', repo, 'status', '--porcelain'], { encoding: 'utf8' })).toContain('partial.txt');
+    const wipBranch = execFileSync('git', ['-C', repo, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/wip/work-1/'], { encoding: 'utf8' }).trim();
+    expect(wipBranch).toMatch(/^wip\/work-1\//);
     expect(execFileSync('git', ['--git-dir', bare, 'show', `${wipBranch}:partial.txt`], { encoding: 'utf8' })).toBe('unfinished partial.txt');
     expect(execFileSync('git', ['-C', repo, 'rev-parse', 'work'], { encoding: 'utf8' }).trim()).toBe(initialHead);
   });
@@ -254,7 +257,12 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
     expect(details).toContain('wip/bead-1/mol-1');
     expect(details).toContain('partial.txt');
     expect(execFileSync('git', ['--git-dir', bare, 'show-ref', '--verify', 'refs/heads/wip/bead-1/mol-1'], { encoding: 'utf8' })).toContain('refs/heads/wip/bead-1/mol-1');
-    expect(await preserver.preserve({ workdir: repo, workBeadId: 'bead-1', moleculeId: 'mol-2' })).toBe('no uncommitted work');
+    expect(execFileSync('git', ['-C', repo, 'branch', '--show-current'], { encoding: 'utf8' }).trim()).toBe('work');
+    expect(execFileSync('git', ['--git-dir', bare, 'show', 'wip/bead-1/mol-1:partial.txt'], { encoding: 'utf8' })).toBe('unfinished');
+    // The checkout was not moved, so the work is still uncommitted there: a second timeout on the
+    // same worktree saves it again, to that run's own WIP branch.
+    expect(await preserver.preserve({ workdir: repo, workBeadId: 'bead-1', moleculeId: 'mol-2' })).toContain('wip/bead-1/mol-2');
+    expect(execFileSync('git', ['--git-dir', bare, 'show', 'wip/bead-1/mol-2:partial.txt'], { encoding: 'utf8' })).toBe('unfinished');
   });
 
   it('a clean turn-limit worktree has no WIP branch', async () => {
