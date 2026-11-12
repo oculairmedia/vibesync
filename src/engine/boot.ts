@@ -39,7 +39,7 @@ export interface OrchestrationHandle {
   readonly provider: RuntimeProvider;
   readonly bus: EventBus;
   readonly walker: MoleculeWalker;
-  /** Ready-step loop (vibesync-efee). Ticked by the scheduler when it is on, by its own timer when off. */
+  /** Ready-step loop (vibesync-efee). Engine-owned timer and event kicks. */
   readonly steps: StepDispatcher;
   /**
    * The running SchedulerDaemon (vibesync-z2ws), or null when
@@ -133,7 +133,7 @@ export interface BootOrchestrationPlaneOptions {
   readonly bdVersion?: () => Promise<string>;
   /** Test seam: use this RuntimeProvider instead of building the env-configured default. */
   readonly provider?: RuntimeProvider;
-  /** Fallback interval for the step loop when the scheduler is off. Default 1000 ms. */
+  /** Step-loop interval. Default 1000 ms. */
   readonly stepTickIntervalMs?: number;
 }
 
@@ -389,8 +389,16 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     ...(opts.stepJudge ? { stepJudge: opts.stepJudge } : {}),
   });
 
+  const schedulerPauseReaders = new Map<string, () => boolean>();
   steps = new StepDispatcher({
-    source: new StoreReadyStepSource(beads, () => dispatcher.liveMoleculeIds()),
+    source: new StoreReadyStepSource(
+      beads,
+      () => dispatcher.liveMoleculeIds(),
+      (moleculeId) => {
+        const projectIdentifier = dispatcher.projectOfLiveMolecule(moleculeId);
+        return projectIdentifier ? schedulerPauseReaders.get(projectIdentifier)?.() ?? false : false;
+      },
+    ),
     runner: dispatcher,
     logger: { warn: (o, m) => console.error(`[orchestration:steps] ${m}`, o) }, // eslint-disable-line no-console
   });
@@ -448,7 +456,6 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
           : {}),
         dispatcher,
         bus,
-        steps,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -456,6 +463,10 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
       console.error(`[orchestration:scheduler] SchedulerDaemon failed to start — continuing without it: ${message}`);
       bus.emit({ layer: 'daemon', kind: SCHEDULER_START_FAILED_EVENT, payload: { error: message } });
     }
+  }
+  if (scheduler && opts.scheduler) {
+    const schedulerConfig = opts.scheduler.config;
+    schedulerPauseReaders.set(schedulerConfig.projectIdentifier, () => schedulerConfig.paused);
   }
 
   // vibesync-9g24: durable waits. Independent of the scheduler (no shared code);
@@ -470,10 +481,9 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
       console.error(`[orchestration:waits] wait watcher failed to start — continuing without it: ${message}`);
     }
   }
-  // Scheduler OFF (production default) or failed to start: nothing else ticks
-  // the step loop, so formulas would never run. Start its own fallback timer.
-  // It decides nothing; readiness still comes from the bead graph.
-  if (!scheduler) steps.start(opts.stepTickIntervalMs);
+  // The engine owns the step loop regardless of scheduler activation. A
+  // scheduler pause filters only that project's molecules at the source.
+  steps.start(opts.stepTickIntervalMs);
 
   let shutDown = false;
 

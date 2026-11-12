@@ -41,7 +41,6 @@ import { BdCommentEscalationStore, createLogNotificationTransport } from '../esc
 import { GhCliGitHubPort, disabledGitHubPort } from '../refinery/github.js';
 import { createInboxWakeSink, type InboxMessageAdapter } from '../pm-wake/inbox-sink.js';
 import { SchedulerDaemon, type DaemonLogger, type DaemonTickReport } from './daemon.js';
-import type { StepDispatcher } from './step-dispatcher.js';
 import { EscalationManager, type NotificationTransport } from '../escalation/escalation.js';
 import { FilePmWakeStateStore, type PmWakeStateStore } from '../pm-wake/state.js';
 import { BdPendingWakeStore } from '../pm-wake/pending-store.js';
@@ -150,8 +149,6 @@ export { normalizeInboxWakeAck } from '../pm-wake/inbox-sink.js';
 type StartOptions = BootSchedulerOptions & {
   readonly dispatcher: FormulaDispatcher;
   readonly bus: EventBus;
-  /** Ready-step source (vibesync-efee); ticked by the daemon, woken by its requestTick. */
-  readonly steps?: StepDispatcher;
 };
 
 export function startSchedulerDaemon(opts: StartOptions): SchedulerHandle {
@@ -193,7 +190,6 @@ export function startSchedulerDaemon(opts: StartOptions): SchedulerHandle {
 
   daemon = new SchedulerDaemon({
     dispatcher: opts.dispatcher,
-    ...(opts.steps ? { steps: opts.steps } : {}),
     formulaResolver,
     readyBeads,
     contextStore,
@@ -218,9 +214,6 @@ export function startSchedulerDaemon(opts: StartOptions): SchedulerHandle {
   });
 
   daemon.run(config.intervalMs);
-  // The step loop is now the daemon's: a cooked molecule / settled step asks the
-  // daemon for a (debounced) tick via requestStepTick instead of ticking on its own.
-  opts.steps?.setWake(() => { daemon.requestStepTick(); });
   // Trigger (b): bead status change -> immediate (debounced) tick. Layering
   // invariant 3: observed through the bus, never by polling bd.
   const unsubscribeStatus = subscribeStatusTrigger(bus, daemon);
@@ -245,7 +238,6 @@ export function startSchedulerDaemon(opts: StartOptions): SchedulerHandle {
     stop(): Promise<void> {
       stopped ??= (async () => {
         unsubscribeStatus();
-        opts.steps?.setWake(null);
         await daemon.stop();
         pmWaker?.dispose();
         bus.emit({ layer: 'daemon', kind: SCHEDULER_STOPPED_EVENT, payload: { project: config.projectIdentifier } });

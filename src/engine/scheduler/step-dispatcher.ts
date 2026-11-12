@@ -19,13 +19,8 @@
  * for its whole molecule, and a formula started over HTTP never had one.
  *
  * Who calls `tick()` (none of them decide anything):
- *   - scheduler ON:  the daemon's loop runs it as a phase of every tick, and
- *     `kick()` (a molecule was cooked / a step settled) is routed to the
- *     daemon's `requestStepTick()` through {@link StepDispatcher.setWake}
- *     — the scheduler loop stays the one place dispatch happens.
- *   - scheduler OFF (the production default): orchestration boot calls
- *     `start(intervalMs)`; `kick()` then ticks directly (coalesced), so a chain
- *     of steps does not wait for the interval.
+ *   - orchestration boot calls `start(intervalMs)`; `kick()` ticks directly
+ *     (coalesced), so a chain of steps does not wait for the interval.
  */
 
 import type { BeadRow } from '../store/index.js';
@@ -52,11 +47,13 @@ export class StoreReadyStepSource implements ReadyStepSource {
   constructor(
     private readonly store: ReadyStepStore,
     private readonly moleculeIds: () => readonly string[],
+    private readonly isPaused?: (moleculeId: string) => boolean,
   ) {}
 
   async readySteps(): Promise<readonly ReadyStep[]> {
     const out: ReadyStep[] = [];
     for (const moleculeId of this.moleculeIds()) {
+      if (this.isPaused?.(moleculeId)) continue;
       for (const step of await this.store.findReadyStepsForMolecule(moleculeId)) {
         out.push({ moleculeId, step });
       }
@@ -98,8 +95,8 @@ export class StepDispatcher {
   }
 
   /**
-   * Route `kick()` to an external loop (the scheduler daemon's `requestStepTick`)
-   * instead of ticking directly. Pass null to go back to self-ticking.
+   * Route `kick()` to an external loop instead of ticking directly. Pass null
+   * to restore self-ticking.
    */
   setWake(wake: (() => void) | null): void {
     this.wake = wake;
@@ -168,9 +165,7 @@ export class StepDispatcher {
   }
 
   /**
-   * The scheduler-off driver: kick on an interval. It decides nothing (readiness
-   * comes from the bead graph); it exists so formulas still execute when
-   * `scheduler.enabled=false`. Not used when the scheduler daemon owns the loop.
+   * Kick on an interval. It decides nothing (readiness comes from the bead graph).
    */
   start(intervalMs: number = DEFAULT_STEP_TICK_INTERVAL_MS): void {
     if (this.timer || this.stopped) return;

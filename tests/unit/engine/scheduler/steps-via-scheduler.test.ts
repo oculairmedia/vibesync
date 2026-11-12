@@ -1,7 +1,6 @@
 /**
- * vibesync-efee — formula steps are dispatched by the scheduler loop (or, with
- * the scheduler off, by the step loop boot starts), never by the dispatcher's
- * own in-process "what runs next" loop.
+ * vibesync-efee — formula steps are dispatched by the engine-owned step loop,
+ * never by the dispatcher's own in-process "what runs next" loop.
  *
  * Everything goes through the REAL boot path (`bootOrchestrationPlane`). FALSE
  * PASS this suite avoids: walking steps through the old walker/dispatcher loop.
@@ -149,13 +148,15 @@ describe('the dispatcher no longer drives its own molecules (vibesync-efee)', ()
   });
 });
 
-describe('scheduler ON: all three steps are dispatched by the scheduler loop', () => {
-  it('a formula run completes through daemon ticks; the step loop never ticks on its own', async () => {
+describe('scheduler ON: the engine owns the step loop', () => {
+  it('a formula run completes through the engine step loop, independently of daemon ticks', async () => {
     const bd = fakeBd();
-    // Spy BEFORE boot: boot is what would start the fallback timer.
+    // Spy BEFORE boot: boot starts the engine-owned step timer.
     const selfTick = vi.spyOn(StepDispatcher.prototype, 'start');
     const { handle, store, provider, events } = await boot({ scheduler: schedulerOptions(bd) });
     expect(handle.scheduler).not.toBeNull();
+    expect(selfTick).toHaveBeenCalledTimes(1);
+    selfTick.mockRestore();
 
     const result = await handle.dispatcher.run({ formula: formula(), pack: pack(), input: 'go' });
 
@@ -165,22 +166,31 @@ describe('scheduler ON: all three steps are dispatched by the scheduler loop', (
       expect((await store.getBead(newMoleculeStepId(result.moleculeId, name)))?.status).toBe('closed');
     }
     expect((await store.getBead(result.moleculeId))?.metadata).toMatchObject({ exec: { outcome: 'completed' } });
-    expect(selfTick).not.toHaveBeenCalled(); // the scheduler owns the loop
-    selfTick.mockRestore();
-    // The steps were run by daemon ticks, woken by the cook / step settle - not by the 600 s interval.
-    const ticks = events.filter((e) => e.kind === TICK);
-    expect(ticks.length).toBeGreaterThanOrEqual(3);
-    expect(ticks.every((t) => t.payload['reason'] !== 'interval')).toBe(true);
+    // The daemon's long interval did not need to fire for the engine loop to run steps.
+    expect(events.filter((e) => e.kind === TICK)).toEqual([]);
     // Step readiness never touched `bd ready` (that source is for WORK beads only).
     expect(bd.calls.filter((c) => c[0] === 'ready' && c.includes('--mol'))).toEqual([]);
+  });
+
+  it('a daemon tick has no step phase: it never ticks the step loop', async () => {
+    // The engine's own step timer is set far out, so any step tick seen here came from the daemon.
+    const stepTick = vi.spyOn(StepDispatcher.prototype, 'tick');
+    const bd = fakeBd();
+    const { handle } = await boot({ scheduler: schedulerOptions(bd), stepTickIntervalMs: 600_000 });
+    expect(handle.scheduler).not.toBeNull();
+    stepTick.mockClear();
+    await handle.scheduler!.daemon.tick();
+    expect(stepTick).not.toHaveBeenCalled();
+    stepTick.mockRestore();
   });
 
   it('a paused scheduler dispatches no steps either', async () => {
     const bd = fakeBd();
     const opts = schedulerOptions(bd);
     const { handle, provider } = await boot({ scheduler: { ...opts, config: { ...opts.config, paused: true } } });
+    // The engine consults the scheduler's project pause state before asking the store for ready steps.
     let settled = false;
-    const run = handle.dispatcher.run({ formula: formula(), pack: pack(), input: 'go' });
+    const run = handle.dispatcher.run({ formula: formula(), pack: pack(), input: 'go', projectIdentifier: 'proj' });
     run.then(() => { settled = true; }, () => { settled = true; });
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(settled).toBe(false);
