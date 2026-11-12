@@ -103,7 +103,7 @@ async function boot(scheduler: BootSchedulerOptions | undefined): Promise<Orches
     irohConnectionFactory: neverDialIroh,
     persistEvents: false,
     runDriftAuditOnBoot: false,
-    ...(scheduler ? { scheduler } : {}),
+    ...(scheduler ? { schedulers: [scheduler] } : {}),
   });
 }
 
@@ -139,7 +139,7 @@ describe('bootOrchestrationPlane — SchedulerDaemon wiring (vibesync-z2ws)', ()
     });
     const ticks = recordTicks(handle);
 
-    expect(handle.scheduler).not.toBeNull();
+    expect(handle.schedulers.get('proj-x')).not.toBeNull();
     expect(info).toHaveBeenCalledWith(expect.objectContaining({ intervalMs: 1000, poolSize: 2 }), 'daemon: started');
     // Nothing runs before the first interval elapses.
     expect(ticks).toHaveLength(0);
@@ -177,7 +177,7 @@ describe('bootOrchestrationPlane — SchedulerDaemon wiring (vibesync-z2ws)', ()
     });
     const ticks = recordTicks(handle);
 
-    expect(handle.scheduler).toBeNull();
+    expect(handle.schedulers.has('proj-x')).toBe(false);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(ticks).toHaveLength(0);
     expect(bd.calls).toHaveLength(0);
@@ -190,7 +190,7 @@ describe('bootOrchestrationPlane — SchedulerDaemon wiring (vibesync-z2ws)', ()
     const ticks = recordTicks(handle);
     const timersBefore = vi.getTimerCount();
 
-    expect(handle.scheduler).toBeNull();
+    expect(handle.schedulers.has('proj-x')).toBe(false);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(ticks).toHaveLength(0);
     expect(vi.getTimerCount()).toBe(timersBefore);
@@ -288,7 +288,7 @@ describe('bootOrchestrationPlane — SchedulerDaemon wiring (vibesync-z2ws)', ()
       bd: bd.run,
       appRoot: process.cwd(),
     });
-    expect(handle.scheduler).toBeNull();
+    expect(handle.schedulers.has('proj-x')).toBe(false);
     expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('no project_role_agents rows'));
     await vi.advanceTimersByTimeAsync(5000);
     expect(bd.calls).toHaveLength(0);
@@ -310,7 +310,7 @@ describe('bootOrchestrationPlane — SchedulerDaemon wiring (vibesync-z2ws)', ()
       appRoot: process.cwd(),
     });
     // autoMerge=true without a gh runner must refuse to start rather than silently run.
-    expect(handle.scheduler).toBeNull();
+    expect(handle.schedulers.has('proj-x')).toBe(false);
     expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('no gh command runner'));
     await handle.shutdown();
     errSpy.mockRestore();

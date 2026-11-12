@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { configSchema, type AppConfig } from './configSchema';
+import { schedulerProjectsFromEnv } from './scheduler-projects.js';
 
 
 /**
@@ -44,7 +45,7 @@ export function loadConfig(): AppConfig {
     scheduler: {
       // vibesync-z2ws: SchedulerDaemon activation. OFF unless explicitly enabled.
       enabled: process.env.VIBESYNC_SCHEDULER_ENABLED === 'true',
-      projectIdentifier: process.env.VIBESYNC_SCHEDULER_PROJECT || '',
+      projectIdentifiers: schedulerProjectsFromEnv(process.env),
       intervalMs: parseStrictInt(process.env.VIBESYNC_SCHEDULER_INTERVAL_MS, 30000),
       // vibesync-p489: min spacing between event-triggered ticks.
       eventDebounceMs: parseStrictInt(process.env.VIBESYNC_SCHEDULER_EVENT_DEBOUNCE_MS, 5000),
@@ -107,7 +108,7 @@ export function getConfigSummary(config: AppConfig) {
     doltHubProvisioningDryRun: config.doltHub.dryRun,
     doltHubOwner: config.doltHub.owner,
     schedulerEnabled: config.scheduler.enabled,
-    schedulerProject: config.scheduler.enabled ? config.scheduler.projectIdentifier : undefined,
+    schedulerProjects: config.scheduler.enabled ? config.scheduler.projectIdentifiers : undefined,
     schedulerAutoMerge: config.scheduler.autoMerge,
     pmWakeEnabled: config.scheduler.pmWake.enabled,
     pmWakeSink: config.scheduler.pmWake.sink,

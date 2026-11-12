@@ -268,22 +268,19 @@ async function startRunAndCaptureMoleculeId(
   orchestration: OrchestrationApi,
   input: Parameters<OrchestrationApi['dispatcher']['run']>[0],
 ): Promise<string | typeof POOL_FULL> {
-  const subscription: { unsubscribe: () => void } = { unsubscribe: () => undefined };
-  const moleculeStarted = new Promise<string>((resolve) => {
-    subscription.unsubscribe = orchestration.bus.subscribe((event) => {
-      if (event.kind === 'dispatcher/formula.started' && event.payload?.formulaName === input.formula.name && event.molecule_id) {
-        resolve(event.molecule_id);
-      }
-    });
+  // vibesync-9lzk.55.9: take the id from THIS run's own onStarted callback. A
+  // shared bus subscription keyed by formula name could return another run's
+  // molecule now that two projects can run the same formula at once.
+  let reportStarted: (moleculeId: string) => void = () => undefined;
+  const moleculeStarted = new Promise<string>((resolve) => { reportStarted = resolve; });
+  const start = () => orchestration.dispatcher.run({
+    ...input,
+    onStarted: (moleculeId: string) => { reportStarted(moleculeId); input.onStarted?.(moleculeId); },
   });
-  const start = () => orchestration.dispatcher.run(input);
-  const daemon = orchestration.scheduler?.daemon;
+  const daemon = input.projectIdentifier ? orchestration.schedulers.get(input.projectIdentifier)?.daemon : undefined;
   const runPromise = daemon ? daemon.startExternalRun(randomUUID(), start) : start();
-  if (!runPromise) {
-    subscription.unsubscribe();
-    return POOL_FULL;
-  }
-  runPromise.catch(() => undefined).finally(() => subscription.unsubscribe());
+  if (!runPromise) return POOL_FULL;
+  runPromise.catch(() => undefined);
   return Promise.race([
     moleculeStarted,
     runPromise.then((result) => result.moleculeId),

@@ -196,7 +196,7 @@ describe('PM wake (vibesync-2bgv)', () => {
       irohConnectionFactory: neverDialIroh,
       persistEvents: false,
       runDriftAuditOnBoot: false,
-      scheduler: {
+      schedulers: [{
         config: schedulerConfig({
           intervalMs: o.intervalMs ?? MIN,
           poolSize: o.poolSize ?? 2,
@@ -208,7 +208,7 @@ describe('PM wake (vibesync-2bgv)', () => {
         appRoot: process.cwd(),
         pmWake: { lookupAgentId: o.lookup ?? (() => PM), sink },
         ...(o.logger ? { logger: o.logger } : {}),
-      },
+      }],
     });
     handles.push(handle);
     const woken: Event[] = [];
@@ -396,7 +396,7 @@ describe('PM wake (vibesync-2bgv)', () => {
   it('5. witness onRepeatedRecovery -> "stall" wake naming the bead', async () => {
     const s = fakeSink();
     const { handle } = await boot({ sink: s.sink, bd: fakeBd({ closed: new Set(['wz']) }) });
-    const pool = (handle.scheduler!.daemon as unknown as { pool: { allocate(i: { workBeadId: string }): unknown } }).pool;
+    const pool = (handle.schedulers.get(PROJECT)!.daemon as unknown as { pool: { allocate(i: { workBeadId: string }): unknown } }).pool;
 
     for (let i = 0; i < 3; i += 1) {
       pool.allocate({ workBeadId: 'wz' }); // a working slot the scheduler does not track; its bead is closed
@@ -411,7 +411,7 @@ describe('PM wake (vibesync-2bgv)', () => {
   it('5b. a run-deadline expiry (vibesync-izn3) -> "stall" wake naming the bead and the deadline', async () => {
     const s = fakeSink();
     const { handle } = await boot({ sink: s.sink });
-    const daemon = handle.scheduler!.daemon as unknown as { deps: { onRunExpired?: (i: { workBeadId: string; moleculeId?: string; deadlineMs: number; elapsedMs: number }) => void } };
+    const daemon = handle.schedulers.get(PROJECT)!.daemon as unknown as { deps: { onRunExpired?: (i: { workBeadId: string; moleculeId?: string; deadlineMs: number; elapsedMs: number }) => void } };
     // The daemon reports an expiry through its observer seam; boot must route it to the waker.
     expect(typeof daemon.deps.onRunExpired).toBe('function');
     daemon.deps.onRunExpired!({ workBeadId: 'wd', moleculeId: 'mol-wd-1', deadlineMs: 3_600_000, elapsedMs: 3_600_004 });
@@ -463,7 +463,7 @@ describe('PM wake (vibesync-2bgv)', () => {
 
       // A project that is not in the registry resolves to null.
       expect(registryPmAgentLookup(db)('no-such-project')).toBeNull();
-      expect(handle.scheduler!.pmWaker).not.toBeNull();
+      expect(handle.schedulers.get(PROJECT)!.pmWaker).not.toBeNull();
     } finally {
       db.close();
     }
@@ -506,8 +506,8 @@ describe('PM wake (vibesync-2bgv)', () => {
     const lookup = vi.fn(() => PM);
     const { handle, woken, skipped } = await boot({ sink: s.sink, lookup, pmWake: { enabled: false, backstopMs: 2 * MIN } });
     const timersAtBoot = vi.getTimerCount(); // daemon interval + orchestration plane timers, none from the waker
-    expect(handle.scheduler).not.toBeNull();
-    expect(handle.scheduler!.pmWaker).toBeNull();
+    expect(handle.schedulers.get(PROJECT)).not.toBeNull();
+    expect(handle.schedulers.get(PROJECT)!.pmWaker).toBeNull();
     handle.bus.emit({ layer: 'dispatcher', kind: 'beads/issue.status_changed', payload: { issueId: 'bd-1', from: 'open', to: 'ready' } });
     await vi.advanceTimersByTimeAsync(24 * HOUR);
 

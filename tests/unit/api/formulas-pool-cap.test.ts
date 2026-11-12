@@ -23,16 +23,17 @@ function memoryContexts(): SlingContextStore {
   };
 }
 
-function setup(opts: { poolSize: number; readyBeads: string[] }) {
+function setup(opts: { poolSize: number; readyBeads: string[]; bodyProject?: string | null; otherDaemon?: SchedulerDaemon }) {
   const bus = new EventBus({ noPersist: true });
   const pending: Array<() => void> = [];
   let concurrent = 0;
   let maxConcurrent = 0;
   const dispatcher = {
-    run: vi.fn((input: { formula: { name: string } }) => {
+    run: vi.fn((input: { formula: { name: string }; onStarted?: (moleculeId: string) => void }) => {
       concurrent += 1;
       maxConcurrent = Math.max(maxConcurrent, concurrent);
       const moleculeId = `mol-${dispatcher.run.mock.calls.length}`;
+      input.onStarted?.(moleculeId); // as the real dispatcher does, before the started event
       bus.emit({ layer: 'dispatcher', kind: 'dispatcher/formula.started', molecule_id: moleculeId, payload: { formulaName: input.formula.name } });
       return new Promise<{ moleculeId: string; outputs: Record<string, string> }>((resolve) => {
         pending.push(() => { concurrent -= 1; resolve({ moleculeId, outputs: {} }); });
@@ -59,12 +60,15 @@ function setup(opts: { poolSize: number; readyBeads: string[] }) {
   const sendJson = vi.fn();
   const sendError = vi.fn();
   const res = { setHeader: vi.fn() };
-  const parseJsonBody = vi.fn(async () => ({ input: 'do it' }));
-  const orchestration = { bus, dispatcher, scheduler: { daemon } } as unknown as OrchestrationApi;
+  const project = opts.bodyProject === undefined ? 'vibesync' : opts.bodyProject;
+  const parseJsonBody = vi.fn(async () => (project === null ? { input: 'do it' } : { input: 'do it', projectIdentifier: project }));
+  const schedulers = new Map<string, { daemon: SchedulerDaemon }>([['vibesync', { daemon }]]);
+  if (opts.otherDaemon) schedulers.set('other', { daemon: opts.otherDaemon });
+  const orchestration = { bus, dispatcher, schedulers } as unknown as OrchestrationApi;
   registerFormulaRoutes(app, { orchestration, parseJsonBody, sendJson, sendError, sseManager: { sendEvent: vi.fn() } as never, logger: { error: vi.fn(), info: vi.fn(), warn: vi.fn() } });
   const route = routes.find((r) => r.match({ method: 'POST', pathname: '/formulas/code-review/run' }))!;
   const post = () => route.handle({ req: { headers: {} } as never, res: res as never, url: new URL('http://l/formulas/code-review/run'), pathname: '/formulas/code-review/run' });
-  return { daemon, dispatcher, post, sendJson, sendError, res, pending, maxConcurrent: () => maxConcurrent };
+  return { daemon, dispatcher, post, sendJson, sendError, res, pending, bus, maxConcurrent: () => maxConcurrent };
 }
 
 describe('HTTP formula runs respect the scheduler pool cap (vibesync-9lzk.17)', () => {
@@ -95,6 +99,48 @@ describe('HTTP formula runs respect the scheduler pool cap (vibesync-9lzk.17)', 
     await h.daemon.tick();
     expect(h.dispatcher.run).toHaveBeenCalledTimes(2);
     expect(h.maxConcurrent()).toBe(1);
+    await h.daemon.stop();
+  });
+});
+
+describe('an HTTP run reports ITS OWN molecule id (vibesync-9lzk.55.9)', () => {
+  it('another run of the same formula starting first does not hijack the reply', async () => {
+    const h = setup({ poolSize: 2, readyBeads: [] });
+    // A run of the same formula, started elsewhere (another project), emits its started event first.
+    const realRun = h.dispatcher.run.getMockImplementation()!;
+    h.dispatcher.run.mockImplementationOnce((input: { formula: { name: string }; onStarted?: (moleculeId: string) => void }) => {
+      h.bus.emit({ layer: 'dispatcher', kind: 'dispatcher/formula.started', molecule_id: 'mol-someone-else', payload: { formulaName: input.formula.name } });
+      return realRun(input);
+    });
+    await h.post();
+    expect(h.sendJson).toHaveBeenCalledWith(h.res, 202, expect.objectContaining({ moleculeId: 'mol-1' }));
+    expect(h.sendJson).not.toHaveBeenCalledWith(h.res, 202, expect.objectContaining({ moleculeId: 'mol-someone-else' }));
+    await h.daemon.stop();
+  });
+});
+
+describe('an HTTP run takes a slot in ITS project\'s pool (vibesync-9lzk.55.9)', () => {
+  it('a run for another project is not refused by this project\'s full pool', async () => {
+    const other = setup({ poolSize: 1, readyBeads: [] }).daemon; // project "other": one free slot
+    const h = setup({ poolSize: 1, readyBeads: ['w1'], bodyProject: 'other', otherDaemon: other });
+    await h.daemon.tick(); // project "vibesync": its only slot is now taken by a scheduled run
+    expect(h.dispatcher.run).toHaveBeenCalledTimes(1);
+
+    await h.post(); // the HTTP run names "other"
+
+    expect(h.sendError).not.toHaveBeenCalled();
+    expect(h.sendJson).toHaveBeenCalledWith(h.res, 202, expect.objectContaining({ moleculeId: 'mol-2' }));
+    expect(other.startExternalRun('probe', async () => undefined)).toBeNull(); // "other"'s only slot is the HTTP run's
+    await h.daemon.stop();
+    await other.stop();
+  });
+
+  it('a run with no project takes no pool slot even when the pool is full', async () => {
+    const h = setup({ poolSize: 1, readyBeads: ['w1'], bodyProject: null });
+    await h.daemon.tick(); // the only slot is taken
+    await h.post();
+    expect(h.sendError).not.toHaveBeenCalled();
+    expect(h.sendJson).toHaveBeenCalledWith(h.res, 202, expect.objectContaining({ moleculeId: 'mol-2' }));
     await h.daemon.stop();
   });
 });

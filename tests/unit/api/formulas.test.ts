@@ -254,7 +254,8 @@ function newOrchestration(overrides: { bus?: EventBus; walker?: MoleculeWalker; 
     bus,
     walker,
     dispatcher: {
-      run: vi.fn(async (input: { formula: Formula }) => {
+      run: vi.fn(async (input: { formula: Formula; onStarted?: (moleculeId: string) => void }) => {
+        input.onStarted?.('mol-123'); // as the real dispatcher does, before the started event
         bus.emit({
           layer: 'dispatcher',
           kind: 'dispatcher/formula.started',

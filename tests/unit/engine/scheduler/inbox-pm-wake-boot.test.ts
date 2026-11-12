@@ -110,12 +110,12 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
       ...inMemoryBeads(),
       persistEvents: false,
       runDriftAuditOnBoot: false,
-      scheduler: {
+      schedulers: [{
         config: schedulerConfig({ statePath: path.join(dir, 'pm-wake-state.json'), sink: 'inbox' }),
         listPoolMembers: () => [],
         bd,
         pmWake: { lookupAgentId: () => PM },
-      },
+      }],
     })).rejects.toThrow(/MobileAgentMessageSender service adapter/);
   });
 
@@ -147,7 +147,7 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
         over.connections?.push(c);
         return c;
       },
-      scheduler: {
+      schedulers: [{
         config: { ...schedulerConfig({ statePath: path.join(dir, 'pm-wake-state.json'), ...over.pmWake }), ...(over.intervalMs ? { intervalMs: over.intervalMs } : {}) },
         listPoolMembers: () => over.listPoolMembers?.() ?? [
           { agentId: 'agent-a', role: 'role-one' },
@@ -157,7 +157,7 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
         appRoot: process.cwd(),
         // The registry lookup, exactly the shape src/index.ts wires: the PM id is DATA.
         pmWake: { lookupAgentId: () => PM, ...(over.wakeSink ? { sink: over.wakeSink } : {}), ...(over.inboxAdapter ? { inboxAdapter: over.inboxAdapter } : {}) },
-      },
+      }],
     });
     handles.push(handle);
     const woken: Event[] = [];
@@ -201,7 +201,7 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
       pmWake: { sink: 'inbox' },
       wakeSink: { wake: async () => ({ ok: true }) },
     });
-    expect(handle.scheduler).not.toBeNull();
+    expect(handle.schedulers.get(PROJECT)).not.toBeNull();
     expect(fake.dials).toBe(0);
     await handle.shutdown();
   });
@@ -225,7 +225,7 @@ describe('Iroh PM wake sink through boot (vibesync-2bgv)', () => {
         identityDir: '/service-identities', addressStore: '/host-addresses', contractVerified: false,
       } },
     });
-    expect(handle.scheduler!.pmWaker).toBeNull();
+    expect(handle.schedulers.get(PROJECT)!.pmWaker).toBeNull();
     expect(fake.dials).toBe(0);
     await handle.shutdown();
   });
