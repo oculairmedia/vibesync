@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import mysql from 'mysql2/promise';
 
-import { DoltClient } from '../../../../src/engine/store/dolt-client.js';
+import { DoltClient, resolveDoltPort } from '../../../../src/engine/store/dolt-client.js';
 
 vi.mock('mysql2/promise', () => ({ default: { createPool: vi.fn(() => ({ end: vi.fn(async () => undefined), execute: vi.fn(async () => [[]]) })) } }));
 
@@ -83,6 +83,52 @@ describe('reading bead rows', () => {
     const client = clientWithRows([]);
     expect(await client.getBead('nope')).toBeNull();
     await client.close();
+  });
+});
+
+describe('reading the database name from metadata.json', () => {
+  it.each([
+    ['an array', '["db"]'],
+    ['a bare number', '42'],
+    ['null', 'null'],
+  ])('rejects metadata that is valid JSON but %s', (_case, body) => {
+    const { root } = fixture();
+    mkdirSync(join(root, '.beads'));
+    writeFileSync(join(root, '.beads', 'metadata.json'), body);
+    expect(() => new DoltClient({ beadsRoot: root, expectedRepoId: 'test' })).toThrow(/malformed metadata.*expected an object/);
+  });
+
+  it('rejects metadata that is not JSON', () => {
+    const { root } = fixture();
+    mkdirSync(join(root, '.beads'));
+    writeFileSync(join(root, '.beads', 'metadata.json'), '{not json');
+    expect(() => new DoltClient({ beadsRoot: root, expectedRepoId: 'test' })).toThrow(/malformed metadata in/);
+  });
+
+  it('rejects a missing metadata.json, naming the override', () => {
+    const { root } = fixture();
+    mkdirSync(join(root, '.beads'));
+    expect(() => new DoltClient({ beadsRoot: root, expectedRepoId: 'test' })).toThrow(/no reliable database name: missing .*metadata\.json/);
+  });
+});
+
+describe('waiting for the Dolt port file', () => {
+  it('reads the port file straight after starting the server, before sleeping', async () => {
+    // A server that comes up within the start call needs no poll interval.
+    const { root } = fixture();
+    beads(root);
+    rmSync(join(root, '.beads', 'dolt-server.port'));
+    let started = false;
+    const sleep = vi.fn(async () => undefined);
+    const deps = {
+      readPortFile: vi.fn(() => (started ? '33555' : null)),
+      startDoltServer: vi.fn(async () => { started = true; }),
+      sleep,
+      log: vi.fn(),
+    };
+    const port = await resolveDoltPort({ beadsRoot: root, expectedRepoId: 'test' }, deps as never, { timeoutMs: 1_000, pollIntervalMs: 100 });
+    expect(port).toBe(33555);
+    expect(sleep).not.toHaveBeenCalled();
   });
 });
 
