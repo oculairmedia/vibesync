@@ -356,6 +356,31 @@ describe('a step that failed, was retried and then succeeded (CodeRabbit on #165
   });
 });
 
+describe('a cancelled run with no events in this release\'s log (vibesync-9lzk.59.3)', () => {
+  it('reads cancelled, offering retry, not failed: the root records the outcome', async () => {
+    const store = new InMemoryDoltClient();
+    const walker = new MoleculeWalker(store);
+    const view = await molecule(walker, [{ name: 'mayor', role: 'mayor' }, { name: 'coder', role: 'coder' }]);
+    // What settlement does on a cancel: each open step failed with "cancelled", then the root closed as cancelled.
+    await walker.failStep(`${view.rootId}-mayor`, 'cancelled');
+    await walker.markMoleculeRootStatus(view.rootId, 'closed', 'cancelled');
+    events([]);
+    const trace = (await harness(walker).call('GET', `/molecules/${view.rootId}/trace`)).body!;
+    expect(trace.health.state).toBe('cancelled');
+    expect(trace.availableActions).toEqual(['retry']);
+  });
+
+  it('a run whose root records a failed outcome still reads failed', async () => {
+    const store = new InMemoryDoltClient();
+    const walker = new MoleculeWalker(store);
+    const view = await molecule(walker, [{ name: 'coder', role: 'coder' }]);
+    await walker.failStep(`${view.rootId}-coder`, 'boom');
+    await walker.markMoleculeRootStatus(view.rootId, 'closed', 'failed');
+    events([]);
+    expect((await harness(walker).call('GET', `/molecules/${view.rootId}/trace`)).body!.health.state).toBe('failed');
+  });
+});
+
 describe('a failed step\'s own error reaches the trace', () => {
   it('with no events at all, the trace errors still carry the step\'s first error line', async () => {
     const walker = new MoleculeWalker(new InMemoryDoltClient());

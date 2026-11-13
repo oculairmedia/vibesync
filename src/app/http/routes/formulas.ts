@@ -551,6 +551,11 @@ function stepHealth(root: BeadRow, steps: readonly BeadRow[], events: readonly E
   if (steps.some((step) => step.status === 'in_progress')) {
     return { state: 'running', message: 'Formula has active runtime work.', recommendedAction: 'Watch live events or cancel if it is stuck.', evidenceEventIds: evidence };
   }
+  // vibesync-9lzk.59.3: a cancel fails each open step with "cancelled" and
+  // records the outcome on the root, so the root decides before the step rule.
+  if (readString(readExec(root).outcome) === 'cancelled') {
+    return { state: 'cancelled', message: 'Molecule was cancelled.', recommendedAction: 'Retry if work is still required.', evidenceEventIds: evidence };
+  }
   // vibesync-9lzk.59.2: a run from an earlier release has no events in this
   // release's log, so a failed step must decide "failed" on its own. Only a
   // CLOSED step counts: a step reopened for retry keeps its old error_trace.
