@@ -121,19 +121,34 @@ export class BdPendingWakeStore implements PendingWakeStore {
     assertId(id);
     const record = await this.get(id);
     if (!record || record.status === 'closed') return { authorized: false, record };
-    if (record.status === 'in_progress' && (record.leaseExpiresAt ?? Infinity) > this.now()) return { authorized: false, record };
-    if (record.status === 'in_progress') {
-      try {
-        // Native reclaim checks the actual lease atomically and only on this
-        // replica. Metadata timestamps must never authorize stealing a claim.
-        await this.bd(['reclaim', '--older-than', '0s', '--id', id]);
-      } catch {
-        return { authorized: false, record: await this.get(id) };
-      }
-    }
+    if (this.leaseIsLive(record)) return { authorized: false, record };
+    if (record.status === 'in_progress' && !(await this.reclaimExpired(id))) return { authorized: false, record: await this.get(id) };
     const claimedFrom = await this.get(id);
-    if (!claimedFrom || (claimedFrom.status !== 'open' && claimedFrom.status !== 'blocked')) return { authorized: false, record: claimedFrom };
+    if (!claimedFrom || !isClaimable(claimedFrom)) return { authorized: false, record: claimedFrom };
+    return this.takeClaim(claimedFrom);
+  }
 
+  /** Someone holds the wake and their lease has not run out. A missing expiry counts as live. */
+  private leaseIsLive(record: PendingWakeRecord): boolean {
+    return record.status === 'in_progress' && (record.leaseExpiresAt ?? Infinity) > this.now();
+  }
+
+  /**
+   * Native reclaim checks the actual lease atomically and only on this replica.
+   * Metadata timestamps must never authorize stealing a claim. False when bd refuses.
+   */
+  private async reclaimExpired(id: string): Promise<boolean> {
+    try {
+      await this.bd(['reclaim', '--older-than', '0s', '--id', id]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Claim the wake under a fresh token; authorized only when bd records exactly that token as the holder. */
+  private async takeClaim(claimedFrom: PendingWakeRecord): Promise<PendingWakeClaim> {
+    const id = claimedFrom.id;
     const claimToken = `${this.owner}-${randomUUID()}`;
     try {
       await this.bd([
@@ -145,8 +160,8 @@ export class BdPendingWakeStore implements PendingWakeStore {
       return { authorized: false, record: await this.get(id) };
     }
     const claimed = await this.get(id);
-    if (!claimed || claimed.status !== 'in_progress' || claimed.assignee !== claimToken) return { authorized: false, record: claimed };
-    return { authorized: true, record: claimed };
+    const held = claimed?.status === 'in_progress' && claimed.assignee === claimToken;
+    return { authorized: held, record: claimed };
   }
 
   private async renewClaim(record: PendingWakeRecord): Promise<PendingWakeClaim> {
@@ -161,60 +176,55 @@ export class BdPendingWakeStore implements PendingWakeStore {
 
   async sendClaimed(record: PendingWakeRecord, sink: PmWakeSink, at = this.now()): Promise<PendingWakeSendResult> {
     const owned = await this.get(record.id);
-    if (!owned || owned.status !== 'in_progress' || owned.assignee !== record.assignee || owned.claimToken !== record.claimToken) return { authorized: false, record: owned };
-    if (owned.receipt?.accepted && owned.receipt.applicationDelivered && owned.receipt.msgId === owned.payload.msgId) {
-      // The delivery receipt survived but closing the bead did not. Complete
-      // bookkeeping under the current claim; never replay the external effect.
-      await this.bd(['update', record.id, '--status', 'closed', '--if-assignee', record.assignee ?? '', '--if-status', 'in_progress']);
-      return {
-        authorized: true, record: await this.get(record.id), receipt: owned.receipt,
-        outcome: { ok: true, accepted: true, applicationDelivered: true, msgId: owned.receipt.msgId, ...(owned.receipt.reason ? { reason: owned.receipt.reason } : {}) },
-      };
-    }
+    if (!owned || !stillHeldBy(owned, record)) return { authorized: false, record: owned };
+    if (alreadyDelivered(owned)) return this.closeAlreadyDelivered(owned, record);
     const heartbeat = startLeaseHeartbeat(this.bd, record.id, record.assignee ?? '', this.logger);
     try {
       const refreshed = await this.renewClaim(owned);
       if (!refreshed.authorized || !refreshed.record) return { authorized: false, record: refreshed.record };
       const renewed = await this.get(record.id);
       if (!renewed || renewed.claimToken !== record.claimToken) return { authorized: false, record: renewed };
-      let outcome: PmWakeOutcome;
-      try {
-        outcome = await sink.wake({
-          agentId: owned.payload.agentId,
-          projectIdentifier: owned.payload.projectIdentifier,
-          reason: owned.payload.reason,
-          detail: owned.payload.detail,
-          wakeId: owned.payload.msgId,
-          ...(owned.payload.correlation ? { correlation: owned.payload.correlation } : {}),
-        });
-      } catch (error) {
-        outcome = { ok: false, error: errorMessage(error) };
-      }
-      const receipt: PendingWakeReceipt = {
-        accepted: outcome.accepted ?? outcome.ok,
-        applicationDelivered: outcome.applicationDelivered ?? false,
-        ...(outcome.reason ?? outcome.error ? { reason: outcome.reason ?? outcome.error } : {}),
-        msgId: owned.payload.msgId,
-        observedAt: new Date(at).toISOString(),
-      };
-      const delivered = receipt.accepted && receipt.applicationDelivered;
-      const metadata = metadataFromRow(owned);
-      await this.bd([
-        'update', record.id,
-        '--metadata', JSON.stringify({
-          ...metadata,
-          state: delivered ? 'delivered' : 'pending',
-          attempts: Number(metadata['attempts'] ?? 0) + 1,
-          receipt,
-        }),
-        '--if-assignee', record.assignee ?? '',
-        '--if-status', 'in_progress',
-      ]);
-      if (delivered) await this.bd(['update', record.id, '--status', 'closed', '--if-assignee', record.assignee ?? '', '--if-status', 'in_progress']);
+      const outcome = await deliver(sink, owned.payload);
+      const receipt = receiptFor(outcome, owned.payload.msgId, at);
+      await this.recordAttempt(owned, record, receipt);
       return { authorized: true, record: await this.get(record.id), outcome, receipt };
     } finally {
       await heartbeat.stop();
     }
+  }
+
+  /**
+   * The delivery receipt survived but closing the bead did not. Complete
+   * bookkeeping under the current claim; never replay the external effect.
+   */
+  private async closeAlreadyDelivered(owned: PendingWakeRecord, record: PendingWakeRecord): Promise<PendingWakeSendResult> {
+    const receipt = owned.receipt!;
+    await this.closeHeld(record);
+    return {
+      authorized: true, record: await this.get(record.id), receipt,
+      outcome: { ok: true, accepted: true, applicationDelivered: true, msgId: receipt.msgId, ...(receipt.reason ? { reason: receipt.reason } : {}) },
+    };
+  }
+
+  /** Store the attempt's receipt and count it; close the wake when it was delivered. Both writes are guarded by the claim. */
+  private async recordAttempt(owned: PendingWakeRecord, record: PendingWakeRecord, receipt: PendingWakeReceipt): Promise<void> {
+    const delivered = receipt.accepted && receipt.applicationDelivered;
+    const metadata = metadataFromRow(owned);
+    await this.bd([
+      'update', record.id,
+      '--metadata', JSON.stringify({
+        ...metadata,
+        state: delivered ? 'delivered' : 'pending',
+        attempts: Number(metadata['attempts'] ?? 0) + 1,
+        receipt,
+      }),
+      ...heldGuard(record),
+    ]);
+    if (delivered) await this.closeHeld(record);
+  }
+
+  private async closeHeld(record: PendingWakeRecord): Promise<void> {
+    await this.bd(['update', record.id, '--status', 'closed', ...heldGuard(record)]);
   }
 
   async claimAndSend(id: string, sink: PmWakeSink): Promise<PendingWakeSendResult> {
@@ -222,6 +232,54 @@ export class BdPendingWakeStore implements PendingWakeStore {
     if (!claim.authorized || !claim.record) return claim;
     return this.sendClaimed(claim.record, sink);
   }
+}
+
+/** Open or blocked: the states bd lets a new claim start from. */
+function isClaimable(record: PendingWakeRecord): boolean {
+  return record.status === 'open' || record.status === 'blocked';
+}
+
+/** bd write guards: the update applies only while this claim still holds the wake. */
+function heldGuard(record: PendingWakeRecord): string[] {
+  return ['--if-assignee', record.assignee ?? '', '--if-status', 'in_progress'];
+}
+
+/** The wake is still in progress under exactly this claim (assignee and claim token). */
+function stillHeldBy(current: PendingWakeRecord, claim: PendingWakeRecord): boolean {
+  return current.status === 'in_progress' && current.assignee === claim.assignee && current.claimToken === claim.claimToken;
+}
+
+/** A receipt for this wake's own message says it was accepted and delivered. */
+function alreadyDelivered(record: PendingWakeRecord): boolean {
+  const receipt = record.receipt;
+  return Boolean(receipt?.accepted && receipt.applicationDelivered && receipt.msgId === record.payload.msgId);
+}
+
+/** Send the wake; a sink that throws is a failed attempt, never an exception. */
+async function deliver(sink: PmWakeSink, payload: PendingWakePayload): Promise<PmWakeOutcome> {
+  try {
+    return await sink.wake({
+      agentId: payload.agentId,
+      projectIdentifier: payload.projectIdentifier,
+      reason: payload.reason,
+      detail: payload.detail,
+      wakeId: payload.msgId,
+      ...(payload.correlation ? { correlation: payload.correlation } : {}),
+    });
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+}
+
+function receiptFor(outcome: PmWakeOutcome, msgId: string, at: number): PendingWakeReceipt {
+  const reason = outcome.reason ?? outcome.error;
+  return {
+    accepted: outcome.accepted ?? outcome.ok,
+    applicationDelivered: outcome.applicationDelivered ?? false,
+    ...(reason ? { reason } : {}),
+    msgId,
+    observedAt: new Date(at).toISOString(),
+  };
 }
 
 function startLeaseHeartbeat(bd: CommandRunner, id: string, assignee: string, logger?: { warn?(o: unknown, message: string): void }) {
@@ -263,36 +321,58 @@ function rows(raw: string, context: string): Record<string, unknown>[] {
 function toRecord(row: Record<string, unknown>): PendingWakeRecord | null {
   const id = String(row['id'] ?? '');
   const metadata = row['metadata'];
-  if (!id || typeof metadata !== 'object' || metadata === null) return null;
-  const md = metadata as Record<string, unknown>;
-  const payload = md['payload'];
-  if (typeof payload !== 'object' || payload === null) return null;
-  const p = payload as Record<string, unknown>;
-  if (typeof p['projectIdentifier'] !== 'string' || typeof p['agentId'] !== 'string' || typeof p['msgId'] !== 'string' || typeof p['body'] !== 'string' || typeof p['detail'] !== 'string') return null;
-  const correlation = p['correlation'];
-  if (correlation !== undefined && (typeof correlation !== 'object' || correlation === null || Array.isArray(correlation))) return null;
-  const receipt = md['receipt'];
+  if (!id || !isObject(metadata)) return null;
+  const payload = toPayload(metadata['payload']);
+  if (!payload) return null;
+  const receipt = metadata['receipt'];
   return {
     id,
     status: String(row['status'] ?? ''),
-    assignee: typeof row['assignee'] === 'string' ? row['assignee'] : '',
-    ...(typeof row['owner'] === 'string' ? { owner: row['owner'] } : {}),
-    ...(typeof row['lease_expires_at'] === 'string' && Number.isFinite(Date.parse(row['lease_expires_at']))
-      ? { leaseExpiresAt: Date.parse(row['lease_expires_at']) } : {}),
-    ...(typeof md['claimToken'] === 'string' ? { claimToken: md['claimToken'] } : {}),
-    rawMetadata: md,
-    payload: {
-      projectIdentifier: p['projectIdentifier'],
-      agentId: p['agentId'],
-      msgId: p['msgId'],
-      reason: isWakeReason(p['reason']) ? p['reason'] : 'backstop',
-      detail: p['detail'],
-      body: p['body'],
-      ...(isStringMap(correlation) ? { correlation } : {}),
-      createdAt: typeof p['createdAt'] === 'string' ? p['createdAt'] : '',
-    },
+    ...leaseFields(row, metadata),
+    rawMetadata: metadata,
+    payload,
     ...(isReceipt(receipt) ? { receipt } : {}),
   };
+}
+
+/** Who holds the wake and until when: assignee, owner, lease expiry, and the claim token from metadata. */
+function leaseFields(row: Record<string, unknown>, metadata: Record<string, unknown>): Pick<PendingWakeRecord, 'assignee' | 'owner' | 'leaseExpiresAt' | 'claimToken'> {
+  const leaseExpiresAt = typeof row['lease_expires_at'] === 'string' ? Date.parse(row['lease_expires_at']) : NaN;
+  return {
+    assignee: stringOr(row['assignee'], ''),
+    ...(typeof row['owner'] === 'string' ? { owner: row['owner'] } : {}),
+    ...(Number.isFinite(leaseExpiresAt) ? { leaseExpiresAt } : {}),
+    ...(typeof metadata['claimToken'] === 'string' ? { claimToken: metadata['claimToken'] } : {}),
+  };
+}
+
+const REQUIRED_PAYLOAD_STRINGS = ['projectIdentifier', 'agentId', 'msgId', 'body', 'detail'] as const;
+
+/** The stored payload, or null when a required field is missing or the correlation is not an object. */
+function toPayload(value: unknown): PendingWakePayload | null {
+  if (!isObject(value)) return null;
+  if (!REQUIRED_PAYLOAD_STRINGS.every((key) => typeof value[key] === 'string')) return null;
+  const correlation = value['correlation'];
+  if (correlation !== undefined && !isObject(correlation)) return null;
+  return {
+    projectIdentifier: value['projectIdentifier'] as string,
+    agentId: value['agentId'] as string,
+    msgId: value['msgId'] as string,
+    reason: isWakeReason(value['reason']) ? value['reason'] : 'backstop',
+    detail: value['detail'] as string,
+    body: value['body'] as string,
+    ...(isStringMap(correlation) ? { correlation } : {}),
+    createdAt: stringOr(value['createdAt'], ''),
+  };
+}
+
+/** A plain object: not null, not an array. */
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function stringOr(value: unknown, fallback: string): string {
+  return typeof value === 'string' ? value : fallback;
 }
 
 function isWakeReason(value: unknown): value is PmWakeInput['reason'] {
@@ -300,13 +380,14 @@ function isWakeReason(value: unknown): value is PmWakeInput['reason'] {
 }
 
 function isStringMap(value: unknown): value is Record<string, string> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) && Object.values(value).every((entry) => typeof entry === 'string');
+  return isObject(value) && Object.values(value).every((entry) => typeof entry === 'string');
 }
 
 function isReceipt(value: unknown): value is PendingWakeReceipt {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  const receipt = value as Record<string, unknown>;
-  return typeof receipt['accepted'] === 'boolean' && typeof receipt['applicationDelivered'] === 'boolean' && typeof receipt['msgId'] === 'string' && typeof receipt['observedAt'] === 'string' && (receipt['reason'] === undefined || typeof receipt['reason'] === 'string');
+  if (!isObject(value)) return false;
+  const typed = (key: string, type: 'boolean' | 'string') => typeof value[key] === type;
+  const reasonOk = value['reason'] === undefined || typeof value['reason'] === 'string';
+  return typed('accepted', 'boolean') && typed('applicationDelivered', 'boolean') && typed('msgId', 'string') && typed('observedAt', 'string') && reasonOk;
 }
 
 function metadataFromRow(record: PendingWakeRecord): Record<string, unknown> {
