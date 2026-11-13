@@ -121,16 +121,17 @@ export async function createConversation(
   title?: string,
   metadata: ConversationCreateMetadata = {},
 ): Promise<string> {
-  const params = {
-    agent_id: agentId,
-    ...(title ? { summary: title } : {}),
-    ...(metadata.tags ? { tags: [...metadata.tags] } : {}),
-  };
+  const params = { agent_id: agentId, ...optionalField('summary', title), ...optionalField('tags', metadata.tags && [...metadata.tags]) };
   const result = await withRedial(conn, () => conn.rpc('conversation.create', params), 3);
-  const r = asRecord(result);
-  const conv = str(r?.['id']) ?? str(asRecord(r?.['conversation'])?.['id']) ?? str(r?.['conversation_id']);
+  const conv = conversationIdOf(result);
   if (!conv) throw new IrohRefusedError('conversation.create returned no conversation id');
   return conv;
+}
+
+/** conversation.create answers `{id}`, `{conversation: {id}}` or `{conversation_id}`. */
+function conversationIdOf(result: unknown): string | null {
+  const r = asRecord(result);
+  return str(r?.['id']) ?? str(asRecord(r?.['conversation'])?.['id']) ?? str(r?.['conversation_id']);
 }
 
 export type InputSubmission =
@@ -155,15 +156,20 @@ export async function submitInput(
   cwd?: string,
 ): Promise<InputSubmission> {
   if (!req.clientMessageId) throw new Error('submitInput: clientMessageId is required (stable per prompt)');
-  const rs = await conn.request({
-    type: 'runtime_start',
-    agent_id: req.agentId,
-    conversation_id: req.conversationId,
-    mode,
-    ...(cwd !== undefined ? { cwd } : {}),
-  });
-  if (rs['success'] !== true) throw refusalFrom('runtime_start', rs['error'] ?? 'runtime_start failed');
+  await startRuntime(conn, req, mode, cwd);
+  return sendInput(conn, req);
+}
 
+async function startRuntime(conn: IrohConnection, req: { readonly agentId: string; readonly conversationId: string }, mode: string, cwd?: string): Promise<void> {
+  const rs = await conn.request({ type: 'runtime_start', agent_id: req.agentId, conversation_id: req.conversationId, mode, ...optionalField('cwd', cwd) });
+  if (rs['success'] !== true) throw refusalFrom('runtime_start', rs['error'] ?? 'runtime_start failed');
+}
+
+/** A refusal the caller cannot fix by retrying (forbidden, missing, unsupported) throws; anything else is a rejected input. */
+async function sendInput(
+  conn: IrohConnection,
+  req: { readonly agentId: string; readonly conversationId: string; readonly text: string; readonly clientMessageId: string },
+): Promise<InputSubmission> {
   const accepted = await conn.request({
     type: 'input',
     runtime: { agent_id: req.agentId, conversation_id: req.conversationId },
@@ -172,12 +178,10 @@ export async function submitInput(
       messages: [{ role: 'user', content: req.text, client_message_id: req.clientMessageId }],
     },
   });
-  if (accepted['accepted'] !== true) {
-    const err = str(accepted['error']) ?? 'input not accepted';
-    if (/forbidden|not found|unknown method|unsupported/i.test(err)) throw refusalFrom('input', err);
-    return { accepted: false, error: err };
-  }
-  return { accepted: true, disposition: str(accepted['disposition']) };
+  if (accepted['accepted'] === true) return { accepted: true, disposition: str(accepted['disposition']) };
+  const err = str(accepted['error']) ?? 'input not accepted';
+  if (/forbidden|not found|unknown method|unsupported/i.test(err)) throw refusalFrom('input', err);
+  return { accepted: false, error: err };
 }
 
 export async function runTurn(conn: IrohConnection, req: TurnRequest, opts: RunTurnOptions = {}): Promise<TurnResult> {
@@ -188,22 +192,28 @@ export async function runTurn(conn: IrohConnection, req: TurnRequest, opts: RunT
   const conversationId = req.conversationId ?? (await createConversation(conn, req.agentId));
   const ctx: TurnContext = { conn, req, conversationId, o, deadline };
 
-  let redials = 0;
-  for (;;) {
-    let outcome: Outcome;
-    try {
-      outcome = await attempt(ctx, redials > 0);
-    } catch (err) {
-      if (!isRetryable(err)) throw err;
-      outcome = { kind: 'disconnect' };
-    }
+  return runWithRedials(ctx);
+}
+
+/** Run attempts until one ends the turn; a dropped link redials, at most maxRedials times. */
+async function runWithRedials(ctx: TurnContext): Promise<TurnResult> {
+  const { conn, o } = ctx;
+  for (let redials = 0; ; redials += 1) {
+    const outcome = await attemptOrDisconnect(ctx, redials > 0);
     if (outcome.kind !== 'disconnect') return finish(ctx, outcome);
-    redials += 1;
-    if (redials > o.maxRedials) {
-      throw new IrohConnectionError(`turn abandoned after ${o.maxRedials} redials`);
-    }
+    if (redials + 1 > o.maxRedials) throw new IrohConnectionError(`turn abandoned after ${o.maxRedials} redials`);
     o.onProgress?.({ kind: 'redial' });
     await conn.connect(); // bounded exponential backoff inside; auth/config errors surface here
+  }
+}
+
+/** One attempt; a retryable transport error counts as a disconnect, anything else is thrown. */
+async function attemptOrDisconnect(ctx: TurnContext, redialed: boolean): Promise<Outcome> {
+  try {
+    return await attempt(ctx, redialed);
+  } catch (err) {
+    if (!isRetryable(err)) throw err;
+    return { kind: 'disconnect' };
   }
 }
 
@@ -301,15 +311,24 @@ function applyFrame(st: TurnState, f: Frame, o: ResolvedOptions): void {
 
 function onStreamDelta(st: TurnState, f: Frame, o: ResolvedOptions): void {
   st.sawActivity = true;
-  const d = asRecord(f['delta']);
+  const progress = deltaProgress(asRecord(f['delta']));
+  if (progress) o.onProgress?.(progress);
+}
+
+/** The progress event a stream delta reports: text for assistant or reasoning output, the tool for a tool call, else nothing. */
+function deltaProgress(d: Record<string, unknown> | null): TurnProgress | null {
   const kind = str(d?.['message_type']);
   if (kind === 'assistant_message' || kind === 'reasoning_message') {
-    const t = contentText(d?.['content']);
-    if (t) o.onProgress?.({ kind: 'delta', text: t });
-  } else if (kind === 'tool_call_message') {
-    const tc = asRecord(d?.['tool_call']);
-    o.onProgress?.({ kind: 'tool-call', tool: str(tc?.['name']) ?? str(d?.['tool_name']) ?? 'unknown', args: tc?.['arguments'] ?? null });
+    const text = contentText(d?.['content']);
+    return text ? { kind: 'delta', text } : null;
   }
+  if (kind === 'tool_call_message') return toolCallProgress(d);
+  return null;
+}
+
+function toolCallProgress(d: Record<string, unknown> | null): TurnProgress {
+  const tc = asRecord(d?.['tool_call']);
+  return { kind: 'tool-call', tool: str(tc?.['name']) ?? str(d?.['tool_name']) ?? 'unknown', args: tc?.['arguments'] ?? null };
 }
 
 function onPendingApprovals(st: TurnState, f: Frame): void {
@@ -344,32 +363,64 @@ function onTurnFinished(st: TurnState, f: Frame, o: ResolvedOptions): void {
 /** Wait for the authoritative end of the turn. */
 async function waitForTurnEnd(ctx: TurnContext, st: TurnState, redialed: boolean): Promise<Outcome> {
   const { o, deadline } = ctx;
-  let nextReconcile = redialed ? Date.now() + o.replayWaitMs : Number.POSITIVE_INFINITY;
-  let approvalSince: number | null = null;
-  let prevRec: Reconciliation | null = null;
+  const wait: WaitState = {
+    nextReconcile: redialed ? Date.now() + o.replayWaitMs : Number.POSITIVE_INFINITY,
+    approvalSince: null,
+    prevRec: null,
+  };
   for (;;) {
     const ended = endedOutcome(st, o.signal);
     if (ended) return ended;
     const now = Date.now();
     if (now >= deadline) return { kind: 'timeout' };
-    approvalSince = st.idleWithApproval ? (approvalSince ?? now) : null;
-    if (approvalSince !== null && now - approvalSince >= o.approvalGraceMs) return { kind: 'approval_stuck' };
-    // Reconcile only when the turn shows no sign of life after the redial: a
-    // live turn replays/continues its frames, a dead one (wrapper restarted,
-    // parking lost) stays silent.
-    if (now >= nextReconcile && st.sawActivity) nextReconcile = now + o.reconcileIntervalMs;
-    if (now >= nextReconcile) {
-      const rec = await tryReconcile(ctx.conn, ctx.req, ctx.conversationId, o);
-      // Two identical polls one interval apart: a mid-turn assistant message
-      // (e.g. text before a tool call) changes or is followed by more frames.
-      if (sameReconciliation(rec, prevRec)) return { kind: 'reconciled', ...rec };
-      prevRec = rec;
-      nextReconcile = Date.now() + o.reconcileIntervalMs;
-      continue;
-    }
-    const approvalWakeAt = approvalSince === null ? Number.POSITIVE_INFINITY : approvalSince + o.approvalGraceMs;
-    await sleepUntilWoken(st, sleepBudgetMs(now, deadline, [approvalWakeAt, nextReconcile]));
+    if (approvalStuck(st, wait, now, o.approvalGraceMs)) return { kind: 'approval_stuck' };
+    const reconciled = await maybeReconcile(ctx, st, wait, now);
+    if (reconciled === 'polled') continue;
+    if (reconciled) return reconciled;
+    await sleepUntilWoken(st, sleepBudgetMs(now, deadline, [approvalWakeAt(wait, o.approvalGraceMs), wait.nextReconcile]));
   }
+}
+
+/** The wait loop's own clocks, kept apart from the frame-driven TurnState. */
+interface WaitState {
+  nextReconcile: number;
+  approvalSince: number | null;
+  prevRec: Reconciliation | null;
+}
+
+/** Idle with a pending approval for longer than the grace period. Starts or clears the approval clock. */
+function approvalStuck(st: TurnState, wait: WaitState, now: number, graceMs: number): boolean {
+  wait.approvalSince = st.idleWithApproval ? (wait.approvalSince ?? now) : null;
+  return wait.approvalSince !== null && now - wait.approvalSince >= graceMs;
+}
+
+function approvalWakeAt(wait: WaitState, graceMs: number): number {
+  return wait.approvalSince === null ? Number.POSITIVE_INFINITY : wait.approvalSince + graceMs;
+}
+
+/**
+ * Reconcile only when the turn shows no sign of life after the redial: a live
+ * turn replays/continues its frames, a dead one (wrapper restarted, parking
+ * lost) stays silent. Returns the reconciled outcome, 'polled' when it polled
+ * without settling (loop again at once), or null when no poll was due.
+ */
+async function maybeReconcile(ctx: TurnContext, st: TurnState, wait: WaitState, now: number): Promise<Outcome | 'polled' | null> {
+  if (now >= wait.nextReconcile && st.sawActivity) wait.nextReconcile = now + ctx.o.reconcileIntervalMs;
+  if (now < wait.nextReconcile) return null;
+  return (await reconcileStep(ctx, wait)) ?? 'polled';
+}
+
+/**
+ * Poll the conversation history. Two identical polls one interval apart end the
+ * turn as reconciled: a mid-turn assistant message (e.g. text before a tool
+ * call) changes or is followed by more frames.
+ */
+async function reconcileStep(ctx: TurnContext, wait: WaitState): Promise<Outcome | null> {
+  const rec = await tryReconcile(ctx.conn, ctx.req, ctx.conversationId, ctx.o);
+  if (sameReconciliation(rec, wait.prevRec)) return { kind: 'reconciled', ...rec };
+  wait.prevRec = rec;
+  wait.nextReconcile = Date.now() + ctx.o.reconcileIntervalMs;
+  return null;
 }
 
 /** The turn ended by itself: a terminal frame, an abort, or a dropped link. */
@@ -553,17 +604,24 @@ async function tryReconcile(
     if (isRetryable(err)) return null;
     throw err;
   }
+  const userIdx = inputIndex(messages, req);
+  if (userIdx < 0) return null;
+  const last = messages.slice(userIdx + 1).filter(isAssistant).at(-1);
+  return last ? { text: contentText(last['content'] ?? last['text']), runId: str(last['run_id']) } : null;
+}
+
+/** The last user message that is this turn's input: matched by client_message_id or otid, or by its text. */
+function inputIndex(messages: readonly Record<string, unknown>[], req: TurnRequest): number {
   let userIdx = -1;
   messages.forEach((m, i) => {
-    if (!isUser(m)) return;
-    const idMatch = m['client_message_id'] === req.clientMessageId || m['otid'] === req.clientMessageId;
-    if (idMatch || contentText(m['content'] ?? m['text']).trim() === req.text.trim()) userIdx = i;
+    if (isUser(m) && isTurnInput(m, req)) userIdx = i;
   });
-  if (userIdx < 0) return null;
-  const after = messages.slice(userIdx + 1).filter(isAssistant);
-  if (after.length === 0) return null;
-  const last = after.at(-1)!;
-  return { text: contentText(last['content'] ?? last['text']), runId: str(last['run_id']) };
+  return userIdx;
+}
+
+function isTurnInput(m: Record<string, unknown>, req: TurnRequest): boolean {
+  const idMatch = m['client_message_id'] === req.clientMessageId || m['otid'] === req.clientMessageId;
+  return idMatch || contentText(m['content'] ?? m['text']).trim() === req.text.trim();
 }
 
 // ───────────────────────── small utilities ─────────────────────────
@@ -595,6 +653,11 @@ export function contentText(content: unknown): string {
       .join('');
   }
   return '';
+}
+
+/** `{ [key]: value }` when the value is set (not undefined, null or empty), else `{}`: for optional request fields. */
+function optionalField<K extends string, V>(key: K, value: V | undefined | null | ''): Partial<Record<K, V>> {
+  return value === undefined || value === null || value === '' ? {} : ({ [key]: value } as Record<K, V>);
 }
 
 function asRecord(v: unknown): Record<string, unknown> | null {
