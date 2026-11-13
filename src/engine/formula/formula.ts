@@ -85,23 +85,19 @@ const DELIVERY_KINDS: ReadonlySet<string> = new Set(['pull_request']);
  * Throws on schema violations (missing role, unknown depends_on, etc.).
  */
 export function parseFormulasFromToml(toml: string): Formula[] {
-  const raw = parseToml(toml) as unknown;
-  if (!isRecord(raw)) {
-    throw new Error('formula: top-level TOML must be a table');
-  }
-  const formulaTable = raw['formula'];
-  if (formulaTable === undefined) return [];
-  if (!isRecord(formulaTable)) {
-    throw new Error('formula: [formula] must be a table');
-  }
-  const out: Formula[] = [];
-  for (const [name, body] of Object.entries(formulaTable)) {
-    if (!isRecord(body)) {
-      throw new Error(`formula "${name}": body must be a table`);
-    }
-    out.push(parseFormulaBody(name, body));
-  }
-  return out;
+  return Object.entries(readFormulaTable(parseToml(toml) as unknown)).map(([name, body]) => {
+    if (!isRecord(body)) throw new Error(`formula "${name}": body must be a table`);
+    return parseFormulaBody(name, body);
+  });
+}
+
+/** The `[formula]` table of a parsed TOML document; empty when the document has none. */
+function readFormulaTable(document: unknown): Record<string, unknown> {
+  if (!isRecord(document)) throw new Error('formula: top-level TOML must be a table');
+  const table = document['formula'];
+  if (table === undefined) return {};
+  if (!isRecord(table)) throw new Error('formula: [formula] must be a table');
+  return table;
 }
 
 /**
@@ -114,31 +110,83 @@ export function loadFormulasFromFile(path: string): Formula[] {
 }
 
 function parseFormulaBody(name: string, body: Record<string, unknown>): Formula {
-  const description = typeof body['description'] === 'string' ? body['description'] : '';
-  const whenToUse = typeof body['when_to_use'] === 'string' ? body['when_to_use'] : '';
-  const deliversRaw = body['delivers'];
-  if (deliversRaw !== undefined && (typeof deliversRaw !== 'string' || !DELIVERY_KINDS.has(deliversRaw))) {
-    throw new Error(`formula "${name}": delivers must be one of ${[...DELIVERY_KINDS].join(', ')} (got ${JSON.stringify(deliversRaw)})`);
-  }
-  const stepsRaw = body['steps'];
-  if (stepsRaw !== undefined && !Array.isArray(stepsRaw)) {
-    throw new Error(`formula "${name}": steps must be an array of tables`);
-  }
-  const seenNames = new Set<string>();
-  const steps: StepSpec[] = [];
-  const stepEntries: unknown[] = Array.isArray(stepsRaw) ? stepsRaw : [];
-  for (const [idx, stepRaw] of stepEntries.entries()) {
-    if (!isRecord(stepRaw)) {
-      throw new Error(`formula "${name}": steps[${idx}] must be a table`);
+  const delivers = readDelivers(name, body['delivers']);
+  return {
+    name,
+    description: stringOr(body['description'], ''),
+    whenToUse: stringOr(body['when_to_use'], ''),
+    ...(delivers !== undefined ? { delivers } : {}),
+    steps: parseSteps(name, readStepTables(name, body['steps'])),
+  };
+}
+
+function readDelivers(formulaName: string, value: unknown): FormulaDelivery | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'string' && DELIVERY_KINDS.has(value)) return value as FormulaDelivery;
+  throw new Error(`formula "${formulaName}": delivers must be one of ${[...DELIVERY_KINDS].join(', ')} (got ${JSON.stringify(value)})`);
+}
+
+function readStepTables(formulaName: string, value: unknown): Record<string, unknown>[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`formula "${formulaName}": steps must be an array of tables`);
+  return value.map((entry: unknown, idx) => {
+    if (!isRecord(entry)) throw new Error(`formula "${formulaName}": steps[${idx}] must be a table`);
+    return entry;
+  });
+}
+
+/** Steps in declared order; each may only refer back to steps declared before it. */
+function parseSteps(formulaName: string, tables: readonly Record<string, unknown>[]): StepSpec[] {
+  const declared = new Set<string>();
+  return tables.map((table, idx) => {
+    const step = parseStep(formulaName, idx, table, declared);
+    if (step.loopsBackTo !== undefined && !declared.has(step.loopsBackTo)) {
+      throw new Error(`formula "${formulaName}": step "${step.name}".loops_back_to names "${step.loopsBackTo}", which is not an earlier step`);
     }
-    const step = parseStep(name, idx, stepRaw, seenNames);
-    steps.push(step);
-    if (step.loopsBackTo !== undefined && !seenNames.has(step.loopsBackTo)) {
-      throw new Error(`formula "${name}": step "${step.name}".loops_back_to names "${step.loopsBackTo}", which is not an earlier step`);
-    }
-    seenNames.add(step.name);
+    declared.add(step.name);
+    return step;
+  });
+}
+
+/**
+ * Reads one TOML table's fields. Every error names where the field lives, as
+ * `<where>.<field> <problem>`, so a formula author can find it.
+ */
+class FieldReader {
+  constructor(readonly where: string, readonly table: Record<string, unknown>) {}
+
+  has(field: string): boolean {
+    return this.table[field] !== undefined;
   }
-  return { name, description, whenToUse, ...(deliversRaw !== undefined ? { delivers: deliversRaw as FormulaDelivery } : {}), steps };
+
+  fail(field: string, problem: string): never {
+    throw new Error(`${this.where}.${field} ${problem}`);
+  }
+
+  optionalString(field: string): string | undefined {
+    const value = this.table[field];
+    if (value === undefined) return undefined;
+    if (typeof value === 'string') return value;
+    return this.fail(field, 'must be a string');
+  }
+
+  optionalBoolean(field: string): boolean | undefined {
+    const value = this.table[field];
+    if (value === undefined) return undefined;
+    if (typeof value === 'boolean') return value;
+    return this.fail(field, 'must be true or false');
+  }
+
+  nonNegativeInteger(field: string, fallback: number): number {
+    return this.optionalNonNegativeInteger(field) ?? fallback;
+  }
+
+  optionalNonNegativeInteger(field: string): number | undefined {
+    const value = this.table[field];
+    if (value === undefined) return undefined;
+    if (isIntegerAtLeast(value, 0)) return value;
+    return this.fail(field, 'must be a non-negative integer');
+  }
 }
 
 function parseStep(
@@ -147,74 +195,95 @@ function parseStep(
   raw: Record<string, unknown>,
   declaredSoFar: ReadonlySet<string>,
 ): StepSpec {
+  const { role, name } = readStepIdentity(formulaName, idx, raw, declaredSoFar);
+  const fields = new FieldReader(`formula "${formulaName}": step "${name}"`, raw);
+  // Read in this order so the first error a broken step reports stays the same.
+  const promptTemplate = fields.optionalString('prompt_template');
+  const dependsOn = readDependsOn(fields, declaredSoFar);
+  requireCompletionWait(fields);
+  const retry = readRetry(fields, formulaName);
+  const turnTimeoutMs = fields.optionalNonNegativeInteger('turn_timeout_ms');
+  const planOnly = fields.optionalBoolean('plan_only');
+  const loop = readReviewLoop(fields);
+  return {
+    name,
+    role,
+    ...(promptTemplate !== undefined ? { promptTemplate } : {}),
+    ...(dependsOn !== undefined ? { dependsOn } : {}),
+    waitFor: 'completion',
+    ...retry,
+    ...(turnTimeoutMs !== undefined ? { turnTimeoutMs } : {}),
+    ...(planOnly === true ? { planOnly: true } : {}),
+    ...loop,
+  };
+}
+
+/** The step's role, and its name: the role unless `name` is set (for a second step with the same role). */
+function readStepIdentity(
+  formulaName: string,
+  idx: number,
+  raw: Record<string, unknown>,
+  declaredSoFar: ReadonlySet<string>,
+): { role: string; name: string } {
   const role = raw['role'];
-  if (typeof role !== 'string' || role.length === 0) {
+  if (!isNonEmptyString(role)) {
     throw new Error(`formula "${formulaName}": steps[${idx}] is missing role`);
   }
-  // Step name defaults to role; explicit `name` allowed for multiple
-  // steps with the same role.
-  const explicitName = raw['name'];
-  const name = typeof explicitName === 'string' && explicitName.length > 0 ? explicitName : role;
+  const name = nonEmptyStringOr(raw['name'], role);
   if (declaredSoFar.has(name)) {
     throw new Error(
       `formula "${formulaName}": step name "${name}" appears more than once; set an explicit name for additional uses of role "${role}"`,
     );
   }
-  const promptTemplate = raw['prompt_template'];
-  if (promptTemplate !== undefined && typeof promptTemplate !== 'string') {
-    throw new Error(`formula "${formulaName}": step "${name}".prompt_template must be a string`);
+  return { role, name };
+}
+
+/**
+ * `depends_on` and its alias `needs` (vibesync-efee, bd's spelling): each takes a
+ * name or an array, both merge in declared order without duplicates, and every
+ * name must be a step declared earlier. Undefined when neither is set.
+ */
+function readDependsOn(fields: FieldReader, declaredSoFar: ReadonlySet<string>): string[] | undefined {
+  if (!fields.has('depends_on') && !fields.has('needs')) return undefined;
+  const dependsOn = [...new Set([...readNameList(fields, 'depends_on'), ...readNameList(fields, 'needs')])];
+  const undeclared = dependsOn.find((dep) => !declaredSoFar.has(dep));
+  if (undeclared !== undefined) {
+    throw new Error(`${fields.where} depends_on "${undeclared}" which is not declared earlier in the formula`);
   }
-  // `needs` is an alias of `depends_on` (vibesync-efee, bd's spelling); both
-  // take a name or an array, and declaring both merges them, de-duplicated.
-  const dependsOn = mergeDependencies(formulaName, name, raw);
-  // Verify all depends_on names are previously-declared steps.
-  for (const dep of dependsOn ?? []) {
-    if (!declaredSoFar.has(dep)) {
-      throw new Error(
-        `formula "${formulaName}": step "${name}" depends_on "${dep}" which is not declared earlier in the formula`,
-      );
-    }
+  return dependsOn;
+}
+
+function readNameList(fields: FieldReader, field: 'depends_on' | 'needs'): string[] {
+  const value = fields.table[field];
+  if (value === undefined) return [];
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value) && value.every((v): v is string => typeof v === 'string')) return value;
+  return fields.fail(field, 'must be a string or array of strings');
+}
+
+function requireCompletionWait(fields: FieldReader): void {
+  const waitFor = fields.table['wait_for'];
+  if (waitFor !== undefined && waitFor !== 'completion') {
+    fields.fail('wait_for', `must be "completion" (got ${JSON.stringify(waitFor)})`);
   }
-  const waitForRaw = raw['wait_for'];
-  if (waitForRaw !== undefined && waitForRaw !== 'completion') {
-    throw new Error(
-      `formula "${formulaName}": step "${name}".wait_for must be "completion" (got ${JSON.stringify(waitForRaw)})`,
-    );
-  }
-  const retries = readNonNegativeInteger(raw['retries'], 0, `formula "${formulaName}": step "${name}".retries`);
-  const retryBackoffMs = readNonNegativeInteger(raw['retry_backoff_ms'], DEFAULT_RETRY_BACKOFF_MS, `formula "${formulaName}": step "${name}".retry_backoff_ms`);
-  const retry = parseRetryPolicy(formulaName, name, raw);
-  const turnTimeoutMs = raw['turn_timeout_ms'] !== undefined
-    ? readNonNegativeInteger(raw['turn_timeout_ms'], undefined as never, `formula "${formulaName}": step "${name}".turn_timeout_ms`)
-    : undefined;
-  const planOnlyRaw = raw['plan_only'];
-  if (planOnlyRaw !== undefined && typeof planOnlyRaw !== 'boolean') {
-    throw new Error(`formula "${formulaName}": step "${name}".plan_only must be true or false`);
-  }
-  const loopsBackTo = raw['loops_back_to'];
-  if (loopsBackTo !== undefined && (typeof loopsBackTo !== 'string' || loopsBackTo.length === 0)) {
-    throw new Error(`formula "${formulaName}": step "${name}".loops_back_to must be a step name`);
-  }
-  const maxRounds = raw['max_rounds'] !== undefined
-    ? readNonNegativeInteger(raw['max_rounds'], undefined as never, `formula "${formulaName}": step "${name}".max_rounds`)
-    : undefined;
-  if (maxRounds !== undefined && (loopsBackTo === undefined || maxRounds < 1)) {
-    throw new Error(`formula "${formulaName}": step "${name}".max_rounds needs loops_back_to and must be >= 1`);
-  }
-  const spec: StepSpec = {
-    name,
-    role,
-    ...(typeof promptTemplate === 'string' ? { promptTemplate } : {}),
-    ...(dependsOn !== undefined ? { dependsOn } : {}),
-    waitFor: 'completion',
-    retries,
-    retryBackoffMs,
-    ...(retry !== undefined ? { retry } : {}),
-    ...(turnTimeoutMs !== undefined ? { turnTimeoutMs } : {}),
-    ...(planOnlyRaw === true ? { planOnly: true } : {}),
-    ...(typeof loopsBackTo === 'string' ? { loopsBackTo, maxRounds: maxRounds ?? 3 } : {}),
-  };
-  return spec;
+}
+
+/** The legacy `retries`/`retry_backoff_ms` fields (always set) and the `[steps.retry]` policy (when given). */
+function readRetry(fields: FieldReader, formulaName: string): Pick<StepSpec, 'retries' | 'retryBackoffMs' | 'retry'> {
+  const retries = fields.nonNegativeInteger('retries', 0);
+  const retryBackoffMs = fields.nonNegativeInteger('retry_backoff_ms', DEFAULT_RETRY_BACKOFF_MS);
+  const retry = parseRetryPolicy(fields, formulaName);
+  return { retries, retryBackoffMs, ...(retry !== undefined ? { retry } : {}) };
+}
+
+/** `loops_back_to` and `max_rounds` (vibesync-9lzk.24): a review step that sends work back; 3 rounds unless set. */
+function readReviewLoop(fields: FieldReader): Pick<StepSpec, 'loopsBackTo' | 'maxRounds'> {
+  const loopsBackTo = fields.table['loops_back_to'];
+  if (loopsBackTo !== undefined && !isNonEmptyString(loopsBackTo)) fields.fail('loops_back_to', 'must be a step name');
+  const maxRounds = fields.optionalNonNegativeInteger('max_rounds');
+  const roundsWithoutLoop = maxRounds !== undefined && loopsBackTo === undefined;
+  if (roundsWithoutLoop || maxRounds === 0) fields.fail('max_rounds', 'needs loops_back_to and must be >= 1');
+  return isNonEmptyString(loopsBackTo) ? { loopsBackTo, maxRounds: maxRounds ?? 3 } : {};
 }
 
 const RETRY_KEYS: ReadonlySet<string> = new Set(['max_attempts', 'on_exhausted', 'backoff_ms']);
@@ -225,52 +294,55 @@ const RETRY_KEYS: ReadonlySet<string> = new Set(['max_attempts', 'on_exhausted',
  * discover when a flaky step kills a molecule. Mixing it with the legacy
  * `retries` alias is rejected (which one wins would be a guess).
  */
-function parseRetryPolicy(formulaName: string, stepName: string, raw: Record<string, unknown>): RetryPolicy | undefined {
-  const table = raw['retry'];
+function parseRetryPolicy(step: FieldReader, formulaName: string): RetryPolicy | undefined {
+  const table = step.table['retry'];
   if (table === undefined) return undefined;
-  const label = `formula "${formulaName}": step "${stepName}".retry`;
-  if (!isRecord(table)) throw new Error(`${label} must be a table ([formula.${formulaName}.steps.retry])`);
-  if (raw['retries'] !== undefined || raw['retry_backoff_ms'] !== undefined) {
-    throw new Error(`${label} cannot be combined with the deprecated retries/retry_backoff_ms; migrate them: retries = N -> [steps.retry] max_attempts = N + 1, on_exhausted = "fail", retry_backoff_ms -> backoff_ms`);
-  }
-  for (const key of Object.keys(table)) {
-    if (!RETRY_KEYS.has(key)) throw new Error(`${label} has unknown key "${key}" (expected max_attempts, on_exhausted, backoff_ms)`);
-  }
-  const maxAttempts = table['max_attempts'];
-  if (typeof maxAttempts !== 'number' || !Number.isInteger(maxAttempts) || maxAttempts < 1) {
-    throw new Error(`${label}.max_attempts is required and must be an integer >= 1`);
-  }
-  const onExhausted = table['on_exhausted'] ?? 'fail';
-  if (onExhausted !== 'fail' && onExhausted !== 'soft_fail') {
-    throw new Error(`${label}.on_exhausted must be "fail" or "soft_fail" (got ${JSON.stringify(onExhausted)})`);
-  }
-  const backoffMs = readNonNegativeInteger(table['backoff_ms'], DEFAULT_RETRY_BACKOFF_MS, `${label}.backoff_ms`);
-  return { maxAttempts, onExhausted: onExhausted as OnExhausted, backoffMs };
+  const retry = readRetryTable(step, formulaName, table);
+  return {
+    maxAttempts: readMaxAttempts(retry),
+    onExhausted: readOnExhausted(retry),
+    backoffMs: retry.nonNegativeInteger('backoff_ms', DEFAULT_RETRY_BACKOFF_MS),
+  };
 }
 
-function readDependencyList(formulaName: string, stepName: string, key: 'depends_on' | 'needs', value: unknown): string[] {
-  if (value === undefined) return [];
-  if (typeof value === 'string') return [value];
-  if (Array.isArray(value) && value.every((v): v is string => typeof v === 'string')) return value;
-  throw new Error(`formula "${formulaName}": step "${stepName}".${key} must be a string or array of strings`);
-}
-
-/** depends_on + needs, in declared order, without duplicates; undefined when neither is set. */
-function mergeDependencies(formulaName: string, stepName: string, raw: Record<string, unknown>): string[] | undefined {
-  if (raw['depends_on'] === undefined && raw['needs'] === undefined) return undefined;
-  const merged = [
-    ...readDependencyList(formulaName, stepName, 'depends_on', raw['depends_on']),
-    ...readDependencyList(formulaName, stepName, 'needs', raw['needs']),
-  ];
-  return [...new Set(merged)];
-}
-
-function readNonNegativeInteger(value: unknown, defaultValue: number, label: string): number {
-  if (value === undefined) return defaultValue;
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
-    throw new Error(`${label} must be a non-negative integer`);
+/** The `[steps.retry]` table, checked: a table, not mixed with the legacy fields, no unknown keys. */
+function readRetryTable(step: FieldReader, formulaName: string, table: unknown): FieldReader {
+  const where = `${step.where}.retry`;
+  if (!isRecord(table)) throw new Error(`${where} must be a table ([formula.${formulaName}.steps.retry])`);
+  if (step.has('retries') || step.has('retry_backoff_ms')) {
+    throw new Error(`${where} cannot be combined with the deprecated retries/retry_backoff_ms; migrate them: retries = N -> [steps.retry] max_attempts = N + 1, on_exhausted = "fail", retry_backoff_ms -> backoff_ms`);
   }
-  return value;
+  const unknown = Object.keys(table).find((key) => !RETRY_KEYS.has(key));
+  if (unknown !== undefined) throw new Error(`${where} has unknown key "${unknown}" (expected max_attempts, on_exhausted, backoff_ms)`);
+  return new FieldReader(where, table);
+}
+
+function readMaxAttempts(retry: FieldReader): number {
+  const value = retry.table['max_attempts'];
+  if (isIntegerAtLeast(value, 1)) return value;
+  return retry.fail('max_attempts', 'is required and must be an integer >= 1');
+}
+
+function readOnExhausted(retry: FieldReader): OnExhausted {
+  const value = retry.table['on_exhausted'] ?? 'fail';
+  if (value === 'fail' || value === 'soft_fail') return value;
+  return retry.fail('on_exhausted', `must be "fail" or "soft_fail" (got ${JSON.stringify(value)})`);
+}
+
+function isIntegerAtLeast(value: unknown, minimum: number): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= minimum;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+function stringOr(value: unknown, fallback: string): string {
+  return typeof value === 'string' ? value : fallback;
+}
+
+function nonEmptyStringOr(value: unknown, fallback: string): string {
+  return isNonEmptyString(value) ? value : fallback;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
