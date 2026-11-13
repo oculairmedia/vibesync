@@ -192,10 +192,13 @@ export class InMemoryDoltClient {
 
   async markStepDone(stepId: string, output: unknown): Promise<void> {
     const row = this.requireBead(stepId);
+    // As the real writer: a step that succeeds drops an old error_trace.
+    const metadata = mergeExec(row.metadata, { output_payload: output });
+    delete (metadata.exec as Record<string, unknown>).error_trace;
     this.updateBead(stepId, {
       status: 'closed',
       closed_at: new Date(),
-      metadata: mergeExec(row.metadata, { output_payload: output }),
+      metadata,
     });
   }
 
