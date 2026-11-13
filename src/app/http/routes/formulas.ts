@@ -53,39 +53,11 @@ export function registerFormulaRoutes(app: App, deps: FormulaRoutesDeps): void {
         deps.sendError(ctx.res, 400, 'Missing required field: input');
         return;
       }
-      const packName = typeof body.pack === 'string' && body.pack.length > 0 ? body.pack : 'gastown';
-      const pack = loadNamedPack(packName);
-      if (!pack) {
-        deps.sendError(ctx.res, 404, 'Pack not found', { pack: packName });
-        return;
-      }
-      const formula = pack.formulas.find((candidate) => candidate.name === formulaName);
-      if (!formula) {
-        deps.sendError(ctx.res, 404, 'Formula not found', { formulaName, pack: packName });
-        return;
-      }
+      const found = findFormula(deps, ctx, formulaName, body);
+      if (!found) return;
+      const { pack, formula } = found;
 
-      try {
-        const result = await startRunAndCaptureMoleculeId(orchestration, {
-          formula,
-          pack,
-          input: body.input,
-          ...(typeof body.motivatingBeadId === 'string' ? { motivatingBeadId: body.motivatingBeadId } : {}),
-          ...(typeof body.projectIdentifier === 'string' && body.projectIdentifier.length > 0
-            ? { projectIdentifier: body.projectIdentifier }
-            : {}),
-        });
-        if (result === POOL_FULL) {
-          // vibesync-9lzk.17: an HTTP run must not exceed the scheduler's pool cap.
-          ctx.res.setHeader?.('Retry-After', String(POOL_FULL_RETRY_AFTER_S));
-          deps.sendError(ctx.res, 503, 'Agent pool is full; retry later', { formulaName, retryAfterSeconds: POOL_FULL_RETRY_AFTER_S });
-          return;
-        }
-        deps.sendJson(ctx.res, 202, { moleculeId: result, formulaName, pack: pack.manifest.name });
-      } catch (error) {
-        deps.logger.error({ err: error }, 'Failed to start formula run');
-        deps.sendError(ctx.res, 500, 'Failed to start formula run', { error: error instanceof Error ? error.message : String(error) });
-      }
+      await startRunAndRespond(deps, ctx, orchestration, { formula, pack, input: body.input, formulaName, options: runOptions(body) });
     },
   });
 
@@ -99,32 +71,9 @@ export function registerFormulaRoutes(app: App, deps: FormulaRoutesDeps): void {
       if (!authorize(ctx, deps)) return;
       const orchestration = requireOrchestration(deps, ctx.res);
       if (!orchestration) return;
-      const statusParam = ctx.url.searchParams.get('status');
-      const statuses = statusParam && statusParam !== 'all'
-        ? statusParam.split(',').map((s) => s.trim()).filter(Boolean)
-        : statusParam === 'all'
-          ? undefined
-          : ['open', 'in_progress'];
-      const limitRaw = ctx.url.searchParams.get('limit');
-      const limit = limitRaw && Number.isFinite(Number(limitRaw))
-        ? Math.max(1, Math.min(500, Math.floor(Number(limitRaw))))
-        : 50;
-      const molecules = await orchestration.walker.listMolecules(
-        statuses ? { statuses, limit } : { limit },
-      );
+      const molecules = await orchestration.walker.listMolecules(moleculeListQuery(ctx.url));
       deps.sendJson(ctx.res, 200, {
-        molecules: molecules.map((m) => ({
-          id: m.id,
-          formulaName: m.formulaName,
-          motivatingBeadId: m.motivatingBeadId,
-          status: m.status,
-          title: m.title,
-          createdAt: m.createdAt instanceof Date ? m.createdAt.toISOString() : m.createdAt,
-          updatedAt: m.updatedAt instanceof Date ? m.updatedAt.toISOString() : m.updatedAt,
-          stepCounts: m.stepCounts,
-          currentStep: m.currentStep,
-          currentStepStatus: m.currentStepStatus,
-        })),
+        molecules: molecules.map(serializeMoleculeSummary),
         fleet: {
           active: orchestration.dispatcher.getActiveMoleculeCount(),
           queueDepth: orchestration.dispatcher.getQueueDepth(),
@@ -219,6 +168,90 @@ export function registerFormulaRoutes(app: App, deps: FormulaRoutesDeps): void {
   });
 }
 
+/** Start the run and answer: 202 with the molecule id, 503 when the agent pool is full, 500 when the start fails. */
+async function startRunAndRespond(
+  deps: FormulaRoutesDeps,
+  ctx: HandleContext,
+  orchestration: OrchestrationApi,
+  run: { formula: Pack['formulas'][number]; pack: Pack; input: string; formulaName: string; options: ReturnType<typeof runOptions> },
+): Promise<void> {
+  const { formula, pack, input, formulaName, options } = run;
+  try {
+    const result = await startRunAndCaptureMoleculeId(orchestration, { formula, pack, input, ...options });
+    if (result === POOL_FULL) {
+      // vibesync-9lzk.17: an HTTP run must not exceed the scheduler's pool cap.
+      ctx.res.setHeader?.('Retry-After', String(POOL_FULL_RETRY_AFTER_S));
+      deps.sendError(ctx.res, 503, 'Agent pool is full; retry later', { formulaName, retryAfterSeconds: POOL_FULL_RETRY_AFTER_S });
+      return;
+    }
+    deps.sendJson(ctx.res, 202, { moleculeId: result, formulaName, pack: pack.manifest.name });
+  } catch (error) {
+    deps.logger.error({ err: error }, 'Failed to start formula run');
+    deps.sendError(ctx.res, 500, 'Failed to start formula run', { error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+/** The pack and formula a run names, or null after sending the 404. */
+function findFormula(
+  deps: FormulaRoutesDeps,
+  ctx: HandleContext,
+  formulaName: string,
+  body: Record<string, unknown>,
+): { pack: Pack; formula: Pack['formulas'][number] } | null {
+  const packName = typeof body.pack === 'string' && body.pack.length > 0 ? body.pack : 'gastown';
+  const pack = loadNamedPack(packName);
+  if (!pack) {
+    deps.sendError(ctx.res, 404, 'Pack not found', { pack: packName });
+    return null;
+  }
+  const formula = pack.formulas.find((candidate) => candidate.name === formulaName);
+  if (!formula) {
+    deps.sendError(ctx.res, 404, 'Formula not found', { formulaName, pack: packName });
+    return null;
+  }
+  return { pack, formula };
+}
+
+/** The optional run fields a request may carry. */
+function runOptions(body: Record<string, unknown>): { motivatingBeadId?: string; projectIdentifier?: string } {
+  return {
+    ...(typeof body.motivatingBeadId === 'string' ? { motivatingBeadId: body.motivatingBeadId } : {}),
+    ...(typeof body.projectIdentifier === 'string' && body.projectIdentifier.length > 0 ? { projectIdentifier: body.projectIdentifier } : {}),
+  };
+}
+
+/** ?status: a comma list, "all" (no filter), or open and in-progress by default. ?limit: 1..500, default 50. */
+function moleculeListQuery(url: URL): { statuses?: string[]; limit: number } {
+  const statuses = moleculeStatuses(url.searchParams.get('status'));
+  const limit = moleculeLimit(url.searchParams.get('limit'));
+  return statuses ? { statuses, limit } : { limit };
+}
+
+function moleculeStatuses(param: string | null): string[] | undefined {
+  if (param === 'all') return undefined;
+  if (!param) return ['open', 'in_progress'];
+  return param.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+function moleculeLimit(raw: string | null): number {
+  return raw && Number.isFinite(Number(raw)) ? Math.max(1, Math.min(500, Math.floor(Number(raw)))) : 50;
+}
+
+function serializeMoleculeSummary(m: Awaited<ReturnType<OrchestrationApi['walker']['listMolecules']>>[number]): Record<string, unknown> {
+  return {
+    id: m.id,
+    formulaName: m.formulaName,
+    motivatingBeadId: m.motivatingBeadId,
+    status: m.status,
+    title: m.title,
+    createdAt: m.createdAt instanceof Date ? m.createdAt.toISOString() : m.createdAt,
+    updatedAt: m.updatedAt instanceof Date ? m.updatedAt.toISOString() : m.updatedAt,
+    stepCounts: m.stepCounts,
+    currentStep: m.currentStep,
+    currentStepStatus: m.currentStepStatus,
+  };
+}
+
 function authorize(ctx: HandleContext, deps: FormulaRoutesDeps): boolean {
   const expected = process.env['VIBESYNC_ORCHESTRATION_TOKEN'];
   if (!expected) return true;
@@ -292,33 +325,46 @@ async function startRunAndCaptureMoleculeId(
  * from a coder step). Returns { prUrl?, branch?, commitSha? } parsed from
  * the output_payload. Looks for common patterns in output (URLs, branch refs).
  */
-function extractArtifacts(steps: readonly BeadRow[]): { prUrl?: string; branch?: string; commitSha?: string } {
-  const artifacts: { prUrl?: string; branch?: string; commitSha?: string } = {};
+type Artifacts = { prUrl?: string; branch?: string; commitSha?: string };
+
+/** The PR, branch and commit the coder step reported, from its text or structured output (a later step wins). */
+function extractArtifacts(steps: readonly BeadRow[]): Artifacts {
+  const artifacts: Artifacts = {};
   for (const step of steps) {
-    const role = readRoleFromTitle(step.title);
-    if (role !== 'coder') continue;
-    const output = readOutput(step);
-    if (typeof output === 'string') {
-      // Extract PR URL: look for github.com/.../.../pull/NNN.
-      const prMatch = /https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+/i.exec(output);
-      if (prMatch?.[0]) artifacts.prUrl = prMatch[0];
-      // Extract branch: look for "branch: <name>" or "on branch <name>".
-      const branchMatch = /(?:branch|on branch)[:\s]+([a-zA-Z0-9._/-]+)/i.exec(output);
-      if (branchMatch?.[1]) artifacts.branch = branchMatch[1];
-      // Extract commit SHA: 40-char hex.
-      const shaMatch = /\b([0-9a-f]{40})\b/i.exec(output);
-      if (shaMatch?.[1]) artifacts.commitSha = shaMatch[1];
-    } else if (output && typeof output === 'object') {
-      // If output is structured, check for direct fields.
-      const obj = output as Record<string, unknown>;
-      if (typeof obj.prUrl === 'string') artifacts.prUrl = obj.prUrl;
-      if (typeof obj.pullRequestUrl === 'string') artifacts.prUrl = obj.pullRequestUrl;
-      if (typeof obj.branch === 'string') artifacts.branch = obj.branch;
-      if (typeof obj.commitSha === 'string') artifacts.commitSha = obj.commitSha;
-      if (typeof obj.commit === 'string') artifacts.commitSha = obj.commit;
-    }
+    if (readRoleFromTitle(step.title) !== 'coder') continue;
+    Object.assign(artifacts, artifactsFromOutput(readOutput(step)));
   }
   return artifacts;
+}
+
+function artifactsFromOutput(output: unknown): Artifacts {
+  if (typeof output === 'string') return artifactsFromText(output);
+  if (output && typeof output === 'object') return artifactsFromFields(output as Record<string, unknown>);
+  return {};
+}
+
+/** A github.com pull URL, "branch: <name>" or "on branch <name>", and a 40-char hex commit. */
+function artifactsFromText(output: string): Artifacts {
+  const found: Artifacts = {};
+  const prUrl = /https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+/i.exec(output)?.[0];
+  const branch = /(?:branch|on branch)[:\s]+([a-zA-Z0-9._/-]+)/i.exec(output)?.[1];
+  const commitSha = /\b([0-9a-f]{40})\b/i.exec(output)?.[1];
+  if (prUrl) found.prUrl = prUrl;
+  if (branch) found.branch = branch;
+  if (commitSha) found.commitSha = commitSha;
+  return found;
+}
+
+/** Structured output: pullRequestUrl wins over prUrl, commit over commitSha. */
+function artifactsFromFields(obj: Record<string, unknown>): Artifacts {
+  const found: Artifacts = {};
+  const prUrl = readString(obj.pullRequestUrl) ?? readString(obj.prUrl);
+  const branch = readString(obj.branch);
+  const commitSha = readString(obj.commit) ?? readString(obj.commitSha);
+  if (prUrl !== null) found.prUrl = prUrl;
+  if (branch !== null) found.branch = branch;
+  if (commitSha !== null) found.commitSha = commitSha;
+  return found;
 }
 
 function serializeMolecule(moleculeId: string, root: BeadRow, steps: readonly BeadRow[]): Record<string, unknown> {
@@ -400,7 +446,7 @@ function serializeMoleculeTrace(
     steps: stepTraces,
     runtimeEvents: events.map(serializeTraceEvent),
     toolCalls: events.filter((event) => event.kind === 'runtime/session.tool_call').map(serializeToolEvent),
-    errors: collectTraceErrors(root, steps, events),
+    errors: collectTraceErrors(steps, events),
     usage,
     availableActions: availableTraceActions(health.state),
     data_freshness: {
@@ -449,13 +495,13 @@ function readTraceEventLimit(ctx: HandleContext): number {
 }
 
 function normalizeMoleculeHealth(root: BeadRow, steps: readonly BeadRow[], events: readonly Event[]): Record<string, unknown> {
+  return eventHealth(events) ?? stepHealth(root, steps, events);
+}
+
+/** A state an event decides on its own, checked in precedence order (a failure wins over a later cancel). */
+function eventHealth(events: readonly Event[]): Record<string, unknown> | null {
   const evidence: string[] = [];
-  const latest = (kind: string): Event | null => {
-    for (let index = events.length - 1; index >= 0; index--) {
-      if (events[index]?.kind === kind) return events[index]!;
-    }
-    return null;
-  };
+  const latest = (kind: string): Event | null => latestEvent(events, kind);
   const failed = latest('dispatcher/formula.failed');
   if (failed) {
     evidence.push(failed.id);
@@ -491,8 +537,14 @@ function normalizeMoleculeHealth(root: BeadRow, steps: readonly BeadRow[], event
     evidence.push(cancelled.id);
     return { state: 'cancelled', message: 'Molecule was cancelled.', recommendedAction: 'Retry if work is still required.', evidenceEventIds: evidence };
   }
-  if (steps.length > 0 && steps.every((step) => step.status === 'closed') && !steps.some((step) => readExec(step).error_trace)) {
-    const completed = latest('dispatcher/formula.completed');
+  return null;
+}
+
+/** With no deciding event, the state follows the steps. */
+function stepHealth(root: BeadRow, steps: readonly BeadRow[], events: readonly Event[]): Record<string, unknown> {
+  const evidence: string[] = [];
+  if (allStepsSucceeded(steps)) {
+    const completed = latestEvent(events, 'dispatcher/formula.completed');
     if (completed) evidence.push(completed.id);
     return { state: 'completed', message: 'Formula completed successfully.', recommendedAction: null, evidenceEventIds: evidence };
   }
@@ -503,6 +555,18 @@ function normalizeMoleculeHealth(root: BeadRow, steps: readonly BeadRow[], event
     return { state: 'missing_metadata', message: 'Molecule root is missing formula metadata.', recommendedAction: 'Inspect the Beads row before retrying.', evidenceEventIds: evidence };
   }
   return { state: 'idle', message: 'Molecule is waiting for dispatch progress.', recommendedAction: 'Resume the molecule or inspect step dependencies.', evidenceEventIds: evidence };
+}
+
+function allStepsSucceeded(steps: readonly BeadRow[]): boolean {
+  return steps.length > 0 && steps.every((step) => step.status === 'closed') && !steps.some((step) => readExec(step).error_trace);
+}
+
+/** The most recent event of a kind. */
+function latestEvent(events: readonly Event[], kind: string): Event | null {
+  for (let index = events.length - 1; index >= 0; index--) {
+    if (events[index]?.kind === kind) return events[index]!;
+  }
+  return null;
 }
 
 function normalizeStepHealth(step: BeadRow, events: readonly Event[]): string {
@@ -524,20 +588,22 @@ function aggregateUsage(events: readonly Event[]): Record<string, number> {
   return { prompt, completion };
 }
 
-function collectTraceErrors(root: BeadRow, steps: readonly BeadRow[], events: readonly Event[]): string[] {
-  const errors = new Set<string>();
-  const rootError = readString(readExec(root).error_trace);
-  if (rootError) errors.add(sanitizeTraceText(rootError));
-  for (const step of steps) {
-    for (const error of collectStepErrors(step, events)) errors.add(error);
-  }
-  for (const event of events) {
-    if (event.kind.includes('failed') || event.kind === 'runtime/session.error') {
-      const message = readString(event.payload?.error) ?? readString(event.payload?.message);
-      if (message) errors.add(sanitizeTraceText(message));
-    }
-  }
-  return [...errors];
+/** Errors from the steps and from failure events, first line each, without repeats. (Only steps carry an error_trace.) */
+function collectTraceErrors(steps: readonly BeadRow[], events: readonly Event[]): string[] {
+  const fromSteps = steps.flatMap((step) => collectStepErrors(step, events));
+  const fromEvents = events.filter(isErrorEvent).flatMap((event) => {
+    const message = eventErrorMessage(event);
+    return message ? [sanitizeTraceText(message)] : [];
+  });
+  return [...new Set([...fromSteps, ...fromEvents])];
+}
+
+function isErrorEvent(event: Event): boolean {
+  return event.kind.includes('failed') || event.kind === 'runtime/session.error';
+}
+
+function eventErrorMessage(event: Event): string | null {
+  return readString(event.payload?.error) ?? readString(event.payload?.message);
 }
 
 function collectStepErrors(step: BeadRow, events: readonly Event[]): string[] {
@@ -545,7 +611,7 @@ function collectStepErrors(step: BeadRow, events: readonly Event[]): string[] {
   const trace = readString(readExec(step).error_trace);
   if (trace) errors.add(sanitizeTraceText(trace));
   for (const event of events) {
-    const message = readString(event.payload?.error) ?? readString(event.payload?.message);
+    const message = eventErrorMessage(event);
     if (message) errors.add(sanitizeTraceText(message));
   }
   return [...errors];
