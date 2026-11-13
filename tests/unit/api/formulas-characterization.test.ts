@@ -309,6 +309,53 @@ describe('the trace uses the latest event of a kind, and lists each error once',
   });
 });
 
+describe('a failed run with no events in this release\'s log (vibesync-9lzk.59.2)', () => {
+  it('a closed step with an error makes the trace failed, offering resume and retry, and agrees with the detail route', async () => {
+    const walker = new MoleculeWalker(new InMemoryDoltClient());
+    const view = await molecule(walker, [{ name: 'coder', role: 'coder' }, { name: 'reviewer', role: 'reviewer' }]);
+    await walker.failStep(`${view.rootId}-coder`, 'coder blew up');
+    events([]);
+    const h = harness(walker);
+    const trace = (await h.call('GET', `/molecules/${view.rootId}/trace`)).body!;
+    expect(trace.health.state).toBe('failed');
+    expect(trace.availableActions).toEqual(['resume', 'retry']);
+    expect((await h.call('GET', `/molecules/${view.rootId}`)).body!.status).toBe('failed');
+  });
+
+  it('a step reopened for retry (still carrying its old error) is not failed: idle until dispatched, then running', async () => {
+    const store = new InMemoryDoltClient();
+    const walker = new MoleculeWalker(store);
+    const view = await molecule(walker, [{ name: 'coder', role: 'coder' }]);
+    await walker.failStep(`${view.rootId}-coder`, 'first attempt failed');
+    await store.reopenStepForRetry(`${view.rootId}-coder`, { attempt: 2, infraRetries: 0, failureClass: null, errorTrace: 'first attempt failed' });
+    events([]);
+    // Reopened, not yet dispatched: open with its old error, so not failed.
+    expect((await harness(walker).call('GET', `/molecules/${view.rootId}/trace`)).body!.health.state).toBe('idle');
+    await walker.startStep(`${view.rootId}-coder`);
+    expect((await harness(walker).call('GET', `/molecules/${view.rootId}/trace`)).body!.health.state).toBe('running');
+  });
+});
+
+describe('a step that failed, was retried and then succeeded (CodeRabbit on #165)', () => {
+  it('is closed with no error, and the molecule reads completed, not failed', async () => {
+    const store = new InMemoryDoltClient();
+    const walker = new MoleculeWalker(store);
+    const view = await molecule(walker, [{ name: 'coder', role: 'coder' }]);
+    const step = `${view.rootId}-coder`;
+    await walker.failStep(step, 'first attempt failed');
+    await store.reopenStepForRetry(step, { attempt: 2, infraRetries: 0, failureClass: null, errorTrace: 'first attempt failed' });
+    await walker.startStep(step);
+    await walker.finishStep(step, 'second attempt ok');
+    const row = (await store.getBead(step))!;
+    expect(row.status).toBe('closed');
+    expect((row.metadata.exec as Record<string, unknown>).error_trace).toBeUndefined();
+    events([]);
+    const h = harness(walker);
+    expect((await h.call('GET', `/molecules/${view.rootId}/trace`)).body!.health.state).toBe('completed');
+    expect((await h.call('GET', `/molecules/${view.rootId}`)).body!.status).toBe('completed');
+  });
+});
+
 describe('a failed step\'s own error reaches the trace', () => {
   it('with no events at all, the trace errors still carry the step\'s first error line', async () => {
     const walker = new MoleculeWalker(new InMemoryDoltClient());

@@ -172,7 +172,11 @@ export class BdMoleculeWriter {
 
   async markStepDone(stepId: string, output: unknown): Promise<void> {
     const bead = await this.require(stepId);
-    await withMetadataFile({ exec: { ...execOf(bead), output_payload: output } }, (ref) =>
+    // A step that succeeds after a failed attempt is not failed: drop the old
+    // error_trace (reopenStepForRetry keeps it), as reopenStepForRound does.
+    const exec: Record<string, unknown> = { ...execOf(bead), output_payload: output };
+    delete exec.error_trace;
+    await withMetadataFile({ exec }, (ref) =>
       this.bd(['update', stepId, '--status', 'closed', '--metadata', ref, '--actor', ACTOR]));
   }
 
