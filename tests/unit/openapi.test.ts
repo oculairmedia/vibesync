@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import fs from 'fs';
-import path from 'path';
+import { buildOpenApiDocument } from '../../src/app/http/openapi/document.js';
 import { createScalarDocsHtml } from '../../src/app/http/routes/openapi.js';
 
 interface OpenApiParameter {
@@ -29,13 +28,12 @@ interface OpenApiSpec {
 }
 
 describe('OpenAPI Spec Generation', () => {
-  let specPath: string;
   let spec: OpenApiSpec;
 
   beforeAll(() => {
-    specPath = path.join(process.cwd(), 'dist', 'openapi.json');
-    expect(fs.existsSync(specPath)).toBe(true);
-    spec = JSON.parse(fs.readFileSync(specPath, 'utf-8')) as OpenApiSpec;
+    // The document the server serves (GET /openapi.json builds it the same way),
+    // not dist/openapi.json, which only a build step writes.
+    spec = JSON.parse(JSON.stringify(buildOpenApiDocument())) as OpenApiSpec;
   });
 
   it('should generate a valid OpenAPI 3.1.0 spec', () => {

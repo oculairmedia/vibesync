@@ -5,37 +5,16 @@
  * This script is run during the build process to emit dist/openapi.json
  */
 
-import { OpenApiGeneratorV31 } from '@asteasolutions/zod-to-openapi';
-import { registry } from '../src/app/http/openapi/registry.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
+import { buildOpenApiDocument } from '../src/app/http/openapi/document.js';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Import routes to register them with the registry
-import '../src/app/http/openapi/routes.js';
-
-const generator = new OpenApiGeneratorV31(registry.definitions);
-
-const openapi = generator.generateDocument({
-  openapi: '3.1.0',
-  info: {
-    title: 'Vibesync API',
-    description: 'Project sync service with PM agent orchestration',
-    version: '1.0.0',
-    contact: {
-      name: 'Oculair Media',
-      url: 'https://github.com/oculairmedia/vibesync',
-    },
-  },
-  servers: [
-    {
-      url: 'http://localhost:3000',
-      description: 'Development server',
-    },
-  ],
-});
+// The same document the server serves at GET /openapi.json, written out for tools and tests.
+const openapi = buildOpenApiDocument();
 
 // Ensure dist directory exists
 const distDir = path.join(__dirname, '..', 'dist');
