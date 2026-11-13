@@ -104,28 +104,25 @@ export interface DiscoveryOptions {
  * — resolution to a single pack is the caller's job.
  */
 export function discoverPacks(opts: DiscoveryOptions = {}): Pack[] {
-  const out: Pack[] = [];
-  const projectRoot = opts.projectRoot ?? process.cwd();
-  const home = opts.homeDir ?? homedir();
-  const scopeRoots: { scope: PackScope; root: string }[] = [
-    { scope: 'project', root: join(projectRoot, '.vibesync', 'packs') },
-  ];
-  if (opts.agentId) {
-    scopeRoots.push({ scope: 'agent', root: join(home, '.letta', 'agents', opts.agentId, 'packs') });
-  }
-  scopeRoots.push({ scope: 'global', root: join(home, '.letta', 'packs') });
+  return scopeRoots(opts).flatMap(({ scope, root }) => packsUnder(root, scope));
+}
 
-  for (const { scope, root } of scopeRoots) {
-    if (!existsSync(root)) continue;
-    for (const entry of readdirSync(root, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      if (entry.name.startsWith('.') || entry.name.startsWith('_')) continue;
-      const packRoot = join(root, entry.name);
-      const loaded = tryLoadPack(packRoot, scope);
-      if (loaded) out.push(loaded);
-    }
-  }
-  return out;
+/** Where each scope keeps its packs, in priority order: project, agent (when an id is given), global. */
+function scopeRoots(opts: DiscoveryOptions): { scope: PackScope; root: string }[] {
+  const home = opts.homeDir ?? homedir();
+  return [
+    { scope: 'project', root: join(opts.projectRoot ?? process.cwd(), '.vibesync', 'packs') },
+    ...(opts.agentId ? [{ scope: 'agent' as const, root: join(home, '.letta', 'agents', opts.agentId, 'packs') }] : []),
+    { scope: 'global', root: join(home, '.letta', 'packs') },
+  ];
+}
+
+/** The loadable packs directly under `root`; dot- and underscore-prefixed directories are skipped. */
+function packsUnder(root: string, scope: PackScope): Pack[] {
+  if (!existsSync(root)) return [];
+  return readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.') && !entry.name.startsWith('_'))
+    .flatMap((entry) => tryLoadPack(join(root, entry.name), scope) ?? []);
 }
 
 /**
@@ -152,32 +149,13 @@ function tryLoadPack(packRoot: string, scope: PackScope): Pack | null {
 
 function readPackManifest(packRoot: string): PackManifest {
   const path = join(packRoot, 'pack.toml');
-  if (!existsSync(path)) {
-    throw new Error(`pack: missing pack.toml at ${path}`);
-  }
-  const raw = parseToml(readFileSync(path, 'utf8')) as unknown;
-  if (!isRecord(raw)) throw new Error(`pack ${path}: pack.toml must be a table`);
-  const packSection = raw['pack'];
-  if (!isRecord(packSection)) {
-    throw new Error(`pack ${path}: missing or invalid [pack] table`);
-  }
-  const name = packSection['name'];
-  const version = packSection['version'];
-  if (typeof name !== 'string' || name.length === 0) {
-    throw new Error(`pack ${path}: pack.name must be a non-empty string`);
-  }
-  if (typeof version !== 'string' || version.length === 0) {
-    throw new Error(`pack ${path}: pack.version must be a non-empty string`);
-  }
-  const description = typeof packSection['description'] === 'string' ? (packSection['description'] as string) : undefined;
-  const dependenciesRaw = packSection['dependencies'];
-  let dependencies: string[] | undefined;
-  if (Array.isArray(dependenciesRaw)) {
-    if (!dependenciesRaw.every((v): v is string => typeof v === 'string')) {
-      throw new Error(`pack ${path}: pack.dependencies must be an array of strings`);
-    }
-    dependencies = dependenciesRaw;
-  }
+  if (!existsSync(path)) throw new Error(`pack: missing pack.toml at ${path}`);
+  const pack = readPackTable(path);
+  const fail = (problem: string): never => { throw new Error(`pack ${path}: ${problem}`); };
+  const name = requireNonEmptyString(pack['name'], () => fail('pack.name must be a non-empty string'));
+  const version = requireNonEmptyString(pack['version'], () => fail('pack.version must be a non-empty string'));
+  const description = optionalString(pack['description']);
+  const dependencies = optionalStringArray(pack['dependencies'], () => fail('pack.dependencies must be an array of strings'));
   return {
     name,
     version,
@@ -186,24 +164,34 @@ function readPackManifest(packRoot: string): PackManifest {
   };
 }
 
+/** The `[pack]` table of a pack.toml. */
+function readPackTable(path: string): Record<string, unknown> {
+  const raw = parseToml(readFileSync(path, 'utf8')) as unknown;
+  if (!isRecord(raw)) throw new Error(`pack ${path}: pack.toml must be a table`);
+  const pack = raw['pack'];
+  if (!isRecord(pack)) throw new Error(`pack ${path}: missing or invalid [pack] table`);
+  return pack;
+}
+
 function readRoles(packRoot: string): RoleConfig[] {
   const dir = join(packRoot, 'roles');
+  return tomlFilesIn(dir).map((fileName) => readRoleFile(packRoot, dir, fileName));
+}
+
+function readRoleFile(packRoot: string, dir: string, fileName: string): RoleConfig {
+  const raw = parseToml(readFileSync(join(dir, fileName), 'utf8')) as unknown;
+  if (!isRecord(raw)) throw new Error(`pack ${packRoot}: role ${fileName} must be a table`);
+  const roleSection = raw['role'];
+  if (!isRecord(roleSection)) throw new Error(`pack ${packRoot}: role ${fileName} missing [role] table`);
+  return parseRoleFromTables(packRoot, fileName, roleSection, raw);
+}
+
+/** The `.toml` files directly in `dir`, in directory order; none when it does not exist. */
+function tomlFilesIn(dir: string): string[] {
   if (!existsSync(dir)) return [];
-  const out: RoleConfig[] = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith('.toml')) continue;
-    const filePath = join(dir, entry.name);
-    const raw = parseToml(readFileSync(filePath, 'utf8')) as unknown;
-    if (!isRecord(raw)) {
-      throw new Error(`pack ${packRoot}: role ${entry.name} must be a table`);
-    }
-    const roleSection = raw['role'];
-    if (!isRecord(roleSection)) {
-      throw new Error(`pack ${packRoot}: role ${entry.name} missing [role] table`);
-    }
-    out.push(parseRoleFromTables(packRoot, entry.name, roleSection, raw));
-  }
-  return out;
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.toml'))
+    .map((entry) => entry.name);
 }
 
 function parseRoleFromTables(
@@ -212,86 +200,85 @@ function parseRoleFromTables(
   roleTable: Record<string, unknown>,
   topTable: Record<string, unknown> | null,
 ): RoleConfig {
-  const defaultName = basename(fileName, '.toml');
-  const name = typeof roleTable['name'] === 'string' && (roleTable['name'] as string).length > 0
-    ? (roleTable['name'] as string)
-    : defaultName;
-  const description = typeof roleTable['description'] === 'string' ? (roleTable['description'] as string) : undefined;
-  const model = typeof roleTable['model'] === 'string' ? (roleTable['model'] as string) : undefined;
-  const systemPromptTemplate = typeof roleTable['system_prompt_template'] === 'string'
-    ? (roleTable['system_prompt_template'] as string)
-    : undefined;
-  const toolsRaw = roleTable['tools'];
-  let tools: string[] | undefined;
-  if (Array.isArray(toolsRaw)) {
-    if (!toolsRaw.every((v): v is string => typeof v === 'string')) {
-      throw new Error(`pack ${packRoot}: role ${fileName}.tools must be an array of strings`);
-    }
-    tools = toolsRaw;
-  }
-  // [[memory_blocks]] lives at the top level of the file (TOML array
-  // of tables), not inside [role]. Fall back to a nested array under
-  // [role] for authors who keep everything in one section.
-  const blocksRaw = (topTable?.['memory_blocks'] ?? roleTable['memory_blocks']) as unknown;
-  let memoryBlocks: MemoryBlock[] | undefined;
-  if (Array.isArray(blocksRaw)) {
-    memoryBlocks = blocksRaw.map((b, idx) => {
-      if (!isRecord(b)) {
-        throw new Error(`pack ${packRoot}: role ${fileName} memory_blocks[${idx}] must be a table`);
-      }
-      const label = b['label'];
-      const value = b['value'];
-      if (typeof label !== 'string' || label.length === 0) {
-        throw new Error(`pack ${packRoot}: role ${fileName} memory_blocks[${idx}].label must be a non-empty string`);
-      }
-      if (typeof value !== 'string') {
-        throw new Error(`pack ${packRoot}: role ${fileName} memory_blocks[${idx}].value must be a string`);
-      }
-      const limit = b['limit'];
-      const limitValue = typeof limit === 'number' && Number.isFinite(limit) && limit > 0 ? limit : undefined;
-      return {
-        label,
-        value,
-        ...(limitValue !== undefined ? { limit: limitValue } : {}),
-      };
-    });
-  }
-  const policyRaw = (topTable?.['memory_blocks_policy'] ?? roleTable['memory_blocks_policy']) as unknown;
-  let memoryBlocksPolicy: MemoryBlocksPolicy | undefined;
-  if (policyRaw !== undefined) {
-    const policyTable = Array.isArray(policyRaw) ? policyRaw[0] : policyRaw;
-    if (!isRecord(policyTable)) {
-      throw new Error(`pack ${packRoot}: role ${fileName} memory_blocks_policy must be a table`);
-    }
-    const mode = policyTable['mode'];
-    if (mode !== 'augment' && mode !== 'replace') {
-      throw new Error(`pack ${packRoot}: role ${fileName} memory_blocks_policy.mode must be "augment" or "replace"`);
-    }
-    memoryBlocksPolicy = { mode };
-  }
+  const where = `pack ${packRoot}: role ${fileName}`;
+  const tools = optionalStringArray(roleTable['tools'], () => { throw new Error(`${where}.tools must be an array of strings`); });
+  // [[memory_blocks]] and [[memory_blocks_policy]] live at the top level of the
+  // file (TOML arrays of tables), not inside [role]. Fall back to [role] for
+  // authors who keep everything in one section.
+  const memoryBlocks = readMemoryBlocks(where, topTable?.['memory_blocks'] ?? roleTable['memory_blocks']);
+  const memoryBlocksPolicy = readMemoryBlocksPolicy(where, topTable?.['memory_blocks_policy'] ?? roleTable['memory_blocks_policy']);
   return {
-    name,
-    ...(description !== undefined ? { description } : {}),
-    ...(model !== undefined ? { model } : {}),
-    ...(systemPromptTemplate !== undefined ? { systemPromptTemplate } : {}),
+    name: nonEmptyStringOr(roleTable['name'], basename(fileName, '.toml')),
+    ...optionalStringFields(roleTable, { description: 'description', model: 'model', systemPromptTemplate: 'system_prompt_template' }),
     ...(tools !== undefined ? { tools } : {}),
     ...(memoryBlocks !== undefined ? { memoryBlocks } : {}),
     ...(memoryBlocksPolicy !== undefined ? { memoryBlocksPolicy } : {}),
   };
 }
 
-function readFormulas(packRoot: string): Formula[] {
-  const dir = join(packRoot, 'formulas');
-  if (!existsSync(dir)) return [];
-  const out: Formula[] = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith('.toml')) continue;
-    const filePath = join(dir, entry.name);
-    const raw = readFileSync(filePath, 'utf8');
-    const formulas = parseFormulasFromToml(raw);
-    out.push(...formulas);
+/** The string-valued fields that are present, renamed from their TOML keys; others are left out. */
+function optionalStringFields<K extends string>(table: Record<string, unknown>, keys: Record<K, string>): Partial<Record<K, string>> {
+  const out: Partial<Record<K, string>> = {};
+  for (const [field, tomlKey] of Object.entries(keys) as [K, string][]) {
+    const value = table[tomlKey];
+    if (typeof value === 'string') out[field] = value;
   }
   return out;
+}
+
+function readMemoryBlocks(where: string, value: unknown): MemoryBlock[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.map((entry: unknown, idx) => readMemoryBlock(`${where} memory_blocks[${idx}]`, entry));
+}
+
+function readMemoryBlock(where: string, entry: unknown): MemoryBlock {
+  if (!isRecord(entry)) throw new Error(`${where} must be a table`);
+  const label = requireNonEmptyString(entry['label'], () => { throw new Error(`${where}.label must be a non-empty string`); });
+  const value = entry['value'];
+  if (typeof value !== 'string') throw new Error(`${where}.value must be a string`);
+  const limit = positiveFiniteNumber(entry['limit']);
+  return { label, value, ...(limit !== undefined ? { limit } : {}) };
+}
+
+/** `[[memory_blocks_policy]]` (first entry) or a single table; mode is augment or replace. */
+function readMemoryBlocksPolicy(where: string, value: unknown): MemoryBlocksPolicy | undefined {
+  if (value === undefined) return undefined;
+  const table: unknown = Array.isArray(value) ? value[0] : value;
+  if (!isRecord(table)) throw new Error(`${where} memory_blocks_policy must be a table`);
+  const mode = table['mode'];
+  if (mode !== 'augment' && mode !== 'replace') {
+    throw new Error(`${where} memory_blocks_policy.mode must be "augment" or "replace"`);
+  }
+  return { mode };
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function nonEmptyStringOr(value: unknown, fallback: string): string {
+  return typeof value === 'string' && value.length > 0 ? value : fallback;
+}
+
+function requireNonEmptyString(value: unknown, onInvalid: () => never): string {
+  if (typeof value === 'string' && value.length > 0) return value;
+  return onInvalid();
+}
+
+/** Undefined unless the value is an array; then every entry must be a string. */
+function optionalStringArray(value: unknown, onInvalid: () => never): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  if (value.every((v): v is string => typeof v === 'string')) return value;
+  return onInvalid();
+}
+
+function positiveFiniteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function readFormulas(packRoot: string): Formula[] {
+  const dir = join(packRoot, 'formulas');
+  return tomlFilesIn(dir).flatMap((fileName) => parseFormulasFromToml(readFileSync(join(dir, fileName), 'utf8')));
 }
 
 /**

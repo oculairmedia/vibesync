@@ -124,66 +124,91 @@ function readOptionalFile(path: string): string | null {
 
 function resolveBeadsLocation(cfg: ResolvedConfig): BeadsLocation {
   if (cfg[locationKey]) return cfg[locationKey];
-  let root = resolve(cfg.beadsRoot ?? process.cwd());
-  // Only inspect this root's Git marker: a standalone project nested in
-  // another checkout must not silently inherit that checkout's Beads store.
-  const gitMarker = join(root, '.git');
-  if (existsSync(gitMarker)) {
-    try {
-      const [gitDir, commonDir] = execFileSync(
-        'git',
-        ['-C', root, 'rev-parse', '--git-dir', '--git-common-dir'],
-        {
-          encoding: 'utf8',
-          timeout: 5_000,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        },
-      )
-        .trim()
-        .split('\n');
-      if (!gitDir || !commonDir) throw new Error('missing Git directory information');
-      const commonPath = realpathSync(resolve(root, commonDir));
-      if (realpathSync(resolve(root, gitDir)) !== commonPath) {
-        if (basename(commonPath) !== '.git') {
-          throw new Error(`unsupported linked Git common directory ${commonPath}`);
-        }
-        root = dirname(commonPath);
-      }
-    } catch (err) {
-      throw new Error(`DoltClient: cannot resolve canonical Beads repository for ${root}`, {
-        cause: err,
-      });
-    }
-  }
+  return followBeadsRedirects(join(canonicalRepositoryRoot(resolve(cfg.beadsRoot ?? process.cwd())), '.beads'));
+}
 
-  let beadsDir = join(root, '.beads');
+/**
+ * The repository that owns Beads for `root`: the primary checkout when `root` is
+ * a linked Git worktree, otherwise `root` itself. Only this root's own Git
+ * marker is inspected: a standalone project nested in another checkout must not
+ * silently inherit that checkout's Beads store.
+ */
+function canonicalRepositoryRoot(root: string): string {
+  if (!existsSync(join(root, '.git'))) return root;
+  try {
+    const { gitDir, commonDir } = gitDirectories(root);
+    const commonPath = realpathSync(resolve(root, commonDir));
+    if (realpathSync(resolve(root, gitDir)) === commonPath) return root;
+    if (basename(commonPath) !== '.git') throw new Error(`unsupported linked Git common directory ${commonPath}`);
+    return dirname(commonPath);
+  } catch (err) {
+    throw new Error(`DoltClient: cannot resolve canonical Beads repository for ${root}`, { cause: err });
+  }
+}
+
+function gitDirectories(root: string): { gitDir: string; commonDir: string } {
+  const [gitDir, commonDir] = execFileSync('git', ['-C', root, 'rev-parse', '--git-dir', '--git-common-dir'], {
+    encoding: 'utf8',
+    timeout: 5_000,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim().split('\n');
+  if (!gitDir || !commonDir) throw new Error('missing Git directory information');
+  return { gitDir, commonDir };
+}
+
+const MAX_BEADS_REDIRECTS = 32;
+
+/**
+ * Follow `.beads/redirect` files from `start` to the Beads directory that holds
+ * the store. Each hop must land on a real directory named `.beads`; a cycle, a
+ * malformed target or more than MAX_BEADS_REDIRECTS hops is an error.
+ */
+function followBeadsRedirects(start: string): BeadsLocation {
+  let beadsDir = start;
   const seen = new Set<string>();
-  for (let hops = 0; hops < 32; hops += 1) {
-    if (existsSync(beadsDir)) beadsDir = realpathSync(beadsDir);
-    if (basename(beadsDir) !== '.beads') {
-      throw new Error(`DoltClient: unsupported Beads redirect layout: ${beadsDir}; expected a .beads directory`);
-    }
-    if (seen.has(beadsDir)) throw new Error(`DoltClient: Beads redirect cycle at ${beadsDir}`);
-    seen.add(beadsDir);
+  for (let hops = 0; hops < MAX_BEADS_REDIRECTS; hops += 1) {
+    beadsDir = checkedBeadsDir(beadsDir, seen);
     const redirect = readOptionalFile(join(beadsDir, 'redirect'));
     if (redirect === null) return { root: dirname(beadsDir), beadsDir };
-    const target = redirect.trim();
-    if (!target || /[\r\n\0]/.test(target)) {
-      throw new Error(`DoltClient: malformed Beads redirect in ${beadsDir}`);
-    }
-    beadsDir = resolve(beadsDir, target);
-    if (!existsSync(beadsDir) || !statSync(beadsDir).isDirectory()) {
-      throw new Error(`DoltClient: Beads redirect target is not a directory: ${beadsDir}`);
-    }
+    beadsDir = redirectTarget(beadsDir, redirect);
   }
   throw new Error('DoltClient: too many Beads redirects');
+}
+
+/** The real path of a `.beads` directory not visited before on this chain. */
+function checkedBeadsDir(beadsDir: string, seen: Set<string>): string {
+  const real = existsSync(beadsDir) ? realpathSync(beadsDir) : beadsDir;
+  if (basename(real) !== '.beads') {
+    throw new Error(`DoltClient: unsupported Beads redirect layout: ${real}; expected a .beads directory`);
+  }
+  if (seen.has(real)) throw new Error(`DoltClient: Beads redirect cycle at ${real}`);
+  seen.add(real);
+  return real;
+}
+
+/** Where a redirect file points: one line, resolved against its own directory, which must exist. */
+function redirectTarget(beadsDir: string, redirect: string): string {
+  const target = redirect.trim();
+  if (!target || /[\r\n\0]/.test(target)) {
+    throw new Error(`DoltClient: malformed Beads redirect in ${beadsDir}`);
+  }
+  const next = resolve(beadsDir, target);
+  if (!existsSync(next) || !statSync(next).isDirectory()) {
+    throw new Error(`DoltClient: Beads redirect target is not a directory: ${next}`);
+  }
+  return next;
 }
 
 function snapshotConfig(cfg: DoltClientConfig): ResolvedConfig {
   // Only a fully explicit endpoint AND identity can bypass local resolution.
   // Otherwise explicit endpoints use the same canonical identity as discovery.
-  if (cfg.port !== undefined && cfg.database !== undefined && cfg.expectedRepoId) return cfg;
+  if (isFullyExplicit(cfg)) return cfg;
   return { ...cfg, [locationKey]: resolveBeadsLocation(cfg) };
+}
+
+/** Port, database and repository identity all given: nothing to discover on disk. */
+function isFullyExplicit(cfg: DoltClientConfig): boolean {
+  return cfg.port !== undefined && cfg.database !== undefined && Boolean(cfg.expectedRepoId);
 }
 
 function resolvedBeadsRoot(cfg: ResolvedConfig): string {
@@ -286,16 +311,6 @@ export async function resolveDoltPort(
 
   cfg = snapshotConfig(cfg);
   const portPath = portFilePath(cfg);
-  const beadsRoot = resolvedBeadsRoot(cfg);
-  const timeoutMs = options.timeoutMs ?? 30_000;
-  const pollIntervalMs = options.pollIntervalMs ?? 500;
-  const startServerIfMissing = options.startServerIfMissing ?? true;
-  // Elapsed is tracked via the injected sleep budget (not wall-clock) so
-  // the loop cannot busy-spin and unit tests with an instant sleep stay
-  // deterministic and fast.
-  let elapsedMs = 0;
-  let attemptedStart = false;
-
   // First read: if the file is already present, we are done — zero added
   // latency on the happy path.
   const first = deps.readPortFile(portPath);
@@ -306,52 +321,71 @@ export async function resolveDoltPort(
     { portPath },
     'DoltClient: port file missing at boot — waiting for Dolt to come up',
   );
-
-  while (elapsedMs < timeoutMs) {
-    // On the first confirmed miss, if we are allowed to manage the Dolt
-    // lifecycle, start the server ourselves (once). On the SIGKILL-restart
-    // case nobody else will re-establish the port file, so passively
-    // waiting is futile — recover actively, then poll for the file the
-    // freshly-started server writes.
-    if (!attemptedStart && startServerIfMissing) {
-      attemptedStart = true;
-      deps.log?.(
-        'info',
-        { beadsRoot },
-        'DoltClient: attempting to start Dolt server via `bd dolt start`',
-      );
-      try {
-        await deps.startDoltServer(beadsRoot);
-      } catch (err) {
-        deps.log?.(
-          'warn',
-          { err },
-          'DoltClient: `bd dolt start` failed — will keep polling for the port file',
-        );
-      }
-      // Re-check immediately after the start attempt before sleeping.
-      const afterStart = deps.readPortFile(portPath);
-      if (afterStart !== null) {
-        deps.log?.('info', { portPath }, 'DoltClient: port file appeared after start — Dolt is up');
-        return parsePort(afterStart, portPath);
-      }
-    }
-
-    await deps.sleep(pollIntervalMs);
-    elapsedMs += pollIntervalMs;
-    const raw = deps.readPortFile(portPath);
-    if (raw !== null) {
-      deps.log?.('info', { portPath }, 'DoltClient: port file appeared — Dolt is up');
-      return parsePort(raw, portPath);
-    }
-  }
-
+  const wait: PortWait = {
+    portPath,
+    beadsRoot: resolvedBeadsRoot(cfg),
+    timeoutMs: options.timeoutMs ?? 30_000,
+    pollIntervalMs: options.pollIntervalMs ?? 500,
+    startServerIfMissing: options.startServerIfMissing ?? true,
+  };
+  const raw = await waitForPortFile(wait, deps);
+  if (raw !== null) return parsePort(raw, portPath);
   throw new Error(
-    `DoltClient: Dolt server did not become available within ${timeoutMs}ms — ` +
+    `DoltClient: Dolt server did not become available within ${wait.timeoutMs}ms — ` +
       `port file ${portPath} never appeared` +
-      (startServerIfMissing ? ' (including after `bd dolt start`)' : '') +
+      (wait.startServerIfMissing ? ' (including after `bd dolt start`)' : '') +
       '. Is the Dolt server up? (vibesync-nl0l)',
   );
+}
+
+interface PortWait {
+  readonly portPath: string;
+  readonly beadsRoot: string;
+  readonly timeoutMs: number;
+  readonly pollIntervalMs: number;
+  readonly startServerIfMissing: boolean;
+}
+
+/**
+ * Poll for the port file until the budget runs out. On the first confirmed miss,
+ * when allowed to manage the Dolt lifecycle, start the server once: on the
+ * SIGKILL-restart case nobody else will re-establish the port file, so passively
+ * waiting is futile. Elapsed time comes from the injected sleep, not the clock,
+ * so the loop cannot busy-spin and tests with an instant sleep stay fast.
+ * Returns the file's contents, or null when it never appeared.
+ */
+async function waitForPortFile(wait: PortWait, deps: DoltBootDeps): Promise<string | null> {
+  const mayStart = wait.startServerIfMissing && wait.timeoutMs > 0;
+  const afterStart = mayStart ? await startServerOnce(wait, deps) : null;
+  return afterStart ?? pollPortFile(wait, deps);
+}
+
+/** Sleep and re-read until the file appears or the budget is spent. */
+async function pollPortFile(wait: PortWait, deps: DoltBootDeps): Promise<string | null> {
+  for (let elapsedMs = 0; elapsedMs < wait.timeoutMs; elapsedMs += wait.pollIntervalMs) {
+    await deps.sleep(wait.pollIntervalMs);
+    const raw = deps.readPortFile(wait.portPath);
+    if (raw !== null) {
+      deps.log?.('info', { portPath: wait.portPath }, 'DoltClient: port file appeared — Dolt is up');
+      return raw;
+    }
+  }
+  return null;
+}
+
+/** Start the Dolt server via `bd dolt start` (a failure is logged, not thrown), then re-read the port file at once. */
+async function startServerOnce(wait: PortWait, deps: DoltBootDeps): Promise<string | null> {
+  deps.log?.('info', { beadsRoot: wait.beadsRoot }, 'DoltClient: attempting to start Dolt server via `bd dolt start`');
+  try {
+    await deps.startDoltServer(wait.beadsRoot);
+  } catch (err) {
+    deps.log?.('warn', { err }, 'DoltClient: `bd dolt start` failed — will keep polling for the port file');
+  }
+  const afterStart = deps.readPortFile(wait.portPath);
+  if (afterStart !== null) {
+    deps.log?.('info', { portPath: wait.portPath }, 'DoltClient: port file appeared after start — Dolt is up');
+  }
+  return afterStart;
 }
 
 function validateDatabase(value: unknown, source: string): string {
@@ -366,6 +400,11 @@ function validateDatabase(value: unknown, source: string): string {
 function readDatabase(cfg: DoltClientConfig): string {
   if (cfg.database !== undefined) return validateDatabase(cfg.database, 'database override');
   const metadataPath = join(resolveBeadsLocation(cfg).beadsDir, 'metadata.json');
+  return validateDatabase(readMetadata(metadataPath)['dolt_database'], metadataPath);
+}
+
+/** The Beads metadata.json, which must exist and hold a JSON object. */
+function readMetadata(metadataPath: string): Record<string, unknown> {
   const raw = readOptionalFile(metadataPath);
   if (raw === null) {
     throw new Error(
@@ -378,10 +417,14 @@ function readDatabase(cfg: DoltClientConfig): string {
   } catch (err) {
     throw new Error(`DoltClient: malformed metadata in ${metadataPath}`, { cause: err });
   }
-  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+  if (!isPlainObject(metadata)) {
     throw new Error(`DoltClient: malformed metadata in ${metadataPath}: expected an object`);
   }
-  return validateDatabase((metadata as Record<string, unknown>).dolt_database, metadataPath);
+  return metadata;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**

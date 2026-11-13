@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -94,6 +94,11 @@ describe('Pack loading', () => {
     const pack = loadPack(packRoot);
     expect(pack.roles).toHaveLength(1);
     expect(pack.roles[0]!.name).toBe('r');
+  });
+
+  it('a role with no name takes its file name', () => {
+    const root = writePack(tmp, 'named-by-file', { roles: { 'code-reviewer.toml': '[role]\ndescription = "reviews"\n' } });
+    expect(loadPack(root).roles.map((r) => r.name)).toEqual(['code-reviewer']);
   });
 
   it('parses [[memory_blocks]] off a role TOML', () => {
@@ -202,8 +207,13 @@ describe('discoverPacks', () => {
     mkdirSync(join(projectRoot, '.vibesync', 'packs', '_internal'), { recursive: true });
     mkdirSync(join(projectRoot, '.vibesync', 'packs', 'no-manifest'), { recursive: true });
     writePack(join(projectRoot, '.vibesync', 'packs'), 'valid');
+    const warnings: unknown[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => { warnings.push(args); });
     const packs = discoverPacks({ projectRoot, homeDir: join(tmp, 'nohome') });
+    warn.mockRestore();
     expect(packs.map((p) => p.manifest.name)).toEqual(['valid']);
+    // A directory with no pack.toml is not a pack: skipped quietly, not loaded and reported as broken.
+    expect(warnings).toEqual([]);
   });
 
   it('agent scope is searched when agentId provided', () => {
