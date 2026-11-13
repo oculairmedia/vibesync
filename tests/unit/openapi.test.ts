@@ -48,52 +48,18 @@ describe('OpenAPI Spec Generation', () => {
     expect(spec.info.version).toBe('1.0.0');
   });
 
-  it('should have all required paths', () => {
-    const requiredPaths = [
-      '/health',
-      '/metrics',
-      '/api/stats',
-      '/api/projects',
-      '/api/projects/{id}',
-      '/api/issues/{id}',
-      '/api/issues/{id}/claim',
-      '/api/issues/{id}/unclaim',
-      '/api/issues/{id}/status',
-      '/api/issues/{id}/notes',
-      '/api/issues/{id}/close',
-      '/api/issues/{id}/reopen',
-    ];
-
-    for (const pathName of requiredPaths) {
+  // Which paths exist, and that each one has a handler, is pinned by
+  // tests/unit/openapi-routes.test.ts against the real route table.
+  it('should declare the health route and the orchestration routes', () => {
+    for (const pathName of ['/health', '/api/projects', '/api/projects/{id}', '/formulas', '/formulas/{name}/run', '/molecules', '/molecules/{id}']) {
       expect(spec.paths[pathName]).toBeDefined();
     }
   });
 
-  it('should have all required schemas', () => {
-    const requiredSchemas = [
-      'HealthMetrics',
-      'StatsResponse',
-      'ProjectSummary',
-      'ProjectDetail',
-      'IssueSummary',
-      'IssueDetail',
-      'ErrorResponse',
-      'ConflictResponse',
-    ];
-
-    for (const schemaName of requiredSchemas) {
+  it('should register the response schemas it references', () => {
+    for (const schemaName of ['Health', 'ProjectSummary', 'RegisteredProject', 'FormulaListResponse', 'MoleculeDetail', 'ErrorResponse']) {
       expect(spec.components.schemas[schemaName]).toBeDefined();
     }
-  });
-
-  it('should have at least 22 paths', () => {
-    const pathCount = Object.keys(spec.paths).length;
-    expect(pathCount).toBeGreaterThanOrEqual(22);
-  });
-
-  it('should have at least 18 schemas', () => {
-    const schemaCount = Object.keys(spec.components.schemas).length;
-    expect(schemaCount).toBeGreaterThanOrEqual(18);
   });
 
   it('should have valid response schemas', () => {
