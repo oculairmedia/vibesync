@@ -33,28 +33,34 @@ export function globalOptsFrom(opts: Record<string, unknown>): GlobalOpts {
 }
 
 export async function fetchJson<T = unknown>(global: GlobalOpts, path: string, options: FetchOptions = {}): Promise<T> {
-  const { apiUrl, timeout } = global;
-  const url = path.startsWith('http') ? path : `${apiUrl}${path}`;
+  const url = path.startsWith('http') ? path : `${global.apiUrl}${path}`;
   const { timeoutMs, ...fetchOptions } = options;
-  const requestTimeout = Number(timeoutMs) || timeout;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), requestTimeout);
+  const requestTimeout = Number(timeoutMs) || global.timeout;
   try {
-    const res = await fetch(url, { ...fetchOptions, signal: controller.signal });
-    clearTimeout(timer);
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      throw new Error(`HTTP ${res.status} — ${body || res.statusText}`);
-    }
+    const res = await fetchWithTimeout(url, fetchOptions, requestTimeout);
+    if (!res.ok) throw new Error(`HTTP ${res.status} — ${(await res.text().catch(() => '')) || res.statusText}`);
     return await res.json() as T;
   } catch (err) {
-    clearTimeout(timer);
-    if ((err as Error)?.name === 'AbortError')
-      throw new Error(`Timeout after ${requestTimeout}ms: ${url}`);
-    if ((err as { code?: string })?.code === 'ECONNREFUSED')
-      throw new Error(`Connection refused: ${url}`);
-    throw err;
+    throw describeFetchError(err, url, requestTimeout);
   }
+}
+
+/** fetch, aborted after `ms`. */
+async function fetchWithTimeout(url: string, init: RequestInit, ms: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** A timeout and a refused connection get a plain message; anything else is rethrown as is. */
+function describeFetchError(err: unknown, url: string, ms: number): unknown {
+  if ((err as Error)?.name === 'AbortError') return new Error(`Timeout after ${ms}ms: ${url}`);
+  if ((err as { code?: string })?.code === 'ECONNREFUSED') return new Error(`Connection refused: ${url}`);
+  return err;
 }
 
 export async function probe(global: GlobalOpts, url: string, timeoutMs?: number): Promise<{ ok: boolean; status?: number; error?: string }> {
@@ -93,10 +99,11 @@ export function die(msg: string): never {
 }
 
 export function toRecord(value: unknown): Record<string, unknown> {
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  return {};
+  return isPlainObject(value) ? value : {};
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export function toArray(value: unknown): unknown[] {
@@ -115,7 +122,6 @@ export function compactPayload(value: unknown): string {
 }
 
 export async function watchMoleculeEvents(global: GlobalOpts, moleculeId: string): Promise<number> {
-  const { apiUrl, timeout } = global;
   const controller = new AbortController();
   let interrupted = false;
   const onSigint = (): void => {
@@ -124,43 +130,61 @@ export async function watchMoleculeEvents(global: GlobalOpts, moleculeId: string
   };
   process.once('SIGINT', onSigint);
   try {
-    const headersTimer = setTimeout(() => controller.abort(), timeout);
-    const response = await fetch(`${apiUrl}/molecules/${encodeURIComponent(moleculeId)}/events`, { signal: controller.signal });
-    clearTimeout(headersTimer);
-    if (!response.ok || !response.body) throw new Error(`event stream failed: HTTP ${response.status}`);
-    const body = response.body;
-    let buffer = '';
-    let eventType = 'message';
-    let exitCode = 0;
-    for await (const chunk of body) {
-      buffer += Buffer.from(chunk).toString('utf8');
-      let boundary = buffer.indexOf('\n\n');
-      while (boundary >= 0) {
-        const frame = buffer.slice(0, boundary);
-        buffer = buffer.slice(boundary + 2);
-        const parsed = parseSseFrame(frame, eventType);
-        eventType = 'message';
-        if (parsed) {
-          eventType = parsed.nextEventType;
-          if (parsed.data) {
-            const event = toRecord(parsed.data);
-            const kind = String(event.kind ?? parsed.eventType);
-            const ts = event.ts ? new Date(String(event.ts)).toLocaleTimeString() : new Date().toLocaleTimeString();
-            console.log(`${ts} ${kind} ${compactPayload(event.payload)}`.trim());
-            if (kind === 'dispatcher/formula.failed') exitCode = 1;
-            if (kind === 'dispatcher/formula.completed' || kind === 'dispatcher/formula.failed') return exitCode;
-          }
-        }
-        boundary = buffer.indexOf('\n\n');
-      }
-    }
-    return exitCode;
+    const body = await openEventStream(global, moleculeId, controller);
+    return await printEventsUntilDone(body);
   } catch (error) {
     if (interrupted) return 130;
     throw error;
   } finally {
     process.removeListener('SIGINT', onSigint);
   }
+}
+
+/** GET the molecule's event stream; the timeout covers the response headers only. */
+async function openEventStream(global: GlobalOpts, moleculeId: string, controller: AbortController): Promise<AsyncIterable<Uint8Array>> {
+  const headersTimer = setTimeout(() => controller.abort(), global.timeout);
+  const response = await fetch(`${global.apiUrl}/molecules/${encodeURIComponent(moleculeId)}/events`, { signal: controller.signal });
+  clearTimeout(headersTimer);
+  if (!response.ok || !response.body) throw new Error(`event stream failed: HTTP ${response.status}`);
+  return response.body as unknown as AsyncIterable<Uint8Array>;
+}
+
+/**
+ * Print each event as it arrives. Exits 0 when the formula completes or the
+ * stream ends, 1 when it fails.
+ */
+async function printEventsUntilDone(body: AsyncIterable<Uint8Array>): Promise<number> {
+  let buffer = '';
+  let eventType = 'message';
+  for await (const chunk of body) {
+    buffer += Buffer.from(chunk).toString('utf8');
+    const { frames, rest } = splitFrames(buffer);
+    buffer = rest;
+    for (const frame of frames) {
+      const parsed = parseSseFrame(frame, eventType);
+      eventType = parsed?.nextEventType ?? 'message';
+      const exitCode = parsed?.data ? printEvent(parsed.data, parsed.eventType) : null;
+      if (exitCode !== null) return exitCode;
+    }
+  }
+  return 0;
+}
+
+/** Complete frames (separated by a blank line) and the unfinished remainder. */
+function splitFrames(buffer: string): { frames: string[]; rest: string } {
+  const parts = buffer.split('\n\n');
+  return { frames: parts.slice(0, -1), rest: parts.at(-1) ?? '' };
+}
+
+/** Print one event; return its exit code when it ends the formula (0 completed, 1 failed), else null. */
+function printEvent(data: unknown, fallbackKind: string): number | null {
+  const event = toRecord(data);
+  const kind = String(event.kind ?? fallbackKind);
+  const ts = event.ts ? new Date(String(event.ts)).toLocaleTimeString() : new Date().toLocaleTimeString();
+  console.log(`${ts} ${kind} ${compactPayload(event.payload)}`.trim());
+  if (kind === 'dispatcher/formula.failed') return 1;
+  if (kind === 'dispatcher/formula.completed') return 0;
+  return null;
 }
 
 export function parseSseFrame(frame: string, currentEventType: string): { eventType: string; nextEventType: string; data: unknown } | null {
