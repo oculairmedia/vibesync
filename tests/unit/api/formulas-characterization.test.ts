@@ -26,9 +26,13 @@ const scratch = mkdtempSync(join(tmpdir(), 'formula-routes-'));
 const startDir = process.cwd();
 beforeAll(() => {
   mkdirSync(join(scratch, '.beads'), { recursive: true });
+  // The trace route reads ./.beads/events.jsonl; packs are found from the app
+  // root, which falls back to the working directory. Pin it to the repo first.
+  process.env.VIBESYNC_APP_ROOT = startDir;
   process.chdir(scratch);
 });
 afterAll(() => {
+  delete process.env.VIBESYNC_APP_ROOT;
   process.chdir(startDir);
   rmSync(scratch, { recursive: true, force: true });
 });
@@ -46,13 +50,18 @@ function harness(walker: MoleculeWalker | null, opts: { active?: number; queueDe
     ? {
       bus: new EventBus({ noPersist: true }),
       walker,
-      dispatcher: { run: vi.fn(), resume: vi.fn(), cancel: vi.fn(), getQueueDepth: () => opts.queueDepth ?? 0, getActiveMoleculeCount: () => opts.active ?? 0 },
+      dispatcher: {
+        run: vi.fn(async (input: { onStarted?: (id: string) => void }) => { input.onStarted?.('mol-run'); return { moleculeId: 'mol-run', outputs: {} }; }),
+        resume: vi.fn(), cancel: vi.fn(), getQueueDepth: () => opts.queueDepth ?? 0, getActiveMoleculeCount: () => opts.active ?? 0,
+      },
+      schedulers: new Map(),
       provider: {}, patrol: {}, shutdown: vi.fn(),
     }
     : null;
+  const parseJsonBody = vi.fn(async (): Promise<Record<string, unknown>> => ({}));
   registerFormulaRoutes(app, {
     orchestration: orchestration as unknown as OrchestrationApi | null,
-    parseJsonBody: vi.fn(async () => ({})), sendJson, sendError,
+    parseJsonBody, sendJson, sendError,
     sseManager: { sendEvent: vi.fn() } as never,
     logger: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
   } as never);
@@ -64,7 +73,7 @@ function harness(walker: MoleculeWalker | null, opts: { active?: number; queueDe
     const err = sendError.mock.calls.at(-1);
     return { status: (ok ?? err)?.[1] as number, body: ok?.[2] as Body | undefined, error: err?.[2] as string | undefined };
   };
-  return { call, sendJson, sendError };
+  return { call, sendJson, sendError, parseJsonBody, run: orchestration?.dispatcher.run };
 }
 
 async function molecule(walker: MoleculeWalker, steps: { name: string; role: string }[]) {
@@ -252,5 +261,61 @@ describe('GET /molecules/:id/trace: health, actions, errors and events', () => {
     expect((await h.call('GET', `/molecules/${view.rootId}/trace?event_limit=2`)).body!.runtimeEvents).toHaveLength(2);
     expect((await h.call('GET', `/molecules/${view.rootId}/trace?limit=0`)).body!.runtimeEvents).toHaveLength(1);
     expect((await h.call('GET', `/molecules/${view.rootId}/trace?limit=abc`)).body!.runtimeEvents).toHaveLength(4);
+  });
+});
+
+describe('POST /formulas/:name/run', () => {
+  it('404 for a pack that does not exist, and for a formula the pack does not have', async () => {
+    const h = harness(new MoleculeWalker(new InMemoryDoltClient()));
+    h.parseJsonBody.mockResolvedValueOnce({ input: 'do it', pack: 'no-such-pack' });
+    expect(await h.call('POST', '/formulas/code-review/run')).toMatchObject({ status: 404, error: 'Pack not found' });
+    h.parseJsonBody.mockResolvedValueOnce({ input: 'do it' });
+    expect(await h.call('POST', '/formulas/no-such-formula/run')).toMatchObject({ status: 404, error: 'Formula not found' });
+    expect(h.run).not.toHaveBeenCalled();
+  });
+
+  it('passes a project identifier and a motivating bead on, but not an empty project identifier', async () => {
+    const h = harness(new MoleculeWalker(new InMemoryDoltClient()));
+    h.parseJsonBody.mockResolvedValueOnce({ input: 'do it', projectIdentifier: '', motivatingBeadId: 'b-1' });
+    expect((await h.call('POST', '/formulas/code-review/run')).status).toBe(202);
+    expect(h.run!.mock.calls[0]![0]).not.toHaveProperty('projectIdentifier');
+    expect(h.run!.mock.calls[0]![0]).toMatchObject({ motivatingBeadId: 'b-1', input: 'do it' });
+    h.parseJsonBody.mockResolvedValueOnce({ input: 'do it', projectIdentifier: 'p-1' });
+    await h.call('POST', '/formulas/code-review/run');
+    expect(h.run!.mock.calls[1]![0]).toMatchObject({ projectIdentifier: 'p-1' });
+  });
+});
+
+describe('the trace uses the latest event of a kind, and lists each error once', () => {
+  it('evidence is the most recent matching event', async () => {
+    const walker = new MoleculeWalker(new InMemoryDoltClient());
+    const view = await molecule(walker, [{ name: 'coder', role: 'coder' }]);
+    await walker.finishStep(`${view.rootId}-coder`, 'ok');
+    events([{ kind: 'dispatcher/formula.completed', molecule_id: view.rootId }, { kind: 'dispatcher/formula.completed', molecule_id: view.rootId }]);
+    expect((await harness(walker).call('GET', `/molecules/${view.rootId}/trace`)).body!.health.evidenceEventIds).toEqual(['e-1']);
+    events([{ kind: 'dispatcher/formula.failed', molecule_id: view.rootId }, { kind: 'dispatcher/formula.failed', molecule_id: view.rootId }]);
+    expect((await harness(walker).call('GET', `/molecules/${view.rootId}/trace`)).body!.health.evidenceEventIds).toEqual(['e-1']);
+  });
+
+  it('the same error from several events appears once', async () => {
+    const walker = new MoleculeWalker(new InMemoryDoltClient());
+    const view = await molecule(walker, [{ name: 'coder', role: 'coder' }]);
+    events([
+      { kind: 'dispatcher/step.failed', molecule_id: view.rootId, payload: { error: 'same failure' } },
+      { kind: 'dispatcher/step.failed', molecule_id: view.rootId, payload: { error: 'same failure' } },
+    ]);
+    const errors = (await harness(walker).call('GET', `/molecules/${view.rootId}/trace`)).body!.errors as unknown as string[];
+    expect(errors.filter((e) => e === 'same failure')).toHaveLength(1);
+  });
+});
+
+describe('a failed step\'s own error reaches the trace', () => {
+  it('with no events at all, the trace errors still carry the step\'s first error line', async () => {
+    const walker = new MoleculeWalker(new InMemoryDoltClient());
+    const view = await molecule(walker, [{ name: 'coder', role: 'coder' }]);
+    await walker.failStep(`${view.rootId}-coder`, 'compile error in foo.ts\nat line 3');
+    events([]);
+    const body = (await harness(walker).call('GET', `/molecules/${view.rootId}/trace`)).body!;
+    expect(body.errors as unknown as string[]).toEqual(['compile error in foo.ts']);
   });
 });
