@@ -2,7 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from 'http';
 import type { Server } from 'http';
 import type { AddressInfo } from 'net';
-import { createScalarDocsHtml } from '../../src/app/http/routes/openapi.js';
+import { registerOpenApiRoutes } from '../../src/app/http/routes/openapi.js';
+import type { App, HandleContext, RouteContext } from '../../src/app/types/api.js';
 
 interface OpenApiTestSpec {
   openapi: string;
@@ -39,46 +40,19 @@ describe('OpenAPI Endpoint Integration', () => {
   let port: number;
 
   beforeAll(async () => {
-    // Create a minimal HTTP server with the OpenAPI route
+    // The REAL /openapi.json and /docs routes (the old version of this test served a
+    // hand-written spec, so it could not see production serving an empty one).
+    type Route = { match: (ctx: RouteContext) => boolean; handle: (ctx: HandleContext) => Promise<void> };
+    const routes: Route[] = [];
+    const app: App = { registerRoute: (route) => { routes.push(route); } };
+    registerOpenApiRoutes(app, {
+      sendJson: (res, code, data) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); },
+    });
     server = createServer((req, res) => {
-      if (req.url === '/openapi.json' && req.method === 'GET') {
-        // Simulate the route handler
-        const spec = {
-          openapi: '3.1.0',
-          info: {
-            title: 'Vibesync API',
-            description: 'Project sync service with PM agent orchestration',
-            version: '1.0.0',
-          },
-          paths: {
-            '/health': {
-              get: {
-                summary: 'Health check',
-                responses: {
-                  '200': {
-                    description: 'Health metrics',
-                  },
-                },
-              },
-            },
-          },
-          components: {
-            schemas: {
-              HealthMetrics: {
-                type: 'object',
-              },
-            },
-          },
-        };
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(spec));
-      } else if (req.url === '/docs' && req.method === 'GET') {
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(createScalarDocsHtml());
-      } else {
-        res.writeHead(404);
-        res.end();
-      }
+      const url = new URL(req.url ?? '/', 'http://localhost');
+      const route = routes.find((r) => r.match({ pathname: url.pathname, method: req.method ?? 'GET' }));
+      if (!route) { res.writeHead(404); res.end(); return; }
+      void route.handle({ req, res, url, pathname: url.pathname });
     });
 
     await new Promise<void>((resolve) => {
@@ -118,6 +92,15 @@ describe('OpenAPI Endpoint Integration', () => {
     expect(spec.paths).toBeDefined();
     expect(spec.components).toBeDefined();
     expect(spec.components.schemas).toBeDefined();
+  });
+
+  it('serves every documented route, built from the route definitions, with no dist/ build artifact', async () => {
+    const response = await fetch(`http://localhost:${port}/openapi.json`);
+    const spec = await readOpenApiSpec(response);
+    expect(Object.keys(spec.paths).length).toBe(17);
+    expect(spec.paths['/formulas/{name}/run']).toBeDefined();
+    expect(spec.paths['/molecules/{id}']).toBeDefined();
+    expect(Object.keys(spec.components.schemas).length).toBeGreaterThan(20);
   });
 
   it('should return Content-Type application/json', async () => {
