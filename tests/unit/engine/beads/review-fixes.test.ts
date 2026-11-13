@@ -47,6 +47,23 @@ describe('BdMoleculeWriter passes metadata by file, never argv', () => {
   });
 });
 
+describe('a step that succeeds after a failed attempt drops the old error (CodeRabbit on #165)', () => {
+  it('markStepDone writes no error_trace, keeping the rest of exec', async () => {
+    const written: Record<string, unknown>[] = [];
+    const bd = vi.fn(async (args: readonly string[]) => {
+      const i = args.indexOf('--metadata');
+      if (i >= 0) written.push(JSON.parse(readFileSync(args[i + 1]!.slice(1), 'utf8')) as Record<string, unknown>);
+      return '';
+    });
+    const retried: BeadRow = { ...bead('s1'), metadata: { exec: { step: 's', attempts: 2, error_trace: 'first attempt failed' } } };
+    const writer = new BdMoleculeWriter(bd, { getBead: async () => retried });
+    await writer.markStepDone('s1', 'second attempt ok');
+    const exec = written.at(-1)!.exec as Record<string, unknown>;
+    expect(exec).not.toHaveProperty('error_trace');
+    expect(exec).toMatchObject({ step: 's', attempts: 2, output_payload: 'second attempt ok' });
+  });
+});
+
 describe('boot reads the molecule id prefix before any side effect', () => {
   it('an invalid issue_prefix fails boot without starting the patrol', async () => {
     const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
