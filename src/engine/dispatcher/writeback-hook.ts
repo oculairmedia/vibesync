@@ -36,19 +36,12 @@ import type { MoleculeWalker } from '../molecule/index.js';
 import type { BeadRow } from '../store/index.js';
 import type { ProjectBindingResolver } from './project-binding-types.js';
 import { readProjectIdentifier } from './util.js';
+import type { WritebackStatus, WritebackStore } from '../molecule/index.js';
 
 const OUTPUT_EXCERPT_LIMIT = 400;
 
-export interface WritebackStore {
-  /** Look up a bead by id. Used to distinguish a GC'd motivating bead
-   *  (permanent no-op) from a transient store failure (must retry). */
-  getBead(id: string): Promise<BeadRow | null>;
-  appendNoteToBead(beadId: string, note: string): Promise<void>;
-  recordMoleculeWriteback(rootId: string, status: WritebackStatus): Promise<string | undefined>;
-}
 
 /** Writeback outcomes; `interrupted` = a restart orphaned the run and the work is re-run. */
-export type WritebackStatus = 'completed' | 'failed' | 'interrupted';
 
 const HANDLED_EVENTS: ReadonlyMap<string, WritebackStatus> = new Map([
   ['dispatcher/formula.completed', 'completed'],

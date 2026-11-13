@@ -110,6 +110,23 @@ describe('bounded review loop (vibesync-9lzk.24)', () => {
     expect(testerPrompt).not.toContain('coder round 2:');
   });
 
+  it('REGRESSION (9lzk.58): the step after the reviewer never starts while a loop-back is reopening the round', async () => {
+    // The live engine ticks every second; a tick that lands between the reviewer's
+    // close and the coder's reopen saw the tester ready (2026-11-12 13:19:53Z: the
+    // tester ran on round 2's code beside round 3's coder and failed the run).
+    // Tick the step dispatcher on every reopen to land in that window.
+    const h = harness(2);
+    const reopen = h.store.reopenStepForRound.bind(h.store);
+    h.store.reopenStepForRound = async (stepId, args) => {
+      await h.dispatcher.steps.tick();
+      return reopen(stepId, args);
+    };
+    await h.dispatcher.run({ formula: looping(), pack: pack(), input: 'go', motivatingBeadId: 'work-1' });
+    expect(h.seen).toEqual({ mayor: 1, coder: 3, reviewer: 3, tester: 1 });
+    const testerPrompt = promptText(h.provider.recorder.prompts.find((p) => roleOf(p) === 'tester')!);
+    expect(testerPrompt).toContain('coder round 3');
+  });
+
   it('after max_rounds blocked rounds the run FAILS with an escalation instead of looping forever', async () => {
     const h = harness(99);
     const thrown = await h.dispatcher.run({ formula: looping(3), pack: pack(), input: 'go', motivatingBeadId: 'work-1' }).catch((e: unknown) => e);

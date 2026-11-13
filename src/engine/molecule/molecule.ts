@@ -104,6 +104,22 @@ export interface MoleculeSummary {
   readonly currentStepStatus: string | null;
 }
 
+/** How a molecule's outcome note was written back to its work bead (vibesync writeback hook). */
+export type WritebackStatus = 'completed' | 'failed' | 'interrupted';
+
+/**
+ * The store port the writeback hook writes through. Defined here, beside
+ * MoleculeStore, because the tracker (beads) implements it and the dispatcher
+ * uses it: the port sits below both.
+ */
+export interface WritebackStore {
+  /** Look up a bead by id. Used to distinguish a GC'd motivating bead
+   *  (permanent no-op) from a transient store failure (must retry). */
+  getBead(id: string): Promise<BeadRow | null>;
+  appendNoteToBead(beadId: string, note: string): Promise<void>;
+  recordMoleculeWriteback(rootId: string, status: WritebackStatus): Promise<string | undefined>;
+}
+
 export interface MoleculeStore {
   getBead(id: string): Promise<BeadRow | null>;
   getBeadDependencies(id: string): Promise<DependencyRow[]>;
