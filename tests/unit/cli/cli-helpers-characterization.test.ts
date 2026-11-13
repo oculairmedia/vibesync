@@ -135,6 +135,14 @@ describe('watchMoleculeEvents', () => {
     expect(lines).toEqual([expect.stringMatching(/custom\.kind n=1$/)]);
   });
 
+  it('an event type from a frame with no data carries to the next frame', async () => {
+    const lines: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((line: string) => { lines.push(line); });
+    handler = sse(['event: carried.kind\n\n', 'data: {"payload":{"n":2}}\n\n']);
+    expect(await watchMoleculeEvents(opts, 'm-5')).toBe(0);
+    expect(lines).toEqual([expect.stringMatching(/carried\.kind n=2$/)]);
+  });
+
   it('the stream ending without a terminal event exits 0', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
     handler = sse(['data: {"kind":"dispatcher/step.started"}\n\n']);
