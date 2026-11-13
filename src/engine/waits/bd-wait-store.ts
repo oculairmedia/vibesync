@@ -133,29 +133,54 @@ function rows(raw: string, context: string): Row[] {
 /** Null when the row is not a well-formed wait (a foreign bead with our label must not crash the sweep). */
 function toRecord(r: Row): WaitRecord | null {
   const id = String(r['id'] ?? '');
-  const md = r['metadata'];
-  if (!id || typeof md !== 'object' || md === null) return null;
-  const m = md as Row;
-  const on = m['on'];
-  const mode = m['mode'];
-  const state = m['state'];
-  const waiter = m['waiter'] as Row | undefined;
-  if (!Array.isArray(on) || on.length === 0 || !on.every((x) => typeof x === 'string')) return null;
-  if (mode !== 'any' && mode !== 'all') return null;
-  if (typeof state !== 'string' || !WAIT_STATES.has(state)) return null;
-  if (!waiter || typeof waiter['id'] !== 'string' || typeof waiter['kind'] !== 'string') return null;
+  const m = asRow(r['metadata']);
+  if (!id || !m) return null;
+  const core = waitCore(m);
+  if (!core) return null;
   const attempts = Number(m['wakeAttempts']);
   return {
     id,
-    mode,
-    on: on as string[],
-    note: typeof m['note'] === 'string' ? m['note'] : undefined,
-    waiter: { kind: waiter['kind'] as WaitWaiter['kind'], id: waiter['id'] },
-    state: state as WaitState,
-    createdAt: typeof m['createdAt'] === 'string' ? m['createdAt'] : undefined,
-    expiresAt: typeof m['expiresAt'] === 'string' ? m['expiresAt'] : undefined,
+    ...core,
+    note: optionalString(m['note']),
+    createdAt: optionalString(m['createdAt']),
+    expiresAt: optionalString(m['expiresAt']),
     wakeAttempts: Number.isFinite(attempts) ? attempts : 0,
-    reason: typeof m['reason'] === 'string' ? m['reason'] : undefined,
+    reason: optionalString(m['reason']),
     beadStatus: String(r['status'] ?? ''),
   };
+}
+
+/** The fields every wait must have: a non-empty target list, a mode, a known state and a waiter. */
+function waitCore(m: Row): Pick<WaitRecord, 'mode' | 'on' | 'state' | 'waiter'> | null {
+  const { on, mode, state } = m;
+  if (!isTargetList(on) || !isMode(mode) || !isState(state)) return null;
+  const waiter = waiterOf(m['waiter']);
+  return waiter ? { mode, on, state, waiter } : null;
+}
+
+function isTargetList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length > 0 && value.every((x) => typeof x === 'string');
+}
+
+function isMode(value: unknown): value is WaitMode {
+  return value === 'any' || value === 'all';
+}
+
+function isState(value: unknown): value is WaitState {
+  return typeof value === 'string' && WAIT_STATES.has(value);
+}
+
+function waiterOf(value: unknown): WaitWaiter | null {
+  const w = asRow(value);
+  const id = optionalString(w?.['id']);
+  const kind = optionalString(w?.['kind']);
+  return id !== undefined && kind !== undefined ? { kind: kind as WaitWaiter['kind'], id } : null;
+}
+
+function asRow(value: unknown): Row | null {
+  return typeof value === 'object' && value !== null ? (value as Row) : null;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
 }

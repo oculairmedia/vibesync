@@ -27,6 +27,7 @@ import {
   type WaitLogger,
   type WaitOutcome,
   type WaitRecord,
+  type WaitState,
   type WaitStore,
   type WaitWakeSink,
   type WakeRequest,
@@ -73,17 +74,24 @@ export class WaitWatcher {
   start(): void {
     if (this.timer !== undefined || this.unsubscribe !== undefined) return;
     this.stopped = false;
-    this.unsubscribe = this.deps.bus?.subscribe((event) => {
-      if (event.kind !== BEADS_ISSUE_STATUS_CHANGED_EVENT) return;
-      // Only a close can satisfy a wait.
-      if (event.payload?.['to'] === 'closed') this.requestReconcile();
-    });
-    const interval = this.deps.reconcileIntervalMs ?? DEFAULT_WAIT_RECONCILE_INTERVAL_MS;
-    if (interval > 0) {
-      this.timer = setInterval(() => this.requestReconcile(), interval);
-      this.timer.unref?.();
-    }
+    this.subscribeToCloses();
+    this.armTimer();
     this.requestReconcile();
+  }
+
+  /** Only a close can satisfy a wait, so only a status change to closed asks for a pass. */
+  private subscribeToCloses(): void {
+    this.unsubscribe = this.deps.bus?.subscribe((event) => {
+      if (event.kind === BEADS_ISSUE_STATUS_CHANGED_EVENT && event.payload?.['to'] === 'closed') this.requestReconcile();
+    });
+  }
+
+  /** The slow safety-net interval; off when it is 0. */
+  private armTimer(): void {
+    const interval = this.deps.reconcileIntervalMs ?? DEFAULT_WAIT_RECONCILE_INTERVAL_MS;
+    if (interval <= 0) return;
+    this.timer = setInterval(() => this.requestReconcile(), interval);
+    this.timer.unref?.();
   }
 
   async stop(): Promise<void> {
@@ -131,91 +139,100 @@ export class WaitWatcher {
 
   private async pass(): Promise<WaitReconcileReport> {
     const { store } = this.deps;
-    const resolved: Array<{ waitId: string; outcome: WaitOutcome }> = [];
-    const woken: string[] = [];
-    const errors: string[] = [];
-    let stillOpen = 0;
-
+    const report: MutableReport = { resolved: [], woken: [], stillOpen: 0, errors: [] };
     const active = await store.listActive();
     const pending = active.filter((w) => w.state === 'pending');
     const statuses = pending.length > 0
       ? await store.beadStatuses([...new Set(pending.flatMap((w) => w.on))])
       : new Map<string, string>();
     const nowMs = this.now().getTime();
-
     for (const wait of active) {
       try {
-        let current: WaitRecord = wait;
-        if (wait.state === 'pending') {
-          const verdict = evaluateWait(wait, statuses, nowMs);
-          if (verdict.kind === 'pending') {
-            stillOpen += 1;
-            continue;
-          }
-          // Re-read just before the transition: a cancel that landed since the
-          // listing must win (bd has no compare-and-set; this narrows the window).
-          const fresh = await store.get(wait.id);
-          if (!fresh || fresh.state !== 'pending') {
-            if (fresh && fresh.state !== 'canceled') stillOpen += 1;
-            continue;
-          }
-          await store.patch(wait.id, { state: verdict.kind, reason: verdict.reason, resolvedAt: this.now().toISOString() });
-          current = { ...fresh, state: verdict.kind, reason: verdict.reason };
-          resolved.push({ waitId: wait.id, outcome: verdict.kind });
-        }
-        if (current.state === 'canceled') {
-          await store.close(current.id, current.reason ?? 'canceled');
-          continue;
-        }
-        if (await this.deliver(current)) woken.push(current.id);
-        else stillOpen += 1;
+        await this.advance(wait, statuses, nowMs, report);
       } catch (err) {
-        stillOpen += 1;
-        const message = `${wait.id}: ${errMessage(err)}`;
-        errors.push(message);
+        report.stillOpen += 1;
+        report.errors.push(`${wait.id}: ${errMessage(err)}`);
         this.deps.logger?.warn?.({ waitId: wait.id, err: errMessage(err) }, 'waits: wait could not be advanced; will retry');
       }
     }
-    return { resolved, woken, stillOpen, errors };
+    return report;
+  }
+
+  /** Move one wait as far as it can go this pass, recording what happened in the report. */
+  private async advance(wait: WaitRecord, statuses: ReadonlyMap<string, string>, nowMs: number, report: MutableReport): Promise<void> {
+    const current = wait.state === 'pending' ? await this.resolvePending(wait, statuses, nowMs, report) : wait;
+    if (!current) return;
+    if (current.state === 'canceled') {
+      await this.deps.store.close(current.id, current.reason ?? 'canceled');
+      return;
+    }
+    if (await this.deliver(current)) report.woken.push(current.id);
+    else report.stillOpen += 1;
+  }
+
+  /**
+   * A pending wait whose condition is decided moves to ready, expired or failed.
+   * Returns the updated wait, or null when there is nothing more to do this pass.
+   */
+  private async resolvePending(wait: WaitRecord, statuses: ReadonlyMap<string, string>, nowMs: number, report: MutableReport): Promise<WaitRecord | null> {
+    const { store } = this.deps;
+    const verdict = evaluateWait(wait, statuses, nowMs);
+    if (verdict.kind === 'pending') {
+      report.stillOpen += 1;
+      return null;
+    }
+    // Re-read just before the transition: a cancel that landed since the
+    // listing must win (bd has no compare-and-set; this narrows the window).
+    const fresh = await store.get(wait.id);
+    if (!fresh || fresh.state !== 'pending') {
+      if (fresh && fresh.state !== 'canceled') report.stillOpen += 1;
+      return null;
+    }
+    await store.patch(wait.id, { state: verdict.kind, reason: verdict.reason, resolvedAt: this.now().toISOString() });
+    report.resolved.push({ waitId: wait.id, outcome: verdict.kind });
+    return { ...fresh, state: verdict.kind, reason: verdict.reason };
   }
 
   /** @returns true when the wake was accepted and the wait closed. */
   private async deliver(wait: WaitRecord): Promise<boolean> {
-    const { store, sink, bus } = this.deps;
     if (wait.state === 'closed') {
       // Defensive: an open bead already marked delivered (never written by this
       // version) must be closed, not woken again.
-      await store.close(wait.id, 'condition met; waiter woken');
+      await this.deps.store.close(wait.id, 'condition met; waiter woken');
       return false;
     }
-    if (wait.state !== 'ready' && wait.state !== 'expired' && wait.state !== 'failed') return false;
-    const outcome: WaitOutcome = wait.state;
-    const request: WakeRequest = {
-      waitId: wait.id,
-      outcome,
-      waiter: wait.waiter,
-      reason: wait.reason ?? (outcome === 'ready' ? readyReason(wait) : `${describeWait(wait)} ${outcome}`),
-      note: wait.note,
-      on: wait.on,
-      mode: wait.mode,
-    };
+    if (!isDeliverable(wait.state)) return false;
+    const request = wakeRequest(wait, wait.state);
     try {
-      await sink.wake(request);
+      await this.deps.sink.wake(request);
     } catch (err) {
-      const attempts = wait.wakeAttempts + 1;
-      const max = this.deps.maxWakeAttempts ?? DEFAULT_MAX_WAKE_ATTEMPTS;
-      this.deps.logger?.warn?.({ waitId: wait.id, attempts, max, err: errMessage(err) }, 'waits: wake sink rejected');
-      if (attempts >= max) {
-        await store.patch(wait.id, { state: 'failed', wakeAttempts: attempts, reason: `wake undeliverable after ${attempts} attempts: ${errMessage(err)}` });
-        await store.close(wait.id, 'wake undeliverable');
-      } else {
-        await store.patch(wait.id, { wakeAttempts: attempts });
-      }
+      await this.wakeRejected(wait, err);
       return false;
     }
+    await this.wakeAccepted(wait, request);
+    return true;
+  }
+
+  /** Count the attempt; at the limit the wait is marked failed and closed. */
+  private async wakeRejected(wait: WaitRecord, err: unknown): Promise<void> {
+    const { store } = this.deps;
+    const attempts = wait.wakeAttempts + 1;
+    const max = this.deps.maxWakeAttempts ?? DEFAULT_MAX_WAKE_ATTEMPTS;
+    this.deps.logger?.warn?.({ waitId: wait.id, attempts, max, err: errMessage(err) }, 'waits: wake sink rejected');
+    if (attempts < max) {
+      await store.patch(wait.id, { wakeAttempts: attempts });
+      return;
+    }
+    await store.patch(wait.id, { state: 'failed', wakeAttempts: attempts, reason: `wake undeliverable after ${attempts} attempts: ${errMessage(err)}` });
+    await store.close(wait.id, 'wake undeliverable');
+  }
+
+  private async wakeAccepted(wait: WaitRecord, request: WakeRequest): Promise<void> {
+    const { store, bus } = this.deps;
+    const outcome = request.outcome;
     bus?.emit({
       layer: 'daemon',
-      kind: outcome === 'ready' ? WAIT_READY_EVENT : outcome === 'expired' ? WAIT_EXPIRED_EVENT : WAIT_FAILED_EVENT,
+      kind: WAKE_EVENT[outcome],
       task_id: wait.id,
       payload: { waitId: wait.id, waiter: wait.waiter, note: wait.note ?? null, on: wait.on, mode: wait.mode, reason: request.reason },
     });
@@ -227,8 +244,31 @@ export class WaitWatcher {
     await store.patch(wait.id, { ...(outcome === 'ready' ? { state: 'closed' } : {}), wokenAt: this.now().toISOString() }).catch((err: unknown) => {
       this.deps.logger?.warn?.({ waitId: wait.id, err: errMessage(err) }, 'waits: wake delivered and wait closed, but the annotation failed');
     });
-    return true;
   }
+}
+
+type MutableReport = { resolved: Array<{ waitId: string; outcome: WaitOutcome }>; woken: string[]; stillOpen: number; errors: string[] };
+
+const WAKE_EVENT: Readonly<Record<WaitOutcome, string>> = {
+  ready: WAIT_READY_EVENT,
+  expired: WAIT_EXPIRED_EVENT,
+  failed: WAIT_FAILED_EVENT,
+};
+
+function isDeliverable(state: WaitState): state is WaitOutcome {
+  return state === 'ready' || state === 'expired' || state === 'failed';
+}
+
+function wakeRequest(wait: WaitRecord, outcome: WaitOutcome): WakeRequest {
+  return {
+    waitId: wait.id,
+    outcome,
+    waiter: wait.waiter,
+    reason: wait.reason ?? (outcome === 'ready' ? readyReason(wait) : `${describeWait(wait)} ${outcome}`),
+    note: wait.note,
+    on: wait.on,
+    mode: wait.mode,
+  };
 }
 
 function errMessage(err: unknown): string {
