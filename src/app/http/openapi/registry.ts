@@ -10,8 +10,14 @@ export const orchestrationAuth = registry.registerComponent('securitySchemes', '
   description: 'Required by the formula-run and molecule routes when the service sets VIBESYNC_ORCHESTRATION_TOKEN; open otherwise.',
 });
 
-for (const [name, schema] of Object.entries(ApiSchemas)) {
-  registry.register(name, schema);
-}
+/**
+ * Every schema, registered as a named component. `register()` returns a copy
+ * tagged with the component name; a route must use that copy, or the
+ * description inlines the schema and never references the component. Routes
+ * import these, not the untagged `ApiSchemas`.
+ */
+export const Components = Object.fromEntries(
+  Object.entries(ApiSchemas).map(([name, schema]) => [name, registry.register(name, schema)]),
+) as typeof ApiSchemas;
 
 export { ApiSchemas };

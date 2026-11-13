@@ -11,8 +11,10 @@ import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import type { ZodType } from 'zod';
+import { OpenApiGeneratorV31 } from '@asteasolutions/zod-to-openapi';
 
+import { registry } from '../../src/app/http/openapi/registry.js';
+import '../../src/app/http/openapi/routes.js';
 import { ApiSchemas } from '../../src/app/http/openapi/schemas.js';
 import { registerHealthRoutes } from '../../src/app/http/routes/health.js';
 import { registerProjectRoutes } from '../../src/app/http/routes/projects.js';
@@ -63,24 +65,41 @@ function server(body: Record<string, unknown> = {}) {
   };
 }
 
-const cases: [string, string, number, ZodType, Record<string, unknown>?][] = [
-  ['GET', '/health', 200, ApiSchemas.Health],
-  ['GET', '/api/projects', 200, ApiSchemas.ProjectListResponse],
-  ['GET', '/api/projects/demo', 200, ApiSchemas.ProjectDetailResponse],
-  ['GET', '/api/projects/demo/beads-remote', 200, ApiSchemas.BeadsRemoteResponse],
-  ['POST', '/api/projects/demo/beads-remote/provision', 200, ApiSchemas.ProvisionBeadsRemoteResponse, { push: false }],
-  ['POST', '/api/registry/projects', 201, ApiSchemas.RegisteredProjectResponse, { filesystem_path: '/abs/demo' }],
-  ['GET', '/api/registry/projects/demo', 200, ApiSchemas.RegistryProjectRead],
-  ['PATCH', '/api/registry/projects/demo', 200, ApiSchemas.RegisteredProjectResponse, { status: 'archived' }],
-  ['DELETE', '/api/registry/projects/demo', 200, ApiSchemas.DeleteProjectResponse],
-  ['POST', '/api/sync/trigger', 410, ApiSchemas.RetiredSyncResponse],
+type SchemaName = keyof typeof ApiSchemas;
+
+/** method, path as called, documented path, status, the response's component name, request body. */
+const cases: [string, string, string, number, SchemaName, Record<string, unknown>?][] = [
+  ['GET', '/health', '/health', 200, 'Health'],
+  ['GET', '/api/projects', '/api/projects', 200, 'ProjectListResponse'],
+  ['GET', '/api/projects/demo', '/api/projects/{id}', 200, 'ProjectDetailResponse'],
+  ['GET', '/api/projects/demo/beads-remote', '/api/projects/{id}/beads-remote', 200, 'BeadsRemoteResponse'],
+  ['POST', '/api/projects/demo/beads-remote/provision', '/api/projects/{id}/beads-remote/provision', 200, 'ProvisionBeadsRemoteResponse', { push: false }],
+  ['POST', '/api/registry/projects', '/api/registry/projects', 201, 'RegisteredProjectResponse', { filesystem_path: '/abs/demo' }],
+  ['GET', '/api/registry/projects/demo', '/api/registry/projects/{id}', 200, 'RegistryProjectRead'],
+  ['PATCH', '/api/registry/projects/demo', '/api/registry/projects/{id}', 200, 'RegisteredProjectResponse', { status: 'archived' }],
+  ['DELETE', '/api/registry/projects/demo', '/api/registry/projects/{id}', 200, 'DeleteProjectResponse'],
+  ['POST', '/api/sync/trigger', '/api/sync/trigger', 410, 'RetiredSyncResponse'],
 ];
 
+/** The component a documented response points at, e.g. "ProjectDetailResponse". */
+function documentedComponent(path: string, method: string, status: number): string | undefined {
+  const doc = new OpenApiGeneratorV31(registry.definitions).generateDocument({ openapi: '3.1.0', info: { title: 't', version: '0' } });
+  const op = (doc.paths?.[path] as Record<string, { responses?: Record<string, { content?: Record<string, { schema?: { $ref?: string } }> }> }> | undefined)?.[method.toLowerCase()];
+  const ref = op?.responses?.[String(status)]?.content?.['application/json']?.schema?.$ref;
+  return ref?.split('/').at(-1);
+}
+
 describe('documented response shapes match what the handlers send', () => {
-  it.each(cases)('%s %s -> %i', async (method, pathname, status, schema, body) => {
+  it.each(cases)('%s %s (%s) -> %i: the handler sends the documented shape', async (method, pathname, _path, status, name, body) => {
     const sent = await server(body)(method, pathname);
     expect(sent.status).toBe(status);
-    const parsed = schema.safeParse(sent.body);
+    const parsed = ApiSchemas[name].safeParse(sent.body);
     expect(parsed.success ? 'matches' : JSON.stringify(parsed.error.issues.slice(0, 3))).toBe('matches');
+  });
+
+  // CodeRabbit on #160: validating the handler against a schema proves nothing if
+  // the published description points at a different one.
+  it.each(cases)('%s %s (%s) -> %i: the description documents that same schema', (method, _pathname, path, status, name) => {
+    expect(documentedComponent(path, method, status)).toBe(name);
   });
 });

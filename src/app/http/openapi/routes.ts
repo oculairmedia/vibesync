@@ -1,6 +1,6 @@
 import type { ZodType } from 'zod';
 
-import { registry, ApiSchemas, orchestrationAuth } from './registry.js';
+import { registry, Components as ApiSchemas, orchestrationAuth } from './registry.js';
 
 /**
  * The published API description: one entry per route the server registers
