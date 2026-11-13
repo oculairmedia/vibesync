@@ -209,9 +209,12 @@ export class StepVerdictReader {
       this.emitReviewExhausted(args, target, round, maxRounds);
       return 'exhausted';
     }
-    // The verdict is this step's output for the next round; close it finished.
+    // The verdict travels to the next round in memory (outputs.review, below), not
+    // on the bead. The reviewer is NOT closed here (vibesync-9lzk.58): a closed
+    // reviewer makes the step after it ready for as long as the reopens below
+    // take, and the engine's 1 s step loop starts it there. reopenLoopSteps
+    // reopens the round, reviewer included, from the reviewer's current state.
     args.outputs[args.stepName] = args.output;
-    await this.deps.walker.finishStep(args.step.id, { output: args.output, round });
     const note = `Round ${round} review (${args.stepName}) requested changes: ${args.blocker}`;
     await this.reopenLoopSteps({
       steps, targetIdx, selfIdx, step: args.step, moleculeId: args.moleculeId,
