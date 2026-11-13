@@ -1,617 +1,237 @@
-import { registry, ApiSchemas } from './registry.js';
+import type { ZodType } from 'zod';
+
+import { registry, Components as ApiSchemas, orchestrationAuth } from './registry.js';
 
 /**
- * OpenAPI route definitions for Vibesync API.
- * Each route includes path, method, tags, description, and schema bindings.
- * 
- * NOTE: Use Zod schemas directly in route definitions. The zod-to-openapi library
- * automatically generates $ref pointers for registered schemas.
+ * The published API description: one entry per route the server registers
+ * (src/app/http/routes/*). tests/unit/openapi-routes.test.ts builds the real
+ * route table and fails if this list and the handlers disagree in either
+ * direction, so a route added, removed or renamed must change both.
  */
 
-// ============================================================================
-// Health & Metrics Routes
-// ============================================================================
+type Method = 'get' | 'post' | 'patch' | 'delete';
 
-registry.registerPath({
-  method: 'get',
-  path: '/health',
-  tags: ['Health'],
-  summary: 'Health check',
-  description: 'Returns current health metrics and system status',
-  responses: {
-    200: {
-      description: 'Health metrics',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.HealthMetrics,
-        },
-      },
+const json = (schema: ZodType) => ({ content: { 'application/json': { schema } } });
+const error = (description: string) => ({ description, ...json(ApiSchemas.ErrorResponse) });
+const ORCHESTRATION_DOWN = error('Orchestration plane not booted');
+const UNAUTHORIZED = error('Missing or wrong bearer token (only when VIBESYNC_ORCHESTRATION_TOKEN is set)');
+
+function route(def: {
+  method: Method;
+  path: string;
+  tag: string;
+  summary: string;
+  description?: string;
+  params?: ZodType;
+  query?: ZodType;
+  body?: ZodType;
+  responses: Record<number, { description: string; content?: Record<string, { schema: unknown }> }>;
+  orchestration?: boolean;
+}): void {
+  registry.registerPath({
+    method: def.method,
+    path: def.path,
+    tags: [def.tag],
+    summary: def.summary,
+    ...(def.description ? { description: def.description } : {}),
+    ...(def.orchestration ? { security: [{ [orchestrationAuth.name]: [] }] } : {}),
+    request: {
+      ...(def.params ? { params: def.params as never } : {}),
+      ...(def.query ? { query: def.query as never } : {}),
+      ...(def.body ? { body: { required: true, ...json(def.body) } } : {}),
     },
+    responses: def.responses as never,
+  });
+}
+
+// ---------------------------------------------------------------- health
+
+route({
+  method: 'get', path: '/health', tag: 'Health', summary: 'Service health',
+  description: 'Liveness, uptime, memory, and whether the orchestration engine is ready.',
+  responses: { 200: { description: 'Healthy', ...json(ApiSchemas.Health) } },
+});
+
+// ---------------------------------------------------------------- projects
+
+route({
+  method: 'get', path: '/api/projects', tag: 'Projects', summary: 'List registered projects',
+  description: 'Unpaginated unless cursor or limit is given.',
+  query: ApiSchemas.ProjectListQuery,
+  responses: {
+    200: { description: 'Projects', ...json(ApiSchemas.ProjectListResponse) },
+    503: error('Registry database not available'),
   },
 });
 
-registry.registerPath({
-  method: 'get',
-  path: '/metrics',
-  tags: ['Health'],
-  summary: 'Prometheus metrics',
-  description: 'Returns Prometheus-format metrics',
+route({
+  method: 'get', path: '/api/projects/{id}', tag: 'Projects', summary: 'Get a project (catalog shape)',
+  params: ApiSchemas.IdParam,
   responses: {
-    200: {
-      description: 'Prometheus metrics',
-      content: {
-        'text/plain': {
-          schema: { type: 'string' },
-        },
-      },
-    },
+    200: { description: 'The project', ...json(ApiSchemas.ProjectDetailResponse) },
+    404: error('Project not found'),
   },
 });
 
-registry.registerPath({
-  method: 'get',
-  path: '/api/stats',
-  tags: ['Health'],
-  summary: 'API statistics',
-  description: 'Returns API statistics and performance metrics',
+route({
+  method: 'get', path: '/api/projects/{id}/beads-remote', tag: 'Projects', summary: 'Get a project\'s Beads remote',
+  params: ApiSchemas.IdParam,
   responses: {
-    200: {
-      description: 'API statistics',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.StatsResponse,
-        },
-      },
-    },
+    200: { description: 'The Beads remote', ...json(ApiSchemas.BeadsRemoteResponse) },
+    404: error('Project not found'),
   },
 });
 
-// ============================================================================
-// Project Registry Routes
-// ============================================================================
-
-registry.registerPath({
-  method: 'get',
-  path: '/api/projects',
-  tags: ['Projects'],
-  summary: 'List all projects',
-  description: 'Returns a paginated list of all registered projects',
-  request: {
-    query: ApiSchemas.PaginationQuery,
-  },
+route({
+  method: 'post', path: '/api/projects/{id}/beads-remote/provision', tag: 'Projects', summary: 'Provision a project\'s Beads remote',
+  params: ApiSchemas.IdParam,
+  body: ApiSchemas.ProvisionBeadsRemoteRequest,
   responses: {
-    200: {
-      description: 'List of projects',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.ProjectListResponse,
-        },
-      },
-    },
+    200: { description: 'Provisioned (or a dry run)', ...json(ApiSchemas.ProvisionBeadsRemoteResponse) },
+    400: error('Project has no Beads database'),
+    404: error('Project not found'),
+    500: error('Provisioning failed'),
   },
 });
 
-registry.registerPath({
-  method: 'get',
-  path: '/api/projects/{id}',
-  tags: ['Projects'],
-  summary: 'Get project detail',
-  description: 'Returns detailed information about a specific project',
-  request: {
-    params: ApiSchemas.ProjectIdParam,
-  },
+route({
+  method: 'post', path: '/api/registry/projects', tag: 'Projects', summary: 'Register a project',
+  body: ApiSchemas.CreateProjectRequest,
   responses: {
-    200: {
-      description: 'Project detail',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.ProjectDetail,
-        },
-      },
-    },
-    404: {
-      description: 'Project not found',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.ErrorResponse,
-        },
-      },
-    },
+    201: { description: 'Registered', ...json(ApiSchemas.RegisteredProjectResponse) },
+    400: error('filesystem_path missing or not absolute, or registration failed'),
+    503: error('Project registry not available'),
   },
 });
 
-registry.registerPath({
-  method: 'post',
-  path: '/api/registry/projects',
-  tags: ['Projects'],
-  summary: 'Register a new project',
-  description: 'Registers a new project in the registry',
-  request: {
-    body: {
-      content: {
-        'application/json': {
-          schema: ApiSchemas.CreateProjectRequest,
-        },
-      },
-    },
-  },
+route({
+  method: 'get', path: '/api/registry/projects/{id}', tag: 'Projects', summary: 'Get a project (registry shape)',
+  params: ApiSchemas.IdParam,
   responses: {
-    201: {
-      description: 'Project created',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.ProjectSummary,
-        },
-      },
-    },
-    400: {
-      description: 'Invalid request',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.ErrorResponse,
-        },
-      },
-    },
+    200: { description: 'The project', ...json(ApiSchemas.RegistryProjectRead) },
+    404: error('Project not found'),
   },
 });
 
-registry.registerPath({
-  method: 'patch',
-  path: '/api/registry/projects/{id}',
-  tags: ['Projects'],
-  summary: 'Update project',
-  description: 'Updates an existing project',
-  request: {
-    params: ApiSchemas.ProjectIdParam,
-    body: {
-      content: {
-        'application/json': {
-          schema: ApiSchemas.UpdateProjectRequest,
-        },
-      },
-    },
-  },
+route({
+  method: 'patch', path: '/api/registry/projects/{id}', tag: 'Projects', summary: 'Update a project',
+  params: ApiSchemas.IdParam,
+  body: ApiSchemas.UpdateProjectRequest,
   responses: {
-    200: {
-      description: 'Project updated',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.ProjectSummary,
-        },
-      },
-    },
-    404: {
-      description: 'Project not found',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.ErrorResponse,
-        },
-      },
-    },
+    200: { description: 'Updated', ...json(ApiSchemas.RegisteredProjectResponse) },
+    400: error('Invalid field'),
+    404: error('Project not found'),
   },
 });
 
-// ============================================================================
-// Project Subresources
-// ============================================================================
+route({
+  method: 'delete', path: '/api/registry/projects/{id}', tag: 'Projects', summary: 'Remove a project from the registry',
+  params: ApiSchemas.IdParam,
+  responses: { 200: { description: 'Deleted', ...json(ApiSchemas.DeleteProjectResponse) }, 404: error('Project not found') },
+});
 
-registry.registerPath({
-  method: 'get',
-  path: '/api/projects/{id}/agents',
-  tags: ['Projects'],
-  summary: 'List project agents',
-  description: 'Returns agents associated with a project',
-  request: {
-    params: ApiSchemas.ProjectIdParam,
-  },
+route({
+  method: 'post', path: '/api/sync/trigger', tag: 'Projects', summary: 'Retired: project sync',
+  description: 'Always 410. Beads is the source of truth; there is nothing to sync.',
+  responses: { 410: { description: 'Retired', ...json(ApiSchemas.RetiredSyncResponse) } },
+});
+
+// ---------------------------------------------------------------- formulas and molecules
+
+route({
+  method: 'get', path: '/formulas', tag: 'Orchestration', summary: 'List formulas',
+  description: 'Every formula in the available packs, with its role sequence.',
+  responses: { 200: { description: 'Formulas', ...json(ApiSchemas.FormulaListResponse) } },
+});
+
+route({
+  method: 'post', path: '/formulas/{name}/run', tag: 'Orchestration', summary: 'Start a formula run', orchestration: true,
+  params: ApiSchemas.FormulaNameParam,
+  body: ApiSchemas.RunFormulaRequest,
   responses: {
-    200: {
-      description: 'List of agents',
-      content: {
-        'application/json': {
-          schema: { type: 'object' },
-        },
-      },
-    },
+    202: { description: 'Started', ...json(ApiSchemas.RunFormulaResponse) },
+    400: error('Missing input'),
+    401: UNAUTHORIZED,
+    404: error('Pack or formula not found'),
+    503: error('Orchestration not booted, or the agent pool is full (retry later)'),
   },
 });
 
-registry.registerPath({
-  method: 'get',
-  path: '/api/projects/{id}/conversations',
-  tags: ['Projects'],
-  summary: 'List project conversations',
-  description: 'Returns conversations for a project',
-  request: {
-    params: ApiSchemas.ProjectIdParam,
-  },
+route({
+  method: 'get', path: '/molecules', tag: 'Orchestration', summary: 'List molecules (formula runs)', orchestration: true,
+  query: ApiSchemas.MoleculeListQuery,
   responses: {
-    200: {
-      description: 'List of conversations',
-      content: {
-        'application/json': {
-          schema: { type: 'object' },
-        },
-      },
-    },
+    200: { description: 'Molecules', ...json(ApiSchemas.MoleculeListResponse) },
+    401: UNAUTHORIZED,
+    503: ORCHESTRATION_DOWN,
   },
 });
 
-registry.registerPath({
-  method: 'get',
-  path: '/api/projects/{id}/work-items',
-  tags: ['Projects'],
-  summary: 'List project work items',
-  description: 'Returns work items for a project',
-  request: {
-    params: ApiSchemas.ProjectIdParam,
-  },
+route({
+  method: 'get', path: '/molecules/{id}', tag: 'Orchestration', summary: 'Get a molecule', orchestration: true,
+  params: ApiSchemas.IdParam,
   responses: {
-    200: {
-      description: 'List of work items',
-      content: {
-        'application/json': {
-          schema: { type: 'object' },
-        },
-      },
-    },
+    200: { description: 'The molecule', ...json(ApiSchemas.MoleculeDetail) },
+    401: UNAUTHORIZED,
+    404: error('Molecule not found'),
+    503: ORCHESTRATION_DOWN,
   },
 });
 
-registry.registerPath({
-  method: 'get',
-  path: '/api/projects/{id}/activity',
-  tags: ['Projects'],
-  summary: 'List project activity',
-  description: 'Returns activity log for a project',
-  request: {
-    params: ApiSchemas.ProjectIdParam,
-  },
+route({
+  method: 'get', path: '/molecules/{id}/trace', tag: 'Orchestration', summary: 'Get a molecule\'s trace', orchestration: true,
+  description: 'Steps, dependency edges and engine events.',
+  params: ApiSchemas.IdParam,
   responses: {
-    200: {
-      description: 'Activity log',
-      content: {
-        'application/json': {
-          schema: { type: 'object' },
-        },
-      },
-    },
+    200: { description: 'The trace', ...json(ApiSchemas.MoleculeTrace) },
+    401: UNAUTHORIZED,
+    404: error('Molecule not found'),
+    503: ORCHESTRATION_DOWN,
   },
 });
 
-registry.registerPath({
-  method: 'get',
-  path: '/api/projects/{id}/issues',
-  tags: ['Issues'],
-  summary: 'List project issues',
-  description: 'Returns paginated issues for a project',
-  request: {
-    params: ApiSchemas.ProjectIdParam,
-    query: ApiSchemas.IssueFilterQuery,
-  },
+route({
+  method: 'get', path: '/molecules/{id}/events', tag: 'Orchestration', summary: 'Stream a molecule\'s events', orchestration: true,
+  description: 'Server-sent events.',
+  params: ApiSchemas.IdParam,
   responses: {
-    200: {
-      description: 'List of issues',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.IssueListResponse,
-        },
-      },
-    },
+    200: { description: 'An event stream', content: { 'text/event-stream': { schema: { type: 'string' } } } },
+    401: UNAUTHORIZED,
+    503: ORCHESTRATION_DOWN,
   },
 });
 
-registry.registerPath({
-  method: 'get',
-  path: '/api/projects/{id}/ready-work',
-  tags: ['Issues'],
-  summary: 'List ready work items',
-  description: 'Returns open, actionable, unblocked work items (Android-friendly)',
-  request: {
-    params: ApiSchemas.ProjectIdParam,
-  },
+route({
+  method: 'post', path: '/molecules/{id}/resume', tag: 'Orchestration', summary: 'Resume a molecule', orchestration: true,
+  params: ApiSchemas.IdParam,
   responses: {
-    200: {
-      description: 'List of ready work items',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.IssueListResponse,
-        },
-      },
-    },
+    202: { description: 'Resumed', ...json(ApiSchemas.ResumeMoleculeResponse) },
+    401: UNAUTHORIZED,
+    500: error('Resume failed'),
+    503: ORCHESTRATION_DOWN,
   },
 });
 
-// ============================================================================
-// Issue Detail & Mutations
-// ============================================================================
-
-registry.registerPath({
-  method: 'get',
-  path: '/api/issues/{id}',
-  tags: ['Issues'],
-  summary: 'Get issue detail',
-  description: 'Returns full issue detail by stable opaque issue ID',
-  request: {
-    params: ApiSchemas.IssueIdParam,
-  },
+route({
+  method: 'delete', path: '/molecules/{id}', tag: 'Orchestration', summary: 'Cancel a molecule', orchestration: true,
+  params: ApiSchemas.IdParam,
   responses: {
-    200: {
-      description: 'Issue detail',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.IssueDetail,
-        },
-      },
-    },
-    404: {
-      description: 'Issue not found',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.ErrorResponse,
-        },
-      },
-    },
+    202: { description: 'Cancelled', ...json(ApiSchemas.CancelMoleculeResponse) },
+    401: UNAUTHORIZED,
+    409: error('Molecule is not cancellable'),
+    500: error('Cancel failed'),
+    503: ORCHESTRATION_DOWN,
   },
 });
 
-registry.registerPath({
-  method: 'post',
-  path: '/api/issues/{id}/claim',
-  tags: ['Issues'],
-  summary: 'Claim an issue',
-  description: 'Claims an issue for the specified assignee',
-  request: {
-    params: ApiSchemas.IssueIdParam,
-    body: {
-      content: {
-        'application/json': {
-          schema: ApiSchemas.ClaimIssueRequest,
-        },
-      },
-    },
-    headers: ApiSchemas.ConflictHeaders,
-  },
-  responses: {
-    200: {
-      description: 'Issue claimed',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.IssueDetail,
-        },
-      },
-    },
-    409: {
-      description: 'Conflict',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.ConflictResponse,
-        },
-      },
-    },
-  },
+// ---------------------------------------------------------------- the description itself
+
+route({
+  method: 'get', path: '/openapi.json', tag: 'Docs', summary: 'This API description (OpenAPI 3.1)',
+  responses: { 200: { description: 'The description', content: { 'application/json': { schema: { type: 'object' } } } } },
 });
 
-registry.registerPath({
-  method: 'post',
-  path: '/api/issues/{id}/unclaim',
-  tags: ['Issues'],
-  summary: 'Unclaim an issue',
-  description: 'Removes the assignee from an issue',
-  request: {
-    params: ApiSchemas.IssueIdParam,
-    headers: ApiSchemas.ConflictHeaders,
-  },
-  responses: {
-    200: {
-      description: 'Issue unclaimed',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.IssueDetail,
-        },
-      },
-    },
-    409: {
-      description: 'Conflict',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.ConflictResponse,
-        },
-      },
-    },
-  },
-});
-
-registry.registerPath({
-  method: 'patch',
-  path: '/api/issues/{id}/status',
-  tags: ['Issues'],
-  summary: 'Update issue status',
-  description: 'Updates the status of an issue',
-  request: {
-    params: ApiSchemas.IssueIdParam,
-    body: {
-      content: {
-        'application/json': {
-          schema: ApiSchemas.UpdateIssueStatusRequest,
-        },
-      },
-    },
-    headers: ApiSchemas.ConflictHeaders,
-  },
-  responses: {
-    200: {
-      description: 'Issue status updated',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.IssueDetail,
-        },
-      },
-    },
-    409: {
-      description: 'Conflict',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.ConflictResponse,
-        },
-      },
-    },
-  },
-});
-
-registry.registerPath({
-  method: 'post',
-  path: '/api/issues/{id}/notes',
-  tags: ['Issues'],
-  summary: 'Add issue note',
-  description: 'Adds a note to an issue',
-  request: {
-    params: ApiSchemas.IssueIdParam,
-    body: {
-      content: {
-        'application/json': {
-          schema: ApiSchemas.AddIssueNoteRequest,
-        },
-      },
-    },
-    headers: ApiSchemas.ConflictHeaders,
-  },
-  responses: {
-    200: {
-      description: 'Note added',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.IssueDetail,
-        },
-      },
-    },
-    409: {
-      description: 'Conflict',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.ConflictResponse,
-        },
-      },
-    },
-  },
-});
-
-registry.registerPath({
-  method: 'post',
-  path: '/api/issues/{id}/close',
-  tags: ['Issues'],
-  summary: 'Close an issue',
-  description: 'Closes an issue',
-  request: {
-    params: ApiSchemas.IssueIdParam,
-    body: {
-      content: {
-        'application/json': {
-          schema: ApiSchemas.CloseIssueRequest,
-        },
-      },
-    },
-    headers: ApiSchemas.ConflictHeaders,
-  },
-  responses: {
-    200: {
-      description: 'Issue closed',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.IssueDetail,
-        },
-      },
-    },
-    409: {
-      description: 'Conflict',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.ConflictResponse,
-        },
-      },
-    },
-  },
-});
-
-registry.registerPath({
-  method: 'post',
-  path: '/api/issues/{id}/reopen',
-  tags: ['Issues'],
-  summary: 'Reopen an issue',
-  description: 'Reopens a closed issue',
-  request: {
-    params: ApiSchemas.IssueIdParam,
-    headers: ApiSchemas.ConflictHeaders,
-  },
-  responses: {
-    200: {
-      description: 'Issue reopened',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.IssueDetail,
-        },
-      },
-    },
-    409: {
-      description: 'Conflict',
-      content: {
-        'application/json': {
-          schema: ApiSchemas.ConflictResponse,
-        },
-      },
-    },
-  },
-});
-
-// ============================================================================
-// Beads Remote Provisioning
-// ============================================================================
-
-registry.registerPath({
-  method: 'get',
-  path: '/api/projects/{id}/beads-remote',
-  tags: ['Projects'],
-  summary: 'Get Beads remote metadata',
-  description: 'Returns stored Beads remote provisioning metadata',
-  request: {
-    params: ApiSchemas.ProjectIdParam,
-  },
-  responses: {
-    200: {
-      description: 'Beads remote metadata',
-      content: {
-        'application/json': {
-          schema: { type: 'object' },
-        },
-      },
-    },
-  },
-});
-
-registry.registerPath({
-  method: 'post',
-  path: '/api/projects/{id}/beads-remote/provision',
-  tags: ['Projects'],
-  summary: 'Provision Beads remote',
-  description: 'Creates or reuses a project-scoped DoltHub database and configures Beads remote',
-  request: {
-    params: ApiSchemas.ProjectIdParam,
-    body: {
-      content: {
-        'application/json': {
-          schema: ApiSchemas.ProvisionBeadsRemoteRequest,
-        },
-      },
-    },
-  },
-  responses: {
-    200: {
-      description: 'Beads remote provisioned',
-      content: {
-        'application/json': {
-          schema: { type: 'object' },
-        },
-      },
-    },
-  },
+route({
+  method: 'get', path: '/docs', tag: 'Docs', summary: 'Interactive API reference',
+  responses: { 200: { description: 'HTML', content: { 'text/html': { schema: { type: 'string' } } } } },
 });
