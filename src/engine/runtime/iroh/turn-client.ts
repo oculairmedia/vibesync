@@ -374,9 +374,14 @@ async function waitForTurnEnd(ctx: TurnContext, st: TurnState, redialed: boolean
     const now = Date.now();
     if (now >= deadline) return { kind: 'timeout' };
     if (approvalStuck(st, wait, now, o.approvalGraceMs)) return { kind: 'approval_stuck' };
-    const reconciled = await maybeReconcile(ctx, st, wait, now);
-    if (reconciled === 'polled') continue;
-    if (reconciled) return reconciled;
+    // Await only when a poll is due (CodeRabbit on #162): an await here when no
+    // poll is due lets an abort land after the check above and before the sleep
+    // registers its wake, and the loop would then sleep to the turn timeout.
+    if (reconcileDue(st, wait, now, o.reconcileIntervalMs)) {
+      const reconciled = await reconcileStep(ctx, wait);
+      if (reconciled) return reconciled;
+      continue;
+    }
     await sleepUntilWoken(st, sleepBudgetMs(now, deadline, [approvalWakeAt(wait, o.approvalGraceMs), wait.nextReconcile]));
   }
 }
@@ -399,15 +404,14 @@ function approvalWakeAt(wait: WaitState, graceMs: number): number {
 }
 
 /**
- * Reconcile only when the turn shows no sign of life after the redial: a live
- * turn replays/continues its frames, a dead one (wrapper restarted, parking
- * lost) stays silent. Returns the reconciled outcome, 'polled' when it polled
- * without settling (loop again at once), or null when no poll was due.
+ * A history poll is due. Reconcile only when the turn shows no sign of life
+ * after the redial: a live turn replays/continues its frames, a dead one
+ * (wrapper restarted, parking lost) stays silent, so a sign of life pushes the
+ * next poll back. Synchronous on purpose (see waitForTurnEnd).
  */
-async function maybeReconcile(ctx: TurnContext, st: TurnState, wait: WaitState, now: number): Promise<Outcome | 'polled' | null> {
-  if (now >= wait.nextReconcile && st.sawActivity) wait.nextReconcile = now + ctx.o.reconcileIntervalMs;
-  if (now < wait.nextReconcile) return null;
-  return (await reconcileStep(ctx, wait)) ?? 'polled';
+function reconcileDue(st: TurnState, wait: WaitState, now: number, intervalMs: number): boolean {
+  if (now >= wait.nextReconcile && st.sawActivity) wait.nextReconcile = now + intervalMs;
+  return now >= wait.nextReconcile;
 }
 
 /**

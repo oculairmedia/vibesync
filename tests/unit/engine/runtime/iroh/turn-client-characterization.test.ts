@@ -321,3 +321,33 @@ describe('reconcile and conversation creation (through a stub connection)', () =
     expect(rpcCalls[0]!.params).toEqual({ agent_id: 'agent-parent' });
   });
 });
+
+describe('an abort while the wait loop is between its checks (CodeRabbit on #162)', () => {
+  const AGENT = 'agent-parent';
+  let conn: IrohConnection | null = null;
+  afterEach(async () => {
+    await conn?.close();
+    conn = null;
+  });
+  const mk = (fake: FakeIrohWrapper) => new IrohConnection({ dial: fake.dial, peerName: 'vibesync-test', sleep: async () => undefined, backoff: { initialMs: 1, capMs: 4, maxAttempts: 4 } });
+  /** Run `fn` after `depth` nested microtasks. */
+  const afterMicrotasks = (depth: number, fn: () => void): void => {
+    if (depth <= 0) { fn(); return; }
+    queueMicrotask(() => afterMicrotasks(depth - 1, fn));
+  };
+
+  it.each([1, 2, 3, 4])('an abort %i microtask(s) after the input is accepted ends the turn as cancelled, not at the turn timeout', async (depth) => {
+    const fake = new FakeIrohWrapper();
+    fake.script = { deltas: [], stopReason: 'end_turn', finalText: 'late', turnDelayMs: 60_000 };
+    conn = mk(fake);
+    const ac = new AbortController();
+    const started = Date.now();
+    const r = await runTurn(conn, { agentId: AGENT, conversationId: null, text: 'hi', clientMessageId: `cm-abort-${depth}` }, {
+      signal: ac.signal,
+      turnTimeoutMs: 4_000,
+      onProgress: (p) => { if (p.kind === 'accepted') afterMicrotasks(depth, () => ac.abort()); },
+    });
+    expect(r.boundary).toBe('cancelled');
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+});
