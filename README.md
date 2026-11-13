@@ -53,11 +53,13 @@ VIBESYNC_SCHEDULER_AUTO_MERGE=false
 `VIBESYNC_SCHEDULER_PROJECTS` is a comma-separated list of registered project
 identifiers; each gets its own scheduler. (It replaced the single-project
 `VIBESYNC_SCHEDULER_PROJECT`; the service refuses to start if only the old name
-is set.) The `VIBESYNC_SCHEDULER_*` formula, ready label, pool size and required
-checks are the defaults for any project that does not set its own (below).
+is set.) The `VIBESYNC_SCHEDULER_*` formula, ready label and pool size are the
+defaults for any project that does not set its own (below). CI checks have no
+global default: each project names its own in `ciChecks`.
 
-Auto-merge stays off unless explicitly enabled; enabling it also requires
-required checks and an allowed-repository list. PM wakes and durable wait
+Auto-merge stays off unless explicitly enabled. Enabling it also requires
+`VIBESYNC_SCHEDULER_REQUIRED_CHECKS` (the checks a pull request must pass before
+it is merged automatically) and an allowed-repository list. PM wakes and durable wait
 reconciliation are separate opt-in settings; see `src/app/config.ts`.
 
 ## Onboard a project
@@ -83,12 +85,18 @@ reconciliation are separate opt-in settings; see `src/app/config.ts`.
    ```
 
    Vibesync reads only the `engine` block today; `projectId`, `key` and `name`
-   are for the Meridian project registry. Every `engine` field is optional, and
-   a missing one uses the scheduler default. `ciChecks` names the CI checks a
-   run's pull request must pass. The engine reads the file as committed on the
-   default branch, so uncommitted edits and branches under review do not change
-   its behaviour. If the file is invalid, that project's scheduler does not
-   start and a warning names the field; other projects are unaffected.
+   are for the Meridian project registry. `formula`, `readyLabel` and
+   `poolSize` are optional; a missing one uses the scheduler default.
+   `ciChecks` names the CI checks a run's pull request must pass, and has no
+   default: without it, the final step of every run fails closed, because it
+   cannot confirm CI.
+
+   The engine reads the file as committed on the default branch, not the
+   working tree. When the checkout records `origin/HEAD`, that is the commit
+   read, so push the change and `git fetch` in the checkout before restarting:
+   a commit to the local branch alone is not seen. If the file is invalid, that
+   project's scheduler does not start and a warning names the field; other
+   projects are unaffected.
 3. Add the project to `VIBESYNC_SCHEDULER_PROJECTS` and restart Vibesync.
 
 ## Schedule work
@@ -104,8 +112,10 @@ reconciliation are separate opt-in settings; see `src/app/config.ts`.
    - `implement-fix`: the same without the mayor, for projects that have none.
    - `code-review`, `refinery-sweep` and `dogfood-rig-smoke` for narrower jobs.
 4. Check the resulting bead notes and pull request. A step that hits its turn
-   limit saves its work to a `wip/` branch and escalates to the project's PM
-   instead of retrying.
+   limit saves its work to a `wip/<bead>/<run>` branch, comments on the bead
+   and stops the run instead of retrying. With PM wake enabled
+   (`VIBESYNC_PM_WAKE_SINK=inbox`), an escalated run also wakes the project's
+   PM agent; the default `log` sink only writes it to the service log.
 
 Pool size, batch size, poll interval and the other scheduler controls are
 `VIBESYNC_SCHEDULER_*` variables, with defaults in `src/app/config.ts`.
@@ -132,8 +142,15 @@ handles.
 
 The `vibesync.service` unit runs `bun src/index.ts` from the selected release
 worktree and reads its `.env` file. Stage a Git worktree with dependencies
-installed and a valid `.env`, check it boots (`scripts/ci/boot-check.sh`, and
-`scripts/ci/engine-boot-check.sh` with orchestration on), then run:
+installed and a valid `.env`.
+
+Two checks prove the staged code boots, not that its `.env` does: both run the
+real entry point against scratch directories with their own settings.
+`scripts/ci/boot-check.sh` boots with orchestration off.
+`scripts/ci/engine-boot-check.sh /abs/path/to/bd` boots with the engine on,
+against a scratch tracker whose Dolt server it has stopped, and requires the
+engine to come up; it needs a `bd` binary (the argument or `VIBESYNC_TEST_BD`)
+and `dolt` on the PATH. Then run:
 
 ```bash
 scripts/deploy/swap.sh <release-dir>
@@ -142,6 +159,7 @@ scripts/deploy/swap.sh <release-dir>
 The swap script installs/reloads the unit, points its release drop-in at the
 staged worktree, restarts the service, and prints the previous working
 directory and rollback command. Do not restart while formula runs are
-in flight. After the swap, `GET /health` should report
-`orchestration.ready: true`; if not, swap back. The unit and release drop-in
+in flight. After the swap, check `GET /health`: with `ENABLE_ORCHESTRATION=true`
+it must report `orchestration.ready: true`, and if it does not, swap back. With
+orchestration off, `ready` is always false and says nothing about the release. The unit and release drop-in
 template are in `deploy/systemd/`.

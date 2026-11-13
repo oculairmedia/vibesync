@@ -68,7 +68,7 @@ route({
   method: 'get', path: '/api/projects/{id}', tag: 'Projects', summary: 'Get a project (catalog shape)',
   params: ApiSchemas.IdParam,
   responses: {
-    200: { description: 'The project', ...json(ApiSchemas.ProjectSummary) },
+    200: { description: 'The project', ...json(ApiSchemas.ProjectDetailResponse) },
     404: error('Project not found'),
   },
 });
@@ -77,7 +77,7 @@ route({
   method: 'get', path: '/api/projects/{id}/beads-remote', tag: 'Projects', summary: 'Get a project\'s Beads remote',
   params: ApiSchemas.IdParam,
   responses: {
-    200: { description: 'The Beads remote', ...json(ApiSchemas.BeadsRemote) },
+    200: { description: 'The Beads remote', ...json(ApiSchemas.BeadsRemoteResponse) },
     404: error('Project not found'),
   },
 });
@@ -87,7 +87,7 @@ route({
   params: ApiSchemas.IdParam,
   body: ApiSchemas.ProvisionBeadsRemoteRequest,
   responses: {
-    200: { description: 'Provisioned (or a dry run)' },
+    200: { description: 'Provisioned (or a dry run)', ...json(ApiSchemas.ProvisionBeadsRemoteResponse) },
     400: error('Project has no Beads database'),
     404: error('Project not found'),
     500: error('Provisioning failed'),
@@ -98,7 +98,7 @@ route({
   method: 'post', path: '/api/registry/projects', tag: 'Projects', summary: 'Register a project',
   body: ApiSchemas.CreateProjectRequest,
   responses: {
-    201: { description: 'Registered', ...json(ApiSchemas.RegisteredProject) },
+    201: { description: 'Registered', ...json(ApiSchemas.RegisteredProjectResponse) },
     400: error('filesystem_path missing or not absolute, or registration failed'),
     503: error('Project registry not available'),
   },
@@ -108,7 +108,7 @@ route({
   method: 'get', path: '/api/registry/projects/{id}', tag: 'Projects', summary: 'Get a project (registry shape)',
   params: ApiSchemas.IdParam,
   responses: {
-    200: { description: 'The project', ...json(ApiSchemas.RegisteredProject) },
+    200: { description: 'The project', ...json(ApiSchemas.RegistryProjectRead) },
     404: error('Project not found'),
   },
 });
@@ -118,7 +118,7 @@ route({
   params: ApiSchemas.IdParam,
   body: ApiSchemas.UpdateProjectRequest,
   responses: {
-    200: { description: 'Updated', ...json(ApiSchemas.RegisteredProject) },
+    200: { description: 'Updated', ...json(ApiSchemas.RegisteredProjectResponse) },
     400: error('Invalid field'),
     404: error('Project not found'),
   },
@@ -127,13 +127,13 @@ route({
 route({
   method: 'delete', path: '/api/registry/projects/{id}', tag: 'Projects', summary: 'Remove a project from the registry',
   params: ApiSchemas.IdParam,
-  responses: { 200: { description: 'Deleted' }, 404: error('Project not found') },
+  responses: { 200: { description: 'Deleted', ...json(ApiSchemas.DeleteProjectResponse) }, 404: error('Project not found') },
 });
 
 route({
   method: 'post', path: '/api/sync/trigger', tag: 'Projects', summary: 'Retired: project sync',
   description: 'Always 410. Beads is the source of truth; there is nothing to sync.',
-  responses: { 410: { description: 'Retired' } },
+  responses: { 410: { description: 'Retired', ...json(ApiSchemas.RetiredSyncResponse) } },
 });
 
 // ---------------------------------------------------------------- formulas and molecules

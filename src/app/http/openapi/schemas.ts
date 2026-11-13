@@ -103,6 +103,46 @@ export const ProjectListResponseSchema = z.looseObject({
   page: PaginationSchema,
 });
 
+/** Response envelopes: what each project route actually sends around the project. */
+export const ProjectDetailResponseSchema = z.looseObject({
+  project: ProjectSummarySchema,
+  timestamp: z.string(),
+});
+
+export const BeadsRemoteResponseSchema = z.looseObject({
+  project_identifier: z.string(),
+  beads_remote: BeadsRemoteSchema,
+  timestamp: z.string(),
+});
+
+export const RegisteredProjectResponseSchema = z.looseObject({
+  message: z.string(),
+  project: RegisteredProjectSchema,
+  timestamp: z.string(),
+});
+
+/** GET /api/registry/projects/{id}: the registry shape with a timestamp, not wrapped. */
+export const RegistryProjectReadSchema = RegisteredProjectSchema.extend({ timestamp: z.string() });
+
+export const ProvisionBeadsRemoteResponseSchema = z.looseObject({
+  message: z.string(),
+  provisioning: z.looseObject({}),
+  beads_remote: BeadsRemoteSchema,
+  timestamp: z.string(),
+});
+
+export const DeleteProjectResponseSchema = z.looseObject({
+  message: z.string(),
+  identifier: z.string(),
+  timestamp: z.string(),
+});
+
+export const RetiredSyncResponseSchema = z.looseObject({
+  status: z.literal('retired'),
+  message: z.string(),
+  event_id: z.null(),
+});
+
 export const ProjectListQuerySchema = z.object({
   status: z.enum(['active', 'archived']).optional(),
   tech_stack: z.string().optional(),
@@ -214,6 +254,13 @@ export const ApiSchemas = {
   BeadsRemote: BeadsRemoteSchema,
   ProjectSummary: ProjectSummarySchema,
   RegisteredProject: RegisteredProjectSchema,
+  ProjectDetailResponse: ProjectDetailResponseSchema,
+  BeadsRemoteResponse: BeadsRemoteResponseSchema,
+  RegisteredProjectResponse: RegisteredProjectResponseSchema,
+  RegistryProjectRead: RegistryProjectReadSchema,
+  ProvisionBeadsRemoteResponse: ProvisionBeadsRemoteResponseSchema,
+  DeleteProjectResponse: DeleteProjectResponseSchema,
+  RetiredSyncResponse: RetiredSyncResponseSchema,
   ProjectListResponse: ProjectListResponseSchema,
   ProjectListQuery: ProjectListQuerySchema,
   CreateProjectRequest: CreateProjectRequestSchema,
