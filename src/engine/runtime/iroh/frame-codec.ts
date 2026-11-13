@@ -115,77 +115,109 @@ export class FrameDecoder {
     this.maxReassembledBytes = typeof maxReassembledBytes === 'function' ? maxReassembledBytes : () => maxReassembledBytes;
   }
 
+  /**
+   * Decode every complete frame in `chunk`. A chunk may end anywhere (inside a
+   * length prefix, a part header or a payload); the decoder keeps that partial
+   * state and resumes on the next chunk.
+   */
   feed(chunk: Uint8Array): string[] {
     const frames: string[] = [];
-    if (chunk.length === 0) return frames;
     const src = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
     let offset = 0;
     while (offset < src.length) {
-      const length = this.expectedLength;
-      if (this.readingPartHeader) {
-        const n = Math.min(PART_HEADER_BYTES - this.partHeaderBytes, src.length - offset);
-        src.copy(this.partHeader, this.partHeaderBytes, offset, offset + n);
-        this.partHeaderBytes += n;
-        offset += n;
-        if (this.partHeaderBytes === PART_HEADER_BYTES) this.beginPartPayload();
-      } else if (length === null) {
-        const n = Math.min(LENGTH_PREFIX_BYTES - this.prefixBytes, src.length - offset);
-        src.copy(this.prefix, this.prefixBytes, offset, offset + n);
-        this.prefixBytes += n;
-        offset += n;
-        if (this.prefixBytes === LENGTH_PREFIX_BYTES) {
-          this.prefixBytes = 0;
-          const decoded = this.prefix.readInt32BE(0);
-          if (decoded === PART_SENTINEL) {
-            this.readingPartHeader = true;
-            this.partHeaderBytes = 0;
-          } else {
-            if (this.reassemblyInProgress()) {
-              throw new IrohProtocolError(
-                `Plain Iroh frame interleaved mid frame_part sequence (expected part ${this.expectedPartIndex})`,
-              );
-            }
-            if (decoded < 0 || decoded > this.maxFrameBytes) {
-              throw new IrohProtocolError(`Iroh frame too large: ${decoded} bytes > max ${this.maxFrameBytes}`);
-            }
-            this.currentSegmentIsPart = false;
-            this.expectedLength = decoded;
-            this.payload = Buffer.alloc(decoded);
-            this.payloadBytes = 0;
-            if (decoded === 0) {
-              frames.push('');
-              this.resetSegment();
-            }
-          }
-        }
-      } else {
-        const n = Math.min(length - this.payloadBytes, src.length - offset);
-        src.copy(this.payload, this.payloadBytes, offset, offset + n);
-        this.payloadBytes += n;
-        offset += n;
-        if (this.payloadBytes === length) {
-          if (this.currentSegmentIsPart) {
-            this.pendingParts.push(this.payload);
-            this.pendingBytes += this.payload.length;
-            this.expectedPartIndex += 1;
-            const fin = this.currentPartFin;
-            this.resetSegment();
-            if (fin) frames.push(this.drainPendingParts());
-          } else {
-            frames.push(this.payload.toString('utf8'));
-            this.resetSegment();
-          }
-        }
-      }
+      offset = this.consume(src, offset, frames);
     }
     return frames;
   }
 
+  /** Read as much of the current field as `src` holds from `offset`; return the new offset. */
+  private consume(src: Buffer, offset: number, frames: string[]): number {
+    if (this.readingPartHeader) return this.readPartHeader(src, offset);
+    if (this.expectedLength === null) return this.readLengthPrefix(src, offset, frames);
+    return this.readPayload(src, offset, this.expectedLength, frames);
+  }
+
+  private readPartHeader(src: Buffer, offset: number): number {
+    const n = fill(src, offset, this.partHeader, this.partHeaderBytes);
+    this.partHeaderBytes += n;
+    if (this.partHeaderBytes === PART_HEADER_BYTES) this.beginPartPayload();
+    return offset + n;
+  }
+
+  private readLengthPrefix(src: Buffer, offset: number, frames: string[]): number {
+    const n = fill(src, offset, this.prefix, this.prefixBytes);
+    this.prefixBytes += n;
+    if (this.prefixBytes === LENGTH_PREFIX_BYTES) {
+      this.prefixBytes = 0;
+      this.beginSegment(this.prefix.readInt32BE(0), frames);
+    }
+    return offset + n;
+  }
+
+  /** A complete length prefix: either the frame_part sentinel or the size of a plain frame. */
+  private beginSegment(decoded: number, frames: string[]): void {
+    if (decoded === PART_SENTINEL) {
+      this.readingPartHeader = true;
+      this.partHeaderBytes = 0;
+      return;
+    }
+    if (this.reassemblyInProgress()) {
+      throw new IrohProtocolError(
+        `Plain Iroh frame interleaved mid frame_part sequence (expected part ${this.expectedPartIndex})`,
+      );
+    }
+    if (decoded < 0 || decoded > this.maxFrameBytes) {
+      throw new IrohProtocolError(`Iroh frame too large: ${decoded} bytes > max ${this.maxFrameBytes}`);
+    }
+    this.startPayload(decoded, false, false);
+    if (decoded === 0) {
+      frames.push('');
+      this.resetSegment();
+    }
+  }
+
+  private readPayload(src: Buffer, offset: number, length: number, frames: string[]): number {
+    const n = Math.min(length - this.payloadBytes, src.length - offset);
+    src.copy(this.payload, this.payloadBytes, offset, offset + n);
+    this.payloadBytes += n;
+    if (this.payloadBytes === length) this.completeSegment(frames);
+    return offset + n;
+  }
+
+  /** A whole payload has arrived: emit a plain frame, or bank a part and emit on FIN. */
+  private completeSegment(frames: string[]): void {
+    if (!this.currentSegmentIsPart) {
+      frames.push(this.payload.toString('utf8'));
+      this.resetSegment();
+      return;
+    }
+    this.pendingParts.push(this.payload);
+    this.pendingBytes += this.payload.length;
+    this.expectedPartIndex += 1;
+    const fin = this.currentPartFin;
+    this.resetSegment();
+    if (fin) frames.push(this.drainPendingParts());
+  }
+
+  private startPayload(length: number, isPart: boolean, fin: boolean): void {
+    this.currentSegmentIsPart = isPart;
+    this.currentPartFin = fin;
+    this.expectedLength = length;
+    this.payload = Buffer.alloc(length);
+    this.payloadBytes = 0;
+  }
+
   /** Call at end-of-stream: throws if the stream ended mid-frame. */
   finish(): void {
-    if (this.prefixBytes !== 0 || this.expectedLength !== null || this.readingPartHeader || this.reassemblyInProgress()) {
+    if (this.midFrame()) {
       throw new IrohProtocolError('Truncated Iroh frame: stream ended mid-frame');
     }
+  }
+
+  /** Any field partly read, or a frame_part sequence not yet closed by FIN. */
+  private midFrame(): boolean {
+    const partialField = this.prefixBytes !== 0 || this.expectedLength !== null || this.readingPartHeader;
+    return partialField || this.reassemblyInProgress();
   }
 
   private reassemblyInProgress(): boolean {
@@ -196,8 +228,13 @@ export class FrameDecoder {
     this.readingPartHeader = false;
     this.partHeaderBytes = 0;
     const flags = this.partHeader.readUInt8(0);
-    const index = this.partHeader.readInt32BE(1);
     const partLen = this.partHeader.readInt32BE(5);
+    this.checkPartHeader(flags, this.partHeader.readInt32BE(1), partLen);
+    this.startPayload(partLen, true, (flags & PART_FLAG_FIN) !== 0);
+  }
+
+  /** A part header must carry known flags, the next index in sequence, and a length that fits. */
+  private checkPartHeader(flags: number, index: number, partLen: number): void {
     if ((flags & ~PART_FLAG_FIN) !== 0) {
       throw new IrohProtocolError(`Unknown frame_part flags: 0x${flags.toString(16)}`);
     }
@@ -206,6 +243,11 @@ export class FrameDecoder {
         `Out-of-sequence frame_part: expected part ${this.expectedPartIndex}, received part ${index}`,
       );
     }
+    this.checkPartLength(partLen);
+  }
+
+  /** A part carries 1..maxFrameBytes bytes, and the frame it adds to stays within the reassembly cap. */
+  private checkPartLength(partLen: number): void {
     if (partLen < 1 || partLen > this.maxFrameBytes) {
       throw new IrohProtocolError(`Invalid frame_part payload length: ${partLen} bytes (max ${this.maxFrameBytes})`);
     }
@@ -213,11 +255,6 @@ export class FrameDecoder {
     if (this.pendingBytes + partLen > max) {
       throw new FrameTooLargeError(`Reassembled Iroh frame too large: ${this.pendingBytes + partLen} bytes > max ${max}`);
     }
-    this.currentSegmentIsPart = true;
-    this.currentPartFin = (flags & PART_FLAG_FIN) !== 0;
-    this.expectedLength = partLen;
-    this.payload = Buffer.alloc(partLen);
-    this.payloadBytes = 0;
   }
 
   private drainPendingParts(): string {
@@ -235,4 +272,11 @@ export class FrameDecoder {
     this.currentSegmentIsPart = false;
     this.currentPartFin = false;
   }
+}
+
+/** Copy from `src` at `offset` into `target` at `filled`, as much as both have room for; return the count. */
+function fill(src: Buffer, offset: number, target: Buffer, filled: number): number {
+  const n = Math.min(target.length - filled, src.length - offset);
+  src.copy(target, filled, offset, offset + n);
+  return n;
 }
