@@ -9,7 +9,7 @@ import { registry, Components as ApiSchemas, orchestrationAuth } from './registr
  * direction, so a route added, removed or renamed must change both.
  */
 
-type Method = 'get' | 'post' | 'patch' | 'delete';
+type Method = 'get' | 'post' | 'put' | 'patch' | 'delete';
 
 const json = (schema: ZodType) => ({ content: { 'application/json': { schema } } });
 const error = (description: string) => ({ description, ...json(ApiSchemas.ErrorResponse) });
@@ -120,6 +120,27 @@ route({
   responses: {
     200: { description: 'Updated', ...json(ApiSchemas.RegisteredProjectResponse) },
     400: error('Invalid field'),
+    404: error('Project not found'),
+  },
+});
+
+route({
+  method: 'get', path: '/api/registry/projects/{id}/role-agents', tag: 'Projects', summary: "List a project's role agents",
+  params: ApiSchemas.IdParam,
+  responses: {
+    200: { description: 'Role agents, sorted by role', ...json(ApiSchemas.RoleAgentsResponse) },
+    404: error('Project not found'),
+  },
+});
+
+route({
+  method: 'put', path: '/api/registry/projects/{id}/role-agents', tag: 'Projects', summary: "Set a project's role agents",
+  description: 'Replaces the whole set: a role not listed is removed. The scheduler builds its agent pool from these.',
+  params: ApiSchemas.IdParam,
+  body: ApiSchemas.SetRoleAgentsRequest,
+  responses: {
+    200: { description: 'Role agents set', ...json(ApiSchemas.RoleAgentsResponse) },
+    400: error('Not a valid set of role agents'),
     404: error('Project not found'),
   },
 });

@@ -33,7 +33,21 @@ interface ProjectUpdates {
 
 type ProjectDB = Pick<Registry,
   'getAllProjects' | 'getProject' | 'resolveProjectIdentifier' | 'updateProject' | 'archiveProject'
-  | 'unarchiveProject' | 'deleteProject' | 'upsertProject' | 'setProjectScan' | 'setBeadsRemoteResult'>;
+  | 'unarchiveProject' | 'deleteProject' | 'upsertProject' | 'setProjectScan' | 'setBeadsRemoteResult'
+  | 'listRoleAgents' | 'upsertRoleAgent' | 'deleteRoleAgent'>;
+
+/**
+ * The Letta server a role agent is reached through. The column predates the
+ * Iroh transport and nothing reads it now; every existing row holds this value,
+ * so new rows get it too rather than asking callers for a meaningless field.
+ */
+const ROLE_AGENT_LETTA_BASE_URL = 'http://localhost:8291';
+
+/** One role a project's runs dispatch to, and the agent that plays it. */
+export interface RoleAgentAssignment {
+  readonly roleName: string;
+  readonly agentId: string;
+}
 
 interface RegistryOptions {
   db: ProjectDB;
@@ -182,6 +196,24 @@ export class ProjectRegistry {
     const existing = this.getProject(identifier);
     if (!existing) return false;
     return this.db.deleteProject(existing.identifier);
+  }
+
+  /** The project's role agents, sorted by role. */
+  listRoleAgents(identifier: string): RoleAgentAssignment[] {
+    return this.db.listRoleAgents(identifier).map((r) => ({ roleName: r.roleName, agentId: r.agentId }));
+  }
+
+  /**
+   * Replace the project's role agents with exactly these: a role not listed is
+   * removed, each listed role is set. The caller validates the assignments.
+   */
+  setRoleAgents(identifier: string, assignments: readonly RoleAgentAssignment[]): RoleAgentAssignment[] {
+    const keep = new Set(assignments.map((a) => a.roleName));
+    for (const existing of this.db.listRoleAgents(identifier)) {
+      if (!keep.has(existing.roleName)) this.db.deleteRoleAgent(identifier, existing.roleName);
+    }
+    for (const a of assignments) this.db.upsertRoleAgent(identifier, a.roleName, a.agentId, ROLE_AGENT_LETTA_BASE_URL);
+    return this.listRoleAgents(identifier);
   }
 
   getProjectByPath(fsPath: string): ProjectRow | null {

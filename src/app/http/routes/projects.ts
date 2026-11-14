@@ -136,6 +136,31 @@ function resolveProject(db: RouteDb, requested: string): ProjectRow | undefined 
   return db.getProject(db.resolveProjectIdentifier(requested) || requested);
 }
 
+const ROLE_AGENTS_PATH = /^\/api\/registry\/projects\/[^/]+\/role-agents$/;
+const ROLE_NAME = /^[a-z][a-z0-9-]{0,63}$/;
+const AGENT_ID = /^agent-[0-9a-f-]{8,}$/;
+
+/**
+ * `{ roleAgents: [{ roleName, agentId }, ...] }`: each role named once, each
+ * agent an `agent-` id. The whole set replaces what the project had.
+ */
+function parseRoleAgents(body: Record<string, unknown>): { assignments: Array<{ roleName: string; agentId: string }> } | { error: string } {
+  const list = body.roleAgents;
+  if (!Array.isArray(list)) return { error: 'roleAgents must be an array of { roleName, agentId }' };
+  const seen = new Set<string>();
+  const assignments: Array<{ roleName: string; agentId: string }> = [];
+  for (const item of list) {
+    const roleName = typeof item?.roleName === 'string' ? item.roleName.trim() : '';
+    const agentId = typeof item?.agentId === 'string' ? item.agentId.trim() : '';
+    if (!ROLE_NAME.test(roleName)) return { error: `roleName must match ${ROLE_NAME.source}` };
+    if (!AGENT_ID.test(agentId)) return { error: `agentId for ${roleName} must be an agent- id` };
+    if (seen.has(roleName)) return { error: `role ${roleName} is listed twice` };
+    seen.add(roleName);
+    assignments.push({ roleName, agentId });
+  }
+  return { assignments };
+}
+
 function projectIdFromPath(pathname: string, segment: number): string {
   return decodeURIComponent(pathname.split('/')[segment] || '');
 }
@@ -280,6 +305,29 @@ export function registerProjectRoutes(app: App, deps: RouteDeps): void {
         logger.error({ err: error, identifier }, 'Failed to update project');
         sendError(res, 400, 'Failed to update project', { error: errorMessage(error, 'Project update failed') });
       }
+    },
+  });
+
+  app.registerRoute({
+    match: ({ pathname, method }) => method === 'GET' && ROLE_AGENTS_PATH.test(pathname),
+    handle: async ({ res, pathname }) => {
+      if (!projectRegistry) { sendError(res, 503, 'ProjectRegistry not available'); return; }
+      const project = projectRegistry.getProject(projectIdFromPath(pathname, 4));
+      if (!project) { sendError(res, 404, 'Project not found', { identifier: projectIdFromPath(pathname, 4) }); return; }
+      sendJson(res, 200, { identifier: project.identifier, roleAgents: projectRegistry.listRoleAgents(project.identifier), timestamp: now() });
+    },
+  });
+
+  app.registerRoute({
+    match: ({ pathname, method }) => method === 'PUT' && ROLE_AGENTS_PATH.test(pathname),
+    handle: async ({ req, res, pathname }) => {
+      if (!projectRegistry) { sendError(res, 503, 'ProjectRegistry not available'); return; }
+      const project = projectRegistry.getProject(projectIdFromPath(pathname, 4));
+      if (!project) { sendError(res, 404, 'Project not found', { identifier: projectIdFromPath(pathname, 4) }); return; }
+      const parsed = parseRoleAgents(await deps.parseJsonBody(req));
+      if ('error' in parsed) { sendError(res, 400, parsed.error, { field: 'roleAgents' }); return; }
+      const roleAgents = projectRegistry.setRoleAgents(project.identifier, parsed.assignments);
+      sendJson(res, 200, { message: 'Role agents set', identifier: project.identifier, roleAgents, timestamp: now() });
     },
   });
 

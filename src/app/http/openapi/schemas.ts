@@ -162,6 +162,20 @@ export const UpdateProjectRequestSchema = z.object({
   status: z.enum(['active', 'archived']).optional(),
 });
 
+export const RoleAgentSchema = z.object({
+  roleName: z.string().describe('Role a formula step dispatches to, e.g. coder; lower case, letters, digits and hyphens'),
+  agentId: z.string().describe('The Letta agent that plays the role (an agent- id)'),
+});
+
+export const SetRoleAgentsRequestSchema = z.object({
+  roleAgents: z.array(RoleAgentSchema).describe('The complete set: a role not listed is removed; each role at most once'),
+});
+
+export const RoleAgentsResponseSchema = z.looseObject({
+  identifier: z.string(),
+  roleAgents: z.array(RoleAgentSchema).describe('Sorted by role'),
+});
+
 export const ProvisionBeadsRemoteRequestSchema = z.object({
   push: z.boolean().optional().describe('Push the tracker after provisioning (default true)'),
 });
@@ -265,6 +279,9 @@ export const ApiSchemas = {
   ProjectListQuery: ProjectListQuerySchema,
   CreateProjectRequest: CreateProjectRequestSchema,
   UpdateProjectRequest: UpdateProjectRequestSchema,
+  RoleAgent: RoleAgentSchema,
+  SetRoleAgentsRequest: SetRoleAgentsRequestSchema,
+  RoleAgentsResponse: RoleAgentsResponseSchema,
   ProvisionBeadsRemoteRequest: ProvisionBeadsRemoteRequestSchema,
   FormulaSummary: FormulaSummarySchema,
   FormulaListResponse: FormulaListResponseSchema,

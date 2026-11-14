@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+
+import { buildOpenApiDocument } from '../../src/app/http/openapi/document.js';
 import { createServer } from 'http';
 import type { Server } from 'http';
 import type { AddressInfo } from 'net';
@@ -97,7 +99,9 @@ describe('OpenAPI Endpoint Integration', () => {
   it('serves every documented route, built from the route definitions, with no dist/ build artifact', async () => {
     const response = await fetch(`http://localhost:${port}/openapi.json`);
     const spec = await readOpenApiSpec(response);
-    expect(Object.keys(spec.paths).length).toBe(17);
+    // Exactly the paths the route definitions describe (a count would go stale with every new route).
+    expect(Object.keys(spec.paths).sort()).toEqual(Object.keys(buildOpenApiDocument().paths ?? {}).sort());
+    expect(spec.paths['/api/registry/projects/{id}/role-agents']).toBeDefined();
     expect(spec.paths['/formulas/{name}/run']).toBeDefined();
     expect(spec.paths['/molecules/{id}']).toBeDefined();
     expect(Object.keys(spec.components.schemas).length).toBeGreaterThan(20);

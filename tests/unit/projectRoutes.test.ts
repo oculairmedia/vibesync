@@ -72,6 +72,52 @@ describe('project registry routes', () => {
     expect((await call('GET', '/api/projects/alpha')).status).toBe(404);
   });
 
+  it('sets, replaces and lists a project\'s role agents (vibesync-9lzk.55.5)', async () => {
+    const created = await call('POST', '/api/registry/projects', { filesystem_path: repo('alpha') });
+    const id = created.body.project.identifier as string;
+    const A = 'agent-11111111-1111-4111-8111-111111111111';
+    const B = 'agent-22222222-2222-4222-8222-222222222222';
+    const C = 'agent-33333333-3333-4333-8333-333333333333';
+
+    expect((await call('GET', `/api/registry/projects/${id}/role-agents`)).body.roleAgents).toEqual([]);
+
+    const set = await call('PUT', `/api/registry/projects/${id}/role-agents`, { roleAgents: [{ roleName: 'tester', agentId: B }, { roleName: 'coder', agentId: A }] });
+    expect(set.status).toBe(200);
+    expect(set.body.roleAgents).toEqual([{ roleName: 'coder', agentId: A }, { roleName: 'tester', agentId: B }]);
+
+    // A replace: a role left out is removed, a listed role is set to its new agent.
+    const replaced = await call('PUT', `/api/registry/projects/${id}/role-agents`, { roleAgents: [{ roleName: 'coder', agentId: C }, { roleName: 'reviewer', agentId: B }] });
+    expect(replaced.body.roleAgents).toEqual([{ roleName: 'coder', agentId: C }, { roleName: 'reviewer', agentId: B }]);
+    expect((await call('GET', `/api/registry/projects/${id}/role-agents`)).body.roleAgents).toEqual(replaced.body.roleAgents);
+    // The scheduler's pool reads the same rows.
+    expect(db.listRoleAgents(id).map((r) => [r.roleName, r.agentId])).toEqual([['coder', C], ['reviewer', B]]);
+
+    // An empty list clears them.
+    expect((await call('PUT', `/api/registry/projects/${id}/role-agents`, { roleAgents: [] })).body.roleAgents).toEqual([]);
+  });
+
+  it('refuses role agents for an unknown project, and a body that is not a valid set, without changing anything', async () => {
+    const created = await call('POST', '/api/registry/projects', { filesystem_path: repo('beta') });
+    const id = created.body.project.identifier as string;
+    const A = 'agent-11111111-1111-4111-8111-111111111111';
+    await call('PUT', `/api/registry/projects/${id}/role-agents`, { roleAgents: [{ roleName: 'coder', agentId: A }] });
+
+    expect((await call('GET', '/api/registry/projects/no-such/role-agents')).status).toBe(404);
+    expect((await call('PUT', '/api/registry/projects/no-such/role-agents', { roleAgents: [] })).status).toBe(404);
+    for (const bad of [
+      {},
+      { roleAgents: 'coder' },
+      { roleAgents: [{ roleName: '', agentId: A }] },
+      { roleAgents: [{ roleName: 'Coder', agentId: A }] },
+      { roleAgents: [{ roleName: 'coder', agentId: 'not-an-agent' }] },
+      { roleAgents: [{ roleName: 'coder', agentId: A }, { roleName: 'coder', agentId: A }] },
+    ]) {
+      const res = await call('PUT', `/api/registry/projects/${id}/role-agents`, bad);
+      expect(res.status, JSON.stringify(bad)).toBe(400);
+    }
+    expect(db.listRoleAgents(id).map((r) => [r.roleName, r.agentId])).toEqual([['coder', A]]);
+  });
+
   it('rejects relative registration paths', async () => {
     expect((await call('POST', '/api/registry/projects', { filesystem_path: 'relative/path' })).status).toBe(400);
     expect((await call('POST', '/api/registry/projects', {})).status).toBe(400);
