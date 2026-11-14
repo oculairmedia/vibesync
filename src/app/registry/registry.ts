@@ -87,6 +87,9 @@ export class Registry {
     return this.projects!.roleAgents.touchRoleAgent(projectIdentifier, roleName, now);
   }
   listRoleAgents(projectIdentifier: string) { return this.projects!.roleAgents.listRoleAgents(projectIdentifier); }
+  replaceRoleAgents(projectIdentifier: string, assignments: ReadonlyArray<{ readonly roleName: string; readonly agentId: string }>, lettaBaseUrl: string, now?: number) {
+    return this.projects!.roleAgents.replaceRoleAgents(projectIdentifier, assignments, lettaBaseUrl, now);
+  }
   deleteRoleAgent(projectIdentifier: string, roleName: string): boolean { return this.projects!.roleAgents.deleteRoleAgent(projectIdentifier, roleName); }
 }
 

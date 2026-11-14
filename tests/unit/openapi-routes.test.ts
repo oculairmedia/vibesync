@@ -58,6 +58,7 @@ describe('API description matches the routes the server handles', () => {
       'GET /health',
       'GET /api/projects', 'GET /api/projects/p', 'GET /api/projects/p/beads-remote', 'POST /api/projects/p/beads-remote/provision',
       'POST /api/registry/projects', 'GET /api/registry/projects/p', 'PATCH /api/registry/projects/p', 'DELETE /api/registry/projects/p',
+      'GET /api/registry/projects/p/role-agents', 'PUT /api/registry/projects/p/role-agents',
       'POST /api/sync/trigger',
       'GET /formulas', 'POST /formulas/f/run',
       'GET /molecules', 'GET /molecules/m', 'GET /molecules/m/trace', 'GET /molecules/m/events', 'POST /molecules/m/resume', 'DELETE /molecules/m',
@@ -70,6 +71,15 @@ describe('API description matches the routes the server handles', () => {
       documented.some((r) => r.method === method && new RegExp(`^${r.path.replace(/\{[^}]+\}/g, '[^/]+')}$`).test(pathname));
     const undocumented = served.filter((s) => { const [method, pathname] = s.split(' '); return !documentedAs(method!, pathname!); });
     expect(undocumented).toEqual([]);
+  });
+
+  it('the role-agent request schema states the same rules the PUT route enforces (CodeRabbit on #178)', async () => {
+    const { RoleAgentSchema } = await import('../../src/app/http/openapi/schemas.js');
+    const ok = { roleName: 'coder', agentId: 'agent-11111111-1111-4111-8111-111111111111' };
+    expect(RoleAgentSchema.safeParse(ok).success).toBe(true);
+    for (const bad of [{ ...ok, roleName: '1coder' }, { ...ok, roleName: 'a'.repeat(65) }, { ...ok, roleName: 'Coder' }, { ...ok, agentId: 'agent-xyz' }, { ...ok, agentId: 'not-an-agent' }]) {
+      expect(RoleAgentSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
   });
 
   it('documents the orchestration token on the routes that check it', () => {

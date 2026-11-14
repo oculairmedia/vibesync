@@ -1,4 +1,6 @@
 import { z } from 'zod';
+
+import { AGENT_ID, ROLE_NAME, ROLE_NAME_MAX_LENGTH } from '../../registry/role-agent-rules.js';
 import { extendZodWithOpenApi } from '@asteasolutions/zod-to-openapi';
 
 // Extend Zod with OpenAPI capabilities
@@ -162,6 +164,21 @@ export const UpdateProjectRequestSchema = z.object({
   status: z.enum(['active', 'archived']).optional(),
 });
 
+export const RoleAgentSchema = z.object({
+  roleName: z.string().max(ROLE_NAME_MAX_LENGTH).regex(ROLE_NAME)
+    .describe('Role a formula step dispatches to, e.g. coder: lower case, starting with a letter, letters/digits/hyphens, at most 64 characters'),
+  agentId: z.string().regex(AGENT_ID).describe('The Letta agent that plays the role: agent- followed by at least 8 hex digits or hyphens'),
+});
+
+export const SetRoleAgentsRequestSchema = z.object({
+  roleAgents: z.array(RoleAgentSchema).describe('The complete set: a role not listed is removed; each role at most once'),
+});
+
+export const RoleAgentsResponseSchema = z.looseObject({
+  identifier: z.string(),
+  roleAgents: z.array(RoleAgentSchema).describe('Sorted by role'),
+});
+
 export const ProvisionBeadsRemoteRequestSchema = z.object({
   push: z.boolean().optional().describe('Push the tracker after provisioning (default true)'),
 });
@@ -265,6 +282,9 @@ export const ApiSchemas = {
   ProjectListQuery: ProjectListQuerySchema,
   CreateProjectRequest: CreateProjectRequestSchema,
   UpdateProjectRequest: UpdateProjectRequestSchema,
+  RoleAgent: RoleAgentSchema,
+  SetRoleAgentsRequest: SetRoleAgentsRequestSchema,
+  RoleAgentsResponse: RoleAgentsResponseSchema,
   ProvisionBeadsRemoteRequest: ProvisionBeadsRemoteRequestSchema,
   FormulaSummary: FormulaSummarySchema,
   FormulaListResponse: FormulaListResponseSchema,

@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { stripUrlCredentials } from '../../utils.js';
+import { AGENT_ID, ProjectNotActiveError, ROLE_NAME } from '../../registry/role-agent-rules.js';
 import type { ProjectRow } from '../../types/db.js';
 import type {
   App,
@@ -134,6 +135,30 @@ function paginate<T extends { id: string }>(items: T[], cursor: string | null, l
 
 function resolveProject(db: RouteDb, requested: string): ProjectRow | undefined {
   return db.getProject(db.resolveProjectIdentifier(requested) || requested);
+}
+
+const ROLE_AGENTS_PATH = /^\/api\/registry\/projects\/[^/]+\/role-agents$/;
+
+/**
+ * `{ roleAgents: [{ roleName, agentId }, ...] }`: each role named once, each
+ * agent an `agent-` id. The whole set replaces what the project had.
+ */
+function parseRoleAgents(body: unknown): { assignments: Array<{ roleName: string; agentId: string }> } | { error: string } {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return { error: 'body must be a JSON object' };
+  const list = (body as Record<string, unknown>).roleAgents;
+  if (!Array.isArray(list)) return { error: 'roleAgents must be an array of { roleName, agentId }' };
+  const seen = new Set<string>();
+  const assignments: Array<{ roleName: string; agentId: string }> = [];
+  for (const item of list) {
+    const roleName = typeof item?.roleName === 'string' ? item.roleName.trim() : '';
+    const agentId = typeof item?.agentId === 'string' ? item.agentId.trim() : '';
+    if (!ROLE_NAME.test(roleName)) return { error: `roleName must match ${ROLE_NAME.source}` };
+    if (!AGENT_ID.test(agentId)) return { error: `agentId for ${roleName} must be an agent- id` };
+    if (seen.has(roleName)) return { error: `role ${roleName} is listed twice` };
+    seen.add(roleName);
+    assignments.push({ roleName, agentId });
+  }
+  return { assignments };
 }
 
 function projectIdFromPath(pathname: string, segment: number): string {
@@ -280,6 +305,44 @@ export function registerProjectRoutes(app: App, deps: RouteDeps): void {
         logger.error({ err: error, identifier }, 'Failed to update project');
         sendError(res, 400, 'Failed to update project', { error: errorMessage(error, 'Project update failed') });
       }
+    },
+  });
+
+  app.registerRoute({
+    match: ({ pathname, method }) => method === 'GET' && ROLE_AGENTS_PATH.test(pathname),
+    handle: async ({ res, pathname }) => {
+      if (!projectRegistry) { sendError(res, 503, 'ProjectRegistry not available'); return; }
+      const project = projectRegistry.getProject(projectIdFromPath(pathname, 4));
+      if (!project) { sendError(res, 404, 'Project not found', { identifier: projectIdFromPath(pathname, 4) }); return; }
+      sendJson(res, 200, { identifier: project.identifier, roleAgents: projectRegistry.listRoleAgents(project.identifier), timestamp: now() });
+    },
+  });
+
+  app.registerRoute({
+    match: ({ pathname, method }) => method === 'PUT' && ROLE_AGENTS_PATH.test(pathname),
+    handle: async ({ req, res, pathname }) => {
+      if (!projectRegistry) { sendError(res, 503, 'ProjectRegistry not available'); return; }
+      const project = projectRegistry.getProject(projectIdFromPath(pathname, 4));
+      if (!project) { sendError(res, 404, 'Project not found', { identifier: projectIdFromPath(pathname, 4) }); return; }
+      // Startup deletes the role agents of any project that is not active, so a
+      // write here would report success for a set the next restart throws away.
+      if (project.status !== 'active') {
+        sendError(res, 409, 'Project is not active; unarchive it before setting role agents', { identifier: project.identifier, status: project.status });
+        return;
+      }
+      let body: unknown;
+      try { body = await deps.parseJsonBody(req); } catch { sendError(res, 400, 'Body is not valid JSON', { field: 'roleAgents' }); return; }
+      const parsed = parseRoleAgents(body);
+      if ('error' in parsed) { sendError(res, 400, parsed.error, { field: 'roleAgents' }); return; }
+      let roleAgents: Array<{ roleName: string; agentId: string }>;
+      try {
+        roleAgents = projectRegistry.setRoleAgents(project.identifier, parsed.assignments);
+      } catch (error) {
+        if (!(error instanceof ProjectNotActiveError)) throw error;
+        sendError(res, 409, 'Project is not active; unarchive it before setting role agents', { identifier: project.identifier, status: error.status });
+        return;
+      }
+      sendJson(res, 200, { message: 'Role agents set', identifier: project.identifier, roleAgents, timestamp: now() });
     },
   });
 
