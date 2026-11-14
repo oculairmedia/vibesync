@@ -85,6 +85,8 @@ describe('API description matches the routes the server handles', () => {
   it('the project update schema states the PM agent rule the PATCH route enforces', async () => {
     const { UpdateProjectRequestSchema } = await import('../../src/app/http/openapi/schemas.js');
     expect(UpdateProjectRequestSchema.safeParse({ pm_agent_id: 'agent-44444444-4444-4444-8444-444444444444' }).success).toBe(true);
+    // Surrounding spaces are trimmed, as the route trims them.
+    expect(UpdateProjectRequestSchema.safeParse({ pm_agent_id: '  agent-44444444-4444-4444-8444-444444444444  ' }).success).toBe(true);
     for (const bad of ['', 'not-an-agent', 'agent-xyz']) {
       expect(UpdateProjectRequestSchema.safeParse({ pm_agent_id: bad }).success, bad).toBe(false);
     }

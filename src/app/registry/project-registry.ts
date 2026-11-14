@@ -183,11 +183,22 @@ export class ProjectRegistry {
       ...nextUpdates,
       ...(updates.pm_agent_id !== undefined ? { letta_agent_id: updates.pm_agent_id } : {}),
     });
-    if (updated?.filesystem_path) {
-      this.db.setProjectScan(updated.identifier, this._detectTechStack(updated.filesystem_path), Date.now());
-    }
+    if (updated?.filesystem_path) this.refreshTechStack(updated.identifier, updated.filesystem_path);
 
     return this.getProject(existing.identifier);
+  }
+
+  /**
+   * Re-detect the project's tech stack after an update. The update has already
+   * committed, so a failure here must not turn into a failed update: the fields
+   * (PM agent included) are saved, and only this hint is stale. It is logged.
+   */
+  private refreshTechStack(identifier: string, filesystemPath: string): void {
+    try {
+      this.db.setProjectScan(identifier, this._detectTechStack(filesystemPath), Date.now());
+    } catch (err) {
+      this.log.warn({ err, identifier }, 'Tech-stack scan failed after a project update; the update itself was saved');
+    }
   }
 
   archiveProject(identifier: string): ProjectRow | null {

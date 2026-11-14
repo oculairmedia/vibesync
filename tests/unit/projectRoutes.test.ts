@@ -215,6 +215,34 @@ describe('project registry routes', () => {
     expect(after?.git_url).toBe(before?.git_url);
   });
 
+  it('a PM agent id with surrounding spaces is trimmed and stored', async () => {
+    const created = await call('POST', '/api/registry/projects', { filesystem_path: repo('pm5') });
+    const id = created.body.project.identifier as string;
+    const PM = 'agent-77777777-7777-4777-8777-777777777777';
+    expect((await call('PATCH', `/api/registry/projects/${id}`, { pm_agent_id: `  ${PM}  ` })).status).toBe(200);
+    expect(registryPmAgentLookup(db)(id)).toBe(PM);
+  });
+
+  it('a tech-stack scan that fails after the update committed does not fail the update (CodeRabbit on #179)', async () => {
+    const created = await call('POST', '/api/registry/projects', { filesystem_path: repo('pm6') });
+    const id = created.body.project.identifier as string;
+    const PM = 'agent-88888888-8888-4888-8888-888888888888';
+    const projects = (db as unknown as { projects: { db: { prepare: (sql: string) => unknown } } }).projects;
+    const realPrepare = projects.db.prepare.bind(projects.db);
+    projects.db.prepare = (sql: string) => {
+      if (sql.startsWith('UPDATE projects SET tech_stack')) throw new Error('scan write failed');
+      return realPrepare(sql);
+    };
+    try {
+      const res = await call('PATCH', `/api/registry/projects/${id}`, { pm_agent_id: PM, git_url: 'https://github.com/o/scan.git' });
+      expect(res.status).toBe(200);
+    } finally {
+      projects.db.prepare = realPrepare;
+    }
+    expect(registryPmAgentLookup(db)(id)).toBe(PM);
+    expect(db.getProject(id)?.git_url).toBe('https://github.com/o/scan.git');
+  });
+
   it('an archived project keeps its PM agent, so unarchiving restores it ready to wake', async () => {
     const created = await call('POST', '/api/registry/projects', { filesystem_path: repo('pm3') });
     const id = created.body.project.identifier as string;

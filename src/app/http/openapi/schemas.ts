@@ -162,7 +162,7 @@ export const UpdateProjectRequestSchema = z.object({
   filesystem_path: z.string().optional().describe('Absolute path'),
   git_url: z.string().optional(),
   status: z.enum(['active', 'archived']).optional(),
-  pm_agent_id: z.string().regex(AGENT_ID).optional()
+  pm_agent_id: z.string().trim().regex(AGENT_ID).optional()
     .describe("The project's PM agent (an agent- id): the agent woken for its ready work and sent its escalations"),
 });
 
