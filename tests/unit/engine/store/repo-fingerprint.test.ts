@@ -26,6 +26,65 @@ function expectedRepoId(canonical: string): string {
   return createHash('sha256').update(canonical).digest('hex').slice(0, 32);
 }
 
+describe('canonicalizeGitURL: the exact canonical forms (characterisation before refactoring, vibesync-ji3w)', () => {
+  const deps = makeDeps({ realpath: (p) => `/real${p}` });
+  it.each([
+    ['https://GitHub.com/Owner/Repo.git', 'github.com/Owner/Repo'],
+    ['https://github.com:8443/owner/repo.git', 'github.com:8443/owner/repo'],
+    ['ssh://git@github.com:22/owner/repo.git', 'github.com/owner/repo'],
+    ['http://github.com:80/owner/repo/', 'github.com/owner/repo'],
+    ['https://github.com:443/owner/repo', 'github.com/owner/repo'],
+    ['  https://github.com/owner/repo.git  ', 'github.com/owner/repo'],
+    ['git@GitHub.com:owner/repo.git', 'github.com/owner/repo'],
+    ['user@host@example.com:owner/repo.git/', 'example.com/owner/repo'],
+    ['example.com:owner\\repo.git', 'example.com/owner/repo'],
+    ['host:repo', 'host/repo'],
+    ['C:/work/repo', '/real' + process.cwd().replace(/\\/g, '/') + '/C:/work/repo'],
+  ])('%s -> %s', (url, expected) => {
+    if (url.startsWith('C:')) {
+      // A Windows drive path is a local path, not scp-style: resolved and realpath-ed.
+      expect(canonicalizeGitURL(url, deps)).not.toBe('c/work/repo');
+      expect(canonicalizeGitURL(url, deps).startsWith('/real')).toBe(true);
+      return;
+    }
+    expect(canonicalizeGitURL(url, deps)).toBe(expected);
+  });
+
+  it('surrounding spaces are trimmed from an scp-style remote too', () => {
+    expect(canonicalizeGitURL('  git@host.example:owner/repo.git  ', deps)).toBe('host.example/owner/repo');
+  });
+
+  it('an ssh:// host is lowercased (the URL parser leaves a non-web scheme\'s host case alone)', () => {
+    expect(canonicalizeGitURL('ssh://git@GitHub.com/owner/repo.git', deps)).toBe('github.com/owner/repo');
+  });
+
+  it('backslashes in an ssh:// path become slashes', () => {
+    expect(canonicalizeGitURL('ssh://git@host.example/owner\\repo.git', deps)).toBe('host.example/owner/repo');
+  });
+
+  it('a Windows drive path with a backslash is a local path too, not scp-style', () => {
+    const got = canonicalizeGitURL('C:\\work\\repo', deps);
+    expect(got.startsWith('/real')).toBe(true);
+    expect(got).not.toBe('c/work/repo');
+  });
+
+  it('a colon after the first slash is a local path, not scp-style', () => {
+    expect(canonicalizeGitURL('./dir:with/colon', deps)).toBe(`/real${process.cwd()}/dir:with/colon`);
+    expect(canonicalizeGitURL('/abs/path/repo', deps)).toBe('/real/abs/path/repo');
+  });
+});
+
+describe('computeRepoId fallbacks', () => {
+  it('a remote that cannot be parsed falls back to the project path', () => {
+    const id = computeRepoId('/srv/p', makeDeps({ readGitRemote: () => 'https://[broken', realpath: () => '/real/srv/p' }));
+    expect(id).toBe(expectedRepoId('/real/srv/p'));
+  });
+
+  it('is null when there is no remote and the path cannot be resolved', () => {
+    expect(computeRepoId('/srv/p', makeDeps({ realpath: () => { throw new Error('gone'); } }))).toBeNull();
+  });
+});
+
 describe('canonicalizeGitURL', () => {
   it('canonicalizes https URLs by lowercasing host and stripping .git', () => {
     expect(canonicalizeGitURL('https://GitHub.com/oculairmedia/letta-mobile.git')).toBe(
