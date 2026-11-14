@@ -497,7 +497,7 @@ export class SchedulerDaemon {
     }
   }
 
-  /** Tell the observer (it wakes the project PM); a throw is logged and never stops the expiry. */
+  /** Tell the expiry observer; a throw is logged and never stops the expiry. */
   private notifyRunExpired(input: { workBeadId: string; moleculeId: string | undefined; deadlineMs: number; elapsedMs: number }): void {
     try {
       this.deps.onRunExpired?.(input);

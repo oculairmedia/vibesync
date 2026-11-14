@@ -339,14 +339,14 @@ describe('SchedulerDaemon — run deadline (vibesync-izn3)', () => {
   });
 
   it('4e. an observer that throws does not stop the expiry: the run is still cancelled and its slot freed', async () => {
-    const h = harness({ beads: ['w1'], onRunExpired: () => { throw new Error('pm wake failed'); } });
+    const h = harness({ beads: ['w1'], onRunExpired: () => { throw new Error('observer failed'); } });
     await h.daemon.tick();
     await vi.advanceTimersByTimeAsync(DEADLINE);
     await flush();
     expect(h.cancels).toEqual(['mol-w1-1']);
     expect(h.onComplete).toHaveBeenCalledTimes(1);
     expect(h.failuresFor('w1')).toBe(1);
-    expect(h.logs.find((l) => l.m.includes('onRunExpired observer failed'))?.o).toMatchObject({ workBeadId: 'w1', error: 'pm wake failed' });
+    expect(h.logs.find((l) => l.m.includes('onRunExpired observer failed'))?.o).toMatchObject({ workBeadId: 'w1', error: 'observer failed' });
     expect(h.logs.some((l) => l.m.includes('deadline handling failed'))).toBe(false);
   });
 
