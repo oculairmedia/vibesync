@@ -71,40 +71,54 @@ export const defaultRepoFingerprintDeps: RepoFingerprintDeps = {
  */
 export function canonicalizeGitURL(rawURL: string, deps: RepoFingerprintDeps = defaultRepoFingerprintDeps): string {
   const url = rawURL.trim();
-
-  // scheme://
-  if (url.includes('://')) {
-    const parsed = new URL(url);
-    let host = parsed.hostname.toLowerCase();
-    const port = parsed.port;
-    if (port && port !== '22' && port !== '80' && port !== '443') {
-      host = `${host}:${port}`;
-    }
-    let path = parsed.pathname.replace(/\/+$/, '');
-    if (path.endsWith('.git')) path = path.slice(0, -4);
-    path = path.replace(/\\/g, '/');
-    return host + path;
-  }
-
-  // scp-style: [user@]host:path
-  const colonIdx = url.indexOf(':');
-  const slashIdx = url.indexOf('/');
-  if (colonIdx > 0 && (slashIdx === -1 || colonIdx < slashIdx)) {
-    // Windows path shortcut: C:/foo
-    const looksWindows = colonIdx === 1 && url.length > 2 && (url[2] === '/' || url[2] === '\\');
-    if (!looksWindows) {
-      const [hostPart, pathPart] = [url.slice(0, colonIdx), url.slice(colonIdx + 1)];
-      const atIdx = hostPart.lastIndexOf('@');
-      const host = (atIdx >= 0 ? hostPart.slice(atIdx + 1) : hostPart).toLowerCase();
-      let path = pathPart.replace(/\/+$/, '');
-      if (path.endsWith('.git')) path = path.slice(0, -4);
-      path = path.replace(/\\/g, '/');
-      return `${host}/${path}`;
-    }
-  }
-
-  // Local path
+  if (url.includes('://')) return canonicalSchemeURL(url);
+  if (isScpStyle(url)) return canonicalScpURL(url);
   return deps.realpath(resolvePath(url)).replace(/\\/g, '/');
+}
+
+/** A scheme URL: lowercased host, non-default port kept, path without trailing slashes or .git. */
+function canonicalSchemeURL(url: string): string {
+  const parsed = new URL(url);
+  const host = parsed.hostname.toLowerCase();
+  const port = DEFAULT_PORTS.has(parsed.port) ? '' : `:${parsed.port}`;
+  return host + port + canonicalRepoPath(parsed.pathname);
+}
+
+const DEFAULT_PORTS: ReadonlySet<string> = new Set(['', '22', '80', '443']);
+
+/**
+ * `[user@]host:path`, where the colon comes before any slash. A Windows drive
+ * path (`C:/x`, `C:\\x`) has the same shape and is a local path instead.
+ */
+function isScpStyle(url: string): boolean {
+  const colonIdx = url.indexOf(':');
+  if (colonIdx <= 0 || slashBefore(url, colonIdx)) return false;
+  return !isWindowsDrivePath(url, colonIdx);
+}
+
+/** Whether a `/` appears before position `idx`. */
+function slashBefore(url: string, idx: number): boolean {
+  const slashIdx = url.indexOf('/');
+  return slashIdx !== -1 && slashIdx < idx;
+}
+
+function isWindowsDrivePath(url: string, colonIdx: number): boolean {
+  return colonIdx === 1 && url.length > 2 && (url[2] === '/' || url[2] === '\\');
+}
+
+/** scp style: the host after the last `@`, lowercased, then the repository path. */
+function canonicalScpURL(url: string): string {
+  const colonIdx = url.indexOf(':');
+  const hostPart = url.slice(0, colonIdx);
+  const host = hostPart.slice(hostPart.lastIndexOf('@') + 1).toLowerCase();
+  return `${host}/${canonicalRepoPath(url.slice(colonIdx + 1))}`;
+}
+
+/** A repository path without trailing slashes or a `.git` suffix, with forward slashes. */
+function canonicalRepoPath(path: string): string {
+  const trimmed = path.replace(/\/+$/, '');
+  const withoutGit = trimmed.endsWith('.git') ? trimmed.slice(0, -4) : trimmed;
+  return withoutGit.replace(/\\/g, '/');
 }
 
 function sha256Hex16(input: string): string {
