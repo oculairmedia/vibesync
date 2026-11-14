@@ -137,19 +137,19 @@ it('a durable send that throws fails closed and backs off: no new wake inside th
   h.waker.dispose();
 });
 
-it('no PM agent: one warning, one skipped event, and the warning returns after an agent comes and goes', async () => {
+it('no agent to wake: one warning, one skipped event, and the warning returns after an agent comes and goes', async () => {
   let agent: string | null = null;
   const h = harness({ enqueue: async () => record('w') }, { lookup: () => agent });
   await h.waker.idle();
   await h.tick();
   await h.tick();
-  expect(h.warns.filter((w) => w.m.includes('has no PM agent'))).toHaveLength(1);
-  expect(h.events.filter((e) => e.kind === PM_WAKE_SKIPPED_EVENT && e.payload['why'] === 'no-pm-agent')).toHaveLength(1);
+  expect(h.warns.filter((w) => w.m.includes('has no agent to wake'))).toHaveLength(1);
+  expect(h.events.filter((e) => e.kind === PM_WAKE_SKIPPED_EVENT && e.payload['why'] === 'no-agent')).toHaveLength(1);
   agent = 'pm';
   await h.tick();
   agent = null;
   await h.tick();
-  expect(h.warns.filter((w) => w.m.includes('has no PM agent'))).toHaveLength(2);
+  expect(h.warns.filter((w) => w.m.includes('has no agent to wake'))).toHaveLength(2);
   h.waker.dispose();
 });
 

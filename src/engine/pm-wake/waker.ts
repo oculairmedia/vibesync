@@ -411,9 +411,9 @@ export class PmWaker {
   private noteNoAgent(project: string): void {
     if (!this.warnedNoAgent) {
       this.warnedNoAgent = true;
-      this.deps.logger?.warn?.({ project }, 'pm-wake: project has no PM agent (letta_agent_id) — not waking');
+      this.deps.logger?.warn?.({ project }, 'pm-wake: project has no agent to wake (letta_agent_id) — not waking');
     }
-    this.notifySkipped('any', 'no-pm-agent');
+    this.notifySkipped('any', 'no-agent');
   }
 
   private async sendDurable(input: PmWakeInput, now: number): Promise<void> {
