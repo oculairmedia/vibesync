@@ -431,7 +431,7 @@ describe('PM wake (vibesync-2bgv)', () => {
     expect(s.calls).toHaveLength(0);
     expect(woken).toHaveLength(0);
     expect(lookup).toHaveBeenCalledWith(PROJECT);
-    expect(warn.mock.calls.filter(([, m]) => String(m).includes('no PM agent'))).toHaveLength(1);
+    expect(warn.mock.calls.filter(([, m]) => String(m).includes('no agent to wake'))).toHaveLength(1);
 
     lookup.mockImplementation(() => 'agent-from-lookup');
     await vi.advanceTimersByTimeAsync(2 * MIN);
@@ -447,7 +447,7 @@ describe('PM wake (vibesync-2bgv)', () => {
       db.upsertProject({ identifier: PROJECT, name: 'Proj X' });
       const { handle } = await boot({ sink: s.sink, lookup: registryPmAgentLookup(db), pmWake: { backstopMs: 2 * MIN } });
 
-      // Row exists but has no PM agent yet -> no wake.
+      // Row exists but has no agent to wake yet -> no wake.
       await vi.advanceTimersByTimeAsync(5 * MIN);
       expect(s.calls).toHaveLength(0);
 
