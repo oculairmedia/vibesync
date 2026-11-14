@@ -178,10 +178,38 @@ export interface BdFormulaResolverOptions {
   readonly logger?: Pick<DaemonLogger, 'warn'>;
 }
 
+/** An optional bead metadata setting: where it lives, what makes it valid, and how a bad value is reported. */
+interface MetadataSetting<T> {
+  readonly key: string;
+  readonly valid: (value: unknown) => value is T;
+  readonly logField: string;
+  readonly warning: string;
+}
+
+const STEP_TIMEOUT_SETTING: MetadataSetting<number> = {
+  key: 'step_timeout_ms',
+  valid: (v): v is number => typeof v === 'number' && Number.isInteger(v) && v > 0,
+  logField: 'stepTimeoutMs',
+  warning: 'Ignoring invalid step_timeout_ms metadata',
+};
+
+const WORKDIR_SETTING: MetadataSetting<string> = {
+  key: 'workdir',
+  valid: (v): v is string => typeof v === 'string' && v.length > 0 && v.startsWith('/'),
+  logField: 'workdir',
+  warning: 'Ignoring invalid workdir metadata',
+};
+
+/** A bead's metadata when it is a plain object, else null. */
+function metadataOf(bead: Row): Row | null {
+  const metadata = bead['metadata'];
+  return typeof metadata === 'object' && metadata !== null && !Array.isArray(metadata) ? (metadata as Row) : null;
+}
+
 export class BdFormulaResolver implements FormulaResolver {
   private readonly formula: Pack['formulas'][number];
-  private readonly warnedInvalidStepTimeoutBeadIds = new Set<string>();
-  private readonly warnedInvalidWorkdirBeadIds = new Set<string>();
+  /** Beads already warned about, per metadata key. */
+  private readonly warnedInvalid = new Map<string, Set<string>>();
 
   constructor(private readonly opts: BdFormulaResolverOptions) {
     const formula = opts.pack.formulas.find((f) => f.name === opts.formulaName);
@@ -200,27 +228,9 @@ export class BdFormulaResolver implements FormulaResolver {
     if (!bead || bead['status'] === 'closed') return null;
     const title = String(bead['title'] ?? '');
     const description = String(bead['description'] ?? '');
-    const metadata = bead['metadata'];
-    const rawStepTimeoutMs = typeof metadata === 'object' && metadata !== null && !Array.isArray(metadata)
-      ? (metadata as Row)['step_timeout_ms']
-      : undefined;
-    const stepTimeoutMs = typeof rawStepTimeoutMs === 'number' && Number.isInteger(rawStepTimeoutMs) && rawStepTimeoutMs > 0
-      ? rawStepTimeoutMs
-      : undefined;
-    const rawWorkdir = typeof metadata === 'object' && metadata !== null && !Array.isArray(metadata)
-      ? (metadata as Row)['workdir']
-      : undefined;
-    const workdir = typeof rawWorkdir === 'string' && rawWorkdir.length > 0 && rawWorkdir.startsWith('/')
-      ? rawWorkdir
-      : undefined;
-    if (rawStepTimeoutMs !== undefined && stepTimeoutMs === undefined && !this.warnedInvalidStepTimeoutBeadIds.has(workBeadId)) {
-      this.warnedInvalidStepTimeoutBeadIds.add(workBeadId);
-      this.opts.logger?.warn?.({ workBeadId, stepTimeoutMs: rawStepTimeoutMs }, 'Ignoring invalid step_timeout_ms metadata');
-    }
-    if (rawWorkdir !== undefined && workdir === undefined && !this.warnedInvalidWorkdirBeadIds.has(workBeadId)) {
-      this.warnedInvalidWorkdirBeadIds.add(workBeadId);
-      this.opts.logger?.warn?.({ workBeadId, workdir: rawWorkdir }, 'Ignoring invalid workdir metadata');
-    }
+    const metadata = metadataOf(bead);
+    const stepTimeoutMs = this.validSetting(workBeadId, metadata, STEP_TIMEOUT_SETTING);
+    const workdir = this.validSetting(workBeadId, metadata, WORKDIR_SETTING);
     return {
       formula: this.formula,
       pack: this.opts.pack,
@@ -229,6 +239,23 @@ export class BdFormulaResolver implements FormulaResolver {
       ...(stepTimeoutMs !== undefined ? { stepTimeoutMs } : {}),
       ...(workdir !== undefined ? { workdir } : {}),
     };
+  }
+
+  /**
+   * A bead's optional metadata setting: its value when valid, else undefined.
+   * An invalid value is ignored with one warning per bead.
+   */
+  private validSetting<T>(workBeadId: string, metadata: Row | null, setting: MetadataSetting<T>): T | undefined {
+    const raw = metadata?.[setting.key];
+    if (raw === undefined) return undefined;
+    if (setting.valid(raw)) return raw;
+    const warned = this.warnedInvalid.get(setting.key) ?? new Set<string>();
+    this.warnedInvalid.set(setting.key, warned);
+    if (!warned.has(workBeadId)) {
+      warned.add(workBeadId);
+      this.opts.logger?.warn?.({ workBeadId, [setting.logField]: raw }, setting.warning);
+    }
+    return undefined;
   }
 }
 
