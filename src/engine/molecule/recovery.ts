@@ -83,7 +83,7 @@ async function unfinishedSteps(store: RecoveryStore, rootId: string): Promise<Be
   const steps: BeadRow[] = [];
   for (const id of childIds) {
     const step = await store.getBead(id);
-    if (step && step.issue_type === 'molecule_step' && step.status !== 'closed') steps.push(step);
+    if (step && isUnfinishedStep(step)) steps.push(step);
   }
   return steps;
 }
@@ -94,31 +94,58 @@ async function unfinishedSteps(store: RecoveryStore, rootId: string): Promise<Be
  * guessing, since bd could close neither side.
  */
 async function blockersFirst(store: RecoveryStore, steps: readonly BeadRow[]): Promise<BeadRow[]> {
+  const graph = await blockGraph(store, steps);
+  const order = drainInDependencyOrder(steps, graph);
+  if (order.length !== steps.length) throw new Error('step dependency cycle; cannot order closes');
+  return order;
+}
+
+interface BlockGraph {
+  /** Open blockers each step still waits on. */
+  readonly waitingOn: Map<string, number>;
+  /** The steps each step blocks. */
+  readonly dependents: Map<string, string[]>;
+}
+
+/** The blocks edges among these steps only: a blocker outside the molecule, or any other edge type, is ignored. */
+async function blockGraph(store: RecoveryStore, steps: readonly BeadRow[]): Promise<BlockGraph> {
   const ids = new Set(steps.map((s) => s.id));
-  const waitingOn = new Map<string, number>(steps.map((s) => [s.id, 0])); // open blockers per step
+  const waitingOn = new Map<string, number>(steps.map((s) => [s.id, 0]));
   const dependents = new Map<string, string[]>(steps.map((s) => [s.id, []]));
   for (const step of steps) {
     for (const edge of await store.getBeadDependencies(step.id)) {
-      // edge.issue_id is blocked by edge.depends_on_id
-      if (edge.type !== 'blocks' || edge.issue_id !== step.id || !ids.has(edge.depends_on_id)) continue;
+      if (!isBlockerWithin(edge, step.id, ids)) continue;
       waitingOn.set(step.id, waitingOn.get(step.id)! + 1);
       dependents.get(edge.depends_on_id)!.push(step.id);
     }
   }
+  return { waitingOn, dependents };
+}
+
+/** `edge` says this step is blocked by another step of the same molecule (edge.issue_id is blocked by edge.depends_on_id). */
+function isBlockerWithin(edge: { readonly issue_id: string; readonly depends_on_id: string; readonly type: string }, stepId: string, ids: ReadonlySet<string>): boolean {
+  return edge.type === 'blocks' && edge.issue_id === stepId && ids.has(edge.depends_on_id);
+}
+
+/** Emit each step once every step it waits on has been emitted; a step in a cycle is never emitted. */
+function drainInDependencyOrder(steps: readonly BeadRow[], graph: BlockGraph): BeadRow[] {
   const byId = new Map(steps.map((s) => [s.id, s]));
-  const queue = steps.filter((s) => waitingOn.get(s.id) === 0).map((s) => s.id);
+  const queue = steps.filter((s) => graph.waitingOn.get(s.id) === 0).map((s) => s.id);
   const order: BeadRow[] = [];
   while (queue.length > 0) {
     const id = queue.shift()!;
     order.push(byId.get(id)!);
-    for (const dependent of dependents.get(id)!) {
-      const left = waitingOn.get(dependent)! - 1;
-      waitingOn.set(dependent, left);
+    for (const dependent of graph.dependents.get(id)!) {
+      const left = graph.waitingOn.get(dependent)! - 1;
+      graph.waitingOn.set(dependent, left);
       if (left === 0) queue.push(dependent);
     }
   }
-  if (order.length !== steps.length) throw new Error('step dependency cycle; cannot order closes');
   return order;
+}
+
+function isUnfinishedStep(bead: BeadRow): boolean {
+  return bead.issue_type === 'molecule_step' && bead.status !== 'closed';
 }
 
 function motivatingBead(root: BeadRow): string | undefined {
