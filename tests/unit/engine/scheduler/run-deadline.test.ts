@@ -74,6 +74,10 @@ function harness(opts: {
   cancelMode?: CancelMode;
   /** When false the fake dispatcher never calls onStarted (no molecule id is learned). */
   reportMolecule?: boolean;
+  /** The daemon's onRunExpired observer. */
+  onRunExpired?: (input: { workBeadId: string; moleculeId: string | undefined; deadlineMs: number; elapsedMs: number }) => void;
+  /** The daemon's onTickRequested observer. */
+  onTickRequested?: (reason: string, detail: string | undefined) => void;
 }) {
   const runs: Run[] = [];
   const cancels: string[] = [];
@@ -135,6 +139,8 @@ function harness(opts: {
     config: () => ({ poolSize: opts.poolSize ?? 1, batchSize: 10, paused: false }),
     ...(opts.runDeadlineMs !== undefined ? { runDeadlineMs: opts.runDeadlineMs } : { runDeadlineMs: DEADLINE }),
     ...(opts.runDeadlineFor ? { runDeadlineFor: opts.runDeadlineFor } : {}),
+    ...(opts.onRunExpired ? { onRunExpired: opts.onRunExpired } : {}),
+    ...(opts.onTickRequested ? { onTickRequested: opts.onTickRequested } : {}),
     onTick: (r: DaemonTickReport) => { reports.push(r); },
     logger: {
       info: (o: unknown, m: string) => { logs.push({ level: 'info', o: o as Record<string, unknown>, m }); },
@@ -323,6 +329,46 @@ describe('SchedulerDaemon — run deadline (vibesync-izn3)', () => {
     expect(h.failuresFor('w1')).toBe(1);
   });
 
+  it('4d. the expiry observer is told once, with the bead, the molecule and the timings', async () => {
+    const seen: unknown[] = [];
+    const h = harness({ beads: ['w1'], onRunExpired: (i) => { seen.push(i); } });
+    await h.daemon.tick();
+    await vi.advanceTimersByTimeAsync(DEADLINE);
+    await flush();
+    expect(seen).toEqual([{ workBeadId: 'w1', moleculeId: 'mol-w1-1', deadlineMs: DEADLINE, elapsedMs: DEADLINE }]);
+  });
+
+  it('4e. an observer that throws does not stop the expiry: the run is still cancelled and its slot freed', async () => {
+    const h = harness({ beads: ['w1'], onRunExpired: () => { throw new Error('observer failed'); } });
+    await h.daemon.tick();
+    await vi.advanceTimersByTimeAsync(DEADLINE);
+    await flush();
+    expect(h.cancels).toEqual(['mol-w1-1']);
+    expect(h.onComplete).toHaveBeenCalledTimes(1);
+    expect(h.failuresFor('w1')).toBe(1);
+    expect(h.logs.find((l) => l.m.includes('onRunExpired observer failed'))?.o).toMatchObject({ workBeadId: 'w1', error: 'observer failed' });
+    expect(h.logs.some((l) => l.m.includes('deadline handling failed'))).toBe(false);
+  });
+
+  it('4f. a failed cancel is contained in the cancel step: one "cancel failed" warning, no "deadline handling failed"', async () => {
+    const h = harness({ beads: ['w1'], cancelMode: 'throw' });
+    await h.daemon.tick();
+    await vi.advanceTimersByTimeAsync(DEADLINE);
+    await flush();
+    expect(h.logs.filter((l) => l.m.includes('cancel of expired run failed'))).toHaveLength(1);
+    expect(h.logs.some((l) => l.m.includes('deadline handling failed'))).toBe(false);
+    expect(h.onComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('4g. the expired run fails with a message naming its deadline and how long it ran', async () => {
+    const h = harness({ beads: ['w1'] });
+    await h.daemon.tick();
+    await vi.advanceTimersByTimeAsync(DEADLINE);
+    await flush();
+    const failed = h.logs.find((l) => l.m.includes('dispatch failed'));
+    expect(failed?.o['error']).toBe(`run exceeded its deadline of ${DEADLINE}ms (cancelled after ${DEADLINE}ms)`);
+  });
+
   it('5. three deadline expiries on the same bead circuit-break it: no 4th dispatch', async () => {
     const h = harness({ beads: ['w1'] });
     for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -352,6 +398,31 @@ describe('SchedulerDaemon — run deadline (vibesync-izn3)', () => {
     await vi.advanceTimersByTimeAsync(DEADLINE * 5);
     expect(h.cancels).toEqual([]);
     expect(h.onComplete).not.toHaveBeenCalled();
+  });
+
+  it('6c. stop() with a run still in flight says so and names its bead; with none it just says stopped', async () => {
+    const h = harness({ beads: ['w1'] });
+    h.daemon.run(INTERVAL);
+    await h.daemon.tick();
+    await h.daemon.stop();
+    const stopped = h.logs.find((l) => l.m.startsWith('daemon: stopped'));
+    expect(stopped?.m).toBe('daemon: stopped — runs still in flight were NOT awaited');
+    expect(stopped?.o['inFlightWorkBeadIds']).toEqual(['w1']);
+
+    const idle = harness({ beads: [] });
+    idle.daemon.run(INTERVAL);
+    await idle.daemon.stop();
+    expect(idle.logs.find((l) => l.m.startsWith('daemon: stopped'))?.m).toBe('daemon: stopped');
+  });
+
+  it('6d. a tick-request observer that throws does not block the tick', async () => {
+    const h = harness({ beads: ['w1'], onTickRequested: () => { throw new Error('observer down'); } });
+    h.daemon.run(INTERVAL);
+    expect(h.daemon.requestTick('run-finished')).toBe('started');
+    await flush();
+    expect(h.runsFor('w1')).toHaveLength(1);
+    expect(h.logs.find((l) => l.m.includes('onTickRequested observer failed'))?.o).toMatchObject({ error: 'observer down', reason: 'run-finished' });
+    await h.daemon.stop();
   });
 
   it('6b. stop() during the cancel grace window also leaves no timer', async () => {
