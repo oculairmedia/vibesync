@@ -55,7 +55,7 @@ export interface ProjectRegistryApi {
   registerProject: (path: string) => ProjectRow | null;
   getProject: (id: string) => ProjectRow | null;
   getProjects: (filters?: ProjectFilters) => ProjectRow[];
-  updateProject: (id: string, updates: { name?: string; filesystem_path?: string; git_url?: string; status?: string }) => ProjectRow | null;
+  updateProject: (id: string, updates: { name?: string; filesystem_path?: string; git_url?: string; status?: string; pm_agent_id?: string }) => ProjectRow | null;
   deleteProject: (id: string) => boolean;
   /** Role name and agent id for each role the project's runs dispatch to, sorted by role. */
   listRoleAgents: (id: string) => Array<{ roleName: string; agentId: string }>;

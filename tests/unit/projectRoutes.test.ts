@@ -14,6 +14,7 @@ import { createApiServer } from '../../src/app/http/server.js';
 import { createRegistry, type Registry } from '../../src/app/registry/registry.js';
 import { ProjectRegistry } from '../../src/app/registry/project-registry.js';
 import type { DoltHubProvisionerApi } from '../../src/app/types/api.js';
+import { registryPmAgentLookup } from '../../src/engine/pm-wake/waker.js';
 
 describe('project registry routes', () => {
   let dir: string;
@@ -185,6 +186,65 @@ describe('project registry routes', () => {
     const res = await fetch(`${base}/api/registry/projects/x/role-agents`, { method: 'OPTIONS' });
     expect(res.status).toBe(204);
     expect(res.headers.get('access-control-allow-methods')).toContain('PUT');
+  });
+
+  it('sets a project\'s PM agent, which is the agent the engine wakes for that project (vibesync-9lzk.55.5)', async () => {
+    const created = await call('POST', '/api/registry/projects', { filesystem_path: repo('pm1') });
+    const id = created.body.project.identifier as string;
+    const PM = 'agent-44444444-4444-4444-8444-444444444444';
+    expect(registryPmAgentLookup(db)(id)).toBeNull();
+    const res = await call('PATCH', `/api/registry/projects/${id}`, { pm_agent_id: PM });
+    expect(res.status).toBe(200);
+    expect(res.body.project.letta_agent_id).toBe(PM);
+    expect(registryPmAgentLookup(db)(id)).toBe(PM);
+    // An update that does not name the PM agent leaves it alone.
+    await call('PATCH', `/api/registry/projects/${id}`, { git_url: 'https://github.com/o/other.git' });
+    expect(registryPmAgentLookup(db)(id)).toBe(PM);
+  });
+
+  it('refuses a PM agent that is not an agent- id with 400, and changes nothing (not even the other fields)', async () => {
+    const created = await call('POST', '/api/registry/projects', { filesystem_path: repo('pm2') });
+    const id = created.body.project.identifier as string;
+    const before = db.getProject(id);
+    for (const bad of ['', 'not-an-agent', 'agent-xyz', 42]) {
+      const res = await call('PATCH', `/api/registry/projects/${id}`, { pm_agent_id: bad, git_url: 'https://github.com/o/changed.git' });
+      expect(res.status, JSON.stringify(bad)).toBe(400);
+    }
+    const after = db.getProject(id);
+    expect(after?.letta_agent_id).toBe(before?.letta_agent_id);
+    expect(after?.git_url).toBe(before?.git_url);
+  });
+
+  it('an archived project keeps its PM agent, so unarchiving restores it ready to wake', async () => {
+    const created = await call('POST', '/api/registry/projects', { filesystem_path: repo('pm3') });
+    const id = created.body.project.identifier as string;
+    const PM = 'agent-55555555-5555-4555-8555-555555555555';
+    await call('PATCH', `/api/registry/projects/${id}`, { pm_agent_id: PM });
+    await call('PATCH', `/api/registry/projects/${id}`, { status: 'archived' });
+    expect(registryPmAgentLookup(db)(id)).toBe(PM);
+    await call('PATCH', `/api/registry/projects/${id}`, { status: 'active' });
+    expect(registryPmAgentLookup(db)(id)).toBe(PM);
+  });
+
+  it('the PM agent and the other fields are one write: a failure writing them leaves all of them as they were', async () => {
+    const created = await call('POST', '/api/registry/projects', { filesystem_path: repo('pm4') });
+    const id = created.body.project.identifier as string;
+    const before = db.getProject(id);
+    const projects = (db as unknown as { projects: { db: { prepare: (sql: string) => unknown } } }).projects;
+    const realPrepare = projects.db.prepare.bind(projects.db);
+    projects.db.prepare = (sql: string) => {
+      if (sql.startsWith('UPDATE projects SET name')) throw new Error('disk full');
+      return realPrepare(sql);
+    };
+    try {
+      const res = await call('PATCH', `/api/registry/projects/${id}`, { pm_agent_id: 'agent-66666666-6666-4666-8666-666666666666', git_url: 'https://github.com/o/x.git' });
+      expect(res.status).toBe(400);
+    } finally {
+      projects.db.prepare = realPrepare;
+    }
+    const after = db.getProject(id);
+    expect(after?.letta_agent_id).toBe(before?.letta_agent_id);
+    expect(after?.git_url).toBe(before?.git_url);
   });
 
   it('rejects relative registration paths', async () => {
