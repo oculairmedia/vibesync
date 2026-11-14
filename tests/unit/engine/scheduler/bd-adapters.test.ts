@@ -168,6 +168,21 @@ describe('BdFormulaResolver / BdLivenessProbe', () => {
     expect((await titleOnly.resolve('w'))?.input).toBe('Bead w: Fix it');
   });
 
+  it('a bead with both settings invalid gets one warning for each, naming the bad value under its own field', async () => {
+    const warnings: Array<[Record<string, unknown>, string]> = [];
+    const resolver = new BdFormulaResolver({
+      bd: async () => JSON.stringify([{ id: 'w', status: 'open', metadata: { step_timeout_ms: 'abc', workdir: 'relative/path' } }]),
+      pack, formulaName: 'f1', projectIdentifier: 'p',
+      logger: { warn: (o: unknown, m: string) => { warnings.push([o as Record<string, unknown>, m]); } },
+    });
+    await resolver.resolve('w');
+    await resolver.resolve('w');
+    expect(warnings).toEqual([
+      [{ workBeadId: 'w', stepTimeoutMs: 'abc' }, 'Ignoring invalid step_timeout_ms metadata'],
+      [{ workBeadId: 'w', workdir: 'relative/path' }, 'Ignoring invalid workdir metadata'],
+    ]);
+  });
+
   it('warns once per bead for invalid step_timeout_ms metadata', async () => {
     const warnings: unknown[] = [];
     const resolver = new BdFormulaResolver({
