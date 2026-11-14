@@ -152,85 +152,117 @@ type StartOptions = BootSchedulerOptions & {
 };
 
 export function startSchedulerDaemon(opts: StartOptions): SchedulerHandle {
-  const { config, bus, logger } = opts;
-  if (!config.enabled) {
+  if (!opts.config.enabled) {
     throw new Error('startSchedulerDaemon called with scheduler.enabled=false (caller must gate on config)');
   }
-
   const members = selectPoolMembers(opts);
-  const effectivePoolSize = members.length;
-  const pack = loadSchedulerPack(opts);
+  const { daemon, pmWaker } = buildDaemon(opts, members);
+  daemon.run(opts.config.intervalMs);
+  // Trigger (b): bead status change -> immediate (debounced) tick. Layering
+  // invariant 3: observed through the bus, never by polling bd.
+  const unsubscribeStatus = subscribeStatusTrigger(opts.bus, daemon);
+  emitStarted(opts, members.length);
+  return schedulerHandle(opts, daemon, pmWaker, unsubscribeStatus);
+}
 
+/**
+ * The daemon and its waker. Order matters: the pack and adapters (which refuse
+ * an unknown formula or an unsafe auto-merge) are built before the waker.
+ */
+function buildDaemon(opts: StartOptions, members: readonly PoolMemberIdentity[]): { daemon: SchedulerDaemon; pmWaker: PmWaker | null } {
+  const adapters = buildAdapters(opts);
+  // The waker reads the daemon's backlog, and the daemon reports to the waker:
+  // the daemon is assigned below, before either can call the other.
+  let daemon!: SchedulerDaemon;
+  const pmWaker = buildPmWaker(opts, () => daemon.backlogSnapshot());
+  daemon = new SchedulerDaemon(daemonDeps(opts, members, adapters, pmWaker));
+  return { daemon, pmWaker };
+}
+
+function buildAdapters(opts: StartOptions) {
+  const { config, logger } = opts;
+  const pack = loadSchedulerPack(opts);
   const contextStore = new BdSlingContextStore(opts.bd);
   const readyBeads = new BdReadyBeadSource({
     bd: opts.bd,
     readyLabel: config.readyLabel,
     excludeWorkBeadIds: () => contextStore.listTerminalWorkBeadIds(),
-    ...(logger ? { logger } : {}),
+    ...loggerField(logger),
   });
   const formulaResolver = new BdFormulaResolver({
     bd: opts.bd,
     pack,
     formulaName: config.formula,
     projectIdentifier: config.projectIdentifier,
-    ...(logger ? { logger } : {}),
+    ...loggerField(logger),
   });
-  const github = selectGitHubPort(opts);
+  return { contextStore, readyBeads, formulaResolver, github: selectGitHubPort(opts) };
+}
 
-  const escalationManager = new EscalationManager({
+function daemonDeps(
+  opts: StartOptions,
+  members: readonly PoolMemberIdentity[],
+  adapters: ReturnType<typeof buildAdapters>,
+  pmWaker: PmWaker | null,
+): ConstructorParameters<typeof SchedulerDaemon>[0] {
+  const { config, logger } = opts;
+  const escalateSafely = safeEscalator(new EscalationManager({
     store: new BdCommentEscalationStore(opts.bd),
     transport: opts.notification ?? createLogNotificationTransport(logger),
-    ...(logger ? { logger } : {}),
-  });
-  // The waker reads the daemon's backlog, and the daemon reports to the waker:
-  // the daemon is assigned below, before either can call the other.
-  let daemon!: SchedulerDaemon;
-  const pmWaker = buildPmWaker(opts, () => daemon.backlogSnapshot());
-  const escalateSafely = safeEscalator(escalationManager, logger);
-
-  daemon = new SchedulerDaemon({
+    ...loggerField(logger),
+  }), logger);
+  return {
     dispatcher: opts.dispatcher,
-    formulaResolver,
-    readyBeads,
-    contextStore,
-    poolMembers: members,
-    github,
+    ...adapters,
+    poolMembers: [...members],
     allowedRepos: config.allowedRepos,
     requiredCheckNames: () => config.requiredChecks,
     livenessProbe: new BdLivenessProbe(opts.bd),
     escalation: escalationHooks(config, pmWaker, escalateSafely, logger),
-    config: () => ({ poolSize: effectivePoolSize, batchSize: config.batchSize, paused: config.paused }),
+    config: () => ({ poolSize: members.length, batchSize: config.batchSize, paused: config.paused }),
+    ...daemonTimings(config),
+    ...loggerField(logger),
+    ...(pmWaker ? pmWakeTriggers(pmWaker) : {}),
+    onRunEscalated: escalationNotifier(opts, pmWaker),
+    onTick: tickReporter(config, opts.bus, pmWaker, logger),
+  };
+}
+
+/** vibesync-9lzk.53: an escalated run wakes the waker (when there is one) and leaves the reason on the bead. */
+function escalationNotifier(opts: StartOptions, pmWaker: PmWaker | null): ReturnType<typeof createEscalationNotifier> {
+  return createEscalationNotifier({
+    ...(pmWaker ? { wakePm: (id: string, detail: string) => pmWaker.noteStall(id, detail) } : {}),
+    commentOnBead: async (id, text) => { await opts.bd(['comments', 'add', id, text]); },
+    ...loggerField(opts.logger),
+  });
+}
+
+/** The optional timings: absent means the daemon's own defaults. */
+function daemonTimings(config: SchedulerBootConfig): { eventDebounceMs?: number; runDeadlineMs?: number } {
+  return {
     ...(config.eventDebounceMs !== undefined ? { eventDebounceMs: config.eventDebounceMs } : {}),
     ...(config.runDeadlineMs !== undefined ? { runDeadlineMs: config.runDeadlineMs } : {}),
-    ...(logger ? { logger } : {}),
-    ...(pmWaker ? pmWakeTriggers(pmWaker) : {}),
-    // vibesync-9lzk.53: an escalated run tells the project PM (inbox wake) and leaves the reason on the bead.
-    onRunEscalated: createEscalationNotifier({
-      ...(pmWaker ? { wakePm: (id: string, detail: string) => pmWaker.noteStall(id, detail) } : {}),
-      commentOnBead: async (id, text) => { await opts.bd(['comments', 'add', id, text]); },
-      ...(logger ? { logger } : {}),
-    }),
-    onTick: tickReporter(config, bus, pmWaker, logger),
-  });
+  };
+}
 
-  daemon.run(config.intervalMs);
-  // Trigger (b): bead status change -> immediate (debounced) tick. Layering
-  // invariant 3: observed through the bus, never by polling bd.
-  const unsubscribeStatus = subscribeStatusTrigger(bus, daemon);
-  bus.emit({
+function emitStarted(opts: StartOptions, poolSize: number): void {
+  const { config } = opts;
+  opts.bus.emit({
     layer: 'daemon',
     kind: SCHEDULER_STARTED_EVENT,
     payload: {
       project: config.projectIdentifier,
       intervalMs: config.intervalMs,
-      poolSize: effectivePoolSize,
+      poolSize,
       batchSize: config.batchSize,
       paused: config.paused,
       autoMerge: config.autoMerge,
       formula: config.formula,
     },
   });
+}
 
+function schedulerHandle(opts: StartOptions, daemon: SchedulerDaemon, pmWaker: PmWaker | null, unsubscribeStatus: () => void): SchedulerHandle {
   let stopped: Promise<void> | null = null;
   return {
     daemon,
@@ -240,11 +272,16 @@ export function startSchedulerDaemon(opts: StartOptions): SchedulerHandle {
         unsubscribeStatus();
         await daemon.stop();
         pmWaker?.dispose();
-        bus.emit({ layer: 'daemon', kind: SCHEDULER_STOPPED_EVENT, payload: { project: config.projectIdentifier } });
+        opts.bus.emit({ layer: 'daemon', kind: SCHEDULER_STOPPED_EVENT, payload: { project: opts.config.projectIdentifier } });
       })();
       return stopped;
     },
   };
+}
+
+/** `{ logger }` when there is one, else `{}`: every adapter takes an optional logger. */
+function loggerField(logger: DaemonLogger | undefined): { logger?: DaemonLogger } {
+  return logger ? { logger } : {};
 }
 
 /**
@@ -253,14 +290,7 @@ export function startSchedulerDaemon(opts: StartOptions): SchedulerHandle {
  */
 function selectPoolMembers(opts: StartOptions): PoolMemberIdentity[] {
   const { config, logger } = opts;
-  const seen = new Set<string>();
-  const members: PoolMemberIdentity[] = [];
-  for (const m of opts.listPoolMembers(config.projectIdentifier)) {
-    if (seen.has(m.agentId)) continue;
-    seen.add(m.agentId);
-    members.push(m);
-    if (members.length >= config.poolSize) break;
-  }
+  const members = uniqueMembers(opts.listPoolMembers(config.projectIdentifier), config.poolSize);
   if (members.length === 0) {
     throw new Error(
       `scheduler: no project_role_agents rows for project "${config.projectIdentifier}" — nothing to build a pool from`,
@@ -275,6 +305,19 @@ function selectPoolMembers(opts: StartOptions): PoolMemberIdentity[] {
   return members;
 }
 
+/** Dedupe by agent id (AgentPool requires unique ids), stopping at `limit`. */
+function uniqueMembers(rows: readonly PoolMemberIdentity[], limit: number): PoolMemberIdentity[] {
+  const seen = new Set<string>();
+  const members: PoolMemberIdentity[] = [];
+  for (const m of rows) {
+    if (seen.has(m.agentId)) continue;
+    seen.add(m.agentId);
+    members.push(m);
+    if (members.length >= limit) break;
+  }
+  return members;
+}
+
 function loadSchedulerPack(opts: StartOptions): Pack {
   const appRoot = opts.appRoot ?? process.env['VIBESYNC_APP_ROOT'] ?? process.cwd();
   const packRoot = path.isAbsolute(opts.config.packDir) ? opts.config.packDir : path.join(appRoot, opts.config.packDir);
@@ -285,6 +328,14 @@ function loadSchedulerPack(opts: StartOptions): Pack {
 function selectGitHubPort(opts: StartOptions): GitHubPort {
   const { config, logger } = opts;
   if (!config.autoMerge) return disabledGitHubPort;
+  const gh = requireAutoMergeConfig(opts);
+  logger?.warn?.({ requiredChecks: config.requiredChecks, allowedRepos: config.allowedRepos }, 'scheduler: AUTO-MERGE ENABLED — refinery may merge PRs that pass all gates');
+  return new GhCliGitHubPort(gh, config.allowedRepos);
+}
+
+/** Auto-merge needs a gh runner, at least one required check and at least one allowed repo; anything less is refused. */
+function requireAutoMergeConfig(opts: StartOptions): CommandRunner {
+  const { config } = opts;
   if (!opts.gh) throw new Error('scheduler.autoMerge=true but no gh command runner was supplied');
   if (config.requiredChecks.length === 0) {
     throw new Error('scheduler.autoMerge=true requires at least one scheduler.requiredChecks name');
@@ -292,32 +343,41 @@ function selectGitHubPort(opts: StartOptions): GitHubPort {
   if (config.allowedRepos.length === 0) {
     throw new Error('scheduler.autoMerge=true requires at least one scheduler.allowedRepos owner/repo');
   }
-  logger?.warn?.({ requiredChecks: config.requiredChecks, allowedRepos: config.allowedRepos }, 'scheduler: AUTO-MERGE ENABLED — refinery may merge PRs that pass all gates');
-  return new GhCliGitHubPort(opts.gh, config.allowedRepos);
+  return opts.gh;
 }
 
 /** vibesync-2bgv: the PM waker, constructed ONLY when scheduler.pmWake.enabled. */
 function buildPmWaker(opts: StartOptions, backlog: () => ReturnType<SchedulerDaemon['backlogSnapshot']>): PmWaker | null {
-  const { config, bus, logger } = opts;
+  const { config, logger } = opts;
   const pw = config.pmWake;
   if (!pw?.enabled) return null;
   if (!opts.pmWake) {
     logger?.warn?.({ project: config.projectIdentifier }, 'pm-wake: enabled but no PM registry lookup supplied — PM wake not started');
     return null;
   }
-  const inbox = pw.sink === 'inbox' ? opts.pmWake.inboxAdapter : undefined;
+  return newPmWaker(opts, pw, opts.pmWake, backlog);
+}
+
+function newPmWaker(
+  opts: StartOptions,
+  pw: NonNullable<SchedulerBootConfig['pmWake']>,
+  seams: NonNullable<BootSchedulerOptions['pmWake']>,
+  backlog: () => ReturnType<SchedulerDaemon['backlogSnapshot']>,
+): PmWaker {
+  const { config, bus, logger } = opts;
+  const inbox = pw.sink === 'inbox' ? seams.inboxAdapter : undefined;
   return new PmWaker({
     projectIdentifier: config.projectIdentifier,
-    lookupAgentId: opts.pmWake.lookupAgentId,
-    sink: selectPmWakeSink(pw.sink, opts.pmWake, logger),
-    store: opts.pmWake.store ?? new FilePmWakeStateStore(pw.statePath, logger),
-    ...(inbox ? { pendingWakeStore: new BdPendingWakeStore(opts.bd, { ...(logger ? { logger } : {}) }) } : {}),
+    lookupAgentId: seams.lookupAgentId,
+    sink: selectPmWakeSink(pw.sink, seams, logger),
+    store: seams.store ?? new FilePmWakeStateStore(pw.statePath, logger),
+    ...(inbox ? { pendingWakeStore: new BdPendingWakeStore(opts.bd, loggerField(logger)) } : {}),
     backlog,
     emit: (kind, payload) => bus.emit({ layer: 'daemon', kind, payload }),
     minIntervalMs: pw.minIntervalMs,
     backstopMs: pw.backstopMs,
-    ...(opts.pmWake.now ? { now: opts.pmWake.now } : {}),
-    ...(logger ? { logger } : {}),
+    ...(seams.now ? { now: seams.now } : {}),
+    ...loggerField(logger),
   });
 }
 
