@@ -188,32 +188,17 @@ async function handleEvent(event: Event, deps: WritebackHookDeps, now: () => Dat
   if (!view) return 'skipped-molecule-not-found';
 
   const exec = readExec(view.root);
-  // vibesync-u32z: resolve the motivating bead from the completion EVENT first
-  // (the dispatcher now carries it on formula.completed|failed), then fall back
-  // to the persisted molecule_root exec for older/in-flight molecules and
-  // resume paths. Depending solely on the persisted row was a single point of
-  // failure: any dispatch path or Dolt write that dropped exec.motivating_bead
-  // silently broke the loop-back (repro: mol-mol-nu3n4s38yfxx / vibesync-sqt0).
-  const motivatingFromEvent = typeof event.payload?.['motivating_bead'] === 'string'
-    ? (event.payload['motivating_bead'] as string)
-    : '';
-  const motivatingFromRoot = typeof exec['motivating_bead'] === 'string' ? (exec['motivating_bead'] as string) : '';
-  const motivatingBeadId = motivatingFromEvent || motivatingFromRoot;
+  const motivatingBeadId = motivatingBeadOf(event, exec);
   if (!motivatingBeadId) return 'skipped-no-motivating-bead';
 
   // Idempotency read (NOT a write): if a prior run already stamped the
   // writeback status, this event is a replay — short-circuit. Reading via
   // the molecule root's own metadata avoids stamping before the note lands.
-  const alreadyDone = typeof exec['writeback_status'] === 'string' ? (exec['writeback_status'] as string) : undefined;
   const status = HANDLED_EVENTS.get(event.kind)!;
-  if (alreadyDone === status) return 'skipped-already-written';
+  if (exec['writeback_status'] === status) return 'skipped-already-written';
 
   const formulaName = typeof exec['formula'] === 'string' ? (exec['formula'] as string) : 'unknown';
-  const note = status === 'completed'
-    ? buildCompletedNote({ moleculeId, formulaName, steps: view.steps, when: now() })
-    : status === 'interrupted'
-      ? buildInterruptedNote({ moleculeId, formulaName, steps: view.steps, when: now() })
-      : buildFailedNote({ moleculeId, formulaName, steps: view.steps, event, when: now() });
+  const note = buildNote(status, { moleculeId, formulaName, steps: view.steps, event, when: now() });
 
   // CONTRACT (vibesync-er21): the writeback stamp must be written ONLY
   // after the note successfully lands on the motivating bead. The previous
@@ -239,6 +224,33 @@ async function handleEvent(event: Event, deps: WritebackHookDeps, now: () => Dat
   await projectStore.appendNoteToBead(motivatingBeadId, note);
   await deps.store.recordMoleculeWriteback(moleculeId, status);
   return 'posted';
+}
+
+/**
+ * vibesync-u32z: the motivating bead from the completion EVENT first (the
+ * dispatcher carries it on formula.completed|failed), then the persisted
+ * molecule_root exec, for older molecules and resume paths. Depending solely
+ * on the persisted row was a single point of failure: a dispatch path or Dolt
+ * write that dropped exec.motivating_bead silently broke the loop-back (repro:
+ * mol-mol-nu3n4s38yfxx / vibesync-sqt0).
+ */
+function motivatingBeadOf(event: Event, exec: Record<string, unknown>): string {
+  const fromEvent = event.payload?.['motivating_bead'];
+  if (typeof fromEvent === 'string' && fromEvent) return fromEvent;
+  return typeof exec['motivating_bead'] === 'string' ? exec['motivating_bead'] : '';
+}
+
+/** The note for a writeback status: completed, interrupted, or failed. */
+function buildNote(status: WritebackStatus, args: {
+  readonly moleculeId: string;
+  readonly formulaName: string;
+  readonly steps: readonly BeadRow[];
+  readonly event: Event;
+  readonly when: Date;
+}): string {
+  if (status === 'completed') return buildCompletedNote(args);
+  if (status === 'interrupted') return buildInterruptedNote(args);
+  return buildFailedNote(args);
 }
 
 function buildInterruptedNote(args: {
@@ -286,22 +298,24 @@ function buildFailedNote(args: {
   lines.push(`[vibesync] formula ${args.formulaName} FAILED at ${args.when.toISOString()}`);
   lines.push(`moleculeId: ${args.moleculeId}`);
 
-  const failingStep = args.steps.find((step) => Boolean(readExec(step).error_trace));
-  if (failingStep) {
-    const role = stepRole(failingStep);
-    const errorTrace = String(readExec(failingStep).error_trace ?? '').slice(0, OUTPUT_EXCERPT_LIMIT);
-    lines.push(`failing step: ${role}`);
-    if (errorTrace) lines.push(`error: ${errorTrace}`);
-  } else {
-    const errorFromEvent = typeof args.event.payload?.error === 'string' ? args.event.payload.error : '';
-    if (errorFromEvent) lines.push(`error: ${errorFromEvent.slice(0, OUTPUT_EXCERPT_LIMIT)}`);
-  }
+  lines.push(...failureLines(args.steps, args.event));
 
   const closedSteps = orderedSteps(args.steps).filter((step) => step.status === 'closed' && !readExec(step).error_trace);
   for (const step of closedSteps) {
     lines.push(`- ${stepRole(step)}: ${excerptStepOutput(step)}`);
   }
   return lines.join('\n');
+}
+
+/** The failing step and its error, or, when no step failed, the error carried on the event. */
+function failureLines(steps: readonly BeadRow[], event: Event): string[] {
+  const failingStep = steps.find((step) => Boolean(readExec(step).error_trace));
+  if (!failingStep) {
+    const errorFromEvent = typeof event.payload?.error === 'string' ? event.payload.error : '';
+    return errorFromEvent ? [`error: ${errorFromEvent.slice(0, OUTPUT_EXCERPT_LIMIT)}`] : [];
+  }
+  const errorTrace = String(readExec(failingStep).error_trace ?? '').slice(0, OUTPUT_EXCERPT_LIMIT);
+  return [`failing step: ${stepRole(failingStep)}`, ...(errorTrace ? [`error: ${errorTrace}`] : [])];
 }
 
 function orderedSteps(steps: readonly BeadRow[]): readonly BeadRow[] {
