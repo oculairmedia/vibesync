@@ -477,36 +477,9 @@ export class SchedulerDaemon {
         { workBeadId, moleculeId: moleculeId ?? null, elapsedMs, deadlineMs },
         'daemon: run exceeded its deadline — cancelling',
       );
-      try {
-        this.deps.onRunExpired?.({ workBeadId, moleculeId, deadlineMs, elapsedMs });
-      } catch (err) {
-        this.deps.logger?.warn?.({ workBeadId, error: msg(err) }, 'daemon: onRunExpired observer failed');
-      }
-      if (moleculeId) {
-        const cancelled = Promise.resolve()
-          .then(() => this.deps.dispatcher.cancel(moleculeId))
-          .then(
-            () => { /* cancelled */ },
-            (err: unknown) => {
-              this.deps.logger?.warn?.(
-                { workBeadId, moleculeId, error: msg(err) },
-                'daemon: cancel of expired run failed — freeing the slot anyway',
-              );
-            },
-          );
-        const grace = new Promise<void>((resolve) => {
-          watch.graceTimer = setTimeout(() => {
-            watch.graceTimer = null;
-            this.deps.logger?.warn?.(
-              { workBeadId, moleculeId, graceMs: RUN_CANCEL_GRACE_MS },
-              'daemon: cancel of expired run still pending — freeing the slot anyway',
-            );
-            resolve();
-          }, RUN_CANCEL_GRACE_MS);
-          watch.graceTimer.unref?.();
-        });
-        await Promise.race([cancelled, grace]);
-      } else {
+      this.notifyRunExpired({ workBeadId, moleculeId, deadlineMs, elapsedMs });
+      if (moleculeId) await this.cancelWithinGrace(watch, workBeadId, moleculeId);
+      else {
         this.deps.logger?.warn?.(
           { workBeadId, elapsedMs },
           'daemon: expired run never reported a molecule id — nothing to cancel',
@@ -522,6 +495,45 @@ export class SchedulerDaemon {
         error: `run exceeded its deadline of ${deadlineMs}ms (cancelled after ${elapsedMs}ms)`,
       });
     }
+  }
+
+  /** Tell the expiry observer; a throw is logged and never stops the expiry. */
+  private notifyRunExpired(input: { workBeadId: string; moleculeId: string | undefined; deadlineMs: number; elapsedMs: number }): void {
+    try {
+      this.deps.onRunExpired?.(input);
+    } catch (err) {
+      this.deps.logger?.warn?.({ workBeadId: input.workBeadId, error: msg(err) }, 'daemon: onRunExpired observer failed');
+    }
+  }
+
+  /**
+   * Cancel the expired molecule, waiting at most RUN_CANCEL_GRACE_MS: a cancel
+   * that fails or hangs is logged and the slot is freed anyway.
+   */
+  private async cancelWithinGrace(watch: RunWatch, workBeadId: string, moleculeId: string): Promise<void> {
+    const cancelled = Promise.resolve()
+      .then(() => this.deps.dispatcher.cancel(moleculeId))
+      .then(
+        () => { /* cancelled */ },
+        (err: unknown) => {
+          this.deps.logger?.warn?.(
+            { workBeadId, moleculeId, error: msg(err) },
+            'daemon: cancel of expired run failed — freeing the slot anyway',
+          );
+        },
+      );
+    const grace = new Promise<void>((resolve) => {
+      watch.graceTimer = setTimeout(() => {
+        watch.graceTimer = null;
+        this.deps.logger?.warn?.(
+          { workBeadId, moleculeId, graceMs: RUN_CANCEL_GRACE_MS },
+          'daemon: cancel of expired run still pending — freeing the slot anyway',
+        );
+        resolve();
+      }, RUN_CANCEL_GRACE_MS);
+      watch.graceTimer.unref?.();
+    });
+    await Promise.race([cancelled, grace]);
   }
 
   /**
@@ -704,15 +716,24 @@ export class SchedulerDaemon {
    */
   requestTick(reason: TickReason, detail?: string): TickRequestOutcome {
     if (!this.timer || this.stopping) return 'inactive';
+    this.notifyTickRequested(reason, detail);
+    if (this.inFlight) {
+      this.logLockedSkip(reason);
+      return 'locked';
+    }
+    return this.startOrDebounce(reason);
+  }
+
+  private notifyTickRequested(reason: TickReason, detail: string | undefined): void {
     try {
       this.deps.onTickRequested?.(reason, detail);
     } catch (err) {
       this.deps.logger?.warn?.({ error: msg(err), reason }, 'daemon: onTickRequested observer failed');
     }
-    if (this.inFlight) {
-      this.logLockedSkip(reason);
-      return 'locked';
-    }
+  }
+
+  /** Start a tick now, or, within the debounce window of the last event tick, defer it to one trailing tick. */
+  private startOrDebounce(reason: TickReason): TickRequestOutcome {
     const now = Date.now();
     const remaining = this.lastEventTickAt === null ? 0 : this.lastEventTickAt + this.eventDebounceMs - now;
     if (remaining > 0) {
@@ -784,32 +805,37 @@ export class SchedulerDaemon {
   async stop(): Promise<void> {
     const wasRunning = this.timer !== null;
     this.stopping = true;
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-    if (this.trailingTimer) {
-      clearTimeout(this.trailingTimer);
-      this.trailingTimer = null;
-    }
-    this.trailingReason = null;
-    this.lastEventTickAt = null;
+    this.clearTickTimers();
     const pending = this.inFlight;
     if (pending) await pending;
     // Runs are not awaited, so their deadlines must not outlive the daemon.
     // Cleared AFTER the in-flight tick so a run that tick just started is covered.
     for (const watch of [...this.runWatches]) this.disposeWatch(watch);
-    if (wasRunning) {
-      // Runs are NOT awaited: they outlive the tick (and a short SIGTERM grace).
-      // Surface which beads are still mid-run so the operator can see them.
-      const inFlightWorkBeadIds = this.scheduler.inFlightWorkBeadIds();
-      this.deps.logger?.info?.(
-        { ticks: this.tickSeq, inFlightWorkBeadIds },
-        inFlightWorkBeadIds.length > 0
-          ? 'daemon: stopped — runs still in flight were NOT awaited'
-          : 'daemon: stopped',
-      );
-    }
+    if (wasRunning) this.logStopped();
+  }
+
+  /** The interval and any trailing tick, and the debounce state they carry. */
+  private clearTickTimers(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    if (this.trailingTimer) clearTimeout(this.trailingTimer);
+    this.trailingTimer = null;
+    this.trailingReason = null;
+    this.lastEventTickAt = null;
+  }
+
+  /**
+   * Runs are NOT awaited: they outlive the tick (and a short SIGTERM grace).
+   * Surface which beads are still mid-run so the operator can see them.
+   */
+  private logStopped(): void {
+    const inFlightWorkBeadIds = this.scheduler.inFlightWorkBeadIds();
+    this.deps.logger?.info?.(
+      { ticks: this.tickSeq, inFlightWorkBeadIds },
+      inFlightWorkBeadIds.length > 0
+        ? 'daemon: stopped — runs still in flight were NOT awaited'
+        : 'daemon: stopped',
+    );
   }
 }
 
