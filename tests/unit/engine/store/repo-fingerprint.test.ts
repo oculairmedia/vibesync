@@ -62,6 +62,12 @@ describe('canonicalizeGitURL: the exact canonical forms (characterisation before
     expect(canonicalizeGitURL('ssh://git@host.example/owner\\repo.git', deps)).toBe('host.example/owner/repo');
   });
 
+  it('a Windows drive path with a backslash is a local path too, not scp-style', () => {
+    const got = canonicalizeGitURL('C:\\work\\repo', deps);
+    expect(got.startsWith('/real')).toBe(true);
+    expect(got).not.toBe('c/work/repo');
+  });
+
   it('a colon after the first slash is a local path, not scp-style', () => {
     expect(canonicalizeGitURL('./dir:with/colon', deps)).toBe(`/real${process.cwd()}/dir:with/colon`);
     expect(canonicalizeGitURL('/abs/path/repo', deps)).toBe('/real/abs/path/repo');
