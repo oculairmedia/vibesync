@@ -39,13 +39,14 @@ function start(over: Partial<SchedulerBootConfig> = {}, extra: Partial<BootSched
     warn: (o: unknown, m: string) => { logs.push({ level: 'warn', o: o as Record<string, unknown>, m }); },
   };
   const packRoots: string[] = [];
+  const bdCalls: string[][] = [];
   const bus = new EventBus({ noPersist: true });
   const started: Record<string, unknown>[] = [];
   bus.subscribe((e) => { if (e.kind === 'daemon/scheduler.started') started.push(e.payload as Record<string, unknown>); });
   const handle = startSchedulerDaemon({
     config: config(over),
     listPoolMembers: () => [{ agentId: 'a1', role: 'coder' }, { agentId: 'a1', role: 'coder' }, { agentId: 'a2', role: 'coder' }],
-    bd: async () => '[]',
+    bd: async (args: readonly string[]) => { bdCalls.push([...args]); return '[]'; },
     logger,
     dispatcher: { run: vi.fn(), cancel: vi.fn() } as never,
     bus,
@@ -53,7 +54,7 @@ function start(over: Partial<SchedulerBootConfig> = {}, extra: Partial<BootSched
     ...extra,
   } as never);
   handles.push(handle);
-  return { handle, logs, packRoots, bus, started };
+  return { handle, logs, packRoots, bus, started, bdCalls };
 }
 
 describe('auto-merge safeguards', () => {
@@ -127,7 +128,9 @@ describe('the PM waker', () => {
   it('enabled without a registry lookup: no waker, and a warning names the project', () => {
     const { handle, logs } = start({ pmWake });
     expect(handle.pmWaker).toBeNull();
-    expect(logs.find((l) => l.m.startsWith('pm-wake: enabled but no PM registry lookup supplied'))?.o).toEqual({ project: 'proj' });
+    const warned = logs.find((l) => l.m.startsWith('pm-wake: enabled but no PM registry lookup supplied'));
+    expect(warned?.level).toBe('warn');
+    expect(warned?.o).toEqual({ project: 'proj' });
   });
 
   it('enabled with a lookup: a waker is built', () => {
@@ -148,5 +151,46 @@ describe('a bead status change asks for a tick', () => {
     bus.emit({ layer: 'daemon', kind: 'beads/issue.status_changed', payload: { issueId: 'b-2', from: 'open', to: 'blocked' } });
     bus.emit({ layer: 'daemon', kind: 'beads/issue.status_changed', payload: { to: 'ready' } });
     expect(asked.mock.calls).toEqual([['bead-status', 'b-1 open->closed'], ['bead-status', 'issue ?->ready']]);
+  });
+});
+
+/** The daemon's own dependencies, as boot wired them (read-only view for wiring checks). */
+const depsOf = (handle: SchedulerHandle) => (handle.daemon as unknown as { deps: Record<string, unknown> }).deps;
+
+describe('what boot hands the daemon', () => {
+  it('the effective pool size (after dedupe), not the configured one', () => {
+    const { handle, started } = start({ poolSize: 5 });
+    expect((depsOf(handle)['config'] as () => { poolSize: number })().poolSize).toBe(2);
+    expect(started[0]?.['poolSize']).toBe(2);
+  });
+
+  it('the run deadline and debounce overrides, when configured, and nothing when not', () => {
+    expect(depsOf(start({ runDeadlineMs: 1234, eventDebounceMs: 56 }).handle)).toMatchObject({ runDeadlineMs: 1234, eventDebounceMs: 56 });
+    const plain = depsOf(start().handle);
+    expect(plain).not.toHaveProperty('runDeadlineMs');
+    expect(plain).not.toHaveProperty('eventDebounceMs');
+  });
+
+  it('an escalated run leaves its reason on the bead and, with a waker, notes a stall', async () => {
+    const pmWake = { enabled: true, minIntervalMs: 1000, backstopMs: 60_000, statePath: '/tmp/never-written.json' };
+    const store = { load: () => ({}), save: () => undefined } as never;
+    const { handle, bdCalls } = start({ pmWake }, { pmWake: { lookupAgentId: () => 'agent-pm', store } });
+    const stall = vi.spyOn(handle.pmWaker!, 'noteStall');
+    const escalated = depsOf(handle)['onRunEscalated'] as (i: { workBeadId: string; contextId: string; reason: string }) => Promise<void>;
+    await escalated({ workBeadId: 'b-9', contextId: 'ctx-1', reason: 'gate failed\nmore' });
+    expect(bdCalls.find((c) => c[0] === 'comments' && c[1] === 'add' && c[2] === 'b-9')?.[3]).toContain('gate failed');
+    expect(stall).toHaveBeenCalledWith('b-9', expect.stringContaining('gate failed'));
+  });
+});
+
+describe('stop', () => {
+  it('is idempotent: a second stop returns the same promise and emits stopped once', async () => {
+    const { handle, bus } = start();
+    const stoppedEvents: unknown[] = [];
+    bus.subscribe((e) => { if (e.kind === 'daemon/scheduler.stopped') stoppedEvents.push(e); });
+    const first = handle.stop();
+    expect(handle.stop()).toBe(first);
+    await first;
+    expect(stoppedEvents).toHaveLength(1);
   });
 });
