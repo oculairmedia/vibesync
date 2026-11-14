@@ -135,6 +135,39 @@ describe('BdFormulaResolver / BdLivenessProbe', () => {
     }
   });
 
+  it('metadata that is a list is not read, and valid settings warn nothing', async () => {
+    const warnings: unknown[] = [];
+    const listMeta = new BdFormulaResolver({
+      bd: async () => JSON.stringify([{ id: 'w', status: 'open', metadata: [{ step_timeout_ms: 5000, workdir: '/x' }] }]),
+      pack, formulaName: 'f1', projectIdentifier: 'p',
+      logger: { warn: (...args: unknown[]) => warnings.push(args) },
+    });
+    const fromList = await listMeta.resolve('w');
+    expect(fromList).not.toHaveProperty('stepTimeoutMs');
+    expect(fromList).not.toHaveProperty('workdir');
+
+    const valid = new BdFormulaResolver({
+      bd: async () => JSON.stringify([{ id: 'w', status: 'open', metadata: { step_timeout_ms: 5000, workdir: '/opt/x' } }]),
+      pack, formulaName: 'f1', projectIdentifier: 'p',
+      logger: { warn: (...args: unknown[]) => warnings.push(args) },
+    });
+    await valid.resolve('w');
+    expect(warnings).toEqual([]);
+  });
+
+  it('the run input is "Bead <id>: <title>", with the description after a blank line when there is one', async () => {
+    const withDescription = new BdFormulaResolver({
+      bd: async () => JSON.stringify([{ id: 'w', status: 'open', title: 'Fix it', description: 'Details here' }]),
+      pack, formulaName: 'f1', projectIdentifier: 'p',
+    });
+    expect((await withDescription.resolve('w'))?.input).toBe('Bead w: Fix it\n\nDetails here');
+    const titleOnly = new BdFormulaResolver({
+      bd: async () => JSON.stringify([{ id: 'w', status: 'open', title: 'Fix it' }]),
+      pack, formulaName: 'f1', projectIdentifier: 'p',
+    });
+    expect((await titleOnly.resolve('w'))?.input).toBe('Bead w: Fix it');
+  });
+
   it('warns once per bead for invalid step_timeout_ms metadata', async () => {
     const warnings: unknown[] = [];
     const resolver = new BdFormulaResolver({
