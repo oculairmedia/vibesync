@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { HostRegistryReader, isRunnable, parseRecord, primaryCheckout, RegistryError, type RegistryRpc } from '../../../../src/app/registry/host-registry.js';
+import { HostRegistryReader, isRunnable, parseRecord, primaryCheckout, RegistryError, runnableProject, type RegistryRpc } from '../../../../src/app/registry/host-registry.js';
 import { refusalFrom } from '../../../../src/engine/runtime/iroh/connection.js';
 
 const DIR = join(process.cwd(), 'tests', 'fixtures', 'project-registry-v1');
@@ -163,5 +163,26 @@ describe('get: one record by key or projectId (contract §3)', () => {
 
   it('a malformed id is refused by the host as invalid_request', async () => {
     await expect(reader().get({ projectId: 'Fixture Project' })).rejects.toMatchObject({ code: 'invalid_request' });
+  });
+});
+
+describe('runnableProject: a project the host does not list is not runnable (contract §8 C5)', () => {
+  const active = parseRecord(fixture('record-active.json'));
+  const invalid = parseRecord(fixture('record-invalid.json'));
+  const snapshot = { revision: 'r-1', records: [active, invalid] };
+
+  it('finds a listed, runnable project by key or projectId', () => {
+    expect(runnableProject(snapshot, { key: 'fixture-project' })).toBe(active);
+    expect(runnableProject(snapshot, { projectId: active.projectId })).toBe(active);
+  });
+
+  it('a listed project that is not runnable is null', () => {
+    expect(runnableProject(snapshot, { key: 'broken-file' })).toBeNull();
+  });
+
+  it('a project missing from the list is null, not an error (the host may leave out records outside the caller\'s scope)', () => {
+    expect(() => runnableProject(snapshot, { key: 'not-listed' })).not.toThrow();
+    expect(runnableProject(snapshot, { key: 'not-listed' })).toBeNull();
+    expect(runnableProject({ revision: 'r-2', records: [] }, { key: 'fixture-project' })).toBeNull();
   });
 });

@@ -72,6 +72,19 @@ export function isRunnable(record: ProjectRecord): boolean {
   return record.state === 'active' && record.engine.enabled && primaryCheckout(record) !== null;
 }
 
+/**
+ * The record an engine may run for this project, or null. A project the
+ * snapshot does not list is not runnable, never an error: the host may leave
+ * out records the caller is not scoped to see (contract §8 C5, still open).
+ */
+export function runnableProject(
+  snapshot: RegistrySnapshot,
+  ref: { readonly key: string } | { readonly projectId: string },
+): ProjectRecord | null {
+  const record = snapshot.records.find((r) => ('key' in ref ? r.key === ref.key : r.projectId === ref.projectId));
+  return record && isRunnable(record) ? record : null;
+}
+
 export interface RegistrySnapshot {
   readonly revision: string;
   readonly records: readonly ProjectRecord[];
