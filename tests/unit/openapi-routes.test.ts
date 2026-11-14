@@ -73,6 +73,15 @@ describe('API description matches the routes the server handles', () => {
     expect(undocumented).toEqual([]);
   });
 
+  it('the role-agent request schema states the same rules the PUT route enforces (CodeRabbit on #178)', async () => {
+    const { RoleAgentSchema } = await import('../../src/app/http/openapi/schemas.js');
+    const ok = { roleName: 'coder', agentId: 'agent-11111111-1111-4111-8111-111111111111' };
+    expect(RoleAgentSchema.safeParse(ok).success).toBe(true);
+    for (const bad of [{ ...ok, roleName: '1coder' }, { ...ok, roleName: 'a'.repeat(65) }, { ...ok, roleName: 'Coder' }, { ...ok, agentId: 'agent-xyz' }, { ...ok, agentId: 'not-an-agent' }]) {
+      expect(RoleAgentSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
+  });
+
   it('documents the orchestration token on the routes that check it', () => {
     const doc = new OpenApiGeneratorV31(registry.definitions).generateDocument({ openapi: '3.1.0', info: { title: 't', version: '0' } });
     const secured = (method: string, path: string) => Boolean((doc.paths?.[path] as Record<string, { security?: unknown[] }>)?.[method]?.security?.length);

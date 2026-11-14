@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { stripUrlCredentials } from '../../utils.js';
+import { AGENT_ID, ROLE_NAME } from '../../registry/role-agent-rules.js';
 import type { ProjectRow } from '../../types/db.js';
 import type {
   App,
@@ -137,15 +138,14 @@ function resolveProject(db: RouteDb, requested: string): ProjectRow | undefined 
 }
 
 const ROLE_AGENTS_PATH = /^\/api\/registry\/projects\/[^/]+\/role-agents$/;
-const ROLE_NAME = /^[a-z][a-z0-9-]{0,63}$/;
-const AGENT_ID = /^agent-[0-9a-f-]{8,}$/;
 
 /**
  * `{ roleAgents: [{ roleName, agentId }, ...] }`: each role named once, each
  * agent an `agent-` id. The whole set replaces what the project had.
  */
-function parseRoleAgents(body: Record<string, unknown>): { assignments: Array<{ roleName: string; agentId: string }> } | { error: string } {
-  const list = body.roleAgents;
+function parseRoleAgents(body: unknown): { assignments: Array<{ roleName: string; agentId: string }> } | { error: string } {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return { error: 'body must be a JSON object' };
+  const list = (body as Record<string, unknown>).roleAgents;
   if (!Array.isArray(list)) return { error: 'roleAgents must be an array of { roleName, agentId }' };
   const seen = new Set<string>();
   const assignments: Array<{ roleName: string; agentId: string }> = [];
@@ -324,7 +324,15 @@ export function registerProjectRoutes(app: App, deps: RouteDeps): void {
       if (!projectRegistry) { sendError(res, 503, 'ProjectRegistry not available'); return; }
       const project = projectRegistry.getProject(projectIdFromPath(pathname, 4));
       if (!project) { sendError(res, 404, 'Project not found', { identifier: projectIdFromPath(pathname, 4) }); return; }
-      const parsed = parseRoleAgents(await deps.parseJsonBody(req));
+      // Startup deletes the role agents of any project that is not active, so a
+      // write here would report success for a set the next restart throws away.
+      if (project.status !== 'active') {
+        sendError(res, 409, 'Project is not active; unarchive it before setting role agents', { identifier: project.identifier, status: project.status });
+        return;
+      }
+      let body: unknown;
+      try { body = await deps.parseJsonBody(req); } catch { sendError(res, 400, 'Body is not valid JSON', { field: 'roleAgents' }); return; }
+      const parsed = parseRoleAgents(body);
       if ('error' in parsed) { sendError(res, 400, parsed.error, { field: 'roleAgents' }); return; }
       const roleAgents = projectRegistry.setRoleAgents(project.identifier, parsed.assignments);
       sendJson(res, 200, { message: 'Role agents set', identifier: project.identifier, roleAgents, timestamp: now() });

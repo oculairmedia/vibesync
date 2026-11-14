@@ -118,6 +118,48 @@ describe('project registry routes', () => {
     expect(db.listRoleAgents(id).map((r) => [r.roleName, r.agentId])).toEqual([['coder', A]]);
   });
 
+  it('role agents: a body that is not JSON or not an object is 400, not 500 (CodeRabbit on #178)', async () => {
+    const created = await call('POST', '/api/registry/projects', { filesystem_path: repo('gamma') });
+    const id = created.body.project.identifier as string;
+    for (const raw of ['{not json', 'null', '[]', '"text"']) {
+      const res = await fetch(`${base}/api/registry/projects/${id}/role-agents`, { method: 'PUT', body: raw, headers: { 'Content-Type': 'application/json' } });
+      expect(res.status, raw).toBe(400);
+    }
+  });
+
+  it('role agents: an archived project is refused with 409 and keeps nothing (startup would drop them)', async () => {
+    const created = await call('POST', '/api/registry/projects', { filesystem_path: repo('delta') });
+    const id = created.body.project.identifier as string;
+    await call('PATCH', `/api/registry/projects/${id}`, { status: 'archived' });
+    const res = await call('PUT', `/api/registry/projects/${id}/role-agents`, { roleAgents: [{ roleName: 'coder', agentId: 'agent-11111111-1111-4111-8111-111111111111' }] });
+    expect(res.status).toBe(409);
+    expect(db.listRoleAgents(id)).toEqual([]);
+  });
+
+  it('role agents: a failure part way through a replace leaves the previous set whole (one transaction)', async () => {
+    const created = await call('POST', '/api/registry/projects', { filesystem_path: repo('epsilon') });
+    const id = created.body.project.identifier as string;
+    const A = 'agent-11111111-1111-4111-8111-111111111111';
+    const B = 'agent-22222222-2222-4222-8222-222222222222';
+    await call('PUT', `/api/registry/projects/${id}/role-agents`, { roleAgents: [{ roleName: 'coder', agentId: A }, { roleName: 'tester', agentId: B }] });
+    // The replace removes tester, then fails while setting reviewer.
+    const repo2 = (db as unknown as { projects: { roleAgents: { upsertRoleAgent: (...a: unknown[]) => unknown } } }).projects.roleAgents;
+    const real = repo2.upsertRoleAgent.bind(repo2);
+    repo2.upsertRoleAgent = (...args: unknown[]) => { if (args[1] === 'reviewer') throw new Error('disk full'); return real(...args); };
+    try {
+      expect(() => db.replaceRoleAgents(id, [{ roleName: 'coder', agentId: A }, { roleName: 'reviewer', agentId: B }], 'http://localhost:8291')).toThrow('disk full');
+    } finally {
+      repo2.upsertRoleAgent = real;
+    }
+    expect(db.listRoleAgents(id).map((r) => [r.roleName, r.agentId])).toEqual([['coder', A], ['tester', B]]);
+  });
+
+  it('a browser preflight allows PUT, so the role-agent route can be called from a page', async () => {
+    const res = await fetch(`${base}/api/registry/projects/x/role-agents`, { method: 'OPTIONS' });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-methods')).toContain('PUT');
+  });
+
   it('rejects relative registration paths', async () => {
     expect((await call('POST', '/api/registry/projects', { filesystem_path: 'relative/path' })).status).toBe(400);
     expect((await call('POST', '/api/registry/projects', {})).status).toBe(400);

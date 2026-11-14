@@ -1,4 +1,6 @@
 import { z } from 'zod';
+
+import { AGENT_ID, ROLE_NAME, ROLE_NAME_MAX_LENGTH } from '../../registry/role-agent-rules.js';
 import { extendZodWithOpenApi } from '@asteasolutions/zod-to-openapi';
 
 // Extend Zod with OpenAPI capabilities
@@ -163,8 +165,9 @@ export const UpdateProjectRequestSchema = z.object({
 });
 
 export const RoleAgentSchema = z.object({
-  roleName: z.string().describe('Role a formula step dispatches to, e.g. coder; lower case, letters, digits and hyphens'),
-  agentId: z.string().describe('The Letta agent that plays the role (an agent- id)'),
+  roleName: z.string().max(ROLE_NAME_MAX_LENGTH).regex(ROLE_NAME)
+    .describe('Role a formula step dispatches to, e.g. coder: lower case, starting with a letter, letters/digits/hyphens, at most 64 characters'),
+  agentId: z.string().regex(AGENT_ID).describe('The Letta agent that plays the role: agent- followed by at least 8 hex digits or hyphens'),
 });
 
 export const SetRoleAgentsRequestSchema = z.object({

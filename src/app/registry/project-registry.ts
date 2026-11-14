@@ -34,7 +34,7 @@ interface ProjectUpdates {
 type ProjectDB = Pick<Registry,
   'getAllProjects' | 'getProject' | 'resolveProjectIdentifier' | 'updateProject' | 'archiveProject'
   | 'unarchiveProject' | 'deleteProject' | 'upsertProject' | 'setProjectScan' | 'setBeadsRemoteResult'
-  | 'listRoleAgents' | 'upsertRoleAgent' | 'deleteRoleAgent'>;
+  | 'listRoleAgents' | 'replaceRoleAgents'>;
 
 /**
  * The Letta server a role agent is reached through. The column predates the
@@ -204,16 +204,12 @@ export class ProjectRegistry {
   }
 
   /**
-   * Replace the project's role agents with exactly these: a role not listed is
-   * removed, each listed role is set. The caller validates the assignments.
+   * Replace the project's role agents with exactly these, atomically: a role not
+   * listed is removed, each listed role is set. The caller validates the assignments.
    */
   setRoleAgents(identifier: string, assignments: readonly RoleAgentAssignment[]): RoleAgentAssignment[] {
-    const keep = new Set(assignments.map((a) => a.roleName));
-    for (const existing of this.db.listRoleAgents(identifier)) {
-      if (!keep.has(existing.roleName)) this.db.deleteRoleAgent(identifier, existing.roleName);
-    }
-    for (const a of assignments) this.db.upsertRoleAgent(identifier, a.roleName, a.agentId, ROLE_AGENT_LETTA_BASE_URL);
-    return this.listRoleAgents(identifier);
+    return this.db.replaceRoleAgents(identifier, assignments, ROLE_AGENT_LETTA_BASE_URL)
+      .map((r) => ({ roleName: r.roleName, agentId: r.agentId }));
   }
 
   getProjectByPath(fsPath: string): ProjectRow | null {
