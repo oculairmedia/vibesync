@@ -76,6 +76,8 @@ function harness(opts: {
   reportMolecule?: boolean;
   /** The daemon's onRunExpired observer. */
   onRunExpired?: (input: { workBeadId: string; moleculeId: string | undefined; deadlineMs: number; elapsedMs: number }) => void;
+  /** The daemon's onTickRequested observer. */
+  onTickRequested?: (reason: string, detail: string | undefined) => void;
 }) {
   const runs: Run[] = [];
   const cancels: string[] = [];
@@ -138,6 +140,7 @@ function harness(opts: {
     ...(opts.runDeadlineMs !== undefined ? { runDeadlineMs: opts.runDeadlineMs } : { runDeadlineMs: DEADLINE }),
     ...(opts.runDeadlineFor ? { runDeadlineFor: opts.runDeadlineFor } : {}),
     ...(opts.onRunExpired ? { onRunExpired: opts.onRunExpired } : {}),
+    ...(opts.onTickRequested ? { onTickRequested: opts.onTickRequested } : {}),
     onTick: (r: DaemonTickReport) => { reports.push(r); },
     logger: {
       info: (o: unknown, m: string) => { logs.push({ level: 'info', o: o as Record<string, unknown>, m }); },
@@ -395,6 +398,31 @@ describe('SchedulerDaemon — run deadline (vibesync-izn3)', () => {
     await vi.advanceTimersByTimeAsync(DEADLINE * 5);
     expect(h.cancels).toEqual([]);
     expect(h.onComplete).not.toHaveBeenCalled();
+  });
+
+  it('6c. stop() with a run still in flight says so and names its bead; with none it just says stopped', async () => {
+    const h = harness({ beads: ['w1'] });
+    h.daemon.run(INTERVAL);
+    await h.daemon.tick();
+    await h.daemon.stop();
+    const stopped = h.logs.find((l) => l.m.startsWith('daemon: stopped'));
+    expect(stopped?.m).toBe('daemon: stopped — runs still in flight were NOT awaited');
+    expect(stopped?.o['inFlightWorkBeadIds']).toEqual(['w1']);
+
+    const idle = harness({ beads: [] });
+    idle.daemon.run(INTERVAL);
+    await idle.daemon.stop();
+    expect(idle.logs.find((l) => l.m.startsWith('daemon: stopped'))?.m).toBe('daemon: stopped');
+  });
+
+  it('6d. a tick-request observer that throws does not block the tick', async () => {
+    const h = harness({ beads: ['w1'], onTickRequested: () => { throw new Error('observer down'); } });
+    h.daemon.run(INTERVAL);
+    expect(h.daemon.requestTick('run-finished')).toBe('started');
+    await flush();
+    expect(h.runsFor('w1')).toHaveLength(1);
+    expect(h.logs.find((l) => l.m.includes('onTickRequested observer failed'))?.o).toMatchObject({ error: 'observer down', reason: 'run-finished' });
+    await h.daemon.stop();
   });
 
   it('6b. stop() during the cancel grace window also leaves no timer', async () => {
