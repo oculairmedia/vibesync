@@ -211,11 +211,7 @@ export class PmWaker {
     const agentId = this.lookupAgent(project);
     if (agentId === undefined) return;
     if (!agentId) {
-      if (!this.warnedNoAgent) {
-        this.warnedNoAgent = true;
-        this.deps.logger?.warn?.({ project }, 'pm-wake: project has no PM agent (letta_agent_id) — not waking');
-      }
-      this.notifySkipped('any', 'no-pm-agent');
+      this.noteNoAgent(project);
       return;
     }
     this.warnedNoAgent = false;
@@ -306,10 +302,9 @@ export class PmWaker {
   }
 
   private addReadyCandidate(out: Candidate[], obs: PmWakeTickObservation, now: number): void {
-    const sched = obs.result.scheduler;
-    if (sched.skippedReason === 'paused' || sched.dispatched.length > 0) return;
+    if (!schedulerIdle(obs)) return;
     const backlog = this.safeBacklog();
-    if (!backlog || backlog.readyCount <= 0 || backlog.freeCapacity <= 0) return;
+    if (!backlog || !hasRunnableWork(backlog)) return;
     out.push({
       reason: 'ready',
       due: this.intervalOk('ready', now),
@@ -354,13 +349,23 @@ export class PmWaker {
   }
 
   private async retryDurablePending(record: PendingWakeRecord, now: number): Promise<void> {
-    const claim = await this.deps.pendingWakeStore?.claim(record.id);
-    if (claim && (!claim.record || claim.record.status === 'closed')) {
+    const store = this.deps.pendingWakeStore;
+    if (store) await this.claimAndSend(store, record, now);
+  }
+
+  /**
+   * Claim a saved wake and send it. A record that is gone or already closed is
+   * dropped; a claim or a send the store does not authorize (another process
+   * holds the wake) does nothing, and the wake stays pending.
+   */
+  private async claimAndSend(store: PendingWakeStore, record: PendingWakeRecord, now: number): Promise<void> {
+    const claim = await store.claim(record.id);
+    if (!claim.record || claim.record.status === 'closed') {
       this.durablePending.delete(record.id);
       return;
     }
-    if (!claim?.authorized || !claim.record || !this.deps.pendingWakeStore) return;
-    const sent = await this.deps.pendingWakeStore.sendClaimed(claim.record, this.deps.sink, now);
+    if (!claim.authorized) return;
+    const sent = await store.sendClaimed(claim.record, this.deps.sink, now);
     if (sent.authorized && sent.outcome) this.applyDurableOutcome(record, sent, now);
   }
 
@@ -402,21 +407,22 @@ export class PmWaker {
     return correlation ? { correlation: { ...correlation } } : {};
   }
 
+  /** Warn once while the project has no agent to wake (again after one comes and goes), and report the skip. */
+  private noteNoAgent(project: string): void {
+    if (!this.warnedNoAgent) {
+      this.warnedNoAgent = true;
+      this.deps.logger?.warn?.({ project }, 'pm-wake: project has no PM agent (letta_agent_id) — not waking');
+    }
+    this.notifySkipped('any', 'no-pm-agent');
+  }
+
   private async sendDurable(input: PmWakeInput, now: number): Promise<void> {
     const store = this.deps.pendingWakeStore!;
     const { reason, wakeId } = input;
     try {
       const record = await store.enqueue(input, now);
       this.durablePending.set(record.id, record);
-      const claim = await store.claim(record.id);
-      if (!claim.record || claim.record.status === 'closed') {
-        this.durablePending.delete(record.id);
-        return;
-      }
-      if (!claim.authorized) return;
-      const sent = await store.sendClaimed(claim.record, this.deps.sink, now);
-      if (!sent.authorized || !sent.outcome) return;
-      this.applyDurableOutcome(record, sent, now);
+      await this.claimAndSend(store, record, now);
     } catch (error) {
       this.failedAt.set(reason, now);
       this.deps.logger?.warn?.(
@@ -542,4 +548,15 @@ function inputFromRecord(record: PendingWakeRecord): PmWakeInput {
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** The tick was not paused and dispatched nothing: ready work is waiting on something. */
+function schedulerIdle(obs: PmWakeTickObservation): boolean {
+  const sched = obs.result.scheduler;
+  return sched.skippedReason !== 'paused' && sched.dispatched.length === 0;
+}
+
+/** There is ready work and a free slot to run it in. */
+function hasRunnableWork(backlog: { readonly readyCount: number; readonly freeCapacity: number }): boolean {
+  return backlog.readyCount > 0 && backlog.freeCapacity > 0;
 }
