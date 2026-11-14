@@ -29,6 +29,8 @@ interface ProjectUpdates {
   filesystem_path?: string;
   git_url?: string;
   status?: string;
+  /** The project's PM agent: the agent woken for its ready work and sent its escalations. */
+  pm_agent_id?: string;
 }
 
 type ProjectDB = Pick<Registry,
@@ -176,12 +178,27 @@ export class ProjectRegistry {
     if (updates.git_url !== undefined) nextUpdates.git_url = updates.git_url;
     if (updates.status !== undefined) nextUpdates.status = updates.status;
 
-    const updated = this.db.updateProject(existing.identifier, nextUpdates);
-    if (updated?.filesystem_path) {
-      this.db.setProjectScan(updated.identifier, this._detectTechStack(updated.filesystem_path), Date.now());
-    }
+    // The PM agent goes in the same write as the other fields: all of them land or none do.
+    const updated = this.db.updateProject(existing.identifier, {
+      ...nextUpdates,
+      ...(updates.pm_agent_id !== undefined ? { letta_agent_id: updates.pm_agent_id } : {}),
+    });
+    if (updated?.filesystem_path) this.refreshTechStack(updated.identifier, updated.filesystem_path);
 
     return this.getProject(existing.identifier);
+  }
+
+  /**
+   * Re-detect the project's tech stack after an update. The update has already
+   * committed, so a failure here must not turn into a failed update: the fields
+   * (PM agent included) are saved, and only this hint is stale. It is logged.
+   */
+  private refreshTechStack(identifier: string, filesystemPath: string): void {
+    try {
+      this.db.setProjectScan(identifier, this._detectTechStack(filesystemPath), Date.now());
+    } catch (err) {
+      this.log.warn({ err, identifier }, 'Tech-stack scan failed after a project update; the update itself was saved');
+    }
   }
 
   archiveProject(identifier: string): ProjectRow | null {

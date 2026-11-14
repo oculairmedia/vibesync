@@ -19,6 +19,8 @@ export interface ProjectUpdate {
   git_url?: string | null;
   status?: string | null;
   last_checked_at?: number | null;
+  /** The project's PM agent (projects.letta_agent_id). */
+  letta_agent_id?: string | null;
 }
 
 export interface BeadsRemoteSnapshot {
@@ -77,13 +79,14 @@ export class ProjectRepository {
         this.db.prepare('DELETE FROM project_role_agents WHERE project_identifier = ?').run(identifier);
       }
       this.db
-        .prepare('UPDATE projects SET name = ?, filesystem_path = ?, git_url = ?, status = ?, last_checked_at = ?, updated_at = ? WHERE identifier = ?')
+        .prepare('UPDATE projects SET name = ?, filesystem_path = ?, git_url = ?, status = ?, last_checked_at = ?, letta_agent_id = ?, updated_at = ? WHERE identifier = ?')
         .run(
           updates.name ?? existing.name,
           updates.filesystem_path ?? existing.filesystem_path,
           updates.git_url ?? existing.git_url,
           nextStatus,
           updates.last_checked_at ?? existing.last_checked_at,
+          updates.letta_agent_id ?? existing.letta_agent_id ?? null,
           Date.now(),
           identifier,
         );

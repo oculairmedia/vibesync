@@ -287,7 +287,7 @@ export function registerProjectRoutes(app: App, deps: RouteDeps): void {
       const identifier = projectIdFromPath(pathname, 4);
       try {
         const body = await deps.parseJsonBody(req);
-        const updates: { filesystem_path?: string; git_url?: string; status?: string } = {};
+        const updates: { filesystem_path?: string; git_url?: string; status?: string; pm_agent_id?: string } = {};
         if (body.filesystem_path !== undefined) {
           if (!isAbsolutePath(body.filesystem_path)) { sendError(res, 400, 'filesystem_path must be an absolute path', { field: 'filesystem_path' }); return; }
           updates.filesystem_path = body.filesystem_path.trim();
@@ -297,6 +297,11 @@ export function registerProjectRoutes(app: App, deps: RouteDeps): void {
           const status = typeof body.status === 'string' ? body.status.trim() : '';
           if (!ALLOWED_PROJECT_STATUSES.has(status)) { sendError(res, 400, 'status must be one of: active, archived', { field: 'status' }); return; }
           updates.status = status;
+        }
+        if (body.pm_agent_id !== undefined) {
+          const agentId = typeof body.pm_agent_id === 'string' ? body.pm_agent_id.trim() : '';
+          if (!AGENT_ID.test(agentId)) { sendError(res, 400, 'pm_agent_id must be an agent- id', { field: 'pm_agent_id' }); return; }
+          updates.pm_agent_id = agentId;
         }
         const project = projectRegistry.updateProject(identifier, updates);
         if (!project) { sendError(res, 404, 'Project not found', { identifier }); return; }
