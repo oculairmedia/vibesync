@@ -245,26 +245,26 @@ export class MoleculeWalker {
     const root = await this.store.getBead(rootId);
     if (!root || root.issue_type !== 'molecule_root') return null;
     const edges = await this.store.getBeadDependencies(rootId);
-    const childIds = edges
-      .filter((e) => e.type === 'parent-child' && e.depends_on_id === rootId)
-      .map((e) => e.issue_id);
+    const steps = await this.loadSteps(childIdsOf(rootId, edges));
+    const stepEdges = await this.edgesOf(steps);
+    return { rootId, root, steps, byName: stepsByName(steps), edges: dedupeEdges([...edges, ...stepEdges]) };
+  }
+
+  /** The step beads among these ids, in order; anything else is skipped. */
+  private async loadSteps(ids: readonly string[]): Promise<BeadRow[]> {
     const steps: BeadRow[] = [];
-    for (const cid of childIds) {
-      const row = await this.store.getBead(cid);
+    for (const id of ids) {
+      const row = await this.store.getBead(id);
       if (row && row.issue_type === 'molecule_step') steps.push(row);
     }
-    // Aggregate edges across all step beads (parent-child + blocks).
-    const stepEdges: DependencyRow[] = [];
-    for (const step of steps) {
-      const sEdges = await this.store.getBeadDependencies(step.id);
-      stepEdges.push(...sEdges);
-    }
-    const byName = new Map<string, BeadRow>();
-    for (const step of steps) {
-      const stepName = (step.metadata as { exec?: { step?: string } })?.exec?.step;
-      if (stepName) byName.set(stepName, step);
-    }
-    return { rootId, root, steps, byName, edges: dedupeEdges([...edges, ...stepEdges]) };
+    return steps;
+  }
+
+  /** Every edge of every step (parent-child and blocks), read from the store in step order. */
+  private async edgesOf(steps: readonly BeadRow[]): Promise<DependencyRow[]> {
+    const edges: DependencyRow[] = [];
+    for (const step of steps) edges.push(...(await this.store.getBeadDependencies(step.id)));
+    return edges;
   }
 
   /** Return step beads currently marked as running for this molecule. */
@@ -283,31 +283,7 @@ export class MoleculeWalker {
   async listMolecules(opts: { statuses?: readonly string[]; limit?: number } = {}): Promise<MoleculeSummary[]> {
     const roots = await this.store.listMoleculeRoots(opts);
     const summaries: MoleculeSummary[] = [];
-    for (const root of roots) {
-      const view = await this.load(root.id);
-      const steps = view?.steps ?? [];
-      const total = steps.length;
-      const done = steps.filter((s) => s.status === 'closed').length;
-      const running = steps.filter((s) => s.status === 'in_progress').length;
-      // current step: prefer a running step, else the last non-open step.
-      const currentStep =
-        steps.find((s) => s.status === 'in_progress') ??
-        [...steps].reverse().find((s) => s.status !== 'open');
-      const exec = (root.metadata as { exec?: { formula?: string; motivating_bead?: string } })?.exec ?? {};
-      const stepExec = (currentStep?.metadata as { exec?: { step?: string } } | undefined)?.exec;
-      summaries.push({
-        id: root.id,
-        formulaName: exec.formula ?? null,
-        motivatingBeadId: exec.motivating_bead ?? null,
-        status: root.status,
-        title: root.title,
-        createdAt: root.created_at,
-        updatedAt: root.updated_at,
-        stepCounts: { total, done, running },
-        currentStep: currentStep ? (stepExec?.step ?? currentStep.title ?? null) : null,
-        currentStepStatus: currentStep?.status ?? null,
-      });
-    }
+    for (const root of roots) summaries.push(summarize(root, (await this.load(root.id))?.steps ?? []));
     return summaries;
   }
 
@@ -328,28 +304,13 @@ export class MoleculeWalker {
     readonly steps: readonly StepSpec[];
   }): Promise<MoleculeView> {
     const rootId = newMoleculeRootId(args.prefix);
-    await this.store.insertMoleculeRoot({
-      id: rootId,
-      formulaName: args.formulaName,
-      title: args.title,
-      ...(args.motivatingBeadId ? { motivatingBeadId: args.motivatingBeadId } : {}),
-      ...(args.projectIdentifier ? { projectIdentifier: args.projectIdentifier } : {}),
-      ...(args.delivers ? { delivers: args.delivers } : {}),
-    });
+    await this.store.insertMoleculeRoot({ id: rootId, formulaName: args.formulaName, title: args.title, ...optionalRootFields(args) });
     // Insert steps in declared order so depends_on references already exist.
     const stepIdByName = new Map<string, string>();
     for (const step of args.steps) {
       const id = newMoleculeStepId(rootId, step.name);
       stepIdByName.set(step.name, id);
-      const dependsOnIds = (step.dependsOn ?? []).map((name) => {
-        const id = stepIdByName.get(name);
-        if (!id) {
-          throw new Error(
-            `MoleculeWalker.dispatch: step "${step.name}" depends_on "${name}" which is not defined before it in the formula`,
-          );
-        }
-        return id;
-      });
+      const dependsOnIds = dependencyIds(step, stepIdByName);
       await this.store.insertMoleculeStep({
         id,
         parentRootId: rootId,
@@ -448,6 +409,71 @@ export class MoleculeWalker {
     if (!view) return false;
     return view.steps.every((s) => s.status === 'closed');
   }
+}
+
+/** The ids of the beads a parent-child edge makes children of the root (a blocks edge onto the root does not). */
+function childIdsOf(rootId: string, edges: readonly DependencyRow[]): string[] {
+  return edges.filter((e) => e.type === 'parent-child' && e.depends_on_id === rootId).map((e) => e.issue_id);
+}
+
+/** Steps indexed by their recorded step name; an unnamed step is left out. */
+function stepsByName(steps: readonly BeadRow[]): Map<string, BeadRow> {
+  const byName = new Map<string, BeadRow>();
+  for (const step of steps) {
+    const stepName = (step.metadata as { exec?: { step?: string } })?.exec?.step;
+    if (stepName) byName.set(stepName, step);
+  }
+  return byName;
+}
+
+/** The current step: the running one, else the last step that is no longer open, else none. */
+function currentStepOf(steps: readonly BeadRow[]): BeadRow | undefined {
+  return steps.find((s) => s.status === 'in_progress') ?? [...steps].reverse().find((s) => s.status !== 'open');
+}
+
+/** A run-list card for one molecule: formula, motivating bead, step counts and the current step. */
+function summarize(root: BeadRow, steps: readonly BeadRow[]): MoleculeSummary {
+  const currentStep = currentStepOf(steps);
+  const exec = (root.metadata as { exec?: { formula?: string; motivating_bead?: string } })?.exec ?? {};
+  const stepExec = (currentStep?.metadata as { exec?: { step?: string } } | undefined)?.exec;
+  return {
+    id: root.id,
+    formulaName: exec.formula ?? null,
+    motivatingBeadId: exec.motivating_bead ?? null,
+    status: root.status,
+    title: root.title,
+    createdAt: root.created_at,
+    updatedAt: root.updated_at,
+    stepCounts: {
+      total: steps.length,
+      done: steps.filter((s) => s.status === 'closed').length,
+      running: steps.filter((s) => s.status === 'in_progress').length,
+    },
+    currentStep: currentStep ? (stepExec?.step ?? currentStep.title ?? null) : null,
+    currentStepStatus: currentStep?.status ?? null,
+  };
+}
+
+/** The ids of a step's dependencies, each of which must be defined earlier in the formula. */
+function dependencyIds(step: StepSpec, stepIdByName: ReadonlyMap<string, string>): string[] {
+  return (step.dependsOn ?? []).map((name) => {
+    const id = stepIdByName.get(name);
+    if (!id) {
+      throw new Error(
+        `MoleculeWalker.dispatch: step "${step.name}" depends_on "${name}" which is not defined before it in the formula`,
+      );
+    }
+    return id;
+  });
+}
+
+/** The root's optional fields, each present only when set. */
+function optionalRootFields(args: { readonly motivatingBeadId?: string; readonly projectIdentifier?: string; readonly delivers?: string }) {
+  return {
+    ...(args.motivatingBeadId ? { motivatingBeadId: args.motivatingBeadId } : {}),
+    ...(args.projectIdentifier ? { projectIdentifier: args.projectIdentifier } : {}),
+    ...(args.delivers ? { delivers: args.delivers } : {}),
+  };
 }
 
 function dedupeEdges(edges: readonly DependencyRow[]): DependencyRow[] {
