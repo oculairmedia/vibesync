@@ -136,6 +136,33 @@ describe('project registry routes', () => {
     expect(db.listRoleAgents(id)).toEqual([]);
   });
 
+  it('role agents: a project archived while the PUT body is still arriving is refused with 409 and keeps nothing', async () => {
+    const created = await call('POST', '/api/registry/projects', { filesystem_path: repo('zeta') });
+    const id = created.body.project.identifier as string;
+    const { request } = await import('node:http');
+    const url = new URL(`${base}/api/registry/projects/${id}/role-agents`);
+    const body = JSON.stringify({ roleAgents: [{ roleName: 'coder', agentId: 'agent-11111111-1111-4111-8111-111111111111' }] });
+    const answer = new Promise<number>((resolve, reject) => {
+      const req = request({ method: 'PUT', hostname: url.hostname, port: url.port, path: url.pathname, headers: { 'Content-Type': 'application/json' } }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode ?? 0)); });
+      req.on('error', reject);
+      req.write(body.slice(0, 10));
+      // The handler has checked the status and is waiting for the rest of the body.
+      setTimeout(async () => {
+        await call('PATCH', `/api/registry/projects/${id}`, { status: 'archived' });
+        req.end(body.slice(10));
+      }, 100);
+    });
+    expect(await answer).toBe(409);
+    expect(db.listRoleAgents(id)).toEqual([]);
+  });
+
+  it('role agents: the registry refuses a replace on a project that is not active, inside the write', () => {
+    db.upsertProject({ identifier: 'eta', name: 'Eta' });
+    db.updateProject('eta', { status: 'archived' });
+    expect(() => db.replaceRoleAgents('eta', [{ roleName: 'coder', agentId: 'agent-11111111-1111-4111-8111-111111111111' }], 'http://localhost:8291')).toThrow(/not active/);
+    expect(db.listRoleAgents('eta')).toEqual([]);
+  });
+
   it('role agents: a failure part way through a replace leaves the previous set whole (one transaction)', async () => {
     const created = await call('POST', '/api/registry/projects', { filesystem_path: repo('epsilon') });
     const id = created.body.project.identifier as string;

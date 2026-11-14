@@ -1,5 +1,7 @@
 import type Database from 'better-sqlite3';
 
+import { ProjectNotActiveError } from '../role-agent-rules';
+
 /**
  * One row from the project_role_agents table (vibesync-mcz Phase A).
  *
@@ -160,6 +162,10 @@ export class ProjectRoleAgentRepository {
     now: number = Date.now(),
   ): ProjectRoleAgentRecord[] {
     const apply = this.db.transaction(() => {
+      // Checked here, inside the write, so a project archived after the
+      // request arrived is still refused (CodeRabbit on #178).
+      const row = this.db.prepare('SELECT status FROM projects WHERE identifier = ?').get(projectIdentifier) as { status?: string } | undefined;
+      if (row?.status !== 'active') throw new ProjectNotActiveError(projectIdentifier, row?.status ?? null);
       const keep = new Set(assignments.map((a) => a.roleName));
       for (const existing of this.listRoleAgents(projectIdentifier)) {
         if (!keep.has(existing.roleName)) this.deleteRoleAgent(projectIdentifier, existing.roleName);

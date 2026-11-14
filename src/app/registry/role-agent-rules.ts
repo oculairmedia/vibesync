@@ -12,4 +12,17 @@ export const ROLE_NAME_MAX_LENGTH = 64;
 export const AGENT_ID_PATTERN = '^agent-[0-9a-f-]{8,}$';
 
 export const ROLE_NAME = new RegExp(ROLE_NAME_PATTERN);
+
+/**
+ * The project is not active, so its role agents cannot be set: startup deletes
+ * the role agents of every project that is not active. Thrown from inside the
+ * replace transaction, so a project archived while a request was in flight is
+ * caught at the moment of writing, not only when the request arrived.
+ */
+export class ProjectNotActiveError extends Error {
+  constructor(readonly projectIdentifier: string, readonly status: string | null) {
+    super(`project ${projectIdentifier} is ${status ?? 'missing'}, not active`);
+    this.name = 'ProjectNotActiveError';
+  }
+}
 export const AGENT_ID = new RegExp(AGENT_ID_PATTERN);

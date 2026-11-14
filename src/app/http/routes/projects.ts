@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { stripUrlCredentials } from '../../utils.js';
-import { AGENT_ID, ROLE_NAME } from '../../registry/role-agent-rules.js';
+import { AGENT_ID, ProjectNotActiveError, ROLE_NAME } from '../../registry/role-agent-rules.js';
 import type { ProjectRow } from '../../types/db.js';
 import type {
   App,
@@ -334,7 +334,14 @@ export function registerProjectRoutes(app: App, deps: RouteDeps): void {
       try { body = await deps.parseJsonBody(req); } catch { sendError(res, 400, 'Body is not valid JSON', { field: 'roleAgents' }); return; }
       const parsed = parseRoleAgents(body);
       if ('error' in parsed) { sendError(res, 400, parsed.error, { field: 'roleAgents' }); return; }
-      const roleAgents = projectRegistry.setRoleAgents(project.identifier, parsed.assignments);
+      let roleAgents: Array<{ roleName: string; agentId: string }>;
+      try {
+        roleAgents = projectRegistry.setRoleAgents(project.identifier, parsed.assignments);
+      } catch (error) {
+        if (!(error instanceof ProjectNotActiveError)) throw error;
+        sendError(res, 409, 'Project is not active; unarchive it before setting role agents', { identifier: project.identifier, status: error.status });
+        return;
+      }
       sendJson(res, 200, { message: 'Role agents set', identifier: project.identifier, roleAgents, timestamp: now() });
     },
   });
