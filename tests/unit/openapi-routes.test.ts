@@ -58,6 +58,7 @@ describe('API description matches the routes the server handles', () => {
       'GET /health',
       'GET /api/projects', 'GET /api/projects/p', 'GET /api/projects/p/beads-remote', 'POST /api/projects/p/beads-remote/provision',
       'POST /api/registry/projects', 'GET /api/registry/projects/p', 'PATCH /api/registry/projects/p', 'DELETE /api/registry/projects/p',
+      'GET /api/registry/projects/p/role-agents', 'PUT /api/registry/projects/p/role-agents',
       'POST /api/sync/trigger',
       'GET /formulas', 'POST /formulas/f/run',
       'GET /molecules', 'GET /molecules/m', 'GET /molecules/m/trace', 'GET /molecules/m/events', 'POST /molecules/m/resume', 'DELETE /molecules/m',

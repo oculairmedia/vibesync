@@ -57,6 +57,10 @@ export interface ProjectRegistryApi {
   getProjects: (filters?: ProjectFilters) => ProjectRow[];
   updateProject: (id: string, updates: { name?: string; filesystem_path?: string; git_url?: string; status?: string }) => ProjectRow | null;
   deleteProject: (id: string) => boolean;
+  /** Role name and agent id for each role the project's runs dispatch to, sorted by role. */
+  listRoleAgents: (id: string) => Array<{ roleName: string; agentId: string }>;
+  /** Replace the project's role agents with exactly these. */
+  setRoleAgents: (id: string, assignments: ReadonlyArray<{ roleName: string; agentId: string }>) => Array<{ roleName: string; agentId: string }>;
 }
 
 export interface BeadsRemoteProvisionResult {

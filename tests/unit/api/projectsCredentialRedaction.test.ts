@@ -84,6 +84,8 @@ function makeHarness(opts: {
     registerProject: vi.fn(),
     updateProject: vi.fn(),
     deleteProject: vi.fn(),
+    listRoleAgents: vi.fn(() => []),
+    setRoleAgents: vi.fn(() => []),
   } as unknown as ProjectRegistryApi;
   registerProjectRoutes(app, {
     db,
