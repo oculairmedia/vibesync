@@ -314,7 +314,7 @@ describe('cancel and failure (the bead graph unblocks dependents; the run contex
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(provider).toBeDefined();
     expect((await store.getBead(moleculeId))?.metadata).toMatchObject({ exec: { outcome: 'cancelled' } });
-    expect((await store.getBead(newMoleculeStepId(moleculeId, 'coder')))?.status).toBe('open');
+    expect((await store.getBead(newMoleculeStepId(moleculeId, 'coder')))?.status).toBe('closed');
     expect(handle.dispatcher.liveMoleculeIds()).toEqual([]);
   });
 });
