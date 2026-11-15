@@ -1,0 +1,949 @@
+{
+ "about": "Tester replies and the scores Jev (jev-1.14.0, 2026-11-15) returned for them with the four questions in src/engine/verdict/questions.ts. Jev is not deterministic: each reply was judged 5 times with identical requests and every sample is kept; a reply must get its verdict on EVERY sample (alsoAllowed lists the one known exception). unverifiedLocalCheck is the PM's label. finalStepVerdict is what decideStepVerdict must return on a final step. previousSingleQuestionSamples are the scores of the question the local-check question replaced (vibesync-9lzk.61), from a separate run the same day. Replies named 'variant:' are the soak-run-3 reply with its last sentence changed; the rest are real.",
+ "cases": [
+  {
+   "name": "soak3 PASS, PR checks not verified",
+   "source": "soak run 3, vibesync-mol-drczcjdh1eae, 2026-11-15",
+   "role": "tester",
+   "reply": "**Result:** PASS\n\n**Suite:** All specified gates passed:\n- `npm run type-check`\n- `node node_modules/typescript/bin/tsc --noEmit -p tests/tsconfig.json`\n- `scripts/ci/boot-check.sh 60`\n- `npm run lint`\n- `node node_modules/vitest/vitest.mjs run --reporter=json --outputFile=/tmp/vitest-vibesync-e57f.4.json`\n\n**Detail:** Full Vitest report: `success: true`; 390/390 suites passed, 0 failed; 1,428 tests passed, 0 failed, 47 pending. PR checks were not verified here.",
+   "unverifiedLocalCheck": false,
+   "finalStepVerdict": "check_ci",
+   "samples": [
+    {
+     "asks_change": 0.06,
+     "blocks_only_on_pending_ci": 0.29,
+     "reports_all_gates_passed": 0.29,
+     "reports_unverified_local_check": 0.04
+    },
+    {
+     "asks_change": 0.04,
+     "blocks_only_on_pending_ci": 0.29,
+     "reports_all_gates_passed": 0.31,
+     "reports_unverified_local_check": 0.04
+    },
+    {
+     "asks_change": 0.04,
+     "blocks_only_on_pending_ci": 0.31,
+     "reports_all_gates_passed": 0.28,
+     "reports_unverified_local_check": 0.04
+    },
+    {
+     "asks_change": 0.04,
+     "blocks_only_on_pending_ci": 0.41,
+     "reports_all_gates_passed": 0.27,
+     "reports_unverified_local_check": 0.04
+    },
+    {
+     "asks_change": 0.04,
+     "blocks_only_on_pending_ci": 0.28,
+     "reports_all_gates_passed": 0.27,
+     "reports_unverified_local_check": 0.03
+    }
+   ],
+   "previousSingleQuestionSamples": [
+    0.9,
+    0.9,
+    0.89,
+    0.89,
+    0.89
+   ]
+  },
+  {
+   "name": "soak2 INCONCLUSIVE, suite hung",
+   "source": "soak run 2, vibesync-mol-4nd5khvkql1z, 2026-11-15",
+   "role": "tester",
+   "reply": "**Result:** INCONCLUSIVE\n\n**Suite:** `npm run type-check`; `node node_modules/typescript/bin/tsc --noEmit -p tests/tsconfig.json`; `scripts/ci/boot-check.sh 60`; `bun run build:openapi`; `bunx vitest run --reporter=json`; focused dispatcher suite\n\n**Detail:**\n- Both type checks, boot check, OpenAPI build, and focused dispatcher tests passed (41 tests).\n- The full Vitest suite did not complete: `bunx vitest run --reporter=json` remained running through repeated attempts, and I interrupted it without obtaining a complete JSON report. The required full-suite gate is therefore unverified.\n- Tested head: `a1b6d89ee4d1b5638dc5f7373ec59ec6678a83aa`.\n\nSTEP OUTCOME: BLOCKED - full Vitest suite did not complete",
+   "unverifiedLocalCheck": true,
+   "finalStepVerdict": "unsettled",
+   "samples": [
+    {
+     "asks_change": 0.98,
+     "blocks_only_on_pending_ci": 0.88,
+     "reports_all_gates_passed": 0.01,
+     "reports_unverified_local_check": 0.92
+    },
+    {
+     "asks_change": 0.98,
+     "blocks_only_on_pending_ci": 0.88,
+     "reports_all_gates_passed": 0.01,
+     "reports_unverified_local_check": 0.88
+    },
+    {
+     "asks_change": 0.97,
+     "blocks_only_on_pending_ci": 0.87,
+     "reports_all_gates_passed": 0.01,
+     "reports_unverified_local_check": 0.9
+    },
+    {
+     "asks_change": 0.98,
+     "blocks_only_on_pending_ci": 0.88,
+     "reports_all_gates_passed": 0.02,
+     "reports_unverified_local_check": 0.89
+    },
+    {
+     "asks_change": 0.97,
+     "blocks_only_on_pending_ci": 0.88,
+     "reports_all_gates_passed": 0.02,
+     "reports_unverified_local_check": 0.9
+    }
+   ],
+   "previousSingleQuestionSamples": [
+    0.99,
+    0.99,
+    0.99,
+    0.99,
+    0.99
+   ]
+  },
+  {
+   "name": "t6d3 PASS, typecheck blocked",
+   "source": "tests/_fixtures/t6d3-tester-pass-but-typecheck-blocked.txt",
+   "role": "tester",
+   "reply": "**Result:** PASS (targeted unit suite)\n\n**Command:** `bunx vitest run tests/unit/orchestration/scheduler/iroh-pm-wake-sink.test.ts`\n\n**Summary:** 18 tests passed, 0 failed.\n\n**TypeScript check:** `bunx tsc -p tsconfig.json --noEmit` was blocked by the missing `@number0/iroh` module at `src/orchestration/runtime/iroh/native-dialer.ts:104`.\n\n**PR:** https://github.com/oculairmedia/vibesync/pull/64",
+   "unverifiedLocalCheck": true,
+   "finalStepVerdict": "unsettled",
+   "samples": [
+    {
+     "asks_change": 0.62,
+     "blocks_only_on_pending_ci": 0.02,
+     "reports_all_gates_passed": 0.04,
+     "reports_unverified_local_check": 0.92
+    },
+    {
+     "asks_change": 0.61,
+     "blocks_only_on_pending_ci": 0.02,
+     "reports_all_gates_passed": 0.04,
+     "reports_unverified_local_check": 0.93
+    },
+    {
+     "asks_change": 0.6,
+     "blocks_only_on_pending_ci": 0.02,
+     "reports_all_gates_passed": 0.04,
+     "reports_unverified_local_check": 0.92
+    },
+    {
+     "asks_change": 0.6,
+     "blocks_only_on_pending_ci": 0.02,
+     "reports_all_gates_passed": 0.05,
+     "reports_unverified_local_check": 0.91
+    },
+    {
+     "asks_change": 0.62,
+     "blocks_only_on_pending_ci": 0.02,
+     "reports_all_gates_passed": 0.04,
+     "reports_unverified_local_check": 0.93
+    }
+   ],
+   "previousSingleQuestionSamples": [
+    0.99,
+    0.99,
+    0.98,
+    0.99,
+    0.98
+   ]
+  },
+  {
+   "name": "round3 PASS, mutation not rerun",
+   "source": "tests/_fixtures/round3-tester-pass-mutation-not-rerun.txt",
+   "role": "tester",
+   "reply": "**Result:** PASS\n\n**Suite:** `npm run type-check`; `node node_modules/typescript/bin/tsc --noEmit -p tests/tsconfig.json`; `bun run build:openapi`; `node node_modules/vitest/vitest.mjs run --reporter=json --outputFile=/tmp/engine-trial3-full.json`\n\n**Detail:**\n- Both TypeScript checks passed; OpenAPI build passed.\n- Full suite: 1017 total, 970 passed, 0 failed, 47 skipped.\n- PR #82 is open against `main`, has the required title, and all reported checks are green.\n\nThe task\u2019s required mutation check was already reported as passing in the handoff; I did not rerun it.",
+   "unverifiedLocalCheck": true,
+   "finalStepVerdict": "unsettled",
+   "samples": [
+    {
+     "asks_change": 0.03,
+     "blocks_only_on_pending_ci": 0.06,
+     "reports_all_gates_passed": 0.1,
+     "reports_unverified_local_check": 0.91
+    },
+    {
+     "asks_change": 0.04,
+     "blocks_only_on_pending_ci": 0.06,
+     "reports_all_gates_passed": 0.1,
+     "reports_unverified_local_check": 0.9
+    },
+    {
+     "asks_change": 0.03,
+     "blocks_only_on_pending_ci": 0.05,
+     "reports_all_gates_passed": 0.09,
+     "reports_unverified_local_check": 0.9
+    },
+    {
+     "asks_change": 0.04,
+     "blocks_only_on_pending_ci": 0.04,
+     "reports_all_gates_passed": 0.07,
+     "reports_unverified_local_check": 0.9
+    },
+    {
+     "asks_change": 0.03,
+     "blocks_only_on_pending_ci": 0.05,
+     "reports_all_gates_passed": 0.1,
+     "reports_unverified_local_check": 0.91
+    }
+   ],
+   "previousSingleQuestionSamples": [
+    0.95,
+    0.95,
+    0.95,
+    0.95,
+    0.94
+   ]
+  },
+  {
+   "name": "round10 clean PASS",
+   "source": "tests/_fixtures/round10-tester-clean-pass.txt",
+   "role": "tester",
+   "reply": "**Result:** PASS\n\n**Suite:** All required local gates passed; PR #103 required checks are green.\n\n**Detail:**\n- `npm run type-check` and `node node_modules/typescript/bin/tsc --noEmit -p tests/tsconfig.json` \u2014 passed.\n- `scripts/ci/boot-check.sh 60` \u2014 passed.\n- Runtime mutation test \u2014 the provider test failed when `cwd` forwarding was removed; source restoration was byte-identical.\n- Full suite \u2014 904 passed, 0 failed, 47 pending.\n- PR #103 is open with the required title. `typecheck`, `test (20.x)`, `test (18.x)`, and `boot` passed.",
+   "unverifiedLocalCheck": false,
+   "finalStepVerdict": "check_ci",
+   "samples": [
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.04,
+     "reports_all_gates_passed": 0.66,
+     "reports_unverified_local_check": 0.04
+    },
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.06,
+     "reports_all_gates_passed": 0.68,
+     "reports_unverified_local_check": 0.04
+    },
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.06,
+     "reports_all_gates_passed": 0.67,
+     "reports_unverified_local_check": 0.05
+    },
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.05,
+     "reports_all_gates_passed": 0.6,
+     "reports_unverified_local_check": 0.04
+    },
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.04,
+     "reports_all_gates_passed": 0.6,
+     "reports_unverified_local_check": 0.04
+    }
+   ],
+   "previousSingleQuestionSamples": [
+    0.02,
+    0.03,
+    0.03,
+    0.02,
+    0.02
+   ]
+  },
+  {
+   "name": "p046 PASS, tsc blocked",
+   "source": "engine trial, 2026-11-02",
+   "role": "tester",
+   "reply": "**Result:** PASS (targeted unit suite)\n\n**Command:** `bunx vitest run tests/unit/orchestration/scheduler/iroh-pm-wake-sink.test.ts`\n\n**Summary:** 18 tests passed, 0 failed.\n\n**TypeScript check:** `bunx tsc -p tsconfig.json --noEmit` was blocked by the missing `@number0/iroh` module at `src/orchestration/runtime/iroh/native-dialer.ts:104`.\n\n**PR:** https://github.com/oculairmedia/vibesync/pull/64",
+   "unverifiedLocalCheck": true,
+   "finalStepVerdict": "unsettled",
+   "samples": [
+    {
+     "asks_change": 0.63,
+     "blocks_only_on_pending_ci": 0.02,
+     "reports_all_gates_passed": 0.04,
+     "reports_unverified_local_check": 0.93
+    },
+    {
+     "asks_change": 0.62,
+     "blocks_only_on_pending_ci": 0.03,
+     "reports_all_gates_passed": 0.05,
+     "reports_unverified_local_check": 0.93
+    },
+    {
+     "asks_change": 0.65,
+     "blocks_only_on_pending_ci": 0.02,
+     "reports_all_gates_passed": 0.04,
+     "reports_unverified_local_check": 0.91
+    },
+    {
+     "asks_change": 0.6,
+     "blocks_only_on_pending_ci": 0.02,
+     "reports_all_gates_passed": 0.04,
+     "reports_unverified_local_check": 0.93
+    },
+    {
+     "asks_change": 0.62,
+     "blocks_only_on_pending_ci": 0.03,
+     "reports_all_gates_passed": 0.04,
+     "reports_unverified_local_check": 0.94
+    }
+   ],
+   "previousSingleQuestionSamples": [
+    0.99,
+    0.98,
+    0.99,
+    0.98,
+    0.98
+   ]
+  },
+  {
+   "name": "9lzk.26 PASS, mutation not rerun",
+   "source": "engine trial, 2026-11-05",
+   "role": "tester",
+   "reply": "**Result:** PASS\n\n**Suite:** `npm run type-check`; `node node_modules/typescript/bin/tsc --noEmit -p tests/tsconfig.json`; `bun run build:openapi`; `node node_modules/vitest/vitest.mjs run --reporter=json --outputFile=/tmp/engine-trial3-full.json`\n\n**Detail:**\n- Both TypeScript checks passed; OpenAPI build passed.\n- Full suite: 1017 total, 970 passed, 0 failed, 47 skipped.\n- PR #82 is open against `main`, has the required title, and all reported checks are green.\n\nThe task\u2019s required mutation check was already reported as passing in the handoff; I did not rerun it.",
+   "unverifiedLocalCheck": true,
+   "finalStepVerdict": "unsettled",
+   "samples": [
+    {
+     "asks_change": 0.03,
+     "blocks_only_on_pending_ci": 0.06,
+     "reports_all_gates_passed": 0.09,
+     "reports_unverified_local_check": 0.89
+    },
+    {
+     "asks_change": 0.03,
+     "blocks_only_on_pending_ci": 0.05,
+     "reports_all_gates_passed": 0.09,
+     "reports_unverified_local_check": 0.89
+    },
+    {
+     "asks_change": 0.03,
+     "blocks_only_on_pending_ci": 0.07,
+     "reports_all_gates_passed": 0.09,
+     "reports_unverified_local_check": 0.89
+    },
+    {
+     "asks_change": 0.04,
+     "blocks_only_on_pending_ci": 0.05,
+     "reports_all_gates_passed": 0.09,
+     "reports_unverified_local_check": 0.89
+    },
+    {
+     "asks_change": 0.04,
+     "blocks_only_on_pending_ci": 0.06,
+     "reports_all_gates_passed": 0.09,
+     "reports_unverified_local_check": 0.9
+    }
+   ],
+   "previousSingleQuestionSamples": [
+    0.94,
+    0.94,
+    0.94,
+    0.95,
+    0.93
+   ]
+  },
+  {
+   "name": "9lzk.30 PASS, PR checks passed",
+   "source": "engine trial, 2026-11-05",
+   "role": "tester",
+   "reply": "**Result:** PASS\n\n**Suite:** Both TypeScript checks, `scripts/ci/boot-check.sh 60`, the callback-removal mutation test, the full suite, and PR checks all passed.\n\n**Detail:**\n- Type checks and boot check exited 0.\n- Mutation test failed as expected when the callback call was removed: the invalid-metadata test observed zero callback calls. The source was restored byte-for-byte.\n- Full suite: 877 passed, 0 failed, 47 pending.\n- PR #91 is open against `main`; its title includes `vibesync-9lzk.30`. Required checks `typecheck`, `test (20.x)`, and `boot` passed.",
+   "unverifiedLocalCheck": false,
+   "finalStepVerdict": "check_ci",
+   "samples": [
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.07,
+     "reports_all_gates_passed": 0.64,
+     "reports_unverified_local_check": 0.03
+    },
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.1,
+     "reports_all_gates_passed": 0.59,
+     "reports_unverified_local_check": 0.03
+    },
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.13,
+     "reports_all_gates_passed": 0.59,
+     "reports_unverified_local_check": 0.03
+    },
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.08,
+     "reports_all_gates_passed": 0.59,
+     "reports_unverified_local_check": 0.03
+    },
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.06,
+     "reports_all_gates_passed": 0.61,
+     "reports_unverified_local_check": 0.03
+    }
+   ],
+   "previousSingleQuestionSamples": [
+    0.02,
+    0.02,
+    0.02,
+    0.02,
+    0.02
+   ]
+  },
+  {
+   "name": "9lzk.33 PASS, PR checks green",
+   "source": "engine trial, 2026-11-06",
+   "role": "tester",
+   "reply": "**Result:** PASS\n\n**Suite:** All required local gates passed; PR #103 required checks are green.\n\n**Detail:**\n- `npm run type-check` and `node node_modules/typescript/bin/tsc --noEmit -p tests/tsconfig.json` \u2014 passed.\n- `scripts/ci/boot-check.sh 60` \u2014 passed.\n- Runtime mutation test \u2014 the provider test failed when `cwd` forwarding was removed; source restoration was byte-identical.\n- Full suite \u2014 904 passed, 0 failed, 47 pending.\n- PR #103 is open with the required title. `typecheck`, `test (20.x)`, `test (18.x)`, and `boot` passed.",
+   "unverifiedLocalCheck": false,
+   "finalStepVerdict": "check_ci",
+   "samples": [
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.06,
+     "reports_all_gates_passed": 0.7,
+     "reports_unverified_local_check": 0.04
+    },
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.06,
+     "reports_all_gates_passed": 0.69,
+     "reports_unverified_local_check": 0.04
+    },
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.05,
+     "reports_all_gates_passed": 0.57,
+     "reports_unverified_local_check": 0.04
+    },
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.05,
+     "reports_all_gates_passed": 0.64,
+     "reports_unverified_local_check": 0.05
+    },
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.06,
+     "reports_all_gates_passed": 0.61,
+     "reports_unverified_local_check": 0.05
+    }
+   ],
+   "previousSingleQuestionSamples": [
+    0.02,
+    0.03,
+    0.02,
+    0.02,
+    0.03
+   ]
+  },
+  {
+   "name": "variant: CI still queued",
+   "source": "the soak-run-3 reply with its last sentence changed (not a real reply)",
+   "role": "tester",
+   "reply": "**Result:** PASS\n\n**Suite:** All specified gates passed:\n- `npm run type-check`\n- `node node_modules/typescript/bin/tsc --noEmit -p tests/tsconfig.json`\n- `scripts/ci/boot-check.sh 60`\n- `npm run lint`\n- `node node_modules/vitest/vitest.mjs run --reporter=json --outputFile=/tmp/vitest-vibesync-e57f.4.json`\n\n**Detail:** Full Vitest report: `success: true`; 390/390 suites passed, 0 failed; 1,428 tests passed, 0 failed, 47 pending. PR checks `typecheck`, `test (20.x)` and `boot` were still queued when I finished.",
+   "unverifiedLocalCheck": false,
+   "finalStepVerdict": "check_ci",
+   "samples": [
+    {
+     "asks_change": 0.06,
+     "blocks_only_on_pending_ci": 0.58,
+     "reports_all_gates_passed": 0.29,
+     "reports_unverified_local_check": 0.15
+    },
+    {
+     "asks_change": 0.06,
+     "blocks_only_on_pending_ci": 0.57,
+     "reports_all_gates_passed": 0.24,
+     "reports_unverified_local_check": 0.15
+    },
+    {
+     "asks_change": 0.08,
+     "blocks_only_on_pending_ci": 0.63,
+     "reports_all_gates_passed": 0.29,
+     "reports_unverified_local_check": 0.16
+    },
+    {
+     "asks_change": 0.07,
+     "blocks_only_on_pending_ci": 0.58,
+     "reports_all_gates_passed": 0.22,
+     "reports_unverified_local_check": 0.19
+    },
+    {
+     "asks_change": 0.07,
+     "blocks_only_on_pending_ci": 0.68,
+     "reports_all_gates_passed": 0.23,
+     "reports_unverified_local_check": 0.14
+    }
+   ],
+   "previousSingleQuestionSamples": [
+    0.8,
+    0.77,
+    0.83,
+    0.82,
+    0.83
+   ]
+  },
+  {
+   "name": "variant: did not check GitHub",
+   "source": "the soak-run-3 reply with its last sentence changed (not a real reply)",
+   "role": "tester",
+   "reply": "**Result:** PASS\n\n**Suite:** All specified gates passed:\n- `npm run type-check`\n- `node node_modules/typescript/bin/tsc --noEmit -p tests/tsconfig.json`\n- `scripts/ci/boot-check.sh 60`\n- `npm run lint`\n- `node node_modules/vitest/vitest.mjs run --reporter=json --outputFile=/tmp/vitest-vibesync-e57f.4.json`\n\n**Detail:** Full Vitest report: `success: true`; 390/390 suites passed, 0 failed; 1,428 tests passed, 0 failed, 47 pending. I did not check the GitHub check runs on the PR head.",
+   "unverifiedLocalCheck": false,
+   "finalStepVerdict": "check_ci",
+   "samples": [
+    {
+     "asks_change": 0.04,
+     "blocks_only_on_pending_ci": 0.15,
+     "reports_all_gates_passed": 0.29,
+     "reports_unverified_local_check": 0.04
+    },
+    {
+     "asks_change": 0.04,
+     "blocks_only_on_pending_ci": 0.16,
+     "reports_all_gates_passed": 0.29,
+     "reports_unverified_local_check": 0.04
+    },
+    {
+     "asks_change": 0.04,
+     "blocks_only_on_pending_ci": 0.16,
+     "reports_all_gates_passed": 0.3,
+     "reports_unverified_local_check": 0.04
+    },
+    {
+     "asks_change": 0.04,
+     "blocks_only_on_pending_ci": 0.14,
+     "reports_all_gates_passed": 0.26,
+     "reports_unverified_local_check": 0.05
+    },
+    {
+     "asks_change": 0.05,
+     "blocks_only_on_pending_ci": 0.16,
+     "reports_all_gates_passed": 0.28,
+     "reports_unverified_local_check": 0.04
+    }
+   ],
+   "previousSingleQuestionSamples": [
+    0.78,
+    0.82,
+    0.8,
+    0.81,
+    0.84
+   ]
+  },
+  {
+   "name": "variant: integration-bd not waited",
+   "source": "the soak-run-3 reply with its last sentence changed (not a real reply)",
+   "role": "tester",
+   "reply": "**Result:** PASS\n\n**Suite:** All specified gates passed:\n- `npm run type-check`\n- `node node_modules/typescript/bin/tsc --noEmit -p tests/tsconfig.json`\n- `scripts/ci/boot-check.sh 60`\n- `npm run lint`\n- `node node_modules/vitest/vitest.mjs run --reporter=json --outputFile=/tmp/vitest-vibesync-e57f.4.json`\n\n**Detail:** Full Vitest report: `success: true`; 390/390 suites passed, 0 failed; 1,428 tests passed, 0 failed, 47 pending. `integration-bd` is in progress on the PR; not waited on, per instructions.",
+   "unverifiedLocalCheck": false,
+   "finalStepVerdict": "check_ci",
+   "samples": [
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.23,
+     "reports_all_gates_passed": 0.7,
+     "reports_unverified_local_check": 0.06
+    },
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.2,
+     "reports_all_gates_passed": 0.72,
+     "reports_unverified_local_check": 0.07
+    },
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.18,
+     "reports_all_gates_passed": 0.7,
+     "reports_unverified_local_check": 0.07
+    },
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.23,
+     "reports_all_gates_passed": 0.7,
+     "reports_unverified_local_check": 0.06
+    },
+    {
+     "asks_change": 0.03,
+     "blocks_only_on_pending_ci": 0.21,
+     "reports_all_gates_passed": 0.69,
+     "reports_unverified_local_check": 0.07
+    }
+   ],
+   "previousSingleQuestionSamples": [
+    0.43,
+    0.53,
+    0.5,
+    0.52,
+    0.51
+   ]
+  },
+  {
+   "name": "variant: lint not run (LOCAL)",
+   "source": "the soak-run-3 reply with its last sentence changed (not a real reply)",
+   "role": "tester",
+   "reply": "**Result:** PASS\n\n**Suite:** All specified gates passed:\n- `npm run type-check`\n- `node node_modules/typescript/bin/tsc --noEmit -p tests/tsconfig.json`\n- `scripts/ci/boot-check.sh 60`\n- `node node_modules/vitest/vitest.mjs run --reporter=json --outputFile=/tmp/vitest-vibesync-e57f.4.json`\n\n**Detail:** Full Vitest report: `success: true`; 390/390 suites passed, 0 failed; 1,428 tests passed, 0 failed, 47 pending. `npm run lint` was not run.",
+   "unverifiedLocalCheck": true,
+   "finalStepVerdict": "unsettled",
+   "samples": [
+    {
+     "asks_change": 0.06,
+     "blocks_only_on_pending_ci": 0.1,
+     "reports_all_gates_passed": 0.38,
+     "reports_unverified_local_check": 0.86
+    },
+    {
+     "asks_change": 0.1,
+     "blocks_only_on_pending_ci": 0.1,
+     "reports_all_gates_passed": 0.37,
+     "reports_unverified_local_check": 0.86
+    },
+    {
+     "asks_change": 0.08,
+     "blocks_only_on_pending_ci": 0.11,
+     "reports_all_gates_passed": 0.36,
+     "reports_unverified_local_check": 0.87
+    },
+    {
+     "asks_change": 0.07,
+     "blocks_only_on_pending_ci": 0.09,
+     "reports_all_gates_passed": 0.33,
+     "reports_unverified_local_check": 0.86
+    },
+    {
+     "asks_change": 0.07,
+     "blocks_only_on_pending_ci": 0.1,
+     "reports_all_gates_passed": 0.37,
+     "reports_unverified_local_check": 0.86
+    }
+   ],
+   "previousSingleQuestionSamples": [
+    0.83,
+    0.84,
+    0.86,
+    0.83,
+    0.81
+   ]
+  },
+  {
+   "name": "variant: both unverified",
+   "source": "the soak-run-3 reply with its last sentence changed (not a real reply)",
+   "role": "tester",
+   "reply": "**Result:** PASS\n\n**Suite:** All specified gates passed:\n- `npm run type-check`\n- `node node_modules/typescript/bin/tsc --noEmit -p tests/tsconfig.json`\n- `scripts/ci/boot-check.sh 60`\n- `npm run lint`\n- `node node_modules/vitest/vitest.mjs run --reporter=json --outputFile=/tmp/vitest-vibesync-e57f.4.json`\n\n**Detail:** Full Vitest report: `success: true`; 390/390 suites passed, 0 failed; 1,428 tests passed, 0 failed, 47 pending. The boot check could not start (port in use), so it is unverified. PR checks were not verified here.",
+   "unverifiedLocalCheck": true,
+   "finalStepVerdict": "unsettled",
+   "samples": [
+    {
+     "asks_change": 0.33,
+     "blocks_only_on_pending_ci": 0.24,
+     "reports_all_gates_passed": 0.02,
+     "reports_unverified_local_check": 0.96
+    },
+    {
+     "asks_change": 0.26,
+     "blocks_only_on_pending_ci": 0.26,
+     "reports_all_gates_passed": 0.02,
+     "reports_unverified_local_check": 0.97
+    },
+    {
+     "asks_change": 0.29,
+     "blocks_only_on_pending_ci": 0.27,
+     "reports_all_gates_passed": 0.03,
+     "reports_unverified_local_check": 0.96
+    },
+    {
+     "asks_change": 0.3,
+     "blocks_only_on_pending_ci": 0.2,
+     "reports_all_gates_passed": 0.03,
+     "reports_unverified_local_check": 0.97
+    },
+    {
+     "asks_change": 0.36,
+     "blocks_only_on_pending_ci": 0.2,
+     "reports_all_gates_passed": 0.02,
+     "reports_unverified_local_check": 0.97
+    }
+   ],
+   "previousSingleQuestionSamples": [
+    0.99,
+    0.99,
+    0.99,
+    0.99,
+    0.99
+   ]
+  },
+  {
+   "name": "yhs0 PASS while test (20.x) running",
+   "source": "backlog run, 2026-11-06 17:05Z",
+   "role": "tester",
+   "reply": "**Result:** PASS\n\n**Suite:** All local acceptance gates passed. PR #110 checks: `test (18.x)`, `typecheck`, and `boot` are SUCCESS; `test (20.x)` is still IN_PROGRESS.\n\n**Detail:**\n- Type checks passed: `npm run type-check` and `node node_modules/typescript/bin/tsc --noEmit -p tests/tsconfig.json`.\n- `scripts/ci/boot-check.sh 60` passed; `/health` answered.\n- `bun run build:openapi` and full `bunx vitest run --coverage` passed: 927 passed, 0 failed, 47 pending.\n- Real-bd integration suites passed: 39 tests across six files, including all 19 durable-waits tests; suites ran with bd 1.3.2.\n- Pin regression mutation behaved as expected: changing the production pin to 1.2.2 failed with expected `1.3.2`, received `1.2.2`; the file was restored and the worktree is clean.\n- PR check `test (20.x)` remains IN_PROGRESS; no failure reported.",
+   "unverifiedLocalCheck": false,
+   "finalStepVerdict": "check_ci",
+   "samples": [
+    {
+     "asks_change": 0.19,
+     "blocks_only_on_pending_ci": 0.72,
+     "reports_all_gates_passed": 0.12,
+     "reports_unverified_local_check": 0.12
+    },
+    {
+     "asks_change": 0.19,
+     "blocks_only_on_pending_ci": 0.82,
+     "reports_all_gates_passed": 0.11,
+     "reports_unverified_local_check": 0.13
+    },
+    {
+     "asks_change": 0.3,
+     "blocks_only_on_pending_ci": 0.78,
+     "reports_all_gates_passed": 0.12,
+     "reports_unverified_local_check": 0.12
+    },
+    {
+     "asks_change": 0.23,
+     "blocks_only_on_pending_ci": 0.76,
+     "reports_all_gates_passed": 0.11,
+     "reports_unverified_local_check": 0.12
+    },
+    {
+     "asks_change": 0.17,
+     "blocks_only_on_pending_ci": 0.76,
+     "reports_all_gates_passed": 0.13,
+     "reports_unverified_local_check": 0.11
+    }
+   ],
+   "previousSingleQuestionSamples": [
+    0.63,
+    0.57,
+    0.6,
+    0.62,
+    0.63
+   ]
+  },
+  {
+   "name": "v16a clean PASS",
+   "source": "backlog run, 2026-11-06 17:24Z",
+   "role": "tester",
+   "reply": "**Result:** PASS\n\n**Suite:** `npm run type-check`; `node node_modules/typescript/bin/tsc --noEmit -p tests/tsconfig.json`; `scripts/ci/boot-check.sh 60`; `bun run build:openapi`; `bunx vitest run --reporter=json`\n\n**Summary:**\n- All local gates passed. Vitest JSON: 974 total, 927 passed, 0 failed, 47 pending.\n- PR #111 required checks `typecheck`, `test (20.x)`, and `boot` all passed on head `28993e946020503ca7632d06b6b190da284b835a`.",
+   "unverifiedLocalCheck": false,
+   "finalStepVerdict": "check_ci",
+   "samples": [
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.07,
+     "reports_all_gates_passed": 0.89,
+     "reports_unverified_local_check": 0.08
+    },
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.05,
+     "reports_all_gates_passed": 0.87,
+     "reports_unverified_local_check": 0.08
+    },
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.05,
+     "reports_all_gates_passed": 0.86,
+     "reports_unverified_local_check": 0.07
+    },
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.05,
+     "reports_all_gates_passed": 0.87,
+     "reports_unverified_local_check": 0.09
+    },
+    {
+     "asks_change": 0.02,
+     "blocks_only_on_pending_ci": 0.06,
+     "reports_all_gates_passed": 0.89,
+     "reports_unverified_local_check": 0.08
+    }
+   ],
+   "previousSingleQuestionSamples": [
+    0.04,
+    0.04,
+    0.04,
+    0.05,
+    0.05
+   ]
+  },
+  {
+   "name": "m9lo INCONCLUSIVE + BLOCKED line, test (20.x) pending",
+   "source": "backlog run, 2026-11-06",
+   "role": "tester",
+   "reply": "**Result:** INCONCLUSIVE\n\n**Suite:** `npm run type-check`; `node node_modules/typescript/bin/tsc --noEmit -p tests/tsconfig.json`; `scripts/ci/boot-check.sh 60`; `bun run build:openapi`; full Vitest suite; `gh pr checks 112`\n\n**Detail:**\n- Local gates passed: both type checks, boot check, OpenAPI build, and Vitest (926 passed, 0 failed, 47 pending).\n- PR checks `boot`, `typecheck`, and `test (18.x)` passed. Required check `test (20.x)` is still pending, so remote verification is incomplete.\n\nSTEP OUTCOME: BLOCKED - PR required check test (20.x) is pending",
+   "unverifiedLocalCheck": false,
+   "finalStepVerdict": "check_ci",
+   "samples": [
+    {
+     "asks_change": 0.95,
+     "blocks_only_on_pending_ci": 0.94,
+     "reports_all_gates_passed": 0.02,
+     "reports_unverified_local_check": 0.05
+    },
+    {
+     "asks_change": 0.95,
+     "blocks_only_on_pending_ci": 0.95,
+     "reports_all_gates_passed": 0.02,
+     "reports_unverified_local_check": 0.05
+    },
+    {
+     "asks_change": 0.96,
+     "blocks_only_on_pending_ci": 0.93,
+     "reports_all_gates_passed": 0.02,
+     "reports_unverified_local_check": 0.05
+    },
+    {
+     "asks_change": 0.96,
+     "blocks_only_on_pending_ci": 0.95,
+     "reports_all_gates_passed": 0.02,
+     "reports_unverified_local_check": 0.05
+    },
+    {
+     "asks_change": 0.95,
+     "blocks_only_on_pending_ci": 0.94,
+     "reports_all_gates_passed": 0.02,
+     "reports_unverified_local_check": 0.05
+    }
+   ],
+   "previousSingleQuestionSamples": [
+    0.96,
+    0.96,
+    0.96,
+    0.96,
+    0.96
+   ]
+  },
+  {
+   "name": "devj INCONCLUSIVE, test (20.x) pending",
+   "source": "backlog run, 2026-11-06",
+   "role": "tester",
+   "reply": "**Result:** INCONCLUSIVE\n\n**Suite:** `npm run type-check`; `node node_modules/typescript/bin/tsc --noEmit -p tests/tsconfig.json`; `scripts/ci/boot-check.sh 60`; `bun run build:openapi`; `bunx vitest run --reporter=json --outputFile=/tmp/vibesync-vitest.json`; `gh pr checks 114`\n\n**Detail:**\n- Local gates passed: both type checks, boot health check, and OpenAPI build.\n- Full Vitest suite: 977 total, 930 passed, 0 failed, 47 pending.\n- PR checks: `typecheck`, `boot`, and `test (18.x)` passed; required `test (20.x)` is still pending. `gh pr checks 114` returned exit code 8 on both checks.",
+   "unverifiedLocalCheck": false,
+   "finalStepVerdict": "check_ci",
+   "samples": [
+    {
+     "asks_change": 0.97,
+     "blocks_only_on_pending_ci": 0.78,
+     "reports_all_gates_passed": 0.03,
+     "reports_unverified_local_check": 0.14
+    },
+    {
+     "asks_change": 0.96,
+     "blocks_only_on_pending_ci": 0.81,
+     "reports_all_gates_passed": 0.04,
+     "reports_unverified_local_check": 0.11
+    },
+    {
+     "asks_change": 0.96,
+     "blocks_only_on_pending_ci": 0.79,
+     "reports_all_gates_passed": 0.04,
+     "reports_unverified_local_check": 0.13
+    },
+    {
+     "asks_change": 0.96,
+     "blocks_only_on_pending_ci": 0.79,
+     "reports_all_gates_passed": 0.04,
+     "reports_unverified_local_check": 0.12
+    },
+    {
+     "asks_change": 0.96,
+     "blocks_only_on_pending_ci": 0.79,
+     "reports_all_gates_passed": 0.04,
+     "reports_unverified_local_check": 0.12
+    }
+   ],
+   "previousSingleQuestionSamples": [
+    0.86,
+    0.85,
+    0.85,
+    0.81,
+    0.85
+   ]
+  },
+  {
+   "name": "m9lo PASS, integration-bd pending",
+   "source": "backlog run, 2026-11-06",
+   "role": "tester",
+   "reply": "**Result:** PASS\n\n**Suite:** `npm run type-check`; `node node_modules/typescript/bin/tsc --noEmit -p tests/tsconfig.json`; `scripts/ci/boot-check.sh 60`; `bun run build:openapi`; `bunx vitest run --reporter=json --outputFile=/tmp/vibesync-vitest.json`; `gh pr checks 112`\n\n**Summary:**\n- Both TypeScript checks passed.\n- Boot check passed: `/health` answered after 1 second.\n- OpenAPI generation passed: 22 paths and 18 schemas.\n- Vitest: 927 passed, 0 failed, 47 pending, 0 todo (974 total).\n- PR checks `boot`, `test (20.x)`, and `typecheck` passed. `integration-bd` is pending.",
+   "unverifiedLocalCheck": false,
+   "finalStepVerdict": "check_ci",
+   "samples": [
+    {
+     "asks_change": 0.31,
+     "blocks_only_on_pending_ci": 0.69,
+     "reports_all_gates_passed": 0.14,
+     "reports_unverified_local_check": 0.09
+    },
+    {
+     "asks_change": 0.34,
+     "blocks_only_on_pending_ci": 0.88,
+     "reports_all_gates_passed": 0.12,
+     "reports_unverified_local_check": 0.08
+    },
+    {
+     "asks_change": 0.35,
+     "blocks_only_on_pending_ci": 0.86,
+     "reports_all_gates_passed": 0.13,
+     "reports_unverified_local_check": 0.1
+    },
+    {
+     "asks_change": 0.28,
+     "blocks_only_on_pending_ci": 0.83,
+     "reports_all_gates_passed": 0.13,
+     "reports_unverified_local_check": 0.09
+    },
+    {
+     "asks_change": 0.32,
+     "blocks_only_on_pending_ci": 0.55,
+     "reports_all_gates_passed": 0.15,
+     "reports_unverified_local_check": 0.09
+    }
+   ],
+   "previousSingleQuestionSamples": [
+    0.61,
+    0.61,
+    0.54,
+    0.6,
+    0.6
+   ],
+   "alsoAllowed": [
+    "unsettled"
+   ],
+   "note": "Known unstable, on main too: asks_change scores 0.28-0.35 and blocks_only_on_pending_ci dips under 0.7, both on a threshold, so some samples fail closed instead of reading the checks. It never approves or asks for a change. Not tuned around (vibesync-9lzk.61)."
+  },
+  {
+   "name": "devj PASS, integration-bd not waited",
+   "source": "backlog run, 2026-11-06",
+   "role": "tester",
+   "reply": "**Result:** PASS\n\n**Suite:** `npm run type-check`; `node node_modules/typescript/bin/tsc --noEmit -p tests/tsconfig.json`; `scripts/ci/boot-check.sh 60`; `bun run build:openapi`; `bunx vitest run --reporter=json --outputFile=/tmp/vibesync-vitest-report.json`\n\n**Summary:**\n- All local gates passed.\n- Vitest: 994 total, 947 passed, 0 failed, 47 pending, 0 todo.\n- PR #114 checks on the current head: `typecheck`, `test (20.x)`, and `boot` passed. `integration-bd` is in progress; not waited on, per instructions.",
+   "unverifiedLocalCheck": false,
+   "finalStepVerdict": "check_ci",
+   "samples": [
+    {
+     "asks_change": 0.06,
+     "blocks_only_on_pending_ci": 0.56,
+     "reports_all_gates_passed": 0.37,
+     "reports_unverified_local_check": 0.11
+    },
+    {
+     "asks_change": 0.05,
+     "blocks_only_on_pending_ci": 0.67,
+     "reports_all_gates_passed": 0.36,
+     "reports_unverified_local_check": 0.1
+    },
+    {
+     "asks_change": 0.04,
+     "blocks_only_on_pending_ci": 0.58,
+     "reports_all_gates_passed": 0.42,
+     "reports_unverified_local_check": 0.11
+    },
+    {
+     "asks_change": 0.06,
+     "blocks_only_on_pending_ci": 0.66,
+     "reports_all_gates_passed": 0.36,
+     "reports_unverified_local_check": 0.1
+    },
+    {
+     "asks_change": 0.04,
+     "blocks_only_on_pending_ci": 0.62,
+     "reports_all_gates_passed": 0.37,
+     "reports_unverified_local_check": 0.1
+    }
+   ],
+   "previousSingleQuestionSamples": [
+    0.82,
+    0.82,
+    0.78,
+    0.76,
+    0.78
+   ]
+  }
+ ]
+}

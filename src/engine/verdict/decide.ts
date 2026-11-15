@@ -40,6 +40,13 @@ function read(p: number): 'yes' | 'no' | 'unsettled' {
 }
 
 export function decideStepVerdict(answers: StepReplyAnswers, summary: string, options: { readonly finalStep: boolean }): FinalStepVerdict {
+  // A check only the role could run did not run to a result: nothing else can
+  // vouch for it, so the final step fails closed (vibesync-t6d3). This rule
+  // comes FIRST: a reply can report an unfinished local suite and pending CI
+  // together (soak run 2), and green checks must not pass it.
+  if (options.finalStep && read(answers.reports_unverified_local_check) === 'yes') {
+    return { kind: 'unsettled', reason: `the final-step reply reports a required local check was not verified (reports_unverified_local_check=${answers.reports_unverified_local_check.toFixed(2)}): ${summary}` };
+  }
   // vibesync-9lzk.46: a final step whose only concern is CI (still running, or
   // a check it cannot see finish) is settled from the PR's real checks, before
   // any rule that would read "pending" as a pass or a failure.
@@ -48,14 +55,9 @@ export function decideStepVerdict(answers: StepReplyAnswers, summary: string, op
   }
   // vibesync-9lzk.46 follow-up: an APPROVING final reply that mentions CI at
   // all (the waits-on-CI reading is not a clear no) is settled from the checks
-  // too, e.g. "PASS; integration-bd is still running, not waited on". A reply
-  // that approves while reporting an unrun LOCAL check (waits-on-CI is a clear
-  // no) still falls through to the unverified rule below: CI cannot vouch for it.
+  // too, e.g. "PASS; integration-bd is still running, not waited on".
   if (options.finalStep && read(answers.asks_change) === 'no' && read(answers.blocks_only_on_pending_ci) !== 'no') {
     return { kind: 'check_ci', from: 'pending', reason: `the final-step reply approves and mentions CI (blocks_only_on_pending_ci=${answers.blocks_only_on_pending_ci.toFixed(2)})` };
-  }
-  if (options.finalStep && read(answers.reports_unverified_check) === 'yes') {
-    return { kind: 'unsettled', reason: `the final-step reply reports a required check was not verified (reports_unverified_check=${answers.reports_unverified_check.toFixed(2)}): ${summary}` };
   }
   const asks = read(answers.asks_change);
   if (asks === 'unsettled') {

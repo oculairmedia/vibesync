@@ -162,7 +162,7 @@ describe('per-project delivery bindings', () => {
   it('T5: final-step CI uses the other project reader', async () => {
     const homeRead = vi.fn(async () => Object.fromEntries(CHECKS.map((name) => [name, 'pending' as const])));
     const otherRead = vi.fn(async (_url: string, names: readonly string[]) => Object.fromEntries(names.map((name) => [name, 'pass' as const])));
-    const judge: StepReplyJudge = { async judge() { return { answers: { asks_change: 0.02, blocks_only_on_pending_ci: 0.05, reports_all_gates_passed: 0.5, reports_unverified_check: 0.04 }, model: 'test', inputTokens: 1 }; } };
+    const judge: StepReplyJudge = { async judge() { return { answers: { asks_change: 0.02, blocks_only_on_pending_ci: 0.05, reports_all_gates_passed: 0.5, reports_unverified_local_check: 0.04 }, model: 'test', inputTokens: 1 }; } };
     const h = harness({ homeReader: { read: homeRead }, otherReader: { read: otherRead }, otherGh: fakeGh({ [OTHER_PR]: { state: 'OPEN' } }), judge, script: (spec) => reply(spec.role === 'coder' ? `PR ${OTHER_PR}` : 'PASS') });
     await expect(h.dispatcher.run({ formula: deliver, pack: pack(), input: 'go', motivatingBeadId: 'vibesync-9lzk.55.1', projectIdentifier: 'other' })).resolves.toBeDefined();
     expect(otherRead).toHaveBeenCalledOnce();
@@ -178,7 +178,7 @@ describe('per-project delivery bindings', () => {
   });
 
   it('T7: an unknown project at final CI is unsettled, never approved', async () => {
-    const judge: StepReplyJudge = { async judge() { return { answers: { asks_change: 0.02, blocks_only_on_pending_ci: 0.05, reports_all_gates_passed: 0.5, reports_unverified_check: 0.04 }, model: 'test', inputTokens: 1 }; } };
+    const judge: StepReplyJudge = { async judge() { return { answers: { asks_change: 0.02, blocks_only_on_pending_ci: 0.05, reports_all_gates_passed: 0.5, reports_unverified_local_check: 0.04 }, model: 'test', inputTokens: 1 }; } };
     const h = harness({ homeProject: false, judge, script: (spec) => reply(spec.role === 'coder' ? `PR ${HOME_PR}` : 'PASS') });
     const result = await h.dispatcher.run({ formula: deliver, pack: pack(), input: 'go', projectIdentifier: 'missing-project' }).catch((error: unknown) => error);
     expect(result).toBeInstanceOf(FormulaEscalationError);

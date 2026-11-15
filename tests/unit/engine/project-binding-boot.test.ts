@@ -89,7 +89,7 @@ const plan: Formula = {
 };
 /** Reads the final reply as an approval that still has to be confirmed against the PR's checks. */
 const approvingJudge: StepReplyJudge = {
-  async judge() { return { answers: { asks_change: 0.02, blocks_only_on_pending_ci: 0.05, reports_all_gates_passed: 0.5, reports_unverified_check: 0.04 }, model: 'test', inputTokens: 1 }; },
+  async judge() { return { answers: { asks_change: 0.02, blocks_only_on_pending_ci: 0.05, reports_all_gates_passed: 0.5, reports_unverified_local_check: 0.04 }, model: 'test', inputTokens: 1 }; },
 };
 
 const handles: OrchestrationHandle[] = [];

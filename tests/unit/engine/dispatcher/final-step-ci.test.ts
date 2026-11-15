@@ -23,22 +23,25 @@ import { InMemoryDoltClient } from '../../../_fixtures/in-memory-dolt-client.js'
 const PR = 'https://github.com/oculairmedia/vibesync/pull/114';
 const FAST = ['typecheck', 'test (20.x)', 'boot'];
 
-/** Real tester verdicts from the backlog run. */
+/**
+ * Real tester verdicts from the backlog run, with Jev's scores for them: medians of 5
+ * samples taken 2026-11-15 with the local-check question (vibesync-9lzk.61).
+ */
 const REAL = {
   // devj 18:20Z: "INCONCLUSIVE ... required test (20.x) is still pending" -> wrongly escalated.
-  devjPending: { asks_change: 0.96, blocks_only_on_pending_ci: 0.84, reports_all_gates_passed: 0.02, reports_unverified_check: 0.83 },
+  devjPending: { asks_change: 0.96, blocks_only_on_pending_ci: 0.79, reports_all_gates_passed: 0.04, reports_unverified_local_check: 0.12 },
   // yhs0 17:05Z: "PASS" while test (20.x) was still running -> wrongly approved.
-  yhs0PassWhilePending: { asks_change: 0.24, blocks_only_on_pending_ci: 0.76, reports_all_gates_passed: 0.1, reports_unverified_check: 0.6 },
+  yhs0PassWhilePending: { asks_change: 0.19, blocks_only_on_pending_ci: 0.76, reports_all_gates_passed: 0.12, reports_unverified_local_check: 0.12 },
   // m9lo 18:54Z: "PASS ... integration-bd is pending" (a non-step check) -> wrongly escalated.
-  m9loPassIntegrationPending: { asks_change: 0.3, blocks_only_on_pending_ci: 0.75, reports_all_gates_passed: 0.14, reports_unverified_check: 0.57 },
+  m9loPassIntegrationPending: { asks_change: 0.32, blocks_only_on_pending_ci: 0.83, reports_all_gates_passed: 0.13, reports_unverified_local_check: 0.09 },
   // v16a 17:24Z: clean PASS, all checks done.
-  v16aCleanPass: { asks_change: 0.02, blocks_only_on_pending_ci: 0.05, reports_all_gates_passed: 0.5, reports_unverified_check: 0.04 },
+  v16aCleanPass: { asks_change: 0.02, blocks_only_on_pending_ci: 0.05, reports_all_gates_passed: 0.87, reports_unverified_local_check: 0.08 },
   // devj 20:46Z: "PASS ... integration-bd is in progress; not waited on, per instructions" -> wrongly escalated.
-  devjPassIntegrationNotWaited: { asks_change: 0.06, blocks_only_on_pending_ci: 0.59, reports_all_gates_passed: 0.5, reports_unverified_check: 0.81 },
+  devjPassIntegrationNotWaited: { asks_change: 0.05, blocks_only_on_pending_ci: 0.62, reports_all_gates_passed: 0.37, reports_unverified_local_check: 0.1 },
   // round 3: "PASS ... I did not rerun the required mutation" (a LOCAL check) -> must still fail closed.
-  round3MutationNotRerun: { asks_change: 0.03, blocks_only_on_pending_ci: 0.06, reports_all_gates_passed: 0.07, reports_unverified_check: 0.94 },
+  round3MutationNotRerun: { asks_change: 0.03, blocks_only_on_pending_ci: 0.05, reports_all_gates_passed: 0.1, reports_unverified_local_check: 0.9 },
   // t6d3 fixture: PASS but the local typecheck was blocked (a check CI does not cover) -> must still fail closed.
-  t6d3TypecheckBlocked: { asks_change: 0.61, blocks_only_on_pending_ci: 0.02, reports_all_gates_passed: 0.04, reports_unverified_check: 0.98 },
+  t6d3TypecheckBlocked: { asks_change: 0.61, blocks_only_on_pending_ci: 0.02, reports_all_gates_passed: 0.04, reports_unverified_local_check: 0.92 },
 };
 
 async function* reply(text: string): AsyncIterable<SessionEvent> {
