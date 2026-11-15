@@ -221,14 +221,6 @@ export class BdMoleculeWriter {
     if (order.length !== steps.length) throw new Error(`step dependency cycle under molecule ${rootId}; cannot order closes`);
 
     for (const stepId of order) {
-      const blockers = (await this.reader.getBeadDependencies(stepId))
-        .filter((edge) => edge.type === 'blocks' && edge.issue_id === stepId && !ids.has(edge.depends_on_id));
-      for (const edge of blockers) {
-        const blocker = await this.reader.getBead(edge.depends_on_id);
-        if (blocker && blocker.status !== 'closed') {
-          throw new Error(`cannot close blocked issue: ${stepId} is blocked by [${edge.depends_on_id}]`);
-        }
-      }
       await this.bd(['close', stepId, '--reason', `run ${outcome}`, '--actor', ACTOR]);
     }
   }

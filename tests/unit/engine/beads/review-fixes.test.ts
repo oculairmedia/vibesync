@@ -108,7 +108,7 @@ describe('BdMoleculeWriter closes only open molecule steps for terminal failures
     expect(seen).toEqual(['second', 'third']);
   });
 
-  it('does not close a step blocked by an untouched running step', async () => {
+  it('closes open steps despite untouched running blockers and preserves running steps', async () => {
     const seen: string[][] = [];
     const rows: Record<string, BeadRow> = {
       root: { ...bead('root'), issue_type: 'molecule_root', status: 'open' },
@@ -125,20 +125,19 @@ describe('BdMoleculeWriter closes only open molecule steps for terminal failures
       getBeadDependencies: async (id: string) => edges.filter((edge) => edge.issue_id === id || edge.depends_on_id === id),
     };
     const writer = new BdMoleculeWriter(async (args) => {
-      const stepId = args[1]!;
-      const blockers = (await reader.getBeadDependencies(stepId)).filter((edge) => edge.type === 'blocks' && edge.issue_id === stepId);
-      for (const edge of blockers) {
-        const blocker = rows[edge.depends_on_id];
-        if (blocker && blocker.status !== 'closed') throw new Error(`cannot close blocked issue: ${stepId} is blocked by [${edge.depends_on_id}]`);
-      }
       seen.push([...args]);
+      if (args[0] === 'close') rows[args[1]!] = { ...rows[args[1]!]!, status: 'closed' };
+      if (args[0] === 'update' && args.includes('--force')) rows.root = { ...rows.root!, status: 'closed' };
       return '';
     }, reader);
 
-    await expect(writer.closeOpenMoleculeSteps('root', 'cancelled')).rejects.toThrow('cannot close blocked issue: open is blocked by [running]');
+    await writer.closeOpenMoleculeSteps('root', 'cancelled');
+    await writer.markMoleculeRootStatus('root', 'closed', 'cancelled');
 
-    expect(seen).toEqual([]);
+    expect(seen[0]).toEqual(['close', 'open', '--reason', 'run cancelled', '--actor', 'orchestration-daemon']);
+    expect(seen[1]).toContain('--force');
     expect(rows.running?.status).toBe('in_progress');
+    expect(rows.root?.status).toBe('closed');
   });
 });
 
