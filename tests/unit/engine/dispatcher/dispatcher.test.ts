@@ -1,4 +1,5 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -28,6 +29,16 @@ function isDispatcherEvent(event: Event): boolean {
   return event.layer === 'dispatcher';
 }
 
+async function closeWithBdRules(store: InMemoryDoltClient, stepId: string, reason: string, force: boolean): Promise<void> {
+  if (!force) {
+    const blocker = store.dependencies.find((edge) => edge.issue_id === stepId
+      && edge.type === 'blocks'
+      && store.beads.get(edge.depends_on_id)?.status !== 'closed');
+    if (blocker) throw new Error(`cannot close blocked issue: ${stepId} is blocked by [${blocker.depends_on_id}]`);
+  }
+  await store.closeOpenStep(stepId, reason, force);
+}
+
 describe('FormulaDispatcher', () => {
   it.each(['failed', 'cancelled'] as const)('closes open blocked steps before closing the root on a %s run', async (outcome) => {
     const store = new InMemoryDoltClient();
@@ -47,7 +58,11 @@ describe('FormulaDispatcher', () => {
         const stepId = args[1]!;
         const force = args.includes('--force');
         const reason = args[args.indexOf('--reason') + 1]!;
-        await store.closeOpenStep(stepId, reason, force);
+        await closeWithBdRules(store, stepId, reason, force);
+      } else if (args[0] === 'update' && args.includes('--status') && args[args.indexOf('--status') + 1] === 'closed') {
+        const rootId = args[1]!;
+        expect(store.beads.get(rootId)?.status).toBe('open');
+        await store.markMoleculeRootStatus(rootId, 'closed', outcome);
       }
       return '';
     }, {
@@ -110,7 +125,11 @@ describe('FormulaDispatcher', () => {
     await walker.startStep(newMoleculeStepId(view.rootId, 'running'));
     await walker.finishStep(newMoleculeStepId(view.rootId, 'closed'), 'done');
     const calls: string[][] = [];
-    const writer = new BdMoleculeWriter(async (args) => { calls.push([...args]); return ''; }, {
+    const writer = new BdMoleculeWriter(async (args) => {
+      calls.push([...args]);
+      if (args[0] === 'close') await closeWithBdRules(store, args[1]!, args[args.indexOf('--reason') + 1]!, args.includes('--force'));
+      return '';
+    }, {
       getBead: (id) => store.getBead(id),
       findStepsForMolecule: (rootId) => store.findStepsForMolecule(rootId),
     });
@@ -143,6 +162,53 @@ describe('FormulaDispatcher', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]).toContain('--status');
     expect((await store.getBead(newMoleculeStepId(view.rootId, 'two')))?.status).toBe('open');
+  });
+
+  it.each(['failed', 'cancelled'] as const)('force-closes a dependent open-step chain on a %s root before closing the root', async (outcome) => {
+    const store = new InMemoryDoltClient();
+    const walker = new MoleculeWalker(store);
+    const view = await walker.dispatch({
+      prefix: 'mol', formulaName: 'code-review', title: '[formula:code-review]',
+      steps: [
+        { name: 'a', role: 'a' },
+        { name: 'b', role: 'b', dependsOn: ['a'] },
+        { name: 'c', role: 'c', dependsOn: ['b'] },
+      ],
+    });
+    const a = newMoleculeStepId(view.rootId, 'a');
+    const b = newMoleculeStepId(view.rootId, 'b');
+    const c = newMoleculeStepId(view.rootId, 'c');
+    await walker.startStep(a);
+    const operations: string[] = [];
+    const writer = new BdMoleculeWriter(async (args) => {
+      if (args[0] === 'close') {
+        const stepId = args[1]!;
+        const forced = args.includes('--force');
+        const reason = args[args.indexOf('--reason') + 1]!;
+        await closeWithBdRules(store, stepId, reason, forced);
+        operations.push(`step:${stepId}:${reason}:${forced}`);
+      } else if (args[0] === 'update' && args.includes('--status') && args[args.indexOf('--status') + 1] === 'closed') {
+        const rootId = args[1]!;
+        expect(store.beads.get(rootId)?.status).toBe('open');
+        operations.push(`root:${rootId}`);
+      }
+      return '';
+    }, {
+      getBead: (id) => store.getBead(id),
+      findStepsForMolecule: (rootId) => store.findStepsForMolecule(rootId),
+    });
+
+    await writer.markMoleculeRootStatus(view.rootId, 'closed', outcome);
+
+    expect(operations).toEqual([
+      `step:${b}:run ${outcome}:true`,
+      `step:${c}:run ${outcome}:true`,
+      `root:${view.rootId}`,
+    ]);
+    expect(await store.getBead(a)).toMatchObject({ status: 'in_progress' });
+    expect(await store.getBead(b)).toMatchObject({ status: 'closed', metadata: { close_reason: `run ${outcome}` } });
+    expect(await store.getBead(c)).toMatchObject({ status: 'closed', metadata: { close_reason: `run ${outcome}` } });
+    expect(await store.getBead(view.rootId)).toMatchObject({ status: 'open' });
   });
 
   it('runs a three-step formula, closes step beads, and emits dispatcher events in order', async () => {
