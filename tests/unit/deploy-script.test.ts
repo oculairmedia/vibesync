@@ -42,7 +42,7 @@ const code = source.split('\n').filter((line) => !/^\s*#/.test(line));
 const HOST_COMMANDS = ['systemctl', 'journalctl', 'curl', 'bd', 'bun', 'npm'];
 /** What each PATH stand-in does after recording its call. */
 const STUB_BODIES: Record<string, string> = {
-  systemctl: 'case "$*" in *"-p MainPID"*) cat "$SANDBOX_STATE/mainpid" 2>/dev/null;; esac',
+  systemctl: 'case "$*" in *"-p MainPID"*) cat "$SANDBOX_STATE/mainpid" 2>/dev/null;; *"-p WorkingDirectory"*) cat "$SANDBOX_STATE/configured-release" 2>/dev/null;; esac',
   journalctl: '',
   curl: '[ "$(cat "$SANDBOX_STATE/ready" 2>/dev/null)" = "1" ] && printf \'{"status":"healthy","orchestration":{"ready":true}}\'',
   // The bd on PATH says the engine is busy: a quiet check that used it instead of the configured bd would stop the deploy.
@@ -57,6 +57,9 @@ const SWAP_STAND_IN = `#!/bin/bash
 dir=$(realpath "$1"); name=$(basename "$dir")
 echo "swap $name" >> "$STUB_LOG"
 if grep -qxF "$name" "$SANDBOX_STATE/swap-fails-for" 2>/dev/null; then echo "missing $dir/.env" >&2; exit 2; fi
+# The real swap.sh writes the drop-in that selects the release, then reloads and restarts.
+printf '%s' "$dir" > "$SANDBOX_STATE/configured-release"
+if grep -qxF "$name" "$SANDBOX_STATE/swap-fails-after-config-for" 2>/dev/null; then echo "Failed to restart vibesync.service" >&2; exit 1; fi
 # Reports success but restarts nothing; whatever is serving reports ready by now.
 if grep -qxF "$name" "$SANDBOX_STATE/swap-changes-nothing-for" 2>/dev/null; then echo 1 > "$SANDBOX_STATE/ready"; echo "pid:      unchanged"; exit 0; fi
 old=$(cat "$SANDBOX_STATE/mainpid" 2>/dev/null)
@@ -66,6 +69,7 @@ pid=$!
 for i in $(seq 1 100); do [ "$(readlink /proc/$pid/cwd 2>/dev/null)" = "$dir" ] && break; sleep 0.02; done
 echo "$pid" > "$SANDBOX_STATE/mainpid"; echo "$pid" >> "$SANDBOX_STATE/pids"
 if grep -qxF "$name" "$SANDBOX_STATE/comes-up-not-ready" 2>/dev/null; then echo 0 > "$SANDBOX_STATE/ready"; else echo 1 > "$SANDBOX_STATE/ready"; fi
+[ -n "\${SANDBOX_AFTER_SWAP:-}" ] && [ "$name" != "$(basename "$(cat "$SANDBOX_STATE/live-dir")")" ] && eval "$SANDBOX_AFTER_SWAP"
 echo "pid:      $pid"
 `;
 /** Stand-in for scripts/ci/boot-check.sh. With the flag set, the service restarts by itself on the LIVE release meanwhile. */
@@ -124,8 +128,8 @@ function sh(script: string, extra: Record<string, string> = {}): { status: numbe
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 const withHelpers = (body: string) => sh(`source "${SCRIPT}"; ${body}`, { VIBESYNC_DEPLOY_LIB: '1' });
-const deploy = (sha: string) => {
-  const result = spawnSync('bash', [SCRIPT, sha], { encoding: 'utf8', timeout: 60_000, env: sandboxEnv() });
+const deploy = (sha: string, extra: Record<string, string> = {}) => {
+  const result = spawnSync('bash', [SCRIPT, sha], { encoding: 'utf8', timeout: 60_000, env: sandboxEnv(extra) });
   if (`${result.stdout}${result.stderr}`.includes(ENV_SECRET)) throw new Error('deploy.sh printed a value from the env file');
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 };
@@ -135,6 +139,8 @@ const flag = (name: string, lines: readonly string[] = ['1']) => writeFileSync(j
 const mainPid = () => Number(readFileSync(join(state, 'mainpid'), 'utf8').trim());
 /** The release tree the "service" is running from. */
 const servingDir = () => readlinkSync(`/proc/${mainPid()}/cwd`);
+/** The release systemd is configured to start the "service" from on its next restart. */
+const configuredDir = () => readFileSync(join(state, 'configured-release'), 'utf8');
 
 function stop(pid: number): void {
   try { process.kill(pid); } catch { /* already gone */ }
@@ -204,9 +210,10 @@ beforeAll(() => {
 
 /** Every test starts with the service on the live release, ready, and no fault planted. */
 beforeEach(() => {
-  for (const name of ['swap-fails-for', 'swap-changes-nothing-for', 'comes-up-not-ready', 'restart-during-staging', 'engine-boot-fails', 'busy-on', 'busy-during-staging']) rmSync(join(state, name), { force: true });
+  for (const name of ['swap-fails-for', 'swap-fails-after-config-for', 'swap-changes-nothing-for', 'comes-up-not-ready', 'restart-during-staging', 'engine-boot-fails', 'busy-on', 'busy-during-staging']) rmSync(join(state, name), { force: true });
   if (existsSync(join(state, 'mainpid'))) stop(mainPid());
   serveFrom(liveDir);
+  writeFileSync(join(state, 'configured-release'), liveDir);
   flag('ready');
   writeFileSync(join(liveDir, '.env'), `VIBESYNC_PM_WAKE_STATE_PATH=${join(root, 'pm-wake-state.json')}\nSANDBOX_SECRET=${ENV_SECRET}\n`);
   const reset = sh(`git -C "${repo}" remote set-url origin "${originUrl}"`);
@@ -276,8 +283,13 @@ describe('deploy.sh gates', () => {
     expect(executes.map((line) => line.trim())).toEqual(['bash "$dir/scripts/deploy/swap.sh" "$dir" >"$out" 2>&1']);
   });
 
-  it('serving reports the release tree the service runs from', () => {
+  it('serving reports the release tree the service runs from, and persisted the one systemd is configured to start', () => {
     expect(withHelpers('serving').stdout.trim()).toBe(liveDir);
+    expect(withHelpers('persisted').stdout.trim()).toBe(liveDir);
+    writeFileSync(join(state, 'configured-release'), stagedDir);
+    expect(withHelpers('persisted').stdout.trim()).toBe(stagedDir);
+    expect(withHelpers('serving').stdout.trim()).toBe(liveDir);
+    expect(withHelpers(`on_release "${liveDir}" && echo YES || echo NO`).stdout.trim()).toBe('NO');
   });
 });
 
@@ -377,6 +389,7 @@ describe('deploy.sh after the swap', () => {
     expect(result.stdout).toContain(`DEPLOYED stage-${mainSha}`);
     expect(result.status).toBe(0);
     expect(servingDir()).toBe(stagedDir);
+    expect(configuredDir()).toBe(stagedDir);
     const calls = stubCalls().slice(before);
     expect(calls.filter((call) => call.startsWith('swap '))).toEqual([`swap stage-${mainSha}`]);
     // Two quiet checks of four reads each, all with the configured bd; the bd on PATH (which says "busy") was never asked.
@@ -391,8 +404,9 @@ describe('deploy.sh after the swap', () => {
     const result = deploy(mainSha);
     expect(result.status).toBe(2);
     expect(result.stdout).not.toContain('DEPLOYED');
-    expect(result.stdout).toContain('previous release serving and ready: yes');
+    expect(result.stdout).toContain('previous release serving, configured and ready: yes');
     expect(servingDir()).toBe(liveDir);
+    expect(configuredDir()).toBe(liveDir);
     expect(stubCalls().slice(before).filter((call) => call.startsWith('swap '))).toEqual([`swap stage-${mainSha}`, `swap stage-${liveSha}`]);
   });
 
@@ -412,7 +426,7 @@ describe('deploy.sh after the swap', () => {
     const result = deploy(mainSha);
     expect(result.status).toBe(3);
     expect(result.stdout).toContain('ROLLBACK FAILED (swap.sh ok: yes');
-    expect(result.stdout).toContain('previous release serving and ready: NO');
+    expect(result.stdout).toContain('previous release serving, configured and ready: NO');
     expect(servingDir()).toBe(liveDir);
   });
 
@@ -425,6 +439,44 @@ describe('deploy.sh after the swap', () => {
     expect(result.stdout).toContain('ROLLBACK FAILED (swap.sh ok: yes');
     expect(result.stdout).toContain(`serving: stage-${mainSha}`);
     expect(servingDir()).toBe(stagedDir);
+  });
+
+  it('exit 3, not 2, when the old release is still serving but systemd is left configured for the staged one', () => {
+    // Review on PR #186. The deploy swap writes the drop-in and then fails to restart: the old process keeps
+    // running. The rollback swap then fails before writing its own drop-in. The running process looks like a
+    // clean rollback, but the next restart of the service, for any reason, would start the staged release.
+    flag('swap-fails-after-config-for', [`stage-${mainSha}`]);
+    flag('swap-fails-for', [`stage-${liveSha}`]);
+    const pidBefore = mainPid();
+    const result = deploy(mainSha);
+    expect(mainPid(), 'the old process was never restarted').toBe(pidBefore);
+    expect(servingDir()).toBe(liveDir);
+    expect(configuredDir(), 'the persisted target is the staged release').toBe(stagedDir);
+    expect(result.stdout).not.toContain('DEPLOYED');
+    expect(result.status).toBe(3);
+    expect(result.stdout).toContain(`configured for the next restart: stage-${mainSha}`);
+    expect(result.stdout).toContain(`Run: bash ${liveDir}/scripts/deploy/swap.sh ${liveDir}`);
+  });
+
+  it('exit 2 when the deploy swap failed after writing the drop-in and the rollback put it back', () => {
+    // The same first failure, but the rollback swap works: the persisted target is the previous release again.
+    flag('swap-fails-after-config-for', [`stage-${mainSha}`]);
+    const result = deploy(mainSha);
+    expect(result.stdout).toContain('SWAP FAILED');
+    expect(result.status).toBe(2);
+    expect(servingDir()).toBe(liveDir);
+    expect(configuredDir()).toBe(liveDir);
+  });
+
+  it('does not report a deploy when the staged release is serving and ready but systemd is configured for another release', () => {
+    // After the swap something else rewrote the drop-in (a second deploy, a hand edit): this release would not survive a restart.
+    // The stand-in swap runs this hook right after it has restarted the service into the staged release.
+    const result = deploy(mainSha, { SANDBOX_AFTER_SWAP: `printf '%s' "${liveDir}" > "${join(state, 'configured-release')}"` });
+    expect(result.stdout).not.toContain('DEPLOYED');
+    // The rollback then restores both: the previous release serves and is the configured one.
+    expect(result.status).toBe(2);
+    expect(servingDir()).toBe(liveDir);
+    expect(configuredDir()).toBe(liveDir);
   });
 
   it('does not report a deploy when the swap failed and the PREVIOUS release restarted by itself', () => {
