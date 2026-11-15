@@ -863,6 +863,25 @@ export class DoltClient {
     return rows.map(toBeadRow);
   }
 
+  /** Issues updated at or after the whole-second cursor, excluding engine-owned run beads. */
+  async listIssueStatusSince(cursor: Date, limit: number): Promise<Array<{ id: string; status: string; updated_at: Date }>> {
+    const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 500));
+    const [rows] = await this.pool.execute<mysql.RowDataPacket[]>(
+      `SELECT id, status, updated_at
+       FROM issues
+       WHERE updated_at >= ?
+         AND issue_type NOT IN ('molecule_root', 'molecule_step', 'gate')
+       ORDER BY updated_at, id
+       LIMIT ${boundedLimit}`,
+      [cursor],
+    );
+    return rows.map((row) => ({
+      id: String(row['id']),
+      status: String(row['status'] ?? 'open'),
+      updated_at: new Date(row['updated_at']),
+    }));
+  }
+
     /**
    * The project's bd `issue_prefix`. bd rejects creating a bead whose id does
    * not start with it, so molecule ids must be minted from this value.

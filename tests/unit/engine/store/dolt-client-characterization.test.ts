@@ -47,6 +47,19 @@ function clientWithRows(rows: unknown[]) {
 }
 
 describe('reading bead rows', () => {
+  it('queries status changes with the whole-second inclusive cursor and excludes engine beads', async () => {
+    const client = clientWithRows([{ id: 'task-1', status: 'closed', updated_at: '2026-01-02T00:00:00Z' }]);
+    const result = await client.listIssueStatusSince(new Date('2026-01-01T00:00:00Z'), 500);
+    expect(result).toEqual([{ id: 'task-1', status: 'closed', updated_at: new Date('2026-01-02T00:00:00Z') }]);
+    const execute = vi.mocked(mysql.createPool).mock.results.at(-1)?.value.execute;
+    const [sql, values] = vi.mocked(execute).mock.calls[0]!;
+    expect(String(sql)).toContain('updated_at >= ?');
+    expect(String(sql)).toContain("issue_type NOT IN ('molecule_root', 'molecule_step', 'gate')");
+    expect(String(sql)).toContain('ORDER BY updated_at, id');
+    expect(values).toEqual([new Date('2026-01-01T00:00:00Z')]);
+    await client.close();
+  });
+
   it('fills defaults for missing fields and keeps a null closed_at', async () => {
     const client = clientWithRows([{ id: 7, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-02T00:00:00Z', closed_at: null }]);
     const bead = await client.getBead('7');
