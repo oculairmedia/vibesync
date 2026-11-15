@@ -120,33 +120,89 @@ interface Candidate {
 const STALL_REASON_MAX_LENGTH = 160;
 const STALL_DETAIL_MAX_LENGTH = 1000;
 
+interface StallEntry { readonly id: string; readonly text: string }
+
+/**
+ * The detail of one coalesced stall wake: each stalled bead with its own reason
+ * (vibesync-e57f.4), at most STALL_DETAIL_MAX_LENGTH characters.
+ *
+ * One stall is returned exactly as noted. Several are listed in the order they
+ * were noted, each reason cut to its first line and STALL_REASON_MAX_LENGTH.
+ * When they do not all fit, as many as possible are shown with their reason and
+ * EVERY other bead is named whole after `; +N more:`. Only when even the ids do
+ * not fit are some left unnamed, and then the message says how many
+ * (`, +M unnamed`). A bead id is never cut: half an id reads as another bead.
+ */
 export function stallDetail(stalls: ReadonlyMap<string, string>): string {
   if (stalls.size === 1) {
     const [id, reason] = stalls.entries().next().value as [string, string];
     return `stalled ${id}: ${reason}`;
   }
+  const entries: StallEntry[] = [...stalls].map(([id, reason]) => ({ id, text: `${id}: ${cappedFirstLine(reason)}` }));
+  // Chosen from lengths, rendered once: this runs on every tick while a stall
+  // is pending, and building each candidate string is quadratic in the batch.
+  const shown = entriesShownWithEveryOtherNamed(entries);
+  if (shown === entries.length) return stallHead(entries, shown);
+  if (shown > 0) return `${stallHead(entries, shown)}; +${entries.length - shown} more: ${entries.slice(shown).map((entry) => entry.id).join(', ')}`;
+  return stallDetailWithUnnamed(entries);
+}
 
-  const entries = [...stalls].map(([id, detail]) => {
-    const firstLine = detail.split(/\r?\n/, 1)[0] ?? '';
-    const reason = firstLine.length > STALL_REASON_MAX_LENGTH
-      ? `${firstLine.slice(0, STALL_REASON_MAX_LENGTH - 3)}...`
-      : firstLine;
-    return `${id}: ${reason}`;
-  });
-  let detail = 'stalled';
-  for (let i = 0; i < entries.length; i++) {
-    const next = `${detail}${i === 0 ? ' ' : '; '}${entries[i]}`;
-    if (next.length > STALL_DETAIL_MAX_LENGTH) {
-      const omitted = entries.slice(i);
-      const omittedIds = omitted.map(entry => entry.slice(0, entry.indexOf(': ')));
-      const tail = `; +${omitted.length} more: ${omittedIds.join(', ')}`;
-      const candidate = `${detail}${tail}`;
-      if (candidate.length <= STALL_DETAIL_MAX_LENGTH) return candidate;
-      return `${candidate.slice(0, STALL_DETAIL_MAX_LENGTH - 3)}...`;
-    }
-    detail = next;
+const STALL_PREFIX = 'stalled ';
+const ENTRY_SEPARATOR = '; ';
+const ID_SEPARATOR = ', ';
+
+/**
+ * How many leading entries can be shown with their reason while every other
+ * bead is still named whole, within the cap: all of them when everything fits,
+ * 0 when not even one entry plus the remaining ids fits.
+ */
+function entriesShownWithEveryOtherNamed(entries: readonly StallEntry[]): number {
+  const count = entries.length;
+  // idsFrom[k] = length of entries[k..].id joined by ", "
+  const idsFrom = new Array<number>(count + 1).fill(0);
+  for (let k = count - 1; k >= 0; k--) idsFrom[k] = entries[k]!.id.length + (k < count - 1 ? ID_SEPARATOR.length + idsFrom[k + 1]! : 0);
+  let best = 0;
+  let head = STALL_PREFIX.length;
+  for (let shown = 1; shown <= count; shown++) {
+    head += entries[shown - 1]!.text.length + (shown > 1 ? ENTRY_SEPARATOR.length : 0);
+    if (head > STALL_DETAIL_MAX_LENGTH) break; // longer prefixes only grow
+    const omitted = count - shown;
+    const total = omitted === 0 ? head : head + `; +${omitted} more: `.length + idsFrom[shown]!;
+    if (total <= STALL_DETAIL_MAX_LENGTH) best = shown;
   }
-  return detail;
+  return best;
+}
+
+function cappedFirstLine(reason: string): string {
+  const firstLine = reason.split(/\r?\n/, 1)[0] ?? '';
+  return firstLine.length > STALL_REASON_MAX_LENGTH ? `${firstLine.slice(0, STALL_REASON_MAX_LENGTH - 3)}...` : firstLine;
+}
+
+function stallHead(entries: readonly StallEntry[], shown: number): string {
+  return `${STALL_PREFIX}${entries.slice(0, shown).map((entry) => entry.text).join(ENTRY_SEPARATOR)}`;
+}
+
+/** Too many beads for even their ids to fit: show the first, name whole ids while they fit, count the rest. */
+function stallDetailWithUnnamed(entries: readonly StallEntry[]): string {
+  const rest = entries.slice(1);
+  const head = `${stallHead(entries, 1)}; +${rest.length} more`;
+  let named = 0;
+  let idsLength = 0;
+  for (let count = 1; count <= rest.length; count++) {
+    idsLength += rest[count - 1]!.id.length + (count > 1 ? ID_SEPARATOR.length : 0);
+    const unnamed = rest.length - count;
+    const total = head.length + ': '.length + idsLength + (unnamed > 0 ? `, +${unnamed} unnamed`.length : 0);
+    if (total <= STALL_DETAIL_MAX_LENGTH) named = count;
+    // Ids only get longer; once they alone pass the cap no larger count can fit.
+    if (head.length + ': '.length + idsLength > STALL_DETAIL_MAX_LENGTH) break;
+  }
+  if (named === 0) {
+    // Only an id far longer than any bead id gets here.
+    const detail = `${head} (ids not shown)`;
+    return detail.length <= STALL_DETAIL_MAX_LENGTH ? detail : `${detail.slice(0, STALL_DETAIL_MAX_LENGTH - 3)}...`;
+  }
+  const unnamed = rest.length - named;
+  return `${head}: ${rest.slice(0, named).map((entry) => entry.id).join(ID_SEPARATOR)}${unnamed > 0 ? `, +${unnamed} unnamed` : ''}`;
 }
 
 export class PmWaker {
