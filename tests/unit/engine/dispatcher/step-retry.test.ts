@@ -518,7 +518,7 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
     const root = await h.store.getBead(rootId);
     expect(root?.status).toBe('closed');
     expect(root?.metadata).toMatchObject({ exec: { outcome: 'failed' } });
-    expect((await meta(h.store, rootId, 'after')).status).toBe('open');
+    expect((await meta(h.store, rootId, 'after')).status).toBe('closed');
   });
 
   it('an agent that CLOSES its step with a failure_class does not release dependents before the policy rules (live race)', async () => {
