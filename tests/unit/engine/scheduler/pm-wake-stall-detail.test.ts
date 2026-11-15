@@ -59,11 +59,18 @@ it('caps stall details and names every omitted bead', async () => {
   const stalls = Array.from({ length: 12 }, (_, i) => [`bead-${String(i).padStart(2, '0')}`, 'r'.repeat(160)] as const);
   const detail = await sendStalls(stalls);
   expect(detail).toContain('; +');
-  expect(detail!.length).toBeLessThanOrEqual(1_000 + 200);
+  expect(detail!.length).toBeLessThanOrEqual(1_000);
   const omitted = detail!.match(/; \+\d+ more: (.+)$/)?.[1]?.split(', ') ?? [];
   expect(omitted.length).toBeGreaterThan(0);
   const included = detail!.slice(0, detail!.indexOf('; +'));
   expect(omitted).toEqual(stalls.filter(([id]) => !included.includes(`${id}: `)).map(([id]) => id));
   for (const [id] of stalls) expect(detail).toContain(id);
   expect(detail!.slice(0, detail!.indexOf('; +')).length).toBeLessThanOrEqual(1_000);
+});
+
+it('strictly bounds output to 1000 characters even with a very large batch of omitted beads', async () => {
+  const stalls = Array.from({ length: 100 }, (_, i) => [`bead-${String(i).padStart(3, '0')}`, 'r'.repeat(160)] as const);
+  const detail = await sendStalls(stalls);
+  expect(detail!.length).toBeLessThanOrEqual(1_000);
+  expect(detail).toContain('; +');
 });

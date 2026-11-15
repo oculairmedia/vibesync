@@ -138,7 +138,11 @@ export function stallDetail(stalls: ReadonlyMap<string, string>): string {
     const next = `${detail}${i === 0 ? ' ' : '; '}${entries[i]}`;
     if (next.length > STALL_DETAIL_MAX_LENGTH) {
       const omitted = entries.slice(i);
-      return `${detail}; +${omitted.length} more: ${omitted.map(entry => entry.slice(0, entry.indexOf(': '))).join(', ')}`;
+      const omittedIds = omitted.map(entry => entry.slice(0, entry.indexOf(': ')));
+      const tail = `; +${omitted.length} more: ${omittedIds.join(', ')}`;
+      const candidate = `${detail}${tail}`;
+      if (candidate.length <= STALL_DETAIL_MAX_LENGTH) return candidate;
+      return `${candidate.slice(0, STALL_DETAIL_MAX_LENGTH - 3)}...`;
     }
     detail = next;
   }
