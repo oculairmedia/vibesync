@@ -141,6 +141,7 @@ export interface MoleculeStore {
   }): Promise<void>;
   findReadyStepsForMolecule(rootId: string): Promise<readonly BeadRow[]>;
   findRunningStepsForMolecule(rootId: string): Promise<readonly BeadRow[]>;
+  findStepsForMolecule(rootId: string): Promise<readonly BeadRow[]>;
   // lcp-61uj: list molecule-root beads (rig runs) for the fleet-status endpoint.
   listMoleculeRoots(opts?: { statuses?: readonly string[]; limit?: number }): Promise<readonly BeadRow[]>;
   markStepRunning(stepId: string): Promise<void>;

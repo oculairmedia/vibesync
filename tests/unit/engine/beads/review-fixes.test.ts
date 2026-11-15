@@ -39,7 +39,7 @@ describe('BdMoleculeWriter passes metadata by file, never argv', () => {
       seen.push({ args: [...args], file: ref?.startsWith('@') ? readFileSync(ref.slice(1), 'utf8') : null });
       return '';
     });
-    const writer = new BdMoleculeWriter(bd, { getBead: async (id) => bead(id) });
+    const writer = new BdMoleculeWriter(bd, { getBead: async (id) => bead(id), findStepsForMolecule: async () => [] });
     await writer.markStepDone('s1', { text: big });
     const call = seen.find((c) => c.args.includes('--metadata'))!;
     expect(call.args.every((a) => a.length < 4096)).toBe(true);
@@ -56,7 +56,7 @@ describe('a step that succeeds after a failed attempt drops the old error (CodeR
       return '';
     });
     const retried: BeadRow = { ...bead('s1'), metadata: { exec: { step: 's', attempts: 2, error_trace: 'first attempt failed' } } };
-    const writer = new BdMoleculeWriter(bd, { getBead: async () => retried });
+    const writer = new BdMoleculeWriter(bd, { getBead: async () => retried, findStepsForMolecule: async () => [] });
     await writer.markStepDone('s1', 'second attempt ok');
     const exec = written.at(-1)!.exec as Record<string, unknown>;
     expect(exec).not.toHaveProperty('error_trace');

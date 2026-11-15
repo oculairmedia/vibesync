@@ -17,6 +17,7 @@ export interface BeadsReader {
   getBeadDependencies(id: string): Promise<DependencyRow[]>;
   findReadyStepsForMolecule(rootId: string): Promise<BeadRow[]>;
   findRunningStepsForMolecule(rootId: string): Promise<BeadRow[]>;
+  findStepsForMolecule(rootId: string): Promise<BeadRow[]>;
   listMoleculeRoots(opts?: { statuses?: readonly string[]; limit?: number }): Promise<BeadRow[]>;
 }
 
@@ -34,6 +35,7 @@ export class BeadsStore implements MoleculeStore, WritebackStore {
   getBeadDependencies(id: string) { return this.reader.getBeadDependencies(id); }
   findReadyStepsForMolecule(rootId: string) { return this.reader.findReadyStepsForMolecule(rootId); }
   findRunningStepsForMolecule(rootId: string) { return this.reader.findRunningStepsForMolecule(rootId); }
+  findStepsForMolecule(rootId: string) { return this.reader.findStepsForMolecule(rootId); }
   listMoleculeRoots(opts?: { statuses?: readonly string[]; limit?: number }) { return this.reader.listMoleculeRoots(opts); }
 
   insertMoleculeRoot: WriterMethods['insertMoleculeRoot'] = (args) => this.writer.insertMoleculeRoot(args);

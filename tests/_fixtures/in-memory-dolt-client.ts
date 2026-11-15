@@ -115,6 +115,13 @@ export class InMemoryDoltClient {
       .filter((row): row is BeadRow => row?.issue_type === 'molecule_step' && row.status === 'in_progress');
   }
 
+  async findStepsForMolecule(rootId: string): Promise<BeadRow[]> {
+    const stepIds = this.dependencies
+      .filter((edge) => edge.type === 'parent-child' && edge.depends_on_id === rootId)
+      .map((edge) => edge.issue_id);
+    return stepIds.map((id) => this.beads.get(id)).filter((row): row is BeadRow => row?.issue_type === 'molecule_step');
+  }
+
   // lcp-61uj: list molecule-root beads for the fleet-status endpoint.
   async listMoleculeRoots(opts: { statuses?: readonly string[]; limit?: number } = {}): Promise<BeadRow[]> {
     const statuses = opts.statuses;
@@ -209,6 +216,14 @@ export class InMemoryDoltClient {
       closed_at: new Date(),
       metadata: { ...mergeExec(row.metadata, { error_trace: errorTrace }), ...(retryOutcome ? { 'gc.retry_outcome': retryOutcome } : {}) },
     });
+  }
+
+  async closeOpenStep(stepId: string, reason: string, force = false): Promise<void> {
+    const row = this.requireBead(stepId);
+    if (row.status !== 'open') throw new Error(`InMemoryDoltClient: ${stepId} is not open`);
+    const blocker = !force ? this.blockingEdges(stepId).find((edge) => this.beads.get(edge.depends_on_id)?.status !== 'closed') : undefined;
+    if (blocker) throw new Error(`cannot close blocked issue: ${stepId} is blocked by [${blocker.depends_on_id}]`);
+    this.updateBead(stepId, { status: 'closed', closed_at: new Date(), metadata: { ...row.metadata, close_reason: reason } });
   }
 
   async appendNoteToBead(beadId: string, note: string): Promise<void> {
