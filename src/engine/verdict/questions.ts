@@ -8,7 +8,11 @@
  *
  * Calibrated 2026-11-06 against 46 real step replies from engine trials 1-10
  * (22 labelled by PM audit, 24 held out and labelled from their own verdict
- * lines): 45 read as expected, 1 genuinely ambiguous reply unsettled.
+ * lines): 45 read as expected, 1 genuinely ambiguous reply unsettled. The
+ * local-check question was calibrated 2026-11-15 against 20 tester replies
+ * (15 real, 5 wording variants), each judged 5 times because Jev is not
+ * deterministic; the samples are the fixture
+ * tests/_fixtures/verdict/unverified-check-replies.json.
  */
 
 export interface NoulQuestion {
@@ -48,12 +52,18 @@ export const STEP_REPLY_QUESTIONS = {
       false: 'the reply reports a failed check, or says some required check was not run, could not run, or is unverified',
     },
   },
-  reports_unverified_check: {
+  // vibesync-9lzk.61: this was "a required check was left unverified", which
+  // also scored yes for "PR checks were not verified here" (0.89, soak run 3)
+  // and failed a run that had met every gate. Only a check the role itself was
+  // to run needs the role's word: the dispatcher reads the pull request's
+  // checks. The false criterion names that case so the question does not
+  // absorb it.
+  reports_unverified_local_check: {
     type: 'noul',
-    instructions: 'Does `reply` say that a check it was required to run could not run, was blocked, was skipped, or was left unverified?',
+    instructions: 'Does `reply` say that a check the author had to run on their own machine did not run to a result?',
     criteria: {
-      true: 'the reply names a check (a typecheck, a test run, a build, a mutation) that did not run to a result: it was blocked, failed to start, was skipped, or is described as unverified',
-      false: 'every check the reply mentions ran and gave a result, or the reply mentions no unrun check',
+      true: 'the reply names a local command or check of its own (a typecheck, a test run or test suite, a lint, a build, a boot check, a mutation or revert probe) that was blocked, failed to start, was skipped, did not complete, or was not rerun',
+      false: "every local check the reply mentions ran and gave a result; a statement that the pull request's CI checks, GitHub checks or check runs were not looked at, not verified, still queued or still running is NOT a local check and does not count",
     },
   },
 } as const satisfies Record<string, NoulQuestion>;
