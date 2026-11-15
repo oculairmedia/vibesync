@@ -55,7 +55,8 @@ it('caps stall details and names every omitted bead', async () => {
   expect(detail!.length).toBeLessThanOrEqual(1_000 + 200);
   const omitted = detail!.match(/; \+\d+ more: (.+)$/)?.[1]?.split(', ') ?? [];
   expect(omitted.length).toBeGreaterThan(0);
-  expect(omitted).toEqual(stalls.slice(stalls.length - omitted.length).map(([id]) => id));
+  const included = detail!.slice(0, detail!.indexOf('; +'));
+  expect(omitted).toEqual(stalls.filter(([id]) => !included.includes(`${id}: `)).map(([id]) => id));
   for (const [id] of stalls) expect(detail).toContain(id);
   expect(detail!.slice(0, detail!.indexOf('; +')).length).toBeLessThanOrEqual(1_000);
 });
