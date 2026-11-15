@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { PmWaker } from '../../../../src/engine/pm-wake/waker.js';
+import { PmWaker, stallDetail } from '../../../../src/engine/pm-wake/waker.js';
 import type { PmWakeInput } from '../../../../src/engine/pm-wake/contract.js';
 
 function harness() {
@@ -40,6 +40,13 @@ it('keeps each coalesced stall paired with its own reason', async () => {
 it('keeps the single-stall detail format unchanged', async () => {
   await expect(sendStalls([['one-bead', 'run deadline exceeded']]))
     .resolves.toBe('stalled one-bead: run deadline exceeded');
+});
+
+it('preserves a single stall reason exactly, including multiple lines and long text', () => {
+  const multiline = new Map([['one-bead', 'first line\nsecond line']]);
+  const long = new Map([['one-bead', 'x'.repeat(161)]]);
+  expect(stallDetail(multiline)).toBe('stalled one-bead: first line\nsecond line');
+  expect(stallDetail(long)).toBe(`stalled one-bead: ${'x'.repeat(161)}`);
 });
 
 it('uses the first reason line and truncates long reasons', async () => {

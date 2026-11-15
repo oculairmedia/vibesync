@@ -120,7 +120,12 @@ interface Candidate {
 const STALL_REASON_MAX_LENGTH = 160;
 const STALL_DETAIL_MAX_LENGTH = 1000;
 
-function stallDetail(stalls: ReadonlyMap<string, string>): string {
+export function stallDetail(stalls: ReadonlyMap<string, string>): string {
+  if (stalls.size === 1) {
+    const [id, reason] = stalls.entries().next().value as [string, string];
+    return `stalled ${id}: ${reason}`;
+  }
+
   const entries = [...stalls].map(([id, detail]) => {
     const firstLine = detail.split(/\r?\n/, 1)[0] ?? '';
     const reason = firstLine.length > STALL_REASON_MAX_LENGTH
@@ -128,8 +133,6 @@ function stallDetail(stalls: ReadonlyMap<string, string>): string {
       : firstLine;
     return `${id}: ${reason}`;
   });
-  if (entries.length === 1) return `stalled ${entries[0]}`;
-
   let detail = 'stalled';
   for (let i = 0; i < entries.length; i++) {
     const next = `${detail}${i === 0 ? ' ' : '; '}${entries[i]}`;
