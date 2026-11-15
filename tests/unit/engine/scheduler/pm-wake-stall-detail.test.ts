@@ -147,3 +147,26 @@ it('for every batch size and reason length: within the cap, and every stalled be
   }
   expect(overflowing).toBeGreaterThan(200);
 });
+
+it('stays fast for a very large batch: the work grows with the batch, not with its square (CodeRabbit on #184)', () => {
+  // Counts character work instead of timing it, so the test is exact and does not flake:
+  // every string the function builds is made by Array.prototype.join or a template over
+  // slices, so the total length of all joined pieces bounds its work.
+  const batch = (count: number) => new Map(Array.from({ length: count }, (_, i) => [`vibesync-9lzk.${i + 1}`, 'escalated, needs the PM'] as const));
+  const joined = (count: number) => {
+    const stalls = batch(count);
+    const original = Array.prototype.join;
+    let pieces = 0;
+    Array.prototype.join = function (this: unknown[], ...args: [string?]) { pieces += this.length; return original.apply(this, args); };
+    try { stallDetail(stalls); } finally { Array.prototype.join = original; }
+    return pieces;
+  };
+  const small = joined(2_000);
+  const large = joined(20_000);
+  // 10x the batch must not cost 100x. The version first pushed to #184 joined ~2,000,000 pieces
+  // for 2,000 beads; this one joins a few dozen whatever the batch size.
+  expect(small).toBeLessThan(2_000);
+  expect(large).toBeLessThan(small * 20);
+  expect(stallDetail(batch(20_000)).length).toBeLessThanOrEqual(1_000);
+});
+
