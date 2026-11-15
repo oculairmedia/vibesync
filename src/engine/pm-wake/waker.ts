@@ -110,11 +110,26 @@ export interface PmWakerDeps {
   };
 }
 
+/**
+ * What a stall or event wake's message was built from. A confirmed wake clears
+ * exactly this, and nothing that arrived while it was still being retried
+ * (vibesync-e57f.3): a retry is the same message, so it never names the later
+ * arrivals, and clearing them would drop them without the PM ever being told.
+ */
+interface WakeCarried {
+  /** The stalled beads the message names, each with the reason it was named for. */
+  readonly stalls?: ReadonlyMap<string, string>;
+  /** How many events had been noted when the message was built (PmWaker.eventsNoted). */
+  readonly eventsUpTo?: number;
+}
+
 interface Candidate {
   reason: WakeReason;
   due: boolean;
   detail: string;
   why?: string;
+  /** Built with `detail`, from the same pending set, so the two cannot disagree. */
+  carried?: WakeCarried;
 }
 
 const STALL_REASON_MAX_LENGTH = 160;
@@ -209,7 +224,15 @@ export class PmWaker {
   private readonly now: () => number;
   private state: PmWakeProjectState;
   private readonly pendingEvents: string[] = [];
+  /** Events ever noted. `pendingEvents` holds the newest of them, in order of arrival. */
+  private eventsNoted = 0;
   private readonly pendingStalls = new Map<string, string>();
+  /**
+   * What each unconfirmed wake of THIS process carries, by wake id. A wake
+   * recovered after a restart has no entry, and confirming it clears nothing:
+   * whatever is pending then arrived after the restart, so after that message.
+   */
+  private readonly carried = new Map<string, WakeCarried>();
   /** wakeId kept across a failed attempt so the retry dedupes. */
   private readonly retryWakeId = new Map<WakeReason, string>();
   private readonly failedAt = new Map<WakeReason, number>();
@@ -243,6 +266,7 @@ export class PmWaker {
   noteEvent(kind: string, detail: string): void {
     if (this.disposed) return;
     this.pendingEvents.push(detail ? `${kind} ${detail}` : kind);
+    this.eventsNoted += 1;
     if (this.pendingEvents.length > 50) this.pendingEvents.shift();
   }
 
@@ -373,7 +397,10 @@ export class PmWaker {
 
   private addStallCandidate(out: Candidate[], now: number): void {
     if (this.pendingStalls.size === 0) return;
-    out.push({ reason: 'stall', due: this.intervalOk('stall', now), detail: stallDetail(this.pendingStalls), why: 'min-interval' });
+    out.push({
+      reason: 'stall', due: this.intervalOk('stall', now), detail: stallDetail(this.pendingStalls), why: 'min-interval',
+      carried: { stalls: new Map(this.pendingStalls) },
+    });
   }
 
   private addEventCandidate(out: Candidate[], now: number): void {
@@ -383,6 +410,7 @@ export class PmWaker {
       reason: 'event',
       due: this.intervalOk('event', now),
       detail: this.pendingEvents.length === 1 ? latest : `${this.pendingEvents.length} events, latest: ${latest}`,
+      carried: { eventsUpTo: this.eventsNoted },
       why: 'min-interval',
     });
   }
@@ -448,6 +476,7 @@ export class PmWaker {
     const claim = await store.claim(record.id);
     if (!claim.record || claim.record.status === 'closed') {
       this.durablePending.delete(record.id);
+      this.carried.delete(record.payload.msgId);
       return;
     }
     if (!claim.authorized) return;
@@ -480,12 +509,15 @@ export class PmWaker {
     const wakeId = this.retryWakeId.get(reason) ?? `${project}-${reason}-${now}`;
     // A logical message ID must retain its recipient and complete payload,
     // even if newer events arrive or the registry changes before a retry.
-    const input = this.retryInput.get(reason) ?? {
+    const retry = this.retryInput.get(reason);
+    const input = retry ?? {
       agentId, projectIdentifier: project, reason, detail, wakeId,
       ...this.correlationInput(reason),
     };
-    if (this.deps.pendingWakeStore) return this.sendDurable(input, now);
-    await this.sendDirect(input, now);
+    // A retry is the same message: what it carries was recorded when it was first built.
+    const carried = retry ? undefined : candidate.carried;
+    if (this.deps.pendingWakeStore) return this.sendDurable(input, now, carried);
+    await this.sendDirect(input, now, carried);
   }
 
   private correlationInput(reason: WakeReason): Pick<PmWakeInput, 'correlation'> | Record<string, never> {
@@ -502,12 +534,14 @@ export class PmWaker {
     this.notifySkipped('any', 'no-agent');
   }
 
-  private async sendDurable(input: PmWakeInput, now: number): Promise<void> {
+  private async sendDurable(input: PmWakeInput, now: number, carried: WakeCarried | undefined): Promise<void> {
     const store = this.deps.pendingWakeStore!;
     const { reason, wakeId } = input;
     try {
       const record = await store.enqueue(input, now);
       this.durablePending.set(record.id, record);
+      // Only once the wake is saved: a wake that was never saved is never confirmed.
+      if (carried) this.carried.set(wakeId, carried);
       await this.claimAndSend(store, record, now);
     } catch (error) {
       this.failedAt.set(reason, now);
@@ -518,7 +552,8 @@ export class PmWaker {
     }
   }
 
-  private async sendDirect(input: PmWakeInput, now: number): Promise<void> {
+  private async sendDirect(input: PmWakeInput, now: number, carried: WakeCarried | undefined): Promise<void> {
+    if (carried) this.carried.set(input.wakeId, carried);
     let outcome: PmWakeOutcome = { ok: false, error: 'sink returned no outcome' };
     try {
       outcome = await this.deps.sink.wake(input);
@@ -554,8 +589,27 @@ export class PmWaker {
     this.retryInput.delete(reason);
     this.failedAt.delete(reason);
     for (const key of [...this.skipNoticed]) if (key.startsWith(`${reason}:`)) this.skipNoticed.delete(key);
-    if (reason === 'stall') this.pendingStalls.clear();
-    if (reason === 'event') this.pendingEvents.length = 0;
+    const carried = this.carried.get(input.wakeId);
+    this.carried.delete(input.wakeId);
+    this.forgetDeliveredStalls(carried?.stalls);
+    this.forgetDeliveredEvents(carried?.eventsUpTo);
+  }
+
+  /** Drop the stalls a confirmed wake named. A bead that has stalled again since, for another reason, stays. */
+  private forgetDeliveredStalls(delivered: ReadonlyMap<string, string> | undefined): void {
+    if (!delivered) return;
+    for (const [bead, reason] of delivered) {
+      if (this.pendingStalls.get(bead) === reason) this.pendingStalls.delete(bead);
+    }
+  }
+
+  /** Drop the events a confirmed wake counted. Those noted after it was built are the newest in the list, and stay. */
+  private forgetDeliveredEvents(upTo: number | undefined): void {
+    if (upTo === undefined) return;
+    // The list keeps only the newest 50, so more may have arrived since than it
+    // holds; the count is then negative and splice removes nothing.
+    const arrivedSince = this.eventsNoted - upTo;
+    this.pendingEvents.splice(0, this.pendingEvents.length - arrivedSince);
   }
 
   private recordFailed(input: PmWakeInput, outcome: PmWakeOutcome, error: string | undefined, now: number): void {

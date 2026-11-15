@@ -501,6 +501,92 @@ describe('PM wake (vibesync-2bgv)', () => {
     expect(readState()[PROJECT]!.lastWokenAt).toBe(new Date(s.calls[2]!.at).toISOString());
   });
 
+  describe('a confirmed wake clears only what it carried (vibesync-e57f.3)', () => {
+    type Expired = { workBeadId: string; moleculeId?: string; deadlineMs: number; elapsedMs: number };
+    const expire = (handle: OrchestrationHandle, workBeadId: string, deadlineMs = 3_600_000) => {
+      const daemon = handle.schedulers.get(PROJECT)!.daemon as unknown as { deps: { onRunExpired?: (i: Expired) => void } };
+      daemon.deps.onRunExpired!({ workBeadId, moleculeId: `mol-${workBeadId}`, deadlineMs, elapsedMs: deadlineMs + 4 });
+    };
+    const stallWakes = (s: ReturnType<typeof fakeSink>) => s.calls.filter((c) => c.reason === 'stall');
+
+    it('a stall that arrives while an earlier stall wake is still being retried is woken for after that wake is confirmed', async () => {
+      // The first send fails, so the wake for `wa` stays pending and is retried with the SAME message.
+      // `wb` stalls meanwhile. Confirming the retry must not drop `wb`: it was never in that message.
+      const s = fakeSink((_call, n) => (n === 1 ? { ok: false, error: 'iroh down' } : { ok: true }));
+      const { handle } = await boot({ sink: s.sink });
+
+      expire(handle, 'wa');
+      await vi.advanceTimersByTimeAsync(MIN); // attempt 1 fails
+      expect(stallWakes(s)).toHaveLength(1);
+      expect(stallWakes(s)[0]!.detail).toContain('wa');
+
+      expire(handle, 'wb'); // arrives while the first wake is pending
+      await vi.advanceTimersByTimeAsync(PM_WAKE_RETRY_BACKOFF_MS + MIN); // the retry is confirmed
+      expect(stallWakes(s)).toHaveLength(2);
+      expect(stallWakes(s)[1]!.wakeId, 'the retry is the same logical message').toBe(stallWakes(s)[0]!.wakeId);
+      expect(stallWakes(s)[1]!.detail, 'and carries the same text: it never named wb').toBe(stallWakes(s)[0]!.detail);
+      expect(stallWakes(s)[1]!.detail).not.toContain('wb');
+
+      await vi.advanceTimersByTimeAsync(31 * MIN); // past the minimum interval between stall wakes
+      expect(stallWakes(s), 'wb gets its own wake').toHaveLength(3);
+      expect(stallWakes(s)[2]!.detail).toContain('wb');
+      expect(stallWakes(s)[2]!.detail, 'wa was delivered: it is not repeated').not.toContain('wa');
+      expect(stallWakes(s)[2]!.wakeId).not.toBe(stallWakes(s)[0]!.wakeId);
+    });
+
+    it('a stall whose reason changed while its wake was pending is woken for again with the new reason', async () => {
+      const s = fakeSink((_call, n) => (n === 1 ? { ok: false, error: 'iroh down' } : { ok: true }));
+      const { handle } = await boot({ sink: s.sink });
+
+      expire(handle, 'wa', 3_600_000);
+      await vi.advanceTimersByTimeAsync(MIN); // attempt 1 fails
+      expire(handle, 'wa', 7_200_000); // the same bead stalls again, for a different reason
+      await vi.advanceTimersByTimeAsync(PM_WAKE_RETRY_BACKOFF_MS + MIN); // the retry (old reason) is confirmed
+      expect(stallWakes(s)[1]!.detail).toContain('3600000');
+      expect(stallWakes(s)[1]!.detail).not.toContain('7200000');
+
+      await vi.advanceTimersByTimeAsync(31 * MIN);
+      expect(stallWakes(s), 'the newer reason was never delivered').toHaveLength(3);
+      expect(stallWakes(s)[2]!.detail).toContain('wa');
+      expect(stallWakes(s)[2]!.detail).toContain('7200000');
+    });
+
+    it('an event that arrives while an earlier event wake is still being retried is woken for after that wake is confirmed', async () => {
+      const s = fakeSink((_call, n) => (n === 1 ? { ok: false, error: 'iroh down' } : { ok: true }));
+      const { handle } = await boot({ sink: s.sink });
+      const emit = (id: string) =>
+        handle.bus.emit({ layer: 'dispatcher', kind: 'beads/issue.status_changed', payload: { issueId: id, from: 'open', to: 'closed' } });
+      const eventWakes = () => s.calls.filter((c) => c.reason === 'event');
+
+      emit('bd-1');
+      await vi.advanceTimersByTimeAsync(10); // attempt 1 fails
+      expect(eventWakes()).toHaveLength(1);
+      expect(eventWakes()[0]!.detail).toContain('bd-1');
+
+      emit('bd-2'); // arrives while the first wake is pending
+      await vi.advanceTimersByTimeAsync(PM_WAKE_RETRY_BACKOFF_MS + MIN); // the retry is confirmed
+      expect(eventWakes()).toHaveLength(2);
+      expect(eventWakes()[1]!.detail).toBe(eventWakes()[0]!.detail);
+      expect(eventWakes()[1]!.detail).not.toContain('bd-2');
+
+      await vi.advanceTimersByTimeAsync(31 * MIN);
+      expect(eventWakes(), 'bd-2 gets its own wake').toHaveLength(3);
+      expect(eventWakes()[2]!.detail).toContain('bd-2');
+      expect(eventWakes()[2]!.detail).not.toContain('bd-1');
+    });
+
+    it('with nothing new while a wake was pending, confirming it leaves nothing to wake for', async () => {
+      const s = fakeSink((_call, n) => (n === 1 ? { ok: false, error: 'iroh down' } : { ok: true }));
+      const { handle } = await boot({ sink: s.sink });
+      expire(handle, 'wa');
+      await vi.advanceTimersByTimeAsync(MIN);
+      await vi.advanceTimersByTimeAsync(PM_WAKE_RETRY_BACKOFF_MS + MIN); // confirmed
+      expect(stallWakes(s)).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(2 * HOUR);
+      expect(stallWakes(s), 'no repeat of a delivered stall').toHaveLength(2);
+    });
+  });
+
   it('8. enabled=false: no PmWaker, no file, no sink/lookup call, no extra timers', async () => {
     const s = fakeSink();
     const lookup = vi.fn(() => PM);
