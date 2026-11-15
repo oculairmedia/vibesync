@@ -117,6 +117,31 @@ interface Candidate {
   why?: string;
 }
 
+const STALL_REASON_MAX_LENGTH = 160;
+const STALL_DETAIL_MAX_LENGTH = 1000;
+
+function stallDetail(stalls: ReadonlyMap<string, string>): string {
+  const entries = [...stalls].map(([id, detail]) => {
+    const firstLine = detail.split(/\r?\n/, 1)[0] ?? '';
+    const reason = firstLine.length > STALL_REASON_MAX_LENGTH
+      ? `${firstLine.slice(0, STALL_REASON_MAX_LENGTH - 3)}...`
+      : firstLine;
+    return `${id}: ${reason}`;
+  });
+  if (entries.length === 1) return `stalled ${entries[0]}`;
+
+  let detail = 'stalled';
+  for (let i = 0; i < entries.length; i++) {
+    const next = `${detail}${i === 0 ? ' ' : '; '}${entries[i]}`;
+    if (next.length > STALL_DETAIL_MAX_LENGTH) {
+      const omitted = entries.slice(i);
+      return `${detail}; +${omitted.length} more: ${omitted.map(entry => entry.slice(0, entry.indexOf(': '))).join(', ')}`;
+    }
+    detail = next;
+  }
+  return detail;
+}
+
 export class PmWaker {
   private readonly now: () => number;
   private state: PmWakeProjectState;
@@ -285,9 +310,7 @@ export class PmWaker {
 
   private addStallCandidate(out: Candidate[], now: number): void {
     if (this.pendingStalls.size === 0) return;
-    const ids = [...this.pendingStalls.keys()];
-    const latest = this.pendingStalls.get(ids[ids.length - 1]!)!;
-    out.push({ reason: 'stall', due: this.intervalOk('stall', now), detail: `stalled ${ids.join(', ')}: ${latest}`, why: 'min-interval' });
+    out.push({ reason: 'stall', due: this.intervalOk('stall', now), detail: stallDetail(this.pendingStalls), why: 'min-interval' });
   }
 
   private addEventCandidate(out: Candidate[], now: number): void {
