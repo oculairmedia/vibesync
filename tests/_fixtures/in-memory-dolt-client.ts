@@ -123,6 +123,23 @@ export class InMemoryDoltClient {
   }
 
   // lcp-61uj: list molecule-root beads for the fleet-status endpoint.
+  /** As DoltClient.listIssueStatusSince: issues updated at or after the cursor, run beads excluded, keyset-paged. */
+  async listIssueStatusSince(
+    cursor: Date,
+    limit: number,
+    after?: { readonly updatedAt: Date; readonly id: string } | null,
+  ): Promise<Array<{ id: string; status: string; updated_at: Date }>> {
+    const bounded = Math.max(1, Math.min(Math.trunc(limit), 500));
+    const engineOwned = new Set(['molecule_root', 'molecule_step', 'gate']);
+    const at = (row: BeadRow) => new Date(row.updated_at).getTime();
+    return [...this.beads.values()]
+      .filter((row) => !engineOwned.has(String(row.issue_type)) && at(row) >= cursor.getTime())
+      .filter((row) => after == null || at(row) > after.updatedAt.getTime() || (at(row) === after.updatedAt.getTime() && row.id > after.id))
+      .sort((a, b) => at(a) - at(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .slice(0, bounded)
+      .map((row) => ({ id: row.id, status: String(row.status ?? 'open'), updated_at: new Date(row.updated_at) }));
+  }
+
   async listMoleculeRoots(opts: { statuses?: readonly string[]; limit?: number } = {}): Promise<BeadRow[]> {
     const statuses = opts.statuses;
     const limit = opts.limit ?? 50;
