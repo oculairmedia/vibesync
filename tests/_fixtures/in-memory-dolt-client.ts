@@ -211,6 +211,19 @@ export class InMemoryDoltClient {
     });
   }
 
+  async closeOpenMoleculeSteps(rootId: string, outcome: 'failed' | 'cancelled'): Promise<void> {
+    const childIds = this.dependencies
+      .filter((edge) => edge.type === 'parent-child' && edge.depends_on_id === rootId)
+      .map((edge) => edge.issue_id);
+    for (const stepId of childIds) {
+      const row = this.beads.get(stepId);
+      if (row?.issue_type !== 'molecule_step' || row.status !== 'open') continue;
+      const reason = `run ${outcome}`;
+      const metadata = mergeExec(row.metadata, { error_trace: reason });
+      this.updateBead(stepId, { status: 'closed', closed_at: new Date(), metadata });
+    }
+  }
+
   async appendNoteToBead(beadId: string, note: string): Promise<void> {
     this.appendAttempts += 1;
     if (this.failNextAppends > 0) {

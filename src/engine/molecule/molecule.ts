@@ -179,6 +179,7 @@ export interface MoleculeStore {
   reopenStepForRound(stepId: string, args: { readonly round: number; readonly note: string }): Promise<void>;
   markStepDone(stepId: string, output: unknown): Promise<void>;
   markStepFailed(stepId: string, errorTrace: string, retryOutcome?: string): Promise<void>;
+  closeOpenMoleculeSteps(rootId: string, outcome: 'failed' | 'cancelled'): Promise<void>;
   appendNoteToBead(beadId: string, note: string): Promise<void>;
   addCommentToBead(beadId: string, comment: string): Promise<void>;
   // lcp-s0wi: mark a molecule root bead as terminal with an outcome.
@@ -363,6 +364,11 @@ export class MoleculeWalker {
   /** Mark a step as failed. Pass-through. `retryOutcome` is stamped as gc.retry_outcome when a retry policy ended it. */
   async failStep(stepId: string, errorTrace: string, retryOutcome?: string): Promise<void> {
     await this.store.markStepFailed(stepId, errorTrace, retryOutcome);
+  }
+
+  /** Close never-started steps before their failed or cancelled root. */
+  async closeOpenSteps(rootId: string, outcome: 'failed' | 'cancelled'): Promise<void> {
+    await this.store.closeOpenMoleculeSteps(rootId, outcome);
   }
 
   /** Re-read one bead (the retry counters and an agent's failure_class live on it). */

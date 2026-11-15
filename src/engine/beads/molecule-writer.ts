@@ -17,6 +17,7 @@
 import { INFRA_RETRIES_KEY, LAST_FAILURE_CLASS_KEY, RETRY_ATTEMPT_KEY, RETRY_OUTCOME_KEY, REVIEW_ROUND_KEY, FAILURE_CLASS_KEY } from '../retry/policy.js';
 import type { MoleculeOutcome } from '../molecule/molecule.js';
 import type { BeadRow } from '../store/index.js';
+import type { DependencyRow } from '../store/index.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -29,6 +30,7 @@ const ACTOR = 'orchestration-daemon';
 
 export interface MoleculeBeadReader {
   getBead(id: string): Promise<BeadRow | null>;
+  getBeadDependencies(id: string): Promise<DependencyRow[]>;
 }
 
 type Exec = Record<string, unknown>;
@@ -186,6 +188,17 @@ export class BdMoleculeWriter {
     if (retryOutcome) metadata[RETRY_OUTCOME_KEY] = retryOutcome;
     await withMetadataFile(metadata, (ref) => this.bd(['update', stepId, '--metadata', ref, '--actor', ACTOR]));
     await this.bd(['close', stepId, '--reason', `step failed: ${errorTrace.slice(0, CLOSE_REASON_MAX)}`, '--actor', ACTOR]);
+  }
+
+  async closeOpenMoleculeSteps(rootId: string, outcome: 'failed' | 'cancelled'): Promise<void> {
+    const edges = await this.reader.getBeadDependencies(rootId);
+    const childIds = edges.filter((edge) => edge.type === 'parent-child' && edge.depends_on_id === rootId).map((edge) => edge.issue_id);
+    for (const stepId of childIds) {
+      const step = await this.reader.getBead(stepId);
+      if (step?.issue_type === 'molecule_step' && step.status === 'open') {
+        await this.bd(['close', stepId, '--reason', `run ${outcome}`, '--actor', ACTOR]);
+      }
+    }
   }
 
   /**

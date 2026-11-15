@@ -96,6 +96,7 @@ export class ResumeCoordinator {
     if (kind === undefined) return;
     const reason = await this.verifyResumedDelivery({ ...args, kind });
     if (reason === null) return;
+    await this.deps.walker.closeOpenSteps(moleculeId, 'failed');
     await this.deps.walker.markMoleculeRootStatus(moleculeId, 'closed', 'failed');
     this.deps.emit('dispatcher/formula.failed', moleculeId, undefined, {
       moleculeId, error: reason, resumed: true,

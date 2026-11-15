@@ -77,6 +77,7 @@ export class MoleculeSettler {
   private async rejectFailedMolecule(run: MoleculeRun): Promise<void> {
     run.finalized = true;
     this.deps.live.delete(run.moleculeId);
+    await this.deps.walker.closeOpenSteps(run.moleculeId, 'failed');
     await this.deps.walker.markMoleculeRootStatus(run.moleculeId, 'closed', 'failed');
     this.deps.emit('dispatcher/formula.failed', run.moleculeId, undefined, {
       moleculeId: run.moleculeId,
@@ -142,6 +143,7 @@ export class MoleculeSettler {
     if (liveRun) liveRun.cancelled = true;
     const provider = await this.resolveCancelProvider(liveRun, view.root, running);
     const cancelledStepCount = await this.cancelRunningSteps(moleculeId, running, provider);
+    await this.deps.walker.closeOpenSteps(moleculeId, 'cancelled');
     await this.deps.walker.markMoleculeRootStatus(moleculeId, 'closed', 'cancelled');
     this.deps.emit('dispatcher/formula.cancelled', moleculeId, undefined, {
       moleculeId,

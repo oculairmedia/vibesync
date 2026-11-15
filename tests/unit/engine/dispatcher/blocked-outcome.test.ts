@@ -73,8 +73,12 @@ describe('blocked step outcome (vibesync-zvcm)', () => {
     const moleculeId = (thrown as FormulaDispatchError).moleculeId;
     const mayor = await h.store.getBead(newMoleculeStepId(moleculeId, 'mayor'));
     expect(mayor).toMatchObject({ status: 'closed', metadata: { exec: { error_trace: 'step blocked: dirty checkout at /opt/stacks/vibesync' } } });
-    expect((await h.store.getBead(newMoleculeStepId(moleculeId, 'coder')))?.status).toBe('open');
-    expect((await h.store.getBead(newMoleculeStepId(moleculeId, 'tester')))?.status).toBe('open');
+    expect(await h.store.getBead(newMoleculeStepId(moleculeId, 'coder'))).toMatchObject({
+      status: 'closed', metadata: { exec: { error_trace: 'run failed' } },
+    });
+    expect(await h.store.getBead(newMoleculeStepId(moleculeId, 'tester'))).toMatchObject({
+      status: 'closed', metadata: { exec: { error_trace: 'run failed' } },
+    });
     expect(await h.store.getBead(moleculeId)).toMatchObject({ status: 'closed', metadata: { exec: { outcome: 'failed' } } });
     expect(h.events.some((e) => e.kind === 'dispatcher/formula.completed')).toBe(false);
     expect(h.events.some((e) => e.kind === 'dispatcher/formula.failed')).toBe(true);

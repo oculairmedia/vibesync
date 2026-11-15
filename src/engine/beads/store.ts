@@ -45,6 +45,7 @@ export class BeadsStore implements MoleculeStore, WritebackStore {
   reopenStepForRound: WriterMethods['reopenStepForRound'] = (id, args) => this.writer.reopenStepForRound(id, args);
   markStepDone: WriterMethods['markStepDone'] = (id, output) => this.writer.markStepDone(id, output);
   markStepFailed: WriterMethods['markStepFailed'] = (id, trace, outcome) => this.writer.markStepFailed(id, trace, outcome);
+  closeOpenMoleculeSteps: WriterMethods['closeOpenMoleculeSteps'] = (id, outcome) => this.writer.closeOpenMoleculeSteps(id, outcome);
   markMoleculeRootStatus: WriterMethods['markMoleculeRootStatus'] = (id, status, outcome) => this.writer.markMoleculeRootStatus(id, status, outcome);
   appendNoteToBead: WriterMethods['appendNoteToBead'] = (id, note) => this.writer.appendNoteToBead(id, note);
   addCommentToBead: WriterMethods['addCommentToBead'] = (id, comment) => this.writer.addCommentToBead(id, comment);

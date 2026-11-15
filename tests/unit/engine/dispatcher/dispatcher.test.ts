@@ -47,6 +47,7 @@ describe('FormulaDispatcher', () => {
         },
       });
     }
+    expect((await store.getBead(result.moleculeId))?.status).toBe('closed');
     expect(events.filter(isDispatcherEvent).map((event) => event.kind)).toEqual([
       'dispatcher/formula.started',
       'dispatcher/step.started',
@@ -279,7 +280,9 @@ describe('FormulaDispatcher', () => {
     expect((await store.getBead(newMoleculeStepId(moleculeId, 'reviewer')))?.metadata).toMatchObject({
       exec: { error_trace: 'review exploded' },
     });
-    expect((await store.getBead(newMoleculeStepId(moleculeId, 'coder')))?.status).toBe('open');
+    expect((await store.getBead(newMoleculeStepId(moleculeId, 'coder')))).toMatchObject({
+      status: 'closed', metadata: { exec: { error_trace: 'run failed' } },
+    });
     expect(provider.recorder.starts.map((start) => start.role)).toEqual(['reviewer']);
   });
 
@@ -510,7 +513,10 @@ describe('FormulaDispatcher', () => {
       prefix: 'mol',
       formulaName: 'code-review',
       title: '[formula:code-review] Code review',
-      steps: [{ name: 'reviewer', role: 'reviewer' }],
+      steps: [
+        { name: 'reviewer', role: 'reviewer' },
+        { name: 'coder', role: 'coder', dependsOn: ['reviewer'] },
+      ],
     });
     const stepId = newMoleculeStepId(view.rootId, 'reviewer');
     await walker.startStep(stepId);
@@ -525,6 +531,10 @@ describe('FormulaDispatcher', () => {
     expect(result).toEqual({ moleculeId: view.rootId, cancelledStepCount: 1 });
     expect(provider.recorder.stops).toEqual([{ id: 'fake-runtime:reviewer-previous', providerKind: 'fake-runtime' }]);
     expect((await store.getBead(stepId))?.metadata).toMatchObject({ exec: { error_trace: 'cancelled' } });
+    expect(await store.getBead(newMoleculeStepId(view.rootId, 'coder'))).toMatchObject({
+      status: 'closed', metadata: { exec: { error_trace: 'run cancelled' } },
+    });
+    expect(await store.getBead(view.rootId)).toMatchObject({ status: 'closed', metadata: { exec: { outcome: 'cancelled' } } });
     expect(events.map((event) => event.kind)).toEqual(['dispatcher/step.cancelled', 'dispatcher/formula.cancelled']);
     expect(events[0]?.task_id).toBe('task-cancel-1');
   });

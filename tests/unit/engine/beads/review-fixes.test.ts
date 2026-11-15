@@ -39,11 +39,36 @@ describe('BdMoleculeWriter passes metadata by file, never argv', () => {
       seen.push({ args: [...args], file: ref?.startsWith('@') ? readFileSync(ref.slice(1), 'utf8') : null });
       return '';
     });
-    const writer = new BdMoleculeWriter(bd, { getBead: async (id) => bead(id) });
+    const writer = new BdMoleculeWriter(bd, { getBead: async (id) => bead(id), getBeadDependencies: async () => [] });
     await writer.markStepDone('s1', { text: big });
     const call = seen.find((c) => c.args.includes('--metadata'))!;
     expect(call.args.every((a) => a.length < 4096)).toBe(true);
     expect(JSON.parse(call.file!).exec.output_payload.text).toHaveLength(big.length);
+  });
+});
+
+describe('BdMoleculeWriter closes only open molecule steps for terminal failures', () => {
+  it('closes open children with the run outcome, preserving closed and running steps', async () => {
+    const seen: string[][] = [];
+    const rows: Record<string, BeadRow> = {
+      root: { ...bead('root'), issue_type: 'molecule_root', status: 'open' },
+      open: { ...bead('open'), issue_type: 'molecule_step', status: 'open' },
+      running: { ...bead('running'), issue_type: 'molecule_step', status: 'in_progress' },
+      closed: { ...bead('closed'), issue_type: 'molecule_step', status: 'closed' },
+    };
+    const reader = {
+      getBead: async (id: string) => rows[id] ?? null,
+      getBeadDependencies: async () => [
+        { issue_id: 'open', depends_on_id: 'root', type: 'parent-child' },
+        { issue_id: 'running', depends_on_id: 'root', type: 'parent-child' },
+        { issue_id: 'closed', depends_on_id: 'root', type: 'parent-child' },
+      ],
+    };
+    const writer = new BdMoleculeWriter(async (args) => { seen.push([...args]); return ''; }, reader);
+
+    await writer.closeOpenMoleculeSteps('root', 'failed');
+
+    expect(seen).toEqual([['close', 'open', '--reason', 'run failed', '--actor', 'orchestration-daemon']]);
   });
 });
 
@@ -56,7 +81,7 @@ describe('a step that succeeds after a failed attempt drops the old error (CodeR
       return '';
     });
     const retried: BeadRow = { ...bead('s1'), metadata: { exec: { step: 's', attempts: 2, error_trace: 'first attempt failed' } } };
-    const writer = new BdMoleculeWriter(bd, { getBead: async () => retried });
+    const writer = new BdMoleculeWriter(bd, { getBead: async () => retried, getBeadDependencies: async () => [] });
     await writer.markStepDone('s1', 'second attempt ok');
     const exec = written.at(-1)!.exec as Record<string, unknown>;
     expect(exec).not.toHaveProperty('error_trace');
