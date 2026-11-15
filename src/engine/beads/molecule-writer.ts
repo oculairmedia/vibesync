@@ -29,6 +29,7 @@ const ACTOR = 'orchestration-daemon';
 
 export interface MoleculeBeadReader {
   getBead(id: string): Promise<BeadRow | null>;
+  findStepsForMolecule(rootId: string): Promise<readonly BeadRow[]>;
 }
 
 type Exec = Record<string, unknown>;
@@ -195,8 +196,17 @@ export class BdMoleculeWriter {
    */
   async markMoleculeRootStatus(rootId: string, status: 'closed', outcome: MoleculeOutcome): Promise<void> {
     const bead = await this.require(rootId);
+    if (outcome === 'failed' || outcome === 'cancelled') await this.closeOpenSteps(rootId, outcome);
     await withMetadataFile({ exec: { ...execOf(bead), outcome } }, (ref) =>
       this.bd(['update', rootId, '--status', status, '--force', '--metadata', ref, '--actor', ACTOR]));
+  }
+
+  private async closeOpenSteps(rootId: string, outcome: 'failed' | 'cancelled'): Promise<void> {
+    const steps = await this.reader.findStepsForMolecule(rootId);
+    for (const step of steps) {
+      if (step.status !== 'open') continue;
+      await this.bd(['close', step.id, '--force', '--reason', `run ${outcome}`]);
+    }
   }
 
   async appendNoteToBead(beadId: string, note: string): Promise<void> {

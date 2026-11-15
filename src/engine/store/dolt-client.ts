@@ -821,6 +821,21 @@ export class DoltClient {
     return rows.map(toBeadRow);
   }
 
+  /** Find every step bead belonging to a molecule, regardless of status. */
+  async findStepsForMolecule(rootId: string): Promise<BeadRow[]> {
+    const [rows] = await this.pool.execute<mysql.RowDataPacket[]>(
+      `SELECT i.*
+       FROM issues i
+       JOIN dependencies parent_dep
+         ON parent_dep.issue_id = i.id
+        AND parent_dep.depends_on_issue_id = ?
+        AND parent_dep.type = 'parent-child'
+       WHERE i.issue_type = 'molecule_step'`,
+      [rootId],
+    );
+    return rows.map(toBeadRow);
+  }
+
   /**
    * lcp-61uj: list molecule-root beads (the rig runs) for the fleet-status
    * endpoint. Ordered newest-first. `statuses` filters by bead status
