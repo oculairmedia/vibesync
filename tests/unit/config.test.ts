@@ -36,10 +36,16 @@ describe('config', () => {
     });
 
     it('configures status polling with a default and allows disabling it', () => {
-      delete process.env.VIBESYNC_STATUS_POLL_INTERVAL_MS;
-      expect(loadConfig().statusPollIntervalMs).toBe(5000);
-      process.env.VIBESYNC_STATUS_POLL_INTERVAL_MS = '0';
-      expect(loadConfig().statusPollIntervalMs).toBe(0);
+      const prev = process.env.VIBESYNC_STATUS_POLL_INTERVAL_MS;
+      try {
+        delete process.env.VIBESYNC_STATUS_POLL_INTERVAL_MS;
+        expect(loadConfig().statusPollIntervalMs).toBe(5000);
+        process.env.VIBESYNC_STATUS_POLL_INTERVAL_MS = '0';
+        expect(loadConfig().statusPollIntervalMs).toBe(0);
+      } finally {
+        if (prev === undefined) delete process.env.VIBESYNC_STATUS_POLL_INTERVAL_MS;
+        else process.env.VIBESYNC_STATUS_POLL_INTERVAL_MS = prev;
+      }
     });
   });
 

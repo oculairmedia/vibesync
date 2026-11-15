@@ -96,7 +96,7 @@ export const configSchema = z.object({
   doltHub: doltHubSchema,
   scheduler: schedulerSchema,
   waits: waitsSchema,
-  statusPollIntervalMs: z.number().int().min(0, 'VIBESYNC_STATUS_POLL_INTERVAL_MS must be >= 0'),
+  statusPollIntervalMs: z.number().int().min(0, 'VIBESYNC_STATUS_POLL_INTERVAL_MS must be >= 0').default(5000),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;
