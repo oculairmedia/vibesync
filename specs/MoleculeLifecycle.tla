@@ -5,8 +5,12 @@
 (* Modelled from the code in src/engine/dispatcher:                        *)
 (*  - step beads: open -> in_progress -> closed (beads/molecule-writer.ts) *)
 (*  - readiness: open, every dependency closed and ruled on                *)
-(*  - FormulaDispatcher.runReadyStep: no start once the run failed or was  *)
-(*    cancelled; at most MaxParallel turns in flight                       *)
+(*  - starting a step is THREE actions, as in the code (review on #188):  *)
+(*    Admit (runReadyStep: run not failed or cancelled, capacity), then    *)
+(*    Recheck (runStep, after the prompt render, which can wait on         *)
+(*    memory: a cancelled run starts no turn), then MarkRunning (the bd    *)
+(*    write that makes the step in_progress). cancel() can land between    *)
+(*    any two of them.                                                     *)
 (*  - StepTurnRunner.runStep: the turn returns, the reply is judged (a     *)
 (*    final step can wait minutes on CI), the engine decides to write, and *)
 (*    the write lands. A failed try below MaxAttempts reopens the step.    *)
@@ -23,11 +27,15 @@
 (*    root. It does not wait for the turns it stopped.                     *)
 (*  "single_writer" (the code now): mark the run, after which a turn that  *)
 (*    returns writes nothing; wait for every turn of the run to return;    *)
-(*    record as cancelled each step still in_progress; close the root.     *)
-(*    The wait is bounded (UnwindTimeout).                                 *)
+(*    record as cancelled each step still in_progress, read FRESH after    *)
+(*    the wait (CancelRecords = "fresh"); close the root. The wait is      *)
+(*    bounded (UnwindTimeout). CancelRecords = "snapshot" records only the *)
+(*    steps read when cancel() began: rejected, a step admitted just       *)
+(*    before the flag is left in_progress under the closed root.           *)
 (*                                                                         *)
 (* Not modelled: process restart and resume, the review loop, waits, more  *)
-(* than one run, the tracker being unavailable, and the code skipping the  *)
+(* than one run, the tracker being unavailable, two concurrent cancel()    *)
+(* calls (a unit test covers the refusal), and the code skipping the       *)
 (* judge call for a run already cancelled when the turn returns (a saving, *)
 (* not a safety rule: the write is what is refused).                       *)
 (***************************************************************************)
@@ -47,6 +55,8 @@ CONSTANTS Steps,       \* step names
                        \* "at_write": fence read and write as ONE step (needs a
                        \*   compare-and-set on status that bd does not have)
           CancelMode,  \* "direct" | "single_writer" (see above)
+          CancelRecords,    \* "single_writer": "fresh" (read after the wait) | "snapshot" (read at the start)
+          RecheckBeforeStart, \* TRUE: runStep asks "cancelled?" after the render, before the turn starts
           UnwindTimeout,    \* TRUE: cancel()'s wait can run out with a turn still in flight
           WriteOutlastsWait \* TRUE: a tracker write that had begun before the cancel can
                             \*   still be on its way when that wait runs out
@@ -54,7 +64,7 @@ CONSTANTS Steps,       \* step names
 VARIABLES status,       \* "open" | "in_progress" | "closed"
           result,       \* "none" | "declared" | "done" | "failed" | "cancelled" | "run_closed"
                         \*   "declared" = closed by its own role with a failure_class, not yet ruled on
-          turn,         \* "idle" | "running" | "returned_*" | "cleared_*" | "writing_*"  (* = ok | fail)
+          turn,         \* "idle" | "admitted" | "starting" | "running" | "returned_*" | "cleared_*" | "writing_*"  (* = ok | fail)
           root,         \* "open" | "closed"
           outcome,      \* "none" | "completed" | "failed" | "cancelled"
           runFailed,    \* run.failed (in memory)
@@ -81,10 +91,23 @@ Writing(s) == turn[s] \in {"writing_ok", "writing_fail"}
 FailedTry(s) == turn[s] \in {"returned_fail", "cleared_fail", "writing_fail"} \/ result[s] = "declared"
 Ready(s) == status[s] = "open" /\ \A d \in Deps[s] : status[d] = "closed" /\ result[d] # "declared"
 
-Start(s) ==
+\* runReadyStep admits the step: the run is neither failed nor cancelled, there is capacity.
+Admit(s) ==
   /\ root = "open" /\ ~runFailed /\ ~runCancelled
   /\ Ready(s) /\ turn[s] = "idle"
   /\ Cardinality(InFlight) < MaxParallel
+  /\ turn' = [turn EXCEPT ![s] = "admitted"]
+  /\ UNCHANGED <<status, result, root, outcome, runFailed, runCancelled, attempts, cancelSet>>
+
+\* runStep, after the prompt render: a run cancelled meanwhile starts no turn.
+Recheck(s) ==
+  /\ turn[s] = "admitted"
+  /\ turn' = [turn EXCEPT ![s] = IF RecheckBeforeStart /\ runCancelled THEN "idle" ELSE "starting"]
+  /\ UNCHANGED <<status, result, root, outcome, runFailed, runCancelled, attempts, cancelSet>>
+
+\* The bd write that marks the step running, then the turn starts.
+MarkRunning(s) ==
+  /\ turn[s] = "starting"
   /\ status' = [status EXCEPT ![s] = "in_progress"]
   /\ turn' = [turn EXCEPT ![s] = "running"]
   /\ attempts' = [attempts EXCEPT ![s] = @ + 1]
@@ -167,7 +190,7 @@ CancelBegin ==
   /\ root = "open" /\ ~runCancelled
   /\ \E s \in Steps : status[s] = "in_progress"
   /\ runCancelled' = TRUE
-  /\ cancelSet' = IF CancelMode = "direct" THEN {s \in Steps : status[s] = "in_progress"} ELSE {}
+  /\ cancelSet' = IF CancelMode = "direct" \/ CancelRecords = "snapshot" THEN {s \in Steps : status[s] = "in_progress"} ELSE {}
   /\ UNCHANGED <<status, result, turn, root, outcome, runFailed, attempts>>
 
 \* "direct": cancel() records a captured step as cancelled. It does not re-read it.
@@ -183,26 +206,34 @@ CancelStep(s) ==
 \* a write that had begun lands within the wait (5 s in the code; a bd write
 \* takes about 0.2 s). The *.single-writer-slow-write configurations drop the
 \* assumption and fail: without a compare-and-set no bounded wait is safe then.
-WaitOver(s) == turn[s] = "idle" \/ (UnwindTimeout /\ (WriteOutlastsWait \/ ~Writing(s)))
+\* The "running" write is a tracker write too: under the same assumption it lands within the wait.
+WaitOver(s) == turn[s] = "idle" \/ (UnwindTimeout /\ (WriteOutlastsWait \/ ~(Writing(s) \/ turn[s] = "starting")))
 
-\* "single_writer": cancel() records a step that is STILL in_progress, read fresh.
+\* "single_writer": cancel() records a step that is STILL in_progress, read fresh. What
+\* separates "fresh" from "snapshot" is when cancel() may close the root (CancelFinish):
+\* recording a step outside the snapshot changes nothing if the root closes first.
 CancelRecord(s) ==
   /\ CancelMode = "single_writer" /\ runCancelled /\ root = "open"
   /\ status[s] = "in_progress" /\ WaitOver(s)
   /\ status' = [status EXCEPT ![s] = "closed"]
   /\ result' = [result EXCEPT ![s] = "cancelled"]
-  /\ UNCHANGED <<turn, root, outcome, runFailed, runCancelled, attempts, cancelSet>>
+  /\ cancelSet' = cancelSet \ {s}
+  /\ UNCHANGED <<turn, root, outcome, runFailed, runCancelled, attempts>>
 
+\* "single_writer" closes the root once every turn is back (or the wait ran out) and the
+\* steps it records are recorded: all of them ("fresh") or its snapshot ("snapshot").
 CancelFinish ==
-  /\ runCancelled /\ root = "open" /\ cancelSet = {}
+  /\ runCancelled /\ root = "open"
+  /\ (CancelMode = "direct" => cancelSet = {})
   /\ (CancelMode = "single_writer" =>
-        \A s \in Steps : status[s] # "in_progress" /\ WaitOver(s))
+        /\ \A s \in Steps : WaitOver(s)
+        /\ \A s \in (IF CancelRecords = "snapshot" THEN cancelSet ELSE Steps) : status[s] # "in_progress")
   /\ status' = CloseOpen /\ result' = MarkRunClosed
   /\ root' = "closed" /\ outcome' = "cancelled"
   /\ UNCHANGED <<turn, runFailed, runCancelled, attempts, cancelSet>>
 
 Next ==
-  \/ \E s \in Steps : Start(s) \/ AgentCloses(s) \/ Judge(s) \/ WriteBegin(s) \/ WriteLand(s) \/ WriteAtomic(s)
+  \/ \E s \in Steps : Admit(s) \/ Recheck(s) \/ MarkRunning(s) \/ AgentCloses(s) \/ Judge(s) \/ WriteBegin(s) \/ WriteLand(s) \/ WriteAtomic(s)
   \/ \E s \in Steps : CancelStep(s) \/ CancelRecord(s)
   \/ \E s \in Steps, ok \in BOOLEAN : TurnEnds(s, ok)
   \/ SettleFailed \/ SettleCompleted \/ CancelBegin \/ CancelFinish
@@ -213,7 +244,7 @@ Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 TypeOK ==
   /\ status \in [Steps -> {"open", "in_progress", "closed"}]
   /\ result \in [Steps -> {"none", "declared", "done", "failed", "cancelled", "run_closed"}]
-  /\ turn \in [Steps -> {"idle", "running", "returned_ok", "returned_fail", "cleared_ok", "cleared_fail", "writing_ok", "writing_fail"}]
+  /\ turn \in [Steps -> {"idle", "admitted", "starting", "running", "returned_ok", "returned_fail", "cleared_ok", "cleared_fail", "writing_ok", "writing_fail"}]
   /\ root \in {"open", "closed"}
   /\ outcome \in {"none", "completed", "failed", "cancelled"}
   /\ cancelSet \subseteq Steps

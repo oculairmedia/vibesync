@@ -547,6 +547,169 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
     expect(h.provider.recorder.starts).toHaveLength(2); // the reopened step was not started again
   });
 
+  // ---- Review on PR #188: races around cancel() itself ----
+
+  it('two cancels that start in the same tick: exactly one runs, the other is refused', async () => {
+    // Both calls used to pass the "already cancelling" check before either set the flag (an await sat between).
+    const h = harness({ ending: 'reply', releaseOnStop: true });
+    let moleculeId = '';
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    pending.catch(() => undefined);
+    const stepId = () => newMoleculeStepId(moleculeId, 'worker');
+    await until(async () => moleculeId !== '' && (await h.store.getBead(stepId()))?.status === 'in_progress', 'worker in progress');
+
+    const results = await Promise.allSettled([h.dispatcher.cancel(moleculeId), h.dispatcher.cancel(moleculeId)]);
+    await settle();
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const refused = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(refused).toHaveLength(1);
+    expect(String((refused[0]!.reason as Error).message)).toContain('already being cancelled');
+    expect(h.events.filter((event) => event.kind === 'dispatcher/formula.cancelled')).toHaveLength(1);
+    expect(h.events.filter((event) => event.kind === 'dispatcher/step.cancelled')).toHaveLength(1);
+  });
+
+  it('a step being admitted when cancel() begins is either refused or captured: never left in_progress under the closed root', async () => {
+    // Fan-out: `left` runs; `right` becomes ready and is being admitted (its blocker read is in flight) when cancel begins.
+    // cancel() used to capture the running steps BEFORE setting the cancelled flag, so `right` could start after the
+    // snapshot, write nothing on return (run cancelled), and stay in_progress under a closed root.
+    const admitting = deferred();
+    const h = harness({ ending: 'reply', releaseOnStop: true });
+    const deps = h.store.getBeadDependencies.bind(h.store);
+    let moleculeId = '';
+    h.store.getBeadDependencies = async (id: string) => {
+      if (moleculeId !== '' && id === newMoleculeStepId(moleculeId, 'right')) await admitting.enter();
+      return deps(id);
+    };
+    const pending = h.dispatcher.run({ formula: formula(['left', 'right']), pack: pack(['left', 'right']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    pending.catch(() => undefined);
+    await until(() => admitting.reached(), 'right is being admitted');
+    const left = newMoleculeStepId(moleculeId, 'left');
+    const right = newMoleculeStepId(moleculeId, 'right');
+    await until(async () => (await h.store.getBead(left))?.status === 'in_progress', 'left in progress');
+
+    const cancelling = h.dispatcher.cancel(moleculeId);
+    await settle();
+    admitting.open(); // admission continues after cancel() has begun
+    await cancelling;
+    await pending.catch(() => undefined);
+    await settle();
+
+    expect((await h.store.getBead(moleculeId))?.status).toBe('closed');
+    expect((await h.store.getBead(right))?.status, 'no step left in_progress under the closed root').not.toBe('in_progress');
+    expect(h.provider.recorder.starts.map((s) => s.role), 'right never started').toEqual(['left']);
+  });
+
+  it('a cancel during the prompt render stops the turn from starting: no session, the step is not marked running again', async () => {
+    // runStep awaits the prompt render (it can read project memory) before it starts the turn.
+    const rendering = deferred();
+    const h = harness({ ending: 'reply', releaseOnStop: true });
+    const recordAttempt = h.store.recordStepAttempt.bind(h.store);
+    let moleculeId = '';
+    let held = false;
+    h.store.recordStepAttempt = async (id: string, attempt: number) => {
+      await recordAttempt(id, attempt);
+      if (!held && moleculeId !== '' && id === newMoleculeStepId(moleculeId, 'right')) { held = true; await rendering.enter(); }
+    };
+    const pending = h.dispatcher.run({ formula: formula(['left', 'right']), pack: pack(['left', 'right']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    pending.catch(() => undefined);
+    await until(() => rendering.reached(), 'right is between its attempt record and its turn');
+    const right = newMoleculeStepId(moleculeId, 'right');
+
+    const cancelling = h.dispatcher.cancel(moleculeId);
+    await settle();
+    rendering.open();
+    await cancelling;
+    await pending.catch(() => undefined);
+    await settle();
+
+    expect(h.provider.recorder.starts.map((s) => s.role), 'no session was started for right').toEqual(['left']);
+    expect((await h.store.getBead(right))?.status).not.toBe('in_progress');
+    expect((await h.store.getBead(moleculeId))?.status).toBe('closed');
+  });
+
+  it('a step whose "running" write lands just after cancel() read the running steps is still recorded as cancelled', async () => {
+    // `right` passed admission before the flag was set; its markStepRunning is held until cancel() has read the
+    // running steps, so it is not in that first read. cancel() waits for every turn, so `right`'s turn returns and
+    // writes nothing; cancel() must then record it from a FRESH read, not from the first one.
+    const marking = deferred();
+    const read = deferred();
+    const h = harness({ ending: 'reply', releaseOnStop: true });
+    const markRunning = h.store.markStepRunning.bind(h.store);
+    const findRunning = h.store.findRunningStepsForMolecule.bind(h.store);
+    let moleculeId = '';
+    let cancelReads = 0;
+    h.store.markStepRunning = async (id: string) => {
+      if (moleculeId !== '' && id === newMoleculeStepId(moleculeId, 'right')) await marking.enter();
+      return markRunning(id);
+    };
+    h.store.findRunningStepsForMolecule = async (rootId: string) => {
+      const rows = await findRunning(rootId);
+      if (marking.reached() && cancelReads++ === 0) read.open();
+      return rows;
+    };
+    const pending = h.dispatcher.run({ formula: formula(['left', 'right']), pack: pack(['left', 'right']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    pending.catch(() => undefined);
+    await until(() => marking.reached(), "right's running write is in flight");
+    const right = newMoleculeStepId(moleculeId, 'right');
+
+    const cancelling = h.dispatcher.cancel(moleculeId);
+    await read.promise; // cancel() has read the running steps without `right`
+    marking.open(); // now `right` lands as in_progress
+    await cancelling;
+    await pending.catch(() => undefined);
+    await settle();
+
+    expect((await h.store.getBead(moleculeId))?.status).toBe('closed');
+    await expectCancelled(h.store, right, 'right');
+  });
+
+  it('a cancel refused after it claimed the run gives the run back: the run finishes normally and can still be cancelled', async () => {
+    // claimCancel marks the run before its first await; if cancel() then refuses (here: nothing running yet),
+    // a mark left behind would make the run unsettleable and every later cancel refused.
+    const h = harness({ ending: 'reply', releaseOnStop: true });
+    const findRunning = h.store.findRunningStepsForMolecule.bind(h.store);
+    let moleculeId = '';
+    let empty = true;
+    h.store.findRunningStepsForMolecule = async (rootId: string) => (empty ? [] : findRunning(rootId));
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    pending.catch(() => undefined);
+    await until(async () => moleculeId !== '' && (await h.store.getBead(newMoleculeStepId(moleculeId, 'worker')))?.status === 'in_progress', 'worker in progress');
+
+    const refused = await h.dispatcher.cancel(moleculeId).then(() => 'ok', (error: unknown) => String((error as Error).message));
+    expect(refused).toContain('no running steps');
+    empty = false;
+    // The mark was given back: a second cancel is not refused as "already being cancelled".
+    expect(await h.dispatcher.cancel(moleculeId)).toEqual({ moleculeId, cancelledStepCount: 1 });
+    await pending.catch(() => undefined);
+    await settle();
+    expect((await h.store.getBead(moleculeId))?.status).toBe('closed');
+    expect(h.dispatcher.liveMoleculeIds()).not.toContain(moleculeId);
+  });
+
+  it('a cancel whose tracker writes fail does not discard the run silently: the run ends failed, the error is not swallowed', async () => {
+    const h = harness({ ending: 'reply', releaseOnStop: true });
+    let moleculeId = '';
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    const told = pending.then(() => 'resolved', (error: unknown) => `rejected: ${String((error as Error).message)}`);
+    await until(async () => moleculeId !== '' && (await h.store.getBead(newMoleculeStepId(moleculeId, 'worker')))?.status === 'in_progress', 'worker in progress');
+    const markRoot = h.store.markMoleculeRootStatus.bind(h.store);
+    let failOnce = true;
+    h.store.markMoleculeRootStatus = async (rootId, status, outcome) => {
+      if (failOnce && outcome === 'cancelled') { failOnce = false; throw new Error('tracker down'); }
+      return markRoot(rootId, status, outcome);
+    };
+
+    const result = await h.dispatcher.cancel(moleculeId).then(() => 'ok', (error: unknown) => String((error as Error).message));
+    await settle();
+    expect(result, 'the caller of cancel() hears about the failure').toContain('tracker down');
+    expect(await told, 'run() is told the run did not end cleanly').toMatch(/^rejected: /);
+    // The root is closed with an outcome on the retry the settlement makes, never left open with no live run.
+    const root = await h.store.getBead(moleculeId);
+    expect(root?.status).toBe('closed');
+    expect(['cancelled', 'failed']).toContain((root?.metadata['exec'] as Record<string, unknown>)['outcome']);
+    expect(h.dispatcher.liveMoleculeIds()).not.toContain(moleculeId);
+  });
+
   it('a run that is not cancelled is unaffected: the turn\'s reply finishes the step', async () => {
     const h = harness({ ending: 'reply' });
     let moleculeId = '';

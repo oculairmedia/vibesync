@@ -66,6 +66,10 @@ describe('TLA+ model check in CI (vibesync-6zos.3)', () => {
       // The stated limit: a tracker write slower than cancel()'s wait.
       expect(result.get(`${shape}.single-writer-slow-write`)).toBe('fail StepResultIsFinal');
     }
+    // Review on #188: each half of the design in the code is shown necessary (fan shape).
+    expect(result.get('fan.single-writer-snapshot')).toBe('fail ClosedRootHasOnlyClosedSteps');
+    expect(result.get('fan.single-writer-timeout-no-recheck')).toBe('fail ClosedRootHasOnlyClosedSteps');
+    expect(result.get('fan.fence-atomic-cancelling')).toBe('fail ClosedRootHasOnlyClosedSteps');
     // A gate with nothing that must fail could never show the checker working.
     expect(expected.filter(([, want]) => want === 'fail').length).toBeGreaterThanOrEqual(8);
   });

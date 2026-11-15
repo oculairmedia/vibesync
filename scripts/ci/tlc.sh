@@ -34,6 +34,8 @@ if [ -z "$JAR" ]; then
   curl -fsSL -o "$JAR" "https://github.com/tlaplus/tlaplus/releases/download/v$TLA2TOOLS_VERSION/tla2tools.jar" || die "could not download tla2tools $TLA2TOOLS_VERSION"
 fi
 [ -s "$JAR" ] || die "no jar at $JAR"
+# Absolute before anything changes directory: TLC runs from specs/, and a relative jar path would point there.
+JAR=$(realpath "$JAR")
 echo "$TLA2TOOLS_SHA256  $JAR" | sha256sum --check --quiet >/dev/null 2>&1 || die "checksum mismatch for $JAR (expected $TLA2TOOLS_SHA256)"
 
 # The two lists must name the same configurations.

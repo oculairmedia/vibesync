@@ -34,7 +34,19 @@ fan.fence-before-judge fail StepResultIsFinal
 chain.fence-atomic-settled fail StepResultIsFinal
 fan.fence-atomic-settled fail StepResultIsFinal
 
-# An atomic check-and-write that also reads the run's cancelled flag is sound,
-# but needs a compare-and-set on status that bd does not have. Not what the code does.
+# An atomic check-and-write that also reads the run's cancelled flag. It needs a
+# compare-and-set on status that bd does not have, and it is NOT sound: with step
+# start modelled as admit / re-check / mark running (review on #188), a step admitted
+# just before the flag is left in_progress under the closed root (fan shape). Chain
+# runs one step at a time, so nothing can be admitted while cancel() runs.
 chain.fence-atomic-cancelling pass
-fan.fence-atomic-cancelling pass
+fan.fence-atomic-cancelling fail ClosedRootHasOnlyClosedSteps
+
+# Review on #188, the two halves of the design in the code, each shown necessary.
+# cancel() recording only the steps it read when it began (the code before the review):
+# a step admitted just before the run was marked cancelled is left in_progress.
+fan.single-writer-snapshot fail ClosedRootHasOnlyClosedSteps
+# No "cancelled?" check between the prompt render and the turn start, and a turn that
+# outlives cancel()'s wait: the late step starts and is never recorded. (Fan only: a chain
+# runs one step at a time, so these two cases cannot arise there.)
+fan.single-writer-timeout-no-recheck fail ClosedRootHasOnlyClosedSteps

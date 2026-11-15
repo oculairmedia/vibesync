@@ -163,37 +163,72 @@ export class MoleculeSettler {
    * root.
    */
   async cancel(moleculeId: string): Promise<CancelResult> {
-    const { root, running, liveRun } = await this.requireCancellable(moleculeId);
-    if (liveRun) {
-      liveRun.cancelled = true;
-      liveRun.cancelInProgress = true;
+    // Claimed before the first await, so a second cancel() in the same tick is refused (review on PR #188).
+    const liveRun = this.claimCancel(moleculeId);
+    let root: BeadRow;
+    let running: readonly BeadRow[];
+    try {
+      // The flag is set BEFORE the running steps are read: a step admitted after this point sees the run as
+      // cancelled and does not start; one admitted before it is in_progress by the time it is read.
+      ({ root, running } = await this.requireCancellable(moleculeId));
+    } catch (error) {
+      if (liveRun) this.unclaimCancel(liveRun);
+      throw error;
     }
+    let closed = false;
     try {
       const provider = await this.resolveCancelProvider(liveRun, root, running);
       await this.stopRunningSessions(running, provider);
       if (liveRun) await this.waitForTurnsToReturn(liveRun);
-      const cancelledStepCount = await this.recordStepsStillRunning(moleculeId, running);
+      // Read fresh after the wait, not the list read at the start: a step admitted just before the flag was set
+      // can land as in_progress after that first read; its turn wrote nothing (the run is cancelled), so cancel()
+      // is the only writer left for it (review on PR #188).
+      const cancelledStepCount = await this.recordStepsStillRunning(moleculeId, await this.deps.walker.findRunning(moleculeId));
       await this.deps.walker.markMoleculeRootStatus(moleculeId, 'closed', 'cancelled');
+      closed = true;
       this.deps.emit('dispatcher/formula.cancelled', moleculeId, undefined, {
         moleculeId,
         cancelledStepCount,
       });
       return { moleculeId, cancelledStepCount };
+    } catch (error) {
+      // cancel() failed part-way (a stop, a tracker write): the run must not be discarded as if it had been
+      // cancelled cleanly. It settles as FAILED, which closes the root with that outcome and tells run().
+      if (liveRun && !closed) {
+        liveRun.failed = true;
+        liveRun.failure = error;
+        liveRun.cancelled = false;
+      }
+      throw error;
     } finally {
       // Also when cancel() failed part-way: the run must not stay unsettled for ever.
       if (liveRun) await this.releaseAfterCancel(liveRun);
     }
   }
 
+  /** Mark the live run as being cancelled, synchronously; refuse if a cancel already holds it. */
+  private claimCancel(moleculeId: string): MoleculeRun | undefined {
+    const liveRun = this.deps.live.get(moleculeId);
+    if (!liveRun) return undefined;
+    if (liveRun.cancelInProgress) throw new FormulaCancellationConflictError(`FormulaDispatcher: molecule ${moleculeId} is already being cancelled`, moleculeId);
+    liveRun.cancelInProgress = true;
+    liveRun.cancelled = true;
+    return liveRun;
+  }
+
+  /** cancel() refused after claiming (not found, nothing running): give the run back as it was. */
+  private unclaimCancel(run: MoleculeRun): void {
+    run.cancelInProgress = false;
+    run.cancelled = false;
+  }
+
   /** The molecule's root, its running steps and its live run; throws when there is nothing to cancel or a cancel is already under way. */
-  private async requireCancellable(moleculeId: string): Promise<{ readonly root: BeadRow; readonly running: readonly BeadRow[]; readonly liveRun: MoleculeRun | undefined }> {
+  private async requireCancellable(moleculeId: string): Promise<{ readonly root: BeadRow; readonly running: readonly BeadRow[] }> {
     const view = await this.deps.walker.load(moleculeId);
     if (!view) throw new FormulaDispatchError(`FormulaDispatcher: molecule ${moleculeId} not found`, moleculeId);
-    const liveRun = this.deps.live.get(moleculeId);
-    if (liveRun?.cancelInProgress) throw new FormulaCancellationConflictError(`FormulaDispatcher: molecule ${moleculeId} is already being cancelled`, moleculeId);
     const running = await this.deps.walker.findRunning(moleculeId);
     if (running.length === 0) throw new FormulaCancellationConflictError(`FormulaDispatcher: molecule ${moleculeId} has no running steps to cancel`, moleculeId);
-    return { root: view.root, running, liveRun };
+    return { root: view.root, running };
   }
 
   /** cancel() is over: the run may settle. Tells the run() caller unless a turn outlived the wait; that turn's return will. */

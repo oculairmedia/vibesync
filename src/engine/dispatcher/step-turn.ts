@@ -61,6 +61,9 @@ export class StepTurnRunner {
     const attemptStartedAt = new Date();
     await this.deps.walker.recordStepAttempt(args.step.id, state.attempt);
     const rendered = await this.renderStepPrompt(args, stepSpec, stepName, state.attempt);
+    // The render can wait on project memory. A run cancelled meanwhile starts no turn: no session, and the step
+    // is not marked running again under a run that is closing (review on PR #188).
+    if (args.cancelled()) return;
 
     const turn = await this.runStepTurn(context, rendered, state);
     // One writer per step (specs/MoleculeLifecycle.tla, CancelMode =
