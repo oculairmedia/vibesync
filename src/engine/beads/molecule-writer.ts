@@ -193,11 +193,43 @@ export class BdMoleculeWriter {
   async closeOpenMoleculeSteps(rootId: string, outcome: 'failed' | 'cancelled'): Promise<void> {
     const edges = await this.reader.getBeadDependencies(rootId);
     const childIds = edges.filter((edge) => edge.type === 'parent-child' && edge.depends_on_id === rootId).map((edge) => edge.issue_id);
-    for (const stepId of childIds) {
-      const step = await this.reader.getBead(stepId);
-      if (step?.issue_type === 'molecule_step' && step.status === 'open') {
-        await this.bd(['close', stepId, '--reason', `run ${outcome}`, '--actor', ACTOR]);
+    const steps = (await Promise.all(childIds.map((id) => this.reader.getBead(id))))
+      .filter((step): step is BeadRow => step?.issue_type === 'molecule_step' && step.status === 'open');
+    const ids = new Set(steps.map((step) => step.id));
+    const waitingOn = new Map(steps.map((step) => [step.id, 0]));
+    const dependents = new Map(steps.map((step) => [step.id, [] as string[]]));
+
+    for (const step of steps) {
+      for (const edge of await this.reader.getBeadDependencies(step.id)) {
+        if (edge.type !== 'blocks' || edge.issue_id !== step.id || !ids.has(edge.depends_on_id)) continue;
+        waitingOn.set(step.id, waitingOn.get(step.id)! + 1);
+        dependents.get(edge.depends_on_id)!.push(step.id);
       }
+    }
+
+    const queue = steps.filter((step) => waitingOn.get(step.id) === 0).map((step) => step.id);
+    const order: string[] = [];
+    while (queue.length > 0) {
+      const blockerId = queue.shift()!;
+      order.push(blockerId);
+      for (const dependentId of dependents.get(blockerId)!) {
+        const remaining = waitingOn.get(dependentId)! - 1;
+        waitingOn.set(dependentId, remaining);
+        if (remaining === 0) queue.push(dependentId);
+      }
+    }
+    if (order.length !== steps.length) throw new Error(`step dependency cycle under molecule ${rootId}; cannot order closes`);
+
+    for (const stepId of order) {
+      const blockers = (await this.reader.getBeadDependencies(stepId))
+        .filter((edge) => edge.type === 'blocks' && edge.issue_id === stepId && !ids.has(edge.depends_on_id));
+      for (const edge of blockers) {
+        const blocker = await this.reader.getBead(edge.depends_on_id);
+        if (blocker && blocker.status !== 'closed') {
+          throw new Error(`cannot close blocked issue: ${stepId} is blocked by [${edge.depends_on_id}]`);
+        }
+      }
+      await this.bd(['close', stepId, '--reason', `run ${outcome}`, '--actor', ACTOR]);
     }
   }
 

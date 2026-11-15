@@ -70,6 +70,76 @@ describe('BdMoleculeWriter closes only open molecule steps for terminal failures
 
     expect(seen).toEqual([['close', 'open', '--reason', 'run failed', '--actor', 'orchestration-daemon']]);
   });
+
+  it('closes dependent steps blocker-first even when children are returned in reverse order', async () => {
+    const seen: string[] = [];
+    const rows: Record<string, BeadRow> = {
+      root: { ...bead('root'), issue_type: 'molecule_root', status: 'open' },
+      first: { ...bead('first'), status: 'closed' },
+      second: { ...bead('second'), status: 'open' },
+      third: { ...bead('third'), status: 'open' },
+    };
+    const edges = [
+      { issue_id: 'second', depends_on_id: 'root', type: 'parent-child' },
+      { issue_id: 'third', depends_on_id: 'root', type: 'parent-child' },
+      { issue_id: 'second', depends_on_id: 'first', type: 'blocks' },
+      { issue_id: 'third', depends_on_id: 'second', type: 'blocks' },
+    ];
+    const reader = {
+      getBead: async (id: string) => rows[id] ?? null,
+      getBeadDependencies: async (id: string) => id === 'root'
+        ? [...edges].reverse()
+        : edges.filter((edge) => edge.issue_id === id || edge.depends_on_id === id),
+    };
+    const writer = new BdMoleculeWriter(async (args) => {
+      const stepId = args[1]!;
+      const blockers = (await reader.getBeadDependencies(stepId)).filter((edge) => edge.type === 'blocks' && edge.issue_id === stepId);
+      for (const edge of blockers) {
+        const blocker = rows[edge.depends_on_id];
+        if (blocker && blocker.status !== 'closed') throw new Error(`cannot close blocked issue: ${stepId} is blocked by [${edge.depends_on_id}]`);
+      }
+      seen.push(stepId);
+      rows[stepId] = { ...rows[stepId]!, status: 'closed' };
+      return '';
+    }, reader);
+
+    await writer.closeOpenMoleculeSteps('root', 'failed');
+
+    expect(seen).toEqual(['second', 'third']);
+  });
+
+  it('does not close a step blocked by an untouched running step', async () => {
+    const seen: string[][] = [];
+    const rows: Record<string, BeadRow> = {
+      root: { ...bead('root'), issue_type: 'molecule_root', status: 'open' },
+      running: { ...bead('running'), status: 'in_progress' },
+      open: { ...bead('open'), status: 'open' },
+    };
+    const edges = [
+      { issue_id: 'open', depends_on_id: 'root', type: 'parent-child' },
+      { issue_id: 'running', depends_on_id: 'root', type: 'parent-child' },
+      { issue_id: 'open', depends_on_id: 'running', type: 'blocks' },
+    ];
+    const reader = {
+      getBead: async (id: string) => rows[id] ?? null,
+      getBeadDependencies: async (id: string) => edges.filter((edge) => edge.issue_id === id || edge.depends_on_id === id),
+    };
+    const writer = new BdMoleculeWriter(async (args) => {
+      const stepId = args[1]!;
+      const blockers = (await reader.getBeadDependencies(stepId)).filter((edge) => edge.type === 'blocks' && edge.issue_id === stepId);
+      for (const edge of blockers) {
+        const blocker = rows[edge.depends_on_id];
+        if (blocker && blocker.status !== 'closed') throw new Error(`cannot close blocked issue: ${stepId} is blocked by [${edge.depends_on_id}]`);
+      }
+      seen.push([...args]);
+      return '';
+    }, reader);
+
+    await expect(writer.closeOpenMoleculeSteps('root', 'cancelled')).rejects.toThrow('cannot close blocked issue: open is blocked by [running]');
+
+    expect(seen).toEqual([]);
+    expect(rows.running?.status).toBe('in_progress');
+  });
 });
 
 describe('a step that succeeds after a failed attempt drops the old error (CodeRabbit on #165)', () => {

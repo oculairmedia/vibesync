@@ -215,9 +215,39 @@ export class InMemoryDoltClient {
     const childIds = this.dependencies
       .filter((edge) => edge.type === 'parent-child' && edge.depends_on_id === rootId)
       .map((edge) => edge.issue_id);
-    for (const stepId of childIds) {
+    const steps = childIds
+      .map((stepId) => this.beads.get(stepId))
+      .filter((row): row is BeadRow => row?.issue_type === 'molecule_step' && row.status === 'open');
+    const ids = new Set(steps.map((step) => step.id));
+    const waitingOn = new Map(steps.map((step) => [step.id, 0]));
+    const dependents = new Map(steps.map((step) => [step.id, [] as string[]]));
+    for (const step of steps) {
+      for (const edge of this.blockingEdges(step.id)) {
+        if (!ids.has(edge.depends_on_id)) continue;
+        waitingOn.set(step.id, waitingOn.get(step.id)! + 1);
+        dependents.get(edge.depends_on_id)!.push(step.id);
+      }
+    }
+    const queue = steps.filter((step) => waitingOn.get(step.id) === 0).map((step) => step.id);
+    const order: string[] = [];
+    while (queue.length > 0) {
+      const blockerId = queue.shift()!;
+      order.push(blockerId);
+      for (const dependentId of dependents.get(blockerId)!) {
+        const remaining = waitingOn.get(dependentId)! - 1;
+        waitingOn.set(dependentId, remaining);
+        if (remaining === 0) queue.push(dependentId);
+      }
+    }
+    if (order.length !== steps.length) throw new Error(`step dependency cycle under molecule ${rootId}; cannot order closes`);
+
+    for (const stepId of order) {
       const row = this.beads.get(stepId);
       if (row?.issue_type !== 'molecule_step' || row.status !== 'open') continue;
+      for (const edge of this.blockingEdges(stepId)) {
+        const blocker = this.beads.get(edge.depends_on_id);
+        if (blocker && blocker.status !== 'closed') throw new Error(`cannot close blocked issue: ${stepId} is blocked by [${edge.depends_on_id}]`);
+      }
       const reason = `run ${outcome}`;
       const metadata = mergeExec(row.metadata, { error_trace: reason });
       this.updateBead(stepId, { status: 'closed', closed_at: new Date(), metadata });
