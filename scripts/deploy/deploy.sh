@@ -12,14 +12,14 @@
 # scheduler contexts or eligible beads); the release tree is staged with the live
 # release's .env; config load, the boot check and the engine boot check must pass
 # in that tree; then the swap. After the swap the service must be running from the
-# staged release, be configured to start from it, AND report ready, or the previous
-# release is swapped back in.
+# staged release, systemd must be configured for it (loaded AND on disk), AND the
+# engine must report ready, or the previous release is swapped back in.
 # Nothing here prints an env value.
 #
 # Exit status: 0 deployed; 1 stopped before the swap, nothing changed; 2 the staged
 # release did not come up and the rollback is complete: the previous release is
-# serving, is what systemd will start on the next restart, and is ready; 3 the
-# rollback is not complete in one of those three ways.
+# serving, is what systemd has loaded, is what the drop-in on disk names, and is
+# ready; 3 the rollback is not complete in one of those ways.
 #
 # Every check that can stop the deploy goes through `gate` or an explicit
 # `|| fail`. Do not read a pipeline status from outside a ( subshell ): it is
@@ -66,14 +66,22 @@ serving(){
   readlink "/proc/$pid/cwd" 2>/dev/null
 }
 
-# persisted: the release tree systemd is CONFIGURED to start the service from (swap.sh's drop-in).
-# It can differ from `serving`: swap.sh writes the drop-in before it restarts the service, so a
-# swap that fails between the two leaves the old process running and the new release selected
-# for the next restart.
-persisted(){ systemctl show -p WorkingDirectory --value vibesync.service; }
+# Which release systemd will start the service from has TWO records, and swap.sh changes them
+# in two steps: it writes the drop-in on disk, then `daemon-reload` makes systemd load it. A swap
+# that fails between the two leaves them disagreeing, and `systemctl show` reports only the
+# loaded one; the next reload or reboot follows the file.
+UNIT_DROPIN=${VIBESYNC_UNIT_DROPIN:-/etc/systemd/system/vibesync.service.d/release.conf}
+# loaded: the release tree in systemd's loaded configuration.
+loaded(){ systemctl show -p WorkingDirectory --value vibesync.service; }
+# on_disk: the release tree the drop-in file names.
+on_disk(){ sed -n 's/^WorkingDirectory=//p' "$UNIT_DROPIN" 2>/dev/null | tail -1; }
 
-# on_release <dir>: the service runs from that release, is configured to start from it, and is ready.
-on_release(){ [ "$(serving)" = "$1" ] && [ "$(persisted)" = "$1" ] && [ "$(ready)" = "1" ]; }
+# ready: the engine answers /health with orchestration ready.
+ready(){ curl -s --max-time 8 http://127.0.0.1:3099/health | tr -d '[:space:]' | grep -c '"orchestration":{"ready":true}'; }
+
+# on_release <dir>: the service runs from that release, systemd has it loaded, the drop-in on
+# disk names it, and the engine is ready.
+on_release(){ [ "$(serving)" = "$1" ] && [ "$(loaded)" = "$1" ] && [ "$(on_disk)" = "$1" ] && [ "$(ready)" = "1" ]; }
 
 # Sourced by tests with VIBESYNC_DEPLOY_LIB=1: define the helpers, deploy nothing.
 if [ "${VIBESYNC_DEPLOY_LIB:-}" = "1" ]; then return 0 2>/dev/null || exit 0; fi
@@ -93,7 +101,6 @@ P=$(systemctl show -p MainPID --value vibesync.service); LIVE=$(readlink /proc/$
 echo "live: $(basename $LIVE) pid=$P -> staging $M"
 git log --format='  %h %s' $(basename $LIVE | sed 's/stage-//')..origin/main | cut -c1-110
 [ "$(basename $LIVE)" != "stage-$M" ] || fail "stage-$M is already live"
-ready(){ curl -s --max-time 8 http://127.0.0.1:3099/health | tr -d '[:space:]' | grep -c '"orchestration":{"ready":true}'; }
 [ "$(ready)" = "1" ] || fail "the engine is not ready BEFORE the swap; fix that first"
 quiet(){ echo "$("$BD" list --type molecule_root --status open,in_progress --json --limit 0 | jq length)/$("$BD" list --type molecule_step --status in_progress --json --limit 0 | jq length)/$("$BD" list --label vibesync:sling-context --status open --include-ephemeral --json --limit 0 2>/dev/null | jq length)/$("$BD" list --label scheduler:eligible --status open --json --limit 0 | jq length)"; }
 Q=$(quiet); echo "quiet check (open roots/running steps/open contexts/eligible): $Q"; [ "$Q" = "0/0/0/0" ] || fail "engine not quiet"
@@ -119,7 +126,7 @@ echo "ROLLBACK target: $LIVE"; echo "swapping at $(date -u +%H:%M:%SZ)"
 run_swap "$R" 3 || echo "SWAP FAILED: swap.sh exited non-zero for $(basename "$R"); the engine check below decides whether to roll back"
 # "Ready" is not enough, and neither is a new PID: the service can restart by itself on the PREVIOUS
 # release while the swap fails. The ready process must be running from the staged release, and the
-# staged release must be what systemd is configured to start.
+# staged release must be what systemd has loaded and what the drop-in on disk names.
 STAGED=$(realpath "$R"); up=0
 for i in $(seq 1 "$READY_TRIES"); do on_release "$STAGED" && { up=1; break; }; sleep "$READY_PAUSE"; done
 NP=$(systemctl show -p MainPID --value vibesync.service)
@@ -133,14 +140,14 @@ if [ $up != 1 ]; then
   run_swap "$LIVE" 2 || rolled=0
   back=0
   for i in $(seq 1 "$READY_TRIES"); do on_release "$LIVE" && { back=1; break; }; sleep "$READY_PAUSE"; done
-  NOW=$(serving); SET=$(persisted)
-  echo "after rollback: serving=$(basename "${NOW:-nothing}"); configured for the next restart=$(basename "${SET:-nothing}"); previous release serving, configured and ready: $([ $back = 1 ] && echo yes || echo NO)"
+  NOW=$(serving); SET=$(loaded); DISK=$(on_disk)
+  echo "after rollback: serving=$(basename "${NOW:-nothing}"); systemd loaded=$(basename "${SET:-nothing}"); drop-in on disk=$(basename "${DISK:-nothing}"); previous release serving, configured and ready: $([ $back = 1 ] && echo yes || echo NO)"
   echo ".beads folders created by the rollback's scan: $(comm -13 "$BEADS_BEFORE_FILE" <(ls -d "$STACKS_DIR"/*/.beads 2>/dev/null | LC_ALL=C sort) | tr '\n' ';')"
   # Decided from what is observed, not from swap.sh's exit status:
-  # 2 = the previous release is serving, is what systemd will start next time, and is ready.
+  # 2 = the previous release is serving, is what systemd has loaded AND what the drop-in on disk names, and is ready.
   # 3 = any of those is not so: the service needs a person now.
   if [ "$back" = "1" ]; then exit 2; fi
-  echo "ROLLBACK FAILED (swap.sh ok: $([ "$rolled" = "1" ] && echo yes || echo NO); serving: $(basename "${NOW:-nothing}"); configured for the next restart: $(basename "${SET:-nothing}")). Run: bash $LIVE/scripts/deploy/swap.sh $LIVE"
+  echo "ROLLBACK FAILED (swap.sh ok: $([ "$rolled" = "1" ] && echo yes || echo NO); serving: $(basename "${NOW:-nothing}"); systemd loaded: $(basename "${SET:-nothing}"); drop-in on disk: $(basename "${DISK:-nothing}")). Run: bash $LIVE/scripts/deploy/swap.sh $LIVE"
   exit 3
 fi
 echo "scan-time provisioning lines in the new process's log: $(echo "$J" | grep -ciE "Rig auto-provision")"
