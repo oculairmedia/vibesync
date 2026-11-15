@@ -11,12 +11,13 @@
 # Order: the engine must be ready and quiet (no open runs, running steps, open
 # scheduler contexts or eligible beads); the release tree is staged with the live
 # release's .env; config load, the boot check and the engine boot check must pass
-# in that tree; then the swap. After the swap the engine must report ready, or the
-# previous release is swapped back in. Nothing here prints an env value.
+# in that tree; then the swap. After the swap the service must be running from the
+# staged release AND report ready, or the previous release is swapped back in.
+# Nothing here prints an env value.
 #
-# Exit status: 0 deployed; 1 stopped before the swap, nothing changed; 2 swapped,
-# the engine was not ready, rolled back and the previous release is serving;
-# 3 the rollback did not restore a ready engine.
+# Exit status: 0 deployed; 1 stopped before the swap, nothing changed; 2 the staged
+# release did not come up, rolled back, and the previous release is serving and ready;
+# 3 the rollback did not leave the previous release serving and ready.
 #
 # Every check that can stop the deploy goes through `gate` or an explicit
 # `|| fail`. Do not read a pipeline status from outside a ( subshell ): it is
@@ -55,15 +56,26 @@ run_swap(){
   return "$status"
 }
 
+# serving: the directory the service's main process runs from (its release tree); empty when it has none.
+serving(){
+  local pid
+  pid=$(systemctl show -p MainPID --value vibesync.service)
+  [ -n "$pid" ] && [ "$pid" != "0" ] || return 0
+  readlink "/proc/$pid/cwd" 2>/dev/null
+}
+
 # Sourced by tests with VIBESYNC_DEPLOY_LIB=1: define the helpers, deploy nothing.
 if [ "${VIBESYNC_DEPLOY_LIB:-}" = "1" ]; then return 0 2>/dev/null || exit 0; fi
 
 REPO_DIR=${VIBESYNC_REPO_DIR:-/opt/stacks/vibesync}
 STACKS_DIR=$(dirname "$REPO_DIR")
 BD=${VIBESYNC_BD:-/usr/local/bin/bd}
+# After a swap, how long to wait for the release to be serving and ready: tries x pause (seconds).
+READY_TRIES=${VIBESYNC_DEPLOY_READY_TRIES:-60}
+READY_PAUSE=${VIBESYNC_DEPLOY_READY_PAUSE:-2}
 cd "$REPO_DIR" || exit 1
 timeout 10 systemctl is-system-running >/dev/null 2>&1; [ $? -ne 124 ] || fail "systemctl does not answer"
-git fetch -q origin
+git fetch -q origin || fail "git fetch origin failed: origin/main in this checkout may be stale"
 M=$(git rev-parse --short origin/main); R="$REPO_DIR/.letta/worktrees/stage-$M"
 [ -n "$EXPECT" ] && [ "$M" = "$EXPECT" ] || fail "origin/main is $M, expected ${EXPECT:-<none given>}"
 P=$(systemctl show -p MainPID --value vibesync.service); LIVE=$(readlink /proc/$P/cwd)
@@ -72,7 +84,7 @@ git log --format='  %h %s' $(basename $LIVE | sed 's/stage-//')..origin/main | c
 [ "$(basename $LIVE)" != "stage-$M" ] || fail "stage-$M is already live"
 ready(){ curl -s --max-time 8 http://127.0.0.1:3099/health | tr -d '[:space:]' | grep -c '"orchestration":{"ready":true}'; }
 [ "$(ready)" = "1" ] || fail "the engine is not ready BEFORE the swap; fix that first"
-quiet(){ echo "$(bd list --type molecule_root --status open,in_progress --json --limit 0 | jq length)/$(bd list --type molecule_step --status in_progress --json --limit 0 | jq length)/$(bd list --label vibesync:sling-context --status open --include-ephemeral --json --limit 0 2>/dev/null | jq length)/$(bd list --label scheduler:eligible --status open --json --limit 0 | jq length)"; }
+quiet(){ echo "$("$BD" list --type molecule_root --status open,in_progress --json --limit 0 | jq length)/$("$BD" list --type molecule_step --status in_progress --json --limit 0 | jq length)/$("$BD" list --label vibesync:sling-context --status open --include-ephemeral --json --limit 0 2>/dev/null | jq length)/$("$BD" list --label scheduler:eligible --status open --json --limit 0 | jq length)"; }
 Q=$(quiet); echo "quiet check (open roots/running steps/open contexts/eligible): $Q"; [ "$Q" = "0/0/0/0" ] || fail "engine not quiet"
 BEADS_BEFORE_FILE=$(mktemp); ls -d "$STACKS_DIR"/*/.beads 2>/dev/null | LC_ALL=C sort > "$BEADS_BEFORE_FILE"
 if [ -e "$R" ]; then
@@ -94,23 +106,28 @@ gate "engine boot check (orchestration on, Dolt stopped)" env BOOT_CHECK_PORT=35
 Q=$(quiet); [ "$Q" = "0/0/0/0" ] || fail "engine no longer quiet: $Q"
 echo "ROLLBACK target: $LIVE"; echo "swapping at $(date -u +%H:%M:%SZ)"
 run_swap "$R" 3 || echo "SWAP FAILED: swap.sh exited non-zero for $(basename "$R"); the engine check below decides whether to roll back"
-NP=""; up=0
-for i in $(seq 1 60); do NP=$(systemctl show -p MainPID --value vibesync.service); [ -n "$NP" ] && [ "$NP" != "0" ] && [ "$NP" != "$P" ] && [ "$(ready)" = "1" ] && { up=1; break; }; sleep 2; done
+# "Ready" is not enough, and neither is a new PID: the service can restart by itself on the PREVIOUS
+# release while the swap fails. The ready process must be running from the staged release.
+STAGED=$(realpath "$R"); up=0
+for i in $(seq 1 "$READY_TRIES"); do [ "$(serving)" = "$STAGED" ] && [ "$(ready)" = "1" ] && { up=1; break; }; sleep "$READY_PAUSE"; done
+NP=$(systemctl show -p MainPID --value vibesync.service)
 J=$(journalctl -u vibesync.service _PID=$NP --no-pager -o cat 2>/dev/null)
 echo "new pid=$NP cwd=$(readlink /proc/$NP/cwd 2>/dev/null | sed 's|.*/||'); engine ready after the swap: $([ $up = 1 ] && echo yes || echo NO)"
 echo "boot lines: $(echo "$J" | grep -oE "Orchestration plane initialized|continuing without it|the Dolt server is down|Dolt server restarted and verified|retrying with backoff" | sort | uniq -c | tr -s ' ' | tr '\n' ';')"
 if [ $up != 1 ]; then
-  echo "ENGINE NOT READY: rolling back to $(basename $LIVE) at $(date -u +%H:%M:%SZ)"
+  echo "STAGED RELEASE NOT SERVING AND READY: rolling back to $(basename $LIVE) at $(date -u +%H:%M:%SZ)"
   echo "$J" | jq -rc 'select(.level=="warn" or .level=="error")|"  \(.time[11:19]) \(.msg[0:110]) :: \((.err.message // "")[0:90])"' 2>/dev/null | tail -6
   rolled=1
   run_swap "$LIVE" 2 || rolled=0
-  for i in $(seq 1 60); do [ "$(ready)" = "1" ] && break; sleep 2; done
-  echo "after rollback: live=$(readlink /proc/$(systemctl show -p MainPID --value vibesync.service)/cwd | sed 's|.*/||') engine ready=$([ "$(ready)" = "1" ] && echo yes || echo NO)"
+  back=0
+  for i in $(seq 1 "$READY_TRIES"); do [ "$(serving)" = "$LIVE" ] && [ "$(ready)" = "1" ] && { back=1; break; }; sleep "$READY_PAUSE"; done
+  NOW=$(serving)
+  echo "after rollback: serving=$(basename "${NOW:-nothing}"); previous release serving and ready: $([ $back = 1 ] && echo yes || echo NO)"
   echo ".beads folders created by the rollback's scan: $(comm -13 "$BEADS_BEFORE_FILE" <(ls -d "$STACKS_DIR"/*/.beads 2>/dev/null | LC_ALL=C sort) | tr '\n' ';')"
-  # 2 = rolled back and the previous release is serving; 3 = the rollback itself
-  # did not restore a ready engine: the service needs a person now.
-  if [ "$rolled" = "1" ] && [ "$(ready)" = "1" ]; then exit 2; fi
-  echo "ROLLBACK FAILED: the engine is not ready on $(basename "$LIVE") either (swap.sh ok: $([ "$rolled" = "1" ] && echo yes || echo NO)). Run: bash $LIVE/scripts/deploy/swap.sh $LIVE"
+  # Decided from what is observed, not from swap.sh's exit status:
+  # 2 = the previous release is serving and ready. 3 = it is not: the service needs a person now.
+  if [ "$back" = "1" ]; then exit 2; fi
+  echo "ROLLBACK FAILED (swap.sh ok: $([ "$rolled" = "1" ] && echo yes || echo NO); serving: $(basename "${NOW:-nothing}"); $(basename "$LIVE") serving and ready: $([ $back = 1 ] && echo yes || echo NO)). Run: bash $LIVE/scripts/deploy/swap.sh $LIVE"
   exit 3
 fi
 echo "scan-time provisioning lines in the new process's log: $(echo "$J" | grep -ciE "Rig auto-provision")"
