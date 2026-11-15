@@ -112,14 +112,18 @@ describe.skipIf(!RUN_ISOLATED_BEADS)('step retry policy on real bd (isolated rep
     expect(show(result.moleculeId)['metadata'].exec.outcome).toBe('completed');
   }, 60_000);
 
-  it('4. fail on exhaustion aborts the molecule: root closed failed, dependent still open', async () => {
+  it('4. fail on exhaustion aborts the molecule: root closed failed, the unstarted dependent closed with it', async () => {
     const { provider } = scripted({ worker: ['agent-fail'] });
     const dispatcher = newDriven(h.store, { idPrefix: 'schema65', provider, walker: new MoleculeWalker(h.store), eventBus: new EventBus({ noPersist: true }) });
     const thrown = await dispatcher.run({ formula: formula(worker(retry(2, 'fail')), after), pack: pack(), input: 'go' }).catch((e: unknown) => e);
     expect(thrown).toBeInstanceOf(FormulaDispatchError);
     const rootId = (thrown as FormulaDispatchError).moleculeId;
     expect(show(stepId(rootId))['metadata']['gc.retry_outcome']).toBe('exhausted');
-    expect(show(stepId(rootId, 'after'))['status']).toBe('open');
+    // vibesync-9lzk.60: a failed run closes its steps that never started, with
+    // a reason naming the run's outcome, instead of leaving them open forever.
+    const dependent = show(stepId(rootId, 'after'));
+    expect(dependent['status']).toBe('closed');
+    expect(String(dependent['close_reason'] ?? '')).toBe('run failed');
     expect(show(rootId)['status']).toBe('closed');
     expect(show(rootId)['metadata'].exec.outcome).toBe('failed');
   }, 60_000);
