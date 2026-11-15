@@ -8,7 +8,7 @@ export interface IssueStatusRow {
 }
 
 export interface IssueStatusReader {
-  listIssueStatusSince(cursor: Date, limit: number): Promise<IssueStatusRow[]>;
+  listIssueStatusSince(cursor: Date, limit: number, after?: { readonly updatedAt: Date; readonly id: string } | null): Promise<IssueStatusRow[]>;
 }
 
 export interface StatusChangePollerOptions {
@@ -55,33 +55,23 @@ export class StatusChangePoller {
 
   private async readBatch(initialPass = this.cursor === null): Promise<void> {
     try {
-      const rows = await this.opts.store.listIssueStatusSince(this.cursor ?? new Date(0), BATCH_LIMIT);
-      if (initialPass) {
-        for (const row of rows) this.statuses.set(row.id, row.status);
-        for (const row of rows) if (!this.cursor || row.updated_at > this.cursor) this.cursor = row.updated_at;
-        if (rows.length === BATCH_LIMIT) {
-          await this.readInitialPages();
-          return;
+      const rows = await this.readAllPages();
+      for (const row of rows) {
+        const previous = this.statuses.get(row.id);
+        if (!initialPass && previous !== undefined && previous !== row.status) {
+          this.opts.bus.emit({
+            layer: 'molecule',
+            kind: BEADS_ISSUE_STATUS_CHANGED_EVENT,
+            task_id: row.id,
+            payload: { issueId: row.id, from: previous, to: row.status },
+          });
         }
-      } else {
-        for (const row of rows) {
-          const previous = this.statuses.get(row.id);
-          if (previous !== undefined && previous !== row.status) {
-            this.opts.bus.emit({
-              layer: 'molecule',
-              kind: BEADS_ISSUE_STATUS_CHANGED_EVENT,
-              task_id: row.id,
-              payload: { issueId: row.id, from: previous, to: row.status },
-            });
-          }
-          this.statuses.set(row.id, row.status);
-        }
+        this.statuses.set(row.id, row.status);
       }
       for (const row of rows) {
         if (!this.cursor || row.updated_at > this.cursor) this.cursor = row.updated_at;
       }
       this.warned = false;
-      if (rows.length === BATCH_LIMIT && !this.stopped) await this.readBatch(initialPass);
     } catch (err) {
       if (!this.warned) {
         this.warned = true;
@@ -90,12 +80,20 @@ export class StatusChangePoller {
     }
   }
 
-  private async readInitialPages(): Promise<void> {
-    let rows: IssueStatusRow[];
-    do {
-      rows = await this.opts.store.listIssueStatusSince(this.cursor ?? new Date(0), BATCH_LIMIT);
-      for (const row of rows) this.statuses.set(row.id, row.status);
-      for (const row of rows) if (!this.cursor || row.updated_at > this.cursor) this.cursor = row.updated_at;
-    } while (rows.length === BATCH_LIMIT && !this.stopped);
+  /** Page by id inside a timestamp while retaining the inclusive time cursor. */
+  private async readAllPages(): Promise<IssueStatusRow[]> {
+    const all: IssueStatusRow[] = [];
+    const startCursor = this.cursor ?? new Date(0);
+    let pageCursor = startCursor;
+    let after: { updatedAt: Date; id: string } | null = null;
+    while (!this.stopped) {
+      const page = await this.opts.store.listIssueStatusSince(pageCursor, BATCH_LIMIT, after);
+      all.push(...page);
+      if (page.length < BATCH_LIMIT) break;
+      const last = page[page.length - 1]!;
+      pageCursor = startCursor;
+      after = { updatedAt: last.updated_at, id: last.id };
+    }
+    return all;
   }
 }

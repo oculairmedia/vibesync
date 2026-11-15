@@ -36,7 +36,7 @@ describe('StatusChangePoller', () => {
       { kind: BEADS_ISSUE_STATUS_CHANGED_EVENT, layer: 'molecule', task_id: 'task-1', payload: { issueId: 'task-1', from: 'open', to: 'in_progress' } },
       { kind: BEADS_ISSUE_STATUS_CHANGED_EVENT, layer: 'molecule', task_id: 'task-1', payload: { issueId: 'task-1', from: 'in_progress', to: 'closed' } },
     ]);
-    expect(store.listIssueStatusSince.mock.calls[3]).toEqual([at(11), 500]);
+    expect(store.listIssueStatusSince.mock.calls[3]).toEqual([at(11), 500, null]);
   });
 
   it('warns once across failed reads, preserves the cursor, and emits recovered changes', async () => {
@@ -62,6 +62,31 @@ describe('StatusChangePoller', () => {
 
     expect(events).toHaveLength(1);
     expect(events[0]?.payload).toEqual({ issueId: 'task-1', from: 'open', to: 'closed' });
+  });
+
+  it('pages beyond 500 issues sharing a timestamp without repeating the first page', async () => {
+    const rows = Array.from({ length: 1_001 }, (_, i) => ({
+      id: `task-${String(i).padStart(4, '0')}`,
+      status: 'open',
+      updated_at: at(10),
+    }));
+    const store = { listIssueStatusSince: vi.fn(async (_cursor: Date, limit: number, after?: { updatedAt: Date; id: string } | null) => {
+      expect(limit).toBe(500);
+      return rows.filter(row => after === undefined || after === null || row.updated_at > after.updatedAt || (row.updated_at.getTime() === after.updatedAt.getTime() && row.id > after.id)).slice(0, limit);
+    }) };
+    const bus = new EventBus({ noPersist: true });
+    const events: Event[] = [];
+    bus.subscribe(event => events.push(event));
+    const poller = new StatusChangePoller({ store, bus });
+
+    await poller.poll();
+    expect(store.listIssueStatusSince.mock.calls.map(call => call[2] ?? null)).toEqual([
+      null,
+      { updatedAt: at(10), id: 'task-0499' },
+      { updatedAt: at(10), id: 'task-0999' },
+    ]);
+    expect(events).toHaveLength(0);
+    await poller.stop();
   });
 
   it('runs an immediate boot read, polls on interval, and stops its timer', async () => {

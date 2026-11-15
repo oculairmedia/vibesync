@@ -864,16 +864,18 @@ export class DoltClient {
   }
 
   /** Issues updated at or after the whole-second cursor, excluding engine-owned run beads. */
-  async listIssueStatusSince(cursor: Date, limit: number): Promise<Array<{ id: string; status: string; updated_at: Date }>> {
+  async listIssueStatusSince(cursor: Date, limit: number, after?: { readonly updatedAt: Date; readonly id: string } | null): Promise<Array<{ id: string; status: string; updated_at: Date }>> {
     const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 500));
+    const afterClause = after == null ? '' : 'AND (updated_at > ? OR (updated_at = ? AND id > ?))';
     const [rows] = await this.pool.execute<mysql.RowDataPacket[]>(
       `SELECT id, status, updated_at
        FROM issues
        WHERE updated_at >= ?
          AND issue_type NOT IN ('molecule_root', 'molecule_step', 'gate')
+         ${afterClause ? `\n         ${afterClause}` : ''}
        ORDER BY updated_at, id
        LIMIT ${boundedLimit}`,
-      [cursor],
+      after == null ? [cursor] : [cursor, after.updatedAt, after.updatedAt, after.id],
     );
     return rows.map((row) => ({
       id: String(row['id']),
