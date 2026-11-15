@@ -32,7 +32,12 @@ describe.skipIf(!RUN_ISOLATED_BEADS)('status change poller on real bd (isolated 
       },
     };
     const runningPoller = new StatusChangePoller({ store, bus, intervalMs: 100 });
-    const tickRequests: Array<{ reason: string; detail?: string }> = [];
+    const schedulerTicks: Event[] = [];
+    const unsubscribeTicks = bus.subscribe((event) => {
+      if (event.kind === 'daemon/scheduler.tick' && event.payload?.['reason'] === 'bead-status') {
+        schedulerTicks.push(event);
+      }
+    });
     const scheduler: SchedulerHandle = startSchedulerDaemon({
       config: {
         enabled: true, projectIdentifier: 'integration', intervalMs: 60_000, poolSize: 1, batchSize: 1, paused: true,
@@ -43,9 +48,8 @@ describe.skipIf(!RUN_ISOLATED_BEADS)('status change poller on real bd (isolated 
       bd: async () => '[]',
       dispatcher: { run: async () => undefined, cancel: async () => undefined } as never,
       loadPack: () => ({ formulas: [{ name: 'onboard-feature' }], manifest: { name: 'integration' } } as unknown as Pack),
-      onTickRequested: (reason: string, detail: string | undefined) => tickRequests.push({ reason, detail }),
       bus,
-    } as never);
+    });
     try {
       runningPoller.start();
       await bootReadStart;
@@ -62,10 +66,27 @@ describe.skipIf(!RUN_ISOLATED_BEADS)('status change poller on real bd (isolated 
       });
       expect(events.filter((event) => event.kind === BEADS_ISSUE_STATUS_CHANGED_EVENT && event.task_id === id)).toHaveLength(1);
       expect(events.find((event) => event.task_id === id)?.payload).toEqual({ issueId: id, from: 'open', to: 'closed' });
-      expect(tickRequests).toContainEqual({ reason: 'bead-status', detail: `${id} open->closed` });
+      await new Promise<void>((resolve, reject) => {
+        const deadline = setTimeout(() => reject(new Error('bead-status scheduler tick was not observed')), 200);
+        if (schedulerTicks.length > 0) {
+          clearTimeout(deadline);
+          resolve();
+          return;
+        }
+        const unsubscribe = bus.subscribe((event) => {
+          if (event.kind === 'daemon/scheduler.tick' && event.payload?.['reason'] === 'bead-status') {
+            schedulerTicks.push(event);
+            clearTimeout(deadline);
+            unsubscribe();
+            resolve();
+          }
+        });
+      });
+      expect(schedulerTicks.length).toBeGreaterThan(0);
     } finally {
       await runningPoller.stop();
       await scheduler.stop();
+      unsubscribeTicks();
       await bootReadStart.catch(() => undefined);
     }
   }, 30_000);
