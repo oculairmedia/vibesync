@@ -497,10 +497,10 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
       console.error(`[orchestration:waits] wait watcher failed to start — continuing without it: ${message}`);
     }
   }
-  const statusPoller = (opts.statusPollIntervalMs === 0 || typeof (opts.dolt as { listIssueStatusSince?: unknown }).listIssueStatusSince !== 'function')
+  const statusPoller = opts.statusPollIntervalMs === 0
     ? null
     : new StatusChangePoller({
-        store: opts.dolt as unknown as import('./store/status-change-poller.js').IssueStatusReader,
+        store: opts.dolt,
         bus,
         ...(opts.statusPollIntervalMs !== undefined ? { intervalMs: opts.statusPollIntervalMs } : {}),
         logger: { warn: (obj, message) => console.error(`[orchestration:status-poller] ${message}`, obj) },
