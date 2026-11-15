@@ -132,6 +132,7 @@ async function bootEngine(db: Registry): Promise<OrchestrationHandle | null> {
           logger,
           bd: projectRunner(db, checkoutRunners, 'bd', 'vibesync-waits', config.scheduler.projectIdentifiers[0] ?? ''),
         },
+        statusPollIntervalMs: config.statusPollIntervalMs,
         projectRoot: registryProjectRoot(db),
         // vibesync-9lzk.25: each step reads ITS project's codebase memories,
         // through that project's own checkout; memories never cross projects.

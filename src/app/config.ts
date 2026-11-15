@@ -87,6 +87,7 @@ export function loadConfig(): AppConfig {
       reconcileIntervalMs: parseStrictInt(process.env.VIBESYNC_WAITS_RECONCILE_INTERVAL_MS, 60_000),
       maxWakeAttempts: parseStrictInt(process.env.VIBESYNC_WAITS_MAX_WAKE_ATTEMPTS, 5),
     },
+    statusPollIntervalMs: parseStrictInt(process.env.VIBESYNC_STATUS_POLL_INTERVAL_MS, 5000),
   };
 
   const result = configSchema.safeParse(config);

@@ -31,6 +31,7 @@ import type { WritebackStore } from './molecule/index.js';
 import { createInboxCliAdapter } from './pm-wake/inbox-cli-adapter.js';
 import type { BootSchedulerOptions, SchedulerHandle } from './scheduler/boot-scheduler.js';
 import type { DoltClient } from './store/index.js';
+import { StatusChangePoller } from './store/status-change-poller.js';
 import { startWaitWatcher } from './waits/boot-waits.js';
 import type { BootWaitsOptions, WaitsHandle } from './waits/boot-waits.js';
 
@@ -48,6 +49,7 @@ export interface OrchestrationHandle {
    * `waits.config.enabled` is false / not supplied / failed to start.
    */
   readonly waits: WaitsHandle | null;
+  readonly statusPoller: StatusChangePoller | null;
   shutdown(): Promise<void>;
 }
 
@@ -114,6 +116,7 @@ export interface BootOrchestrationPlaneOptions {
    * no `bd` call.
    */
   readonly waits?: BootWaitsOptions;
+  readonly statusPollIntervalMs?: number;
   /**
    * Test seam for provider kind 'letta-code-iroh' (vibesync-x38j): supplies the
    * Iroh connection instead of the native @number0/iroh dialer. Production
@@ -494,6 +497,15 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
       console.error(`[orchestration:waits] wait watcher failed to start — continuing without it: ${message}`);
     }
   }
+  const statusPoller = opts.statusPollIntervalMs === 0
+    ? null
+    : new StatusChangePoller({
+        store: opts.dolt,
+        bus,
+        ...(opts.statusPollIntervalMs !== undefined ? { intervalMs: opts.statusPollIntervalMs } : {}),
+        logger: { warn: (obj, message) => console.error(`[orchestration:status-poller] ${message}`, obj) },
+      });
+  statusPoller?.start();
   // The engine owns the step loop regardless of scheduler activation. A
   // scheduler pause filters only that project's molecules at the source.
   steps.start(opts.stepTickIntervalMs);
@@ -508,6 +520,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
     steps,
     schedulers,
     waits,
+    statusPoller,
     async shutdown(): Promise<void> {
       if (shutDown) return;
       shutDown = true;
@@ -528,6 +541,7 @@ export async function bootOrchestrationPlane(opts: BootOrchestrationPlaneOptions
           console.error('[orchestration:waits] error while stopping wait watcher', err);
         }
       }
+      if (statusPoller) await statusPoller.stop();
       await steps.stop();
       unsubscribeWriteback();
       if (irohProvider) {
