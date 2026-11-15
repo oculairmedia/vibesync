@@ -11,6 +11,8 @@ import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { freePort } from '../_fixtures/free-port.js';
+
 const tempDirs: string[] = [];
 const REPO_SCRIPT = resolve('scripts/ci/boot-check.sh');
 
@@ -44,7 +46,7 @@ function runBootCheck(scriptPath: string, logDelayMs: number): ReturnType<typeof
     timeout: 25_000,
     env: {
       ...process.env,
-      BOOT_CHECK_PORT: String(40_000 + Math.floor(Math.random() * 10_000)),
+      BOOT_CHECK_PORT: String(freePort()),
       FAKE_LOG_DELAY_MS: String(logDelayMs),
     },
   });
