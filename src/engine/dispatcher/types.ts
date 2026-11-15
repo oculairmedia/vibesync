@@ -71,6 +71,12 @@ export type StepRunArgs = {
   readonly outputs: Record<string, string>;
   readonly rolesByName: ReadonlyMap<string, RoleConfig>;
   readonly provider: RuntimeProvider;
+  /**
+   * True once the run has been told to cancel (MoleculeRun.cancelled). The step
+   * turn asks before every write: under a cancelled run it writes nothing, and
+   * cancel() records the step once the turn has returned (vibesync-6zos.3).
+   */
+  readonly cancelled: () => boolean;
 };
 
 export type StepRunFailure = { readonly signal: FailureSignal; readonly error: unknown; readonly failureClass: string | null; readonly code?: string };
@@ -119,6 +125,20 @@ export interface MoleculeRun {
    * run twice. Not a counter: nothing here decides whether to retry.
    */
   readonly startedSteps: Set<string>;
+  /**
+   * Step beads with a turn of this process in flight. While a step is here its
+   * turn is the ONLY writer of its record: cancel() waits for the turn to
+   * return (it writes nothing once the run is cancelled) before it records the
+   * step as cancelled.
+   */
+  readonly inFlight: Set<string>;
+  /**
+   * True while cancel() is still stopping sessions, waiting for turns, recording
+   * steps and closing the root. The run is not settled (its run() caller is not
+   * told) until this is false again: the stopped turns return in the middle of
+   * cancel(), and a caller told then would read a root that is still open.
+   */
+  cancelInProgress: boolean;
   running: number;
   failed: boolean;
   failure: unknown;

@@ -461,7 +461,10 @@ describe('FormulaDispatcher', () => {
     expect((await store.getBead(newMoleculeStepId(moleculeId, 'reviewer')))?.metadata).toMatchObject({
       exec: { error_trace: 'review exploded' },
     });
-    expect((await store.getBead(newMoleculeStepId(moleculeId, 'coder')))?.status).toBe('open');
+    // vibesync-9lzk.60: a run that fails or is cancelled closes its steps that never started, with a reason naming the outcome.
+    const neverStarted = await store.getBead(newMoleculeStepId(moleculeId, 'coder'));
+    expect(neverStarted?.status).toBe('closed');
+    expect(neverStarted?.metadata['close_reason']).toBe('run failed');
     expect(provider.recorder.starts.map((start) => start.role)).toEqual(['reviewer']);
   });
 

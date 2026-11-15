@@ -505,7 +505,7 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
     expect(h.events.find((e) => e.kind === 'dispatcher/step.failed')?.payload).toMatchObject({ softFail: true, retryOutcome: 'soft_failed', failureClass: 'lint' });
   });
 
-  it('4. fail on exhaustion aborts the molecule: root closed failed, dependents never start', async () => {
+  it('4. fail on exhaustion aborts the molecule: root closed failed, dependents never start and are closed with the run', async () => {
     const h = harness({ worker: [{ kind: 'agent-fail', failureClass: 'lint' }] });
     const thrown = await h.dispatcher.run({ formula: formula(worker({ maxAttempts: 3, onExhausted: 'fail', backoffMs: 0 }), after), pack: pack(), input: 'go' }).catch((e: unknown) => e);
     expect(thrown).toBeInstanceOf(FormulaDispatchError);
@@ -518,7 +518,10 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
     const root = await h.store.getBead(rootId);
     expect(root?.status).toBe('closed');
     expect(root?.metadata).toMatchObject({ exec: { outcome: 'failed' } });
-    expect((await meta(h.store, rootId, 'after')).status).toBe('open');
+    // vibesync-9lzk.60: a run that fails or is cancelled closes its steps that never started, with a reason naming the outcome.
+    const dependent = await meta(h.store, rootId, 'after');
+    expect(dependent.status).toBe('closed');
+    expect(dependent.metadata['close_reason']).toBe('run failed');
   });
 
   it('an agent that CLOSES its step with a failure_class does not release dependents before the policy rules (live race)', async () => {

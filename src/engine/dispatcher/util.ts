@@ -25,6 +25,21 @@ export function readStepRole(row: BeadRow): string {
   return match[1];
 }
 
+/**
+ * The record cancel() leaves on a step it stopped (`exec.error_trace`). The
+ * step turn reads it to discard a result that arrives after the cancel.
+ */
+export const STEP_CANCELLED_TRACE = 'cancelled';
+
+/**
+ * How long cancel() waits for the turns it stopped to return and record their
+ * own steps. Past this, cancel() records what is left itself and closes the
+ * root: a stop that hangs must not hold the cancel (or the scheduler slot
+ * behind it) open. A turn that returns later still writes nothing but
+ * `cancelled`.
+ */
+export const DEFAULT_CANCEL_UNWIND_MS = 5_000;
+
 export function readExec(row: BeadRow): Record<string, unknown> {
   const exec = row.metadata.exec;
   return exec && typeof exec === 'object' ? exec as Record<string, unknown> : {};

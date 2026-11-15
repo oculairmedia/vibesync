@@ -259,6 +259,14 @@ export class InMemoryDoltClient {
     outcome: MoleculeOutcome,
   ): Promise<void> {
     const row = this.requireBead(rootId);
+    // As the real writer does (BdMoleculeWriter.closeOpenSteps, vibesync-9lzk.60): a run that
+    // fails or is cancelled closes its steps that are still open, with the reason `run <outcome>`.
+    // Without this the stand-in left a step open under a closed root where real bd does not.
+    if (outcome === 'failed' || outcome === 'cancelled') {
+      for (const step of await this.findStepsForMolecule(rootId)) {
+        if (step.status === 'open') await this.closeOpenStep(step.id, `run ${outcome}`, true);
+      }
+    }
     this.updateBead(rootId, {
       status,
       closed_at: new Date(),

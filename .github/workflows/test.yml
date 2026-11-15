@@ -114,6 +114,25 @@ jobs:
             html/
           retention-days: 30
 
+  # vibesync-6zos.3: model-check the TLA+ specs in specs/. scripts/ci/tlc.sh
+  # downloads the pinned, checksum-verified checker, runs every configuration
+  # and fails unless each one ends as specs/EXPECTED says: the design in the
+  # code passes, and the designs TLC rejected still fail. About 20 seconds.
+  tlc:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Model-check the specs (TLC)
+        run: scripts/ci/tlc.sh
+
   # The bd-backed integration suites (vibesync-yhs0) run in their own job so the
   # required `test (20.x)` job stays fast: these suites wait out real bd lease
   # and claim timers and took the 20.x job from ~2 to ~24 minutes. Same pinned,

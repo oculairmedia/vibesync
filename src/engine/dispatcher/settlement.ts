@@ -3,7 +3,7 @@ import type { BeadRow } from '../store/index.js';
 import type { RuntimeProvider } from '../runtime/index.js';
 import type { ProjectBindingResolver } from './project-binding-types.js';
 import { FormulaCancellationConflictError, FormulaDispatchError, type CancelResult, type MoleculeRun, type ProviderResolver } from './types.js';
-import { readExec, readProjectIdentifier, readStepName, readStepRole, readString, stringifyError } from './util.js';
+import { DEFAULT_CANCEL_UNWIND_MS, readExec, readProjectIdentifier, readStepName, readStepRole, readString, sleep, stringifyError, STEP_CANCELLED_TRACE } from './util.js';
 
 export interface MoleculeSettlerDeps {
   readonly walker: MoleculeWalker;
@@ -12,7 +12,22 @@ export interface MoleculeSettlerDeps {
   readonly defaultProvider: RuntimeProvider;
   readonly providerResolver: ProviderResolver | null;
   readonly emit: (kind: string, moleculeId: string | undefined, taskId: string | undefined, payload: Readonly<Record<string, unknown>>) => void;
+  /** How long cancel() waits for the turns it stopped to return (default DEFAULT_CANCEL_UNWIND_MS). */
+  readonly cancelUnwindMs?: number;
 }
+
+/**
+ * A run settles (its run() caller is told) only when it has not settled already,
+ * none of its turns is in flight, and no cancel() is part-way through it.
+ */
+function canSettle(run: MoleculeRun): boolean {
+  if (run.finalized) return false;
+  if (run.running > 0) return false;
+  return !run.cancelInProgress;
+}
+
+/** How often cancel() looks for the stopped turns to have returned. */
+const CANCEL_UNWIND_POLL_MS = 20;
 
 export class MoleculeSettler {
   constructor(private readonly deps: MoleculeSettlerDeps) {}
@@ -23,7 +38,7 @@ export class MoleculeSettler {
    * closed. Otherwise the next ready steps are the StepDispatcher's to offer.
    */
   async settleMolecule(run: MoleculeRun): Promise<void> {
-    if (run.finalized || run.running > 0) return;
+    if (!canSettle(run)) return;
     try {
       await this.settleMoleculeOutcome(run);
     } catch (error) {
@@ -66,9 +81,10 @@ export class MoleculeSettler {
   }
 
   private rejectCancelledMolecule(run: MoleculeRun): void {
-    // cancel() already closed the root as 'cancelled' and emitted
-    // formula.cancelled. The step it stopped may well have thrown on the way
-    // down; that must not turn the cancelled root into a 'failed' one.
+    // cancel() has closed the root as 'cancelled' and emitted formula.cancelled
+    // (settleMolecule does not get here while cancelInProgress). The step it
+    // stopped may well have thrown on the way down; that must not turn the
+    // cancelled root into a 'failed' one.
     run.finalized = true;
     this.deps.live.delete(run.moleculeId);
     run.reject(new FormulaDispatchError(`FormulaDispatcher: molecule ${run.moleculeId} was cancelled`, run.moleculeId));
@@ -130,50 +146,111 @@ export class MoleculeSettler {
     }
   }
 
+  /**
+   * Cancel a run. One writer per step (specs/MoleculeLifecycle.tla, CancelMode =
+   * "single_writer"; vibesync-6zos.3):
+   *  1. the run is marked cancelled: no step starts, and a turn that returns
+   *     from now on writes nothing (StepTurnRunner.runStep);
+   *  2. the running steps' sessions are stopped, which is what makes those
+   *     turns return;
+   *  3. cancel() waits, bounded, for the turns of THIS process to return;
+   *  4. it records as cancelled every one of those steps that is still
+   *     in_progress, read fresh;
+   *  5. the root is closed, and only then is the run() caller told.
+   * cancel() used to record the steps and close the root at once, while the
+   * turns it had just stopped were still returning; such a turn then wrote its
+   * result over the `cancelled` record, or reopened the step under the closed
+   * root.
+   */
   async cancel(moleculeId: string): Promise<CancelResult> {
-    const view = await this.deps.walker.load(moleculeId);
-    if (!view) throw new FormulaDispatchError(`FormulaDispatcher: molecule ${moleculeId} not found`, moleculeId);
-    const running = await this.deps.walker.findRunning(moleculeId);
-    if (running.length === 0) throw new FormulaCancellationConflictError(`FormulaDispatcher: molecule ${moleculeId} has no running steps to cancel`, moleculeId);
-
-    // Closing the running steps below unblocks their dependents in the bead
-    // graph; mark the run so none of them is started.
-    const liveRun = this.deps.live.get(moleculeId);
-    if (liveRun) liveRun.cancelled = true;
-    const provider = await this.resolveCancelProvider(liveRun, view.root, running);
-    const cancelledStepCount = await this.cancelRunningSteps(moleculeId, running, provider);
-    await this.deps.walker.markMoleculeRootStatus(moleculeId, 'closed', 'cancelled');
-    this.deps.emit('dispatcher/formula.cancelled', moleculeId, undefined, {
-      moleculeId,
-      cancelledStepCount,
-    });
-    // Release the run() caller now if no step of this process is still unwinding.
-    if (liveRun) await this.settleMolecule(liveRun);
-    return { moleculeId, cancelledStepCount };
+    const { root, running, liveRun } = await this.requireCancellable(moleculeId);
+    if (liveRun) {
+      liveRun.cancelled = true;
+      liveRun.cancelInProgress = true;
+    }
+    try {
+      const provider = await this.resolveCancelProvider(liveRun, root, running);
+      await this.stopRunningSessions(running, provider);
+      if (liveRun) await this.waitForTurnsToReturn(liveRun);
+      const cancelledStepCount = await this.recordStepsStillRunning(moleculeId, running);
+      await this.deps.walker.markMoleculeRootStatus(moleculeId, 'closed', 'cancelled');
+      this.deps.emit('dispatcher/formula.cancelled', moleculeId, undefined, {
+        moleculeId,
+        cancelledStepCount,
+      });
+      return { moleculeId, cancelledStepCount };
+    } finally {
+      // Also when cancel() failed part-way: the run must not stay unsettled for ever.
+      if (liveRun) await this.releaseAfterCancel(liveRun);
+    }
   }
 
-  private async cancelRunningSteps(moleculeId: string, running: readonly BeadRow[], provider: RuntimeProvider): Promise<number> {
-    let cancelledStepCount = 0;
+  /** The molecule's root, its running steps and its live run; throws when there is nothing to cancel or a cancel is already under way. */
+  private async requireCancellable(moleculeId: string): Promise<{ readonly root: BeadRow; readonly running: readonly BeadRow[]; readonly liveRun: MoleculeRun | undefined }> {
+    const view = await this.deps.walker.load(moleculeId);
+    if (!view) throw new FormulaDispatchError(`FormulaDispatcher: molecule ${moleculeId} not found`, moleculeId);
+    const liveRun = this.deps.live.get(moleculeId);
+    if (liveRun?.cancelInProgress) throw new FormulaCancellationConflictError(`FormulaDispatcher: molecule ${moleculeId} is already being cancelled`, moleculeId);
+    const running = await this.deps.walker.findRunning(moleculeId);
+    if (running.length === 0) throw new FormulaCancellationConflictError(`FormulaDispatcher: molecule ${moleculeId} has no running steps to cancel`, moleculeId);
+    return { root: view.root, running, liveRun };
+  }
+
+  /** cancel() is over: the run may settle. Tells the run() caller unless a turn outlived the wait; that turn's return will. */
+  private async releaseAfterCancel(run: MoleculeRun): Promise<void> {
+    run.cancelInProgress = false;
+    await this.settleMolecule(run);
+  }
+
+  private async stopRunningSessions(running: readonly BeadRow[], provider: RuntimeProvider): Promise<void> {
     for (const step of running) {
-      const stepName = readStepName(step);
-      const role = readStepRole(step);
       const exec = readExec(step);
       const sessionId = readString(exec.session_id);
       const providerKind = readString(exec.provider_kind);
-      const taskId = readString(exec.task_id) ?? undefined;
-      if (sessionId && providerKind) {
-        await provider.stop({ id: sessionId, providerKind });
-      }
-      await this.deps.walker.failStep(step.id, 'cancelled');
-      cancelledStepCount++;
-      this.deps.emit('dispatcher/step.cancelled', moleculeId, taskId, {
-        stepName,
-        role,
+      if (sessionId && providerKind) await provider.stop({ id: sessionId, providerKind });
+    }
+  }
+
+  /**
+   * Wait until NO turn of this run is in flight, or the bound runs out. Every
+   * turn, not only those of the steps captured as running: a step its own role
+   * closed is not in_progress, yet its turn may be about to rule on it (and
+   * reopen it for a retry), and the root must not close under that.
+   */
+  private async waitForTurnsToReturn(run: MoleculeRun): Promise<void> {
+    const waitMs = this.deps.cancelUnwindMs ?? DEFAULT_CANCEL_UNWIND_MS;
+    const deadline = Date.now() + waitMs;
+    while (run.inFlight.size > 0 && Date.now() < deadline) await sleep(CANCEL_UNWIND_POLL_MS);
+    if (run.inFlight.size === 0) return;
+    this.deps.emit('dispatcher/cancel.unwind_timeout', run.moleculeId, undefined, {
+      moleculeId: run.moleculeId,
+      stepIds: [...run.inFlight],
+      waitedMs: waitMs,
+    });
+  }
+
+  /**
+   * Record as cancelled each of these steps that is STILL in_progress, and say
+   * how many. Read fresh: a step whose result was written just before the run
+   * was marked cancelled, or that its own role closed, keeps that record.
+   */
+  private async recordStepsStillRunning(moleculeId: string, running: readonly BeadRow[]): Promise<number> {
+    let recorded = 0;
+    for (const captured of running) {
+      const step = await this.deps.walker.readStep(captured.id);
+      if (step?.status !== 'in_progress') continue;
+      const exec = readExec(step);
+      const sessionId = readString(exec.session_id);
+      await this.deps.walker.failStep(step.id, STEP_CANCELLED_TRACE);
+      recorded++;
+      this.deps.emit('dispatcher/step.cancelled', moleculeId, readString(exec.task_id) ?? undefined, {
+        stepName: readStepName(step),
+        role: readStepRole(step),
         stepId: step.id,
         ...(sessionId ? { sessionId } : {}),
       });
     }
-    return cancelledStepCount;
+    return recorded;
   }
 
   private async resolveCancelProvider(liveRun: MoleculeRun | undefined, root: BeadRow, running: readonly BeadRow[]): Promise<RuntimeProvider> {

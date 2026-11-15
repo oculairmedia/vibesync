@@ -73,8 +73,15 @@ describe('blocked step outcome (vibesync-zvcm)', () => {
     const moleculeId = (thrown as FormulaDispatchError).moleculeId;
     const mayor = await h.store.getBead(newMoleculeStepId(moleculeId, 'mayor'));
     expect(mayor).toMatchObject({ status: 'closed', metadata: { exec: { error_trace: 'step blocked: dirty checkout at /opt/stacks/vibesync' } } });
-    expect((await h.store.getBead(newMoleculeStepId(moleculeId, 'coder')))?.status).toBe('open');
-    expect((await h.store.getBead(newMoleculeStepId(moleculeId, 'tester')))?.status).toBe('open');
+    // vibesync-9lzk.60: a run that fails or is cancelled closes its steps that never started, with a reason naming the outcome.
+    for (const never of ['coder', 'tester']) {
+      const bead = await h.store.getBead(newMoleculeStepId(moleculeId, never));
+      expect(bead?.status, never).toBe('closed');
+      expect(bead?.metadata['close_reason'], never).toBe('run failed');
+      // It never ran: no session, no attempt, no output, no failure on its record.
+      const exec = bead?.metadata['exec'] as Record<string, unknown>;
+      for (const key of ['session_id', 'task_id', 'output_payload', 'error_trace']) expect(exec[key], `${never}.${key}`).toBeUndefined();
+    }
     expect(await h.store.getBead(moleculeId)).toMatchObject({ status: 'closed', metadata: { exec: { outcome: 'failed' } } });
     expect(h.events.some((e) => e.kind === 'dispatcher/formula.completed')).toBe(false);
     expect(h.events.some((e) => e.kind === 'dispatcher/formula.failed')).toBe(true);
