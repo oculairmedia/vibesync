@@ -314,7 +314,10 @@ describe('cancel and failure (the bead graph unblocks dependents; the run contex
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(provider).toBeDefined();
     expect((await store.getBead(moleculeId))?.metadata).toMatchObject({ exec: { outcome: 'cancelled' } });
-    expect((await store.getBead(newMoleculeStepId(moleculeId, 'coder')))?.status).toBe('open');
+    // vibesync-9lzk.60: a run that fails or is cancelled closes its steps that never started, with a reason naming the outcome.
+    const neverStarted = await store.getBead(newMoleculeStepId(moleculeId, 'coder'));
+    expect(neverStarted?.status).toBe('closed');
+    expect(neverStarted?.metadata['close_reason']).toBe('run cancelled');
     expect(handle.dispatcher.liveMoleculeIds()).toEqual([]);
   });
 });

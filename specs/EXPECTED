@@ -1,0 +1,66 @@
+# What TLC must report for each model configuration in this directory.
+# scripts/ci/tlc.sh runs every *.cfg and fails unless the result is exactly this.
+#
+#   <config> pass                 TLC finds no error
+#   <config> fail <Name>          TLC reports that invariant or property violated
+#
+# The "fail" lines are designs TLC rejected, or a stated limit of the design in
+# the code. They stay so that every run shows the checker failing on a known-bad
+# design: a spec that cannot express the bug proves nothing.
+
+# The design in the code: one writer per step. A cancelled run's turn writes
+# nothing; cancel() waits for the turns, records what is still running, closes the root.
+chain.single-writer pass
+fan.single-writer pass
+# ...also when a turn does not return before cancel()'s wait runs out.
+chain.single-writer-timeout pass
+fan.single-writer-timeout pass
+
+# The LIMIT of that design. These drop the assumption that a tracker write which
+# had already begun lands within cancel()'s wait (5 s in the code; a bd write
+# takes about 0.2 s). The "running" write is now a compare-and-set (StartCAS,
+# bd --if-status open), so a late START is refused; a late RESULT write still
+# is not fenced, and that is what these show.
+chain.single-writer-slow-write fail StepResultIsFinal
+fan.single-writer-slow-write fail StepResultIsFinal
+
+# cancel() as it was before vibesync-6zos.3: it records the steps itself and
+# does not wait for the turns it stopped.
+chain.main fail StepResultIsFinal
+fan.main fail StepResultIsFinal
+# The same, with the turn checking "was my step settled?" before it judges.
+chain.fence-before-judge fail StepResultIsFinal
+fan.fence-before-judge fail StepResultIsFinal
+# The same check made as one atomic check-and-write.
+chain.fence-atomic-settled fail StepResultIsFinal
+fan.fence-atomic-settled fail StepResultIsFinal
+
+# An atomic check-and-write that also reads the run's cancelled flag. It needs a
+# compare-and-set on status that bd does not have, and it is NOT sound: with step
+# start modelled as admit / re-check / mark running (review on #188), a step admitted
+# just before the flag is left in_progress under the closed root (fan shape). Chain
+# runs one step at a time, so nothing can be admitted while cancel() runs.
+chain.fence-atomic-cancelling pass
+fan.fence-atomic-cancelling fail ClosedRootHasOnlyClosedSteps
+
+# What the model shows about the two parts of the design in the code (corrected after CodeRabbit on PR #188): the
+# full root-close sweep IS shown necessary (weakening it makes fan.single-writer-snapshot-swept fail); fresh
+# cancellation records are NOT shown necessary while the sweep is in place (snapshot recording on the current design
+# passes). Fresh records stay because they record each running step as cancelled, rather than leaving it to the sweep.
+# The snapshot design AS IT WAS (before PR #188's review): the root close swept only open steps and the start was not a
+# compare-and-set. Under those flags, recording only the steps read at the start leaves a step in_progress under the
+# closed root. This configuration records the old design; it does NOT show the snapshot change alone is unsafe now.
+fan.single-writer-snapshot fail ClosedRootHasOnlyClosedSteps
+# The snapshot recording ISOLATED on the current design (full sweep, conditional start): it holds, because the root
+# close sweeps the step the snapshot missed. If the sweep is ever weakened, this one fails (CodeRabbit on PR #188).
+fan.single-writer-snapshot-swept pass
+# cancel() refusing a run with nothing in_progress, and giving it back (82fd087): a turn that had already seen
+# the flag gave its step up, and the run is left with a step whose try is used but which never ran.
+# Found by the outside review of PR #188 (Fable); needs cancel modelled as claim, then decide.
+chain.single-writer-cancel-refuse fail NoStrandedStep
+# No "cancelled?" check between the prompt render and the turn start, in the design in the
+# code. It PASSES: with the compare-and-set start and the root close sweeping in_progress
+# steps, a late start is refused or swept, so the model's step and root properties hold
+# without the check. What the check still prevents is a SESSION starting after a cancel,
+# which the model does not track; the unit tests cover that (cancel-race.test.ts).
+fan.single-writer-timeout-no-recheck pass

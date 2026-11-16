@@ -68,11 +68,10 @@ describe('FormulaDispatcher', () => {
       getBead: (id) => store.getBead(id),
       findStepsForMolecule: (rootId) => store.findStepsForMolecule(rootId),
     });
-    const markRoot = walker.markMoleculeRootStatus.bind(walker);
-    walker.markMoleculeRootStatus = async (rootId, status, result) => {
-      await rootWriter.markMoleculeRootStatus(rootId, status, result);
-      await markRoot(rootId, status, result);
-    };
+    // The real writer closes the root through the fake bd above (which writes the in-memory store), so its answer is
+    // the one the dispatcher acts on. A second close of the walker's own store would now be refused (the root is
+    // already closed: `--if-status open`), so it is not made.
+    walker.markMoleculeRootStatus = (rootId, status, result) => rootWriter.markMoleculeRootStatus(rootId, status, result);
     const eventBus = new EventBus({ noPersist: true });
     const dispatcher = newDriven(store, { idPrefix: 'mol', provider, walker, eventBus });
     let moleculeId = '';
@@ -114,7 +113,7 @@ describe('FormulaDispatcher', () => {
     expect(await store.getBead(moleculeId)).toMatchObject({ status: 'closed', metadata: { exec: { outcome } } });
   });
 
-  it('leaves in-progress and already-closed steps untouched during failed-run cleanup', async () => {
+  it('closes in-progress and open steps during failed-run cleanup, and leaves already-closed ones untouched', async () => {
     const store = new InMemoryDoltClient();
     const walker = new MoleculeWalker(store);
     const view = await walker.dispatch({
@@ -135,10 +134,13 @@ describe('FormulaDispatcher', () => {
 
     await writer.markMoleculeRootStatus(view.rootId, 'closed', 'failed');
 
-    expect(calls.filter((args) => args[0] === 'close')).toEqual([
-      ['close', newMoleculeStepId(view.rootId, 'open'), '--force', '--reason', 'run failed'],
+    // A failed run settles only when no turn of it is in flight, so an in_progress step here has no owner left:
+    // it is closed with the run (outside review of PR #188). The already-closed step keeps its own record.
+    expect(calls.filter((args) => args[0] === 'close').map((args) => args[1])).toEqual([
+      newMoleculeStepId(view.rootId, 'running'),
+      newMoleculeStepId(view.rootId, 'open'),
     ]);
-    expect((await store.getBead(newMoleculeStepId(view.rootId, 'running')))?.status).toBe('in_progress');
+    expect((await store.getBead(newMoleculeStepId(view.rootId, 'running')))?.status).toBe('closed');
     expect((await store.getBead(newMoleculeStepId(view.rootId, 'closed')))?.status).toBe('closed');
   });
 
@@ -199,12 +201,15 @@ describe('FormulaDispatcher', () => {
 
     await writer.markMoleculeRootStatus(view.rootId, 'closed', outcome);
 
+    // Every step that is not closed is closed with the run, in_progress `a` included: the root close is the last
+    // writer, and nothing else would close a step left in_progress under it (outside review of PR #188).
     expect(operations).toEqual([
+      `step:${a}:run ${outcome}:true`,
       `step:${b}:run ${outcome}:true`,
       `step:${c}:run ${outcome}:true`,
       `root:${view.rootId}`,
     ]);
-    expect(await store.getBead(a)).toMatchObject({ status: 'in_progress' });
+    expect(await store.getBead(a)).toMatchObject({ status: 'closed', metadata: { close_reason: `run ${outcome}` } });
     expect(await store.getBead(b)).toMatchObject({ status: 'closed', metadata: { close_reason: `run ${outcome}` } });
     expect(await store.getBead(c)).toMatchObject({ status: 'closed', metadata: { close_reason: `run ${outcome}` } });
     expect(await store.getBead(view.rootId)).toMatchObject({ status: 'open' });
@@ -461,7 +466,10 @@ describe('FormulaDispatcher', () => {
     expect((await store.getBead(newMoleculeStepId(moleculeId, 'reviewer')))?.metadata).toMatchObject({
       exec: { error_trace: 'review exploded' },
     });
-    expect((await store.getBead(newMoleculeStepId(moleculeId, 'coder')))?.status).toBe('open');
+    // vibesync-9lzk.60: a run that fails or is cancelled closes its steps that never started, with a reason naming the outcome.
+    const neverStarted = await store.getBead(newMoleculeStepId(moleculeId, 'coder'));
+    expect(neverStarted?.status).toBe('closed');
+    expect(neverStarted?.metadata['close_reason']).toBe('run failed');
     expect(provider.recorder.starts.map((start) => start.role)).toEqual(['reviewer']);
   });
 
@@ -711,7 +719,7 @@ describe('FormulaDispatcher', () => {
     expect(events[0]?.task_id).toBe('task-cancel-1');
   });
 
-  it('rejects cancellation when no step is running', async () => {
+  it('cancels a run with no step running and no live run (after a restart): the root is closed as cancelled', async () => {
     const { dispatcher, store } = newHarness({ script: scriptByRole({ reviewer: 'unused' }) });
     const walker = new MoleculeWalker(store);
     const view = await walker.dispatch({
@@ -721,10 +729,16 @@ describe('FormulaDispatcher', () => {
       steps: [{ name: 'reviewer', role: 'reviewer' }],
     });
 
-    const thrown = await dispatcher.cancel(view.rootId).catch((error: unknown) => error);
-
-    expect(thrown).toBeInstanceOf(FormulaDispatchError);
-    expect(String((thrown as Error).message)).toContain('has no running steps to cancel');
+    // A run interrupted before any step started, then cancelled, must end closed rather than stay open for ever.
+    expect(await dispatcher.cancel(view.rootId)).toEqual({ moleculeId: view.rootId, cancelledStepCount: 0 });
+    const root = await store.getBead(view.rootId);
+    expect(root?.status).toBe('closed');
+    expect((root?.metadata['exec'] as Record<string, unknown>)['outcome']).toBe('cancelled');
+    expect((await store.getBead(newMoleculeStepId(view.rootId, 'reviewer')))?.status).toBe('closed');
+    // Cancelling it again is refused: the root is closed and nothing is running.
+    const again = await dispatcher.cancel(view.rootId).catch((error: unknown) => error);
+    expect(again).toBeInstanceOf(FormulaDispatchError);
+    expect(String((again as Error).message)).toContain('has no running steps to cancel');
   });
 
   describe('onStarted (vibesync-izn3)', () => {
@@ -781,7 +795,10 @@ describe('FormulaDispatcher', () => {
       await waitForCondition(() => alternateProvider.recorder.starts.length === 1);
       const stepId = newMoleculeStepId(moleculeId, 'worker');
       const walker = new MoleculeWalker(store);
-      await walker.startStep(stepId);
+      // The process "died" with this step in_progress. Set that directly, as the restart case at line ~866 does:
+      // by now the first turn has already closed the step, and starting a closed step is refused (it is the late
+      // reopen PR #188 removes), so walker.startStep no longer forces it back.
+      store.beads.set(stepId, { ...(await store.getBead(stepId))!, status: 'in_progress' });
       await walker.recordStepTask(stepId, {
         taskId: 'task-resume-project', providerKind: 'fake-runtime', sessionId: 'fake-runtime:worker-previous',
       });
@@ -813,7 +830,10 @@ describe('FormulaDispatcher', () => {
       await waitForCondition(() => alternateProvider.recorder.starts.length === 1);
       const stepId = newMoleculeStepId(moleculeId, 'worker');
       const walker = new MoleculeWalker(store);
-      await walker.startStep(stepId);
+      // The process "died" with this step in_progress. Set that directly, as the restart case at line ~866 does:
+      // by now the first turn has already closed the step, and starting a closed step is refused (it is the late
+      // reopen PR #188 removes), so walker.startStep no longer forces it back.
+      store.beads.set(stepId, { ...(await store.getBead(stepId))!, status: 'in_progress' });
       await walker.recordStepTask(stepId, {
         taskId: 'task-cancel-project', providerKind: 'fake-runtime', sessionId: 'fake-runtime:worker-previous',
       });

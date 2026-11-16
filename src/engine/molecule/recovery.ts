@@ -27,7 +27,7 @@ export interface RecoveryStore {
   getBeadDependencies(id: string): Promise<ReadonlyArray<{ readonly issue_id: string; readonly depends_on_id: string; readonly type: string }>>;
   getBead(id: string): Promise<BeadRow | null>;
   markStepFailed(stepId: string, errorTrace: string, retryOutcome?: string): Promise<void>;
-  markMoleculeRootStatus(rootId: string, status: 'closed', outcome: 'interrupted'): Promise<void>;
+  markMoleculeRootStatus(rootId: string, status: 'closed', outcome: 'interrupted'): Promise<boolean | void>;
 }
 
 export interface RecoveryEmitter {
@@ -39,7 +39,12 @@ export interface RecoveryReport {
   readonly failed: ReadonlyArray<{ readonly moleculeId: string; readonly error: string }>;
 }
 
-const OPEN_STATUSES = ['open', 'in_progress'] as const;
+/**
+ * Only roots recovery can close. The root close is a compare-and-set on `open` (`bd update --if-status open`), and
+ * nothing in the engine sets a root in_progress; a root someone claimed is theirs, and closing its steps under a root
+ * left open would strand it and report it failed on every boot (CodeRabbit on PR #188).
+ */
+const OPEN_STATUSES = ['open'] as const;
 const STEP_TRACE = 'interrupted: vibesync restarted while this step was pending; the work bead is re-run';
 /** Generous ceiling; a host has a handful of live molecules at most. */
 const MAX_ROOTS = 500;
@@ -60,7 +65,10 @@ export async function recoverInterruptedMolecules(store: RecoveryStore, emit: Re
       // ("cannot close blocked issue: B is blocked by [A]"), so close in
       // dependency order: every step after the steps it waits on.
       for (const step of await blockersFirst(store, steps)) await store.markStepFailed(step.id, STEP_TRACE, 'interrupted');
-      await store.markMoleculeRootStatus(root.id, 'closed', 'interrupted');
+      // Another closer may have closed the root while recovery ran: its outcome stands, so the root is neither reported
+      // nor announced as interrupted (fourth outside review of PR #188). A store that returns nothing is treated as
+      // having closed it.
+      if ((await store.markMoleculeRootStatus(root.id, 'closed', 'interrupted')) === false) continue;
       interrupted.push(root.id);
       const motivating = motivatingBead(root);
       emit(root.id, {

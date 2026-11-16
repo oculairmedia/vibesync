@@ -1,0 +1,128 @@
+/**
+ * The step-start write is a compare-and-set (outside review of PR #188): bd's `--if-status open` refuses a step that is
+ * no longer open with exit 13, and the engine must read that exit code, not a message.
+ */
+import { describe, expect, it } from 'vitest';
+
+import { CliExitError, createCliRunner } from '../../../../src/engine/beads/cli.js';
+import { BdMoleculeWriter } from '../../../../src/engine/beads/molecule-writer.js';
+
+const reader = { getBead: async () => null, findStepsForMolecule: async () => [] };
+
+describe('createCliRunner keeps the exit code of a CLI that ran and failed', () => {
+  it('a non-zero exit is a CliExitError carrying that code', async () => {
+    const run = createCliRunner({ binary: '/bin/sh' });
+    const error = await run(['-c', 'exit 13']).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CliExitError);
+    expect((error as CliExitError).exitCode).toBe(13);
+  });
+
+  it('a CLI that could not be started has no exit code', async () => {
+    const run = createCliRunner({ binary: '/nonexistent/vibesync-no-such-binary' });
+    const error = await run(['x']).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CliExitError);
+    expect((error as CliExitError).exitCode).toBeNull();
+  });
+});
+
+describe('BdMoleculeWriter.markStepRunning starts a step only if it is still open', () => {
+  it('asks bd for the compare-and-set and reports a start', async () => {
+    const calls: string[][] = [];
+    const writer = new BdMoleculeWriter(async (args) => { calls.push([...args]); return ''; }, reader);
+    expect(await writer.markStepRunning('s-1')).toBe(true);
+    const args = calls[0]!;
+    expect(args.slice(0, 4)).toEqual(['update', 's-1', '--status', 'in_progress']);
+    expect(args[args.indexOf('--if-status') + 1]).toBe('open');
+  });
+
+  it("bd's precondition exit (13) is a refusal: false, not an error", async () => {
+    const writer = new BdMoleculeWriter(async () => { throw new CliExitError('status mismatch', 13); }, reader);
+    expect(await writer.markStepRunning('s-1')).toBe(false);
+  });
+
+  it('any other failure is still an error', async () => {
+    const other = new BdMoleculeWriter(async () => { throw new CliExitError('dolt down', 1); }, reader);
+    await expect(other.markStepRunning('s-1')).rejects.toThrow('dolt down');
+    const plain = new BdMoleculeWriter(async () => { throw new Error('spawn failed'); }, reader);
+    await expect(plain.markStepRunning('s-1')).rejects.toThrow('spawn failed');
+  });
+});
+
+describe('BdMoleculeWriter.markMoleculeRootStatus closes the root only if it is still open', () => {
+  const openRoot = { id: 'r-1', status: 'open', issue_type: 'molecule_root', metadata: { exec: {} } } as never;
+  const closedRoot = { id: 'r-1', status: 'closed', issue_type: 'molecule_root', metadata: { exec: { outcome: 'cancelled' } } } as never;
+
+  it('asks bd for the compare-and-set and reports that this call closed it', async () => {
+    const calls: string[][] = [];
+    const writer = new BdMoleculeWriter(async (args) => { calls.push([...args]); return ''; }, { getBead: async () => openRoot, findStepsForMolecule: async () => [] });
+    expect(await writer.markMoleculeRootStatus('r-1', 'closed', 'completed')).toBe(true);
+    const update = calls.find((a) => a[0] === 'update')!;
+    expect(update[update.indexOf('--if-status') + 1]).toBe('open');
+  });
+
+  it('a root already closed is not written at all, and its steps are not swept', async () => {
+    const calls: string[][] = [];
+    const writer = new BdMoleculeWriter(async (args) => { calls.push([...args]); return ''; }, { getBead: async () => closedRoot, findStepsForMolecule: async () => [{ id: 's-1', status: 'open' } as never] });
+    expect(await writer.markMoleculeRootStatus('r-1', 'closed', 'failed')).toBe(false);
+    expect(calls, 'no bd write at all').toEqual([]);
+  });
+
+  it("bd's precondition exit (13) on the root write means another closer won: false, not an error", async () => {
+    // Another closer closes the root between the writer's first read and its write: the re-read sees it closed.
+    let reads = 0;
+    const writer = new BdMoleculeWriter(async (args) => {
+      if (args[0] === 'update') throw new CliExitError('status mismatch', 13);
+      return '';
+    }, { getBead: async () => (reads++ === 0 ? openRoot : closedRoot), findStepsForMolecule: async () => [] });
+    expect(await writer.markMoleculeRootStatus('r-1', 'closed', 'completed')).toBe(false);
+    const failing = new BdMoleculeWriter(async (args) => {
+      if (args[0] === 'update') throw new CliExitError('dolt down', 1);
+      return '';
+    }, { getBead: async () => openRoot, findStepsForMolecule: async () => [] });
+    await expect(failing.markMoleculeRootStatus('r-1', 'closed', 'completed')).rejects.toThrow('dolt down');
+  });
+});
+
+describe('exit 13 on the root close means "closed elsewhere" only if the root really is closed', () => {
+  it('a root that is not open and not closed (claimed, blocked) is an error, not "closed elsewhere"', async () => {
+    // Fourth outside review (Fable): --if-status open also refuses a root in_progress or blocked. Reporting that as
+    // "closed elsewhere" leaves the root open while the run is told it was closed.
+    const claimed = { id: 'r-1', status: 'in_progress', issue_type: 'molecule_root', metadata: { exec: {} } } as never;
+    const writer = new BdMoleculeWriter(async (args) => {
+      if (args[0] === 'update') throw new CliExitError('status mismatch', 13);
+      return '';
+    }, { getBead: async () => claimed, findStepsForMolecule: async () => [] });
+    await expect(writer.markMoleculeRootStatus('r-1', 'closed', 'completed')).rejects.toThrow();
+  });
+});
+
+describe('the in-memory stand-in keeps the first root close, as real bd does', () => {
+  it('two closers racing across the sweep: only the first records its outcome; the second is refused', async () => {
+    // CodeRabbit on PR #188: the stand-in checked "still open" before its awaited sweep, not after, so both closers won.
+    const { InMemoryDoltClient } = await import('../../../_fixtures/in-memory-dolt-client.js');
+    const { MoleculeWalker } = await import('../../../../src/engine/molecule/index.js');
+    const store = new InMemoryDoltClient();
+    const view = await new MoleculeWalker(store).dispatch({ prefix: 'mol', formulaName: 'f', title: 't', steps: [{ name: 'a', role: 'a', promptTemplate: 'p' }] });
+    await store.markStepDone(`${view.rootId}-a`, { output: 'x' });
+    const [first, second] = await Promise.all([
+      store.markMoleculeRootStatus(view.rootId, 'closed', 'cancelled'),
+      store.markMoleculeRootStatus(view.rootId, 'closed', 'completed'),
+    ]);
+    expect([first, second].filter(Boolean), 'exactly one closer won').toHaveLength(1);
+    const outcome = ((await store.getBead(view.rootId))?.metadata['exec'] as Record<string, unknown>)['outcome'];
+    expect(outcome, 'the winner is the one that returned true').toBe(first ? 'cancelled' : 'completed');
+  });
+});
+
+describe('the in-memory stand-in refuses to close a root that is not open, as bd --if-status open does', () => {
+  it('a claimed (in_progress) root is not closed', async () => {
+    const { InMemoryDoltClient } = await import('../../../_fixtures/in-memory-dolt-client.js');
+    const { MoleculeWalker } = await import('../../../../src/engine/molecule/index.js');
+    const store = new InMemoryDoltClient();
+    const view = await new MoleculeWalker(store).dispatch({ prefix: 'mol', formulaName: 'f', title: 't', steps: [{ name: 'a', role: 'a', promptTemplate: 'p' }] });
+    store.beads.set(view.rootId, { ...(await store.getBead(view.rootId))!, status: 'in_progress' });
+    expect(await store.markMoleculeRootStatus(view.rootId, 'closed', 'failed')).toBe(false);
+    expect((await store.getBead(view.rootId))?.status).toBe('in_progress');
+  });
+});
+

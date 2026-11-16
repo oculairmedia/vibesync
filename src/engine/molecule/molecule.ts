@@ -144,7 +144,8 @@ export interface MoleculeStore {
   findStepsForMolecule(rootId: string): Promise<readonly BeadRow[]>;
   // lcp-61uj: list molecule-root beads (rig runs) for the fleet-status endpoint.
   listMoleculeRoots(opts?: { statuses?: readonly string[]; limit?: number }): Promise<readonly BeadRow[]>;
-  markStepRunning(stepId: string): Promise<void>;
+  /** False when the step was no longer open, so it was not started (a delayed start after the root close). */
+  markStepRunning(stepId: string): Promise<boolean>;
   recordStepTask(stepId: string, task: {
     /**
      * Provider-opaque task id for restart re-attachment (f5g). Optional:
@@ -183,7 +184,8 @@ export interface MoleculeStore {
   appendNoteToBead(beadId: string, note: string): Promise<void>;
   addCommentToBead(beadId: string, comment: string): Promise<void>;
   // lcp-s0wi: mark a molecule root bead as terminal with an outcome.
-  markMoleculeRootStatus(rootId: string, status: 'closed', outcome: MoleculeOutcome): Promise<void>;
+  /** False when the root was already closed (another closer won): its outcome stands and nothing was written. */
+  markMoleculeRootStatus(rootId: string, status: 'closed', outcome: MoleculeOutcome): Promise<boolean>;
 }
 
 /**
@@ -328,8 +330,9 @@ export class MoleculeWalker {
   }
 
   /** Mark a step as running. Pass-through to the store. */
-  async startStep(stepId: string): Promise<void> {
-    await this.store.markStepRunning(stepId);
+  /** Mark a step running. False when it was no longer open: the caller must then start nothing. */
+  async startStep(stepId: string): Promise<boolean> {
+    return this.store.markStepRunning(stepId);
   }
 
   /**
@@ -397,8 +400,8 @@ export class MoleculeWalker {
     rootId: string,
     status: 'closed',
     outcome: MoleculeOutcome,
-  ): Promise<void> {
-    await this.store.markMoleculeRootStatus(rootId, status, outcome);
+  ): Promise<boolean> {
+    return this.store.markMoleculeRootStatus(rootId, status, outcome);
   }
 
   /**

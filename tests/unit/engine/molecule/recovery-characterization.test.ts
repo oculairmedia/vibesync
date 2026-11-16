@@ -89,14 +89,17 @@ describe('closing order', () => {
 });
 
 describe('what is recovered', () => {
-  it('a root that is in progress, not just open, is recovered', async () => {
+  it('a root that is in progress (claimed) is left to its owner, not recovered', async () => {
+    // Changed in PR #188 (CodeRabbit): this characterisation test pinned recovery of in_progress roots. Nothing in the
+    // engine sets a root in_progress, and the root close is now a compare-and-set on `open`, so on real bd recovery
+    // would close the steps and then fail to close the root. Recovery now takes only the roots it can close.
     const store = new InMemoryDoltClient();
     const m = await molecule(store, [{ name: 'a', role: 'r', promptTemplate: 'p' }]);
     const root = store.beads.get(m.rootId)!;
     store.beads.set(m.rootId, { ...root, status: 'in_progress' });
     const report = await recoverInterruptedMolecules(store as never, () => undefined);
-    expect(report.interrupted).toEqual([m.rootId]);
-    expect(await store.getBead(m.rootId)).toMatchObject({ status: 'closed' });
+    expect(report.interrupted).toEqual([]);
+    expect(await store.getBead(m.rootId)).toMatchObject({ status: 'in_progress' });
   });
 
   it('a child of the root that is not a step, and a bead joined to the root by a blocks edge, are not closed', async () => {

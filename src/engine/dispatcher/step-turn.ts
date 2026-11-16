@@ -40,6 +40,12 @@ export interface StepTurnDeps {
   readonly turnLimitRecordStore: (projectIdentifier: string | undefined) => Pick<TurnLimitRecordStore, 'addCommentToBead'>;
 }
 
+/**
+ * The step needs nothing more from this turn: its result was written, a review
+ * loop reopened the round, or the run was cancelled and the turn writes nothing.
+ */
+const SETTLED = 'settled';
+
 export class StepTurnRunner {
   constructor(private readonly deps: StepTurnDeps) {}
 
@@ -55,13 +61,39 @@ export class StepTurnRunner {
     const attemptStartedAt = new Date();
     await this.deps.walker.recordStepAttempt(args.step.id, state.attempt);
     const rendered = await this.renderStepPrompt(args, stepSpec, stepName, state.attempt);
+    // The render can wait on project memory. A run cancelled meanwhile starts no turn: no session, and the step
+    // is not marked running again under a run that is closing (review on PR #188).
+    if (args.cancelled()) return;
 
     const turn = await this.runStepTurn(context, rendered, state);
+    // One writer per step (specs/MoleculeLifecycle.tla, CancelMode =
+    // "single_writer"; vibesync-6zos.3). Once its run is cancelled this turn
+    // writes NOTHING: no result, no failure, no retry, no review loop-back.
+    // cancel() waits for the turn to return and then records the step as
+    // cancelled itself. Asked here, so a cancelled run's reply is not judged at
+    // all (a judge call, and up to minutes waiting on CI); and asked again in
+    // the same tick as each write below, because the run can be cancelled while
+    // the reply is being judged.
+    if (args.cancelled()) return;
+    // The attempt never ran (bd refused the start, or the run was cancelled): there is no reply. Write nothing; the
+    // step is closed by whoever closed it, and settlement reads the root (third outside review of PR #188).
+    if (turn.output?.notStarted) {
+      // This run was not cancelled (asked just above). bd refused the start because the step is not open: read which.
+      // CLOSED: someone closed it under this run, which then ends through its root (settlement), never as completed.
+      // IN_PROGRESS: another dispatcher claimed it and owns that work; this run stops and writes nothing (CodeRabbit).
+      // A failed read must not fail the run: that would close the root and sweep a step another dispatcher may hold. An
+      // unknown status goes the way that writes nothing (outside review of PR #188, Fable).
+      const now = await this.deps.walker.readStep(args.step.id).catch(() => null);
+      if (args.cancelled()) return;
+      if (now?.status === 'closed') args.closedUnder?.();
+      else args.claimedElsewhere?.();
+      return;
+    }
     let failure = turn.failure;
 
     if (turn.output !== null) {
       const judged = await this.judgeStepTurn(context, turn.output, attemptStartedAt, state.attempt);
-      if (judged === 'finished' || judged === 'looped') return;
+      if (judged === SETTLED) return;
       failure = judged;
     }
     if (failure === null) {
@@ -70,6 +102,7 @@ export class StepTurnRunner {
       throw new Error(`step ${args.step.id}: attempt ended with neither an output nor a failure`);
     }
 
+    if (args.cancelled()) return;
     await this.settleStepFailure(context, policy, state, failure);
   }
 
@@ -99,6 +132,7 @@ export class StepTurnRunner {
           ? { turnTimeoutMs: stepSpec.turnTimeoutMs ?? args.input.stepTimeoutMs }
           : {}),
         ...(args.workdir !== undefined ? { workdir: args.workdir } : {}),
+        cancelled: args.cancelled,
       });
       return { output, failure: null };
     } catch (error) {
@@ -177,17 +211,20 @@ export class StepTurnRunner {
     output: StepAttemptOutput,
     attemptStartedAt: Date,
     attempt: number,
-  ): Promise<'finished' | 'looped' | StepRunFailure> {
+  ): Promise<typeof SETTLED | StepRunFailure> {
     const verdict = await this.handleStepVerdict(context, output, attemptStartedAt);
+    if (verdict === 'looped' || verdict === 'cancelled') return SETTLED;
     if (verdict !== null) return verdict;
-    return this.finishStepTurn(context, output, attempt);
+    if (context.args.cancelled()) return SETTLED;
+    await this.finishStepTurn(context, output, attempt);
+    return SETTLED;
   }
 
   private async handleStepVerdict(
     context: StepRunContext,
     output: StepAttemptOutput,
     attemptStartedAt: Date,
-  ): Promise<'looped' | StepRunFailure | null> {
+  ): Promise<'looped' | 'cancelled' | StepRunFailure | null> {
     const { args, stepSpec, stepName } = context;
     const bead = await this.deps.walker.readStep(args.step.id);
     const declared = bead ? readFailureClass(bead.metadata) : null;
@@ -214,9 +251,11 @@ export class StepTurnRunner {
     context: StepRunContext,
     blocker: string | null,
     output: string,
-  ): Promise<'looped' | StepRunFailure | null> {
+  ): Promise<'looped' | 'cancelled' | StepRunFailure | null> {
     if (blocker === null) return null;
     const { args, stepSpec, stepName } = context;
+    // A loop-back reopens OTHER steps of the run.
+    if (args.cancelled()) return 'cancelled';
     const looped = stepSpec.loopsBackTo
       ? await this.deps.stepVerdict.loopBack({ ...args, stepSpec, stepName, blocker, output })
       : 'no-loop';
@@ -322,6 +361,8 @@ export class StepTurnRunner {
     const reason = `turn limit reached; ${work}`;
     const trace = reason;
     const { args, stepSpec, stepName } = context;
+    // Preserving the work can take seconds; the run may have been cancelled meanwhile.
+    if (args.cancelled()) return;
     await this.deps.walker.failStep(args.step.id, trace, 'not_retryable');
     this.deps.emit('dispatcher/step.failed', args.moleculeId, args.step.id, {
       stepName, role: stepSpec.role, stepId: args.step.id, error: trace, attempts: state.attempt,

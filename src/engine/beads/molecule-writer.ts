@@ -14,6 +14,7 @@
  * Measured on bd 1.3.2: ~190 ms per update, ~500 ms per step create. A formula
  * step is an LLM turn of minutes, so this is well under 1% of a run.
  */
+import { BD_PRECONDITION_FAILED, CliExitError } from './cli.js';
 import { INFRA_RETRIES_KEY, LAST_FAILURE_CLASS_KEY, RETRY_ATTEMPT_KEY, RETRY_OUTCOME_KEY, REVIEW_ROUND_KEY, FAILURE_CLASS_KEY } from '../retry/policy.js';
 import type { MoleculeOutcome } from '../molecule/molecule.js';
 import type { BeadRow } from '../store/index.js';
@@ -101,8 +102,19 @@ export class BdMoleculeWriter {
     await this.bd(['dep', 'add', args.id, args.parentRootId, '--type', 'parent-child', '--actor', ACTOR]);
   }
 
-  async markStepRunning(stepId: string): Promise<void> {
-    await this.bd(['update', stepId, '--status', 'in_progress', '--actor', ACTOR]);
+  /**
+   * Start a step, only if it is still open (bd's compare-and-set). Returns false when bd refused because the step
+   * is no longer open: the root close (a cancelled or failed run) got there first, and a delayed start must not
+   * reopen it (second outside review of PR #188). Any other failure is thrown.
+   */
+  async markStepRunning(stepId: string): Promise<boolean> {
+    try {
+      await this.bd(['update', stepId, '--status', 'in_progress', '--if-status', 'open', '--actor', ACTOR]);
+      return true;
+    } catch (error) {
+      if (error instanceof CliExitError && error.exitCode === BD_PRECONDITION_FAILED) return false;
+      throw error;
+    }
   }
 
   async recordStepTask(stepId: string, task: {
@@ -194,18 +206,43 @@ export class BdMoleculeWriter {
    * legitimately leaves steps that never ran, and bd otherwise refuses to close
    * a parent with open children.
    */
-  async markMoleculeRootStatus(rootId: string, status: 'closed', outcome: MoleculeOutcome): Promise<void> {
+  /**
+   * Close the root with its outcome, only if it is still open (bd's compare-and-set, `--if-status open`). Returns false
+   * when the root was already closed: another closer got there first (a second dispatcher, the restart path), and its
+   * outcome stands (third outside review of PR #188: two closers used to overwrite each other). The step sweep is
+   * skipped for a root already closed, and the refusal of the root write remains the final word if two race.
+   */
+  async markMoleculeRootStatus(rootId: string, status: 'closed', outcome: MoleculeOutcome): Promise<boolean> {
     const bead = await this.require(rootId);
+    if (bead.status === 'closed') return false;
     if (outcome === 'failed' || outcome === 'cancelled') await this.closeOpenSteps(rootId, outcome);
-    await withMetadataFile({ exec: { ...execOf(bead), outcome } }, (ref) =>
-      this.bd(['update', rootId, '--status', status, '--force', '--metadata', ref, '--actor', ACTOR]));
+    try {
+      await withMetadataFile({ exec: { ...execOf(bead), outcome } }, (ref) =>
+        this.bd(['update', rootId, '--status', status, '--force', '--if-status', 'open', '--metadata', ref, '--actor', ACTOR]));
+      return true;
+    } catch (error) {
+      // bd's refusal means the root was not open. Only a root that is now CLOSED means "another closer won"; one claimed
+      // or blocked by someone is not closed at all, and must not be reported as if it were (fourth outside review of
+      // PR #188).
+      if (error instanceof CliExitError && error.exitCode === BD_PRECONDITION_FAILED) {
+        const now = await this.reader.getBead(rootId);
+        if (now?.status === 'closed') return false;
+        throw new Error(`markMoleculeRootStatus: ${rootId} was not closed: bd refused because its status is "${now?.status ?? 'unknown'}", not open`, { cause: error });
+      }
+      throw error;
+    }
   }
 
+  /**
+   * Close every step of the run that is not closed yet, open or in_progress: the root close is the last writer, and a
+   * step left in_progress under a closed root has no one else to close it (a turn that saw the run cancelled wrote
+   * nothing; outside review of PR #188).
+   */
   private async closeOpenSteps(rootId: string, outcome: 'failed' | 'cancelled'): Promise<void> {
     const steps = await this.reader.findStepsForMolecule(rootId);
     for (const step of steps) {
-      if (step.status !== 'open') continue;
-      await this.bd(['close', step.id, '--force', '--reason', `run ${outcome}`]);
+      if (step.status === 'closed') continue;
+      await this.bd(['close', step.id, '--force', '--reason', `run ${outcome}`, '--actor', ACTOR]);
     }
   }
 

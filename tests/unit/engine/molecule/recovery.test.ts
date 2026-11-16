@@ -23,6 +23,38 @@ async function cookRunning(store: InMemoryDoltClient, motivatingBeadId?: string)
 }
 
 describe('recoverInterruptedMolecules', () => {
+  it('a root that is not open (claimed: in_progress) is not touched: its steps are not closed under a root left open', async () => {
+    // CodeRabbit on PR #188: recovery selected open AND in_progress roots, closed their steps as interrupted, then the
+    // root close (--if-status open) refused the in_progress root: steps closed, root left open, reported failed on every
+    // boot. Nothing in the engine sets a root in_progress; recovery now takes only the roots it can close.
+    const store = new InMemoryDoltClient();
+    const a = await cookRunning(store, 'work-1');
+    store.beads.set(a.rootId, { ...(await store.getBead(a.rootId))!, status: 'in_progress' });
+    const coderBefore = (await store.getBead(a.id('coder')))?.status;
+    const report = await recoverInterruptedMolecules(store as never, () => undefined);
+    expect(report.interrupted).not.toContain(a.rootId);
+    expect((await store.getBead(a.id('coder')))?.status, 'its steps are left as they were').toBe(coderBefore);
+    expect((await store.getBead(a.rootId))?.status).toBe('in_progress');
+  });
+
+  it('a root that another closer closes while recovery runs is not reported or announced as interrupted', async () => {
+    // Fourth outside review (GPT, Fable): recovery ignored the root close's answer and announced `interrupted` for a
+    // root whose outcome another closer had recorded.
+    const store = new InMemoryDoltClient();
+    const a = await cookRunning(store, 'work-1');
+    const markRoot = store.markMoleculeRootStatus.bind(store);
+    // Another closer records `cancelled` just before recovery's own root close.
+    store.markMoleculeRootStatus = async (rootId, status, outcome) => {
+      if (outcome === 'interrupted') await markRoot(rootId, status, 'cancelled');
+      return markRoot(rootId, status, outcome);
+    };
+    const emitted: Array<{ moleculeId: string }> = [];
+    const report = await recoverInterruptedMolecules(store as never, (moleculeId) => emitted.push({ moleculeId }));
+    expect(report.interrupted, 'not reported as interrupted').not.toContain(a.rootId);
+    expect(emitted.map((e) => e.moleculeId), 'not announced').not.toContain(a.rootId);
+    expect(((await store.getBead(a.rootId))?.metadata['exec'] as Record<string, unknown>)['outcome']).toBe('cancelled');
+  });
+
   it('closes every open root and its unfinished steps as interrupted; finished steps keep their output', async () => {
     const store = new InMemoryDoltClient();
     const a = await cookRunning(store, 'work-1');
@@ -96,7 +128,7 @@ describe('recoverInterruptedMolecules', () => {
         if (prop === 'markMoleculeRootStatus') {
           return async (rootId: string, ...rest: unknown[]) => {
             if (rootId === a.rootId) throw new Error('bd unavailable');
-            return (target.markMoleculeRootStatus as (...x: unknown[]) => Promise<void>).call(target, rootId, ...rest);
+            return (target.markMoleculeRootStatus as (...x: unknown[]) => Promise<boolean>).call(target, rootId, ...rest);
           };
         }
         return Reflect.get(target, prop, receiver);
