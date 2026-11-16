@@ -8,6 +8,7 @@ import { expect, it } from 'vitest';
 
 import { PmWaker } from '../../../../src/engine/pm-wake/waker.js';
 import { BdPendingWakeStore } from '../../../../src/engine/pm-wake/pending-store.js';
+import { createEscalationNotifier } from '../../../../src/engine/scheduler/escalation-notify.js';
 
 type Row = { id: string; status: string; assignee?: string; lease_expires_at?: string; metadata?: Record<string, unknown> };
 const LEASE_MS = 60_000;
@@ -96,3 +97,46 @@ it('real store: a held wake is not re-sent until its lease expires; once confirm
   expect(sent[2]!.detail, 'the delivered stall is not repeated').not.toContain('wa');
   waker.dispose();
 });
+
+it('real notifier and real store: an escalation noted while the first wake is held reaches the PM after that wake is confirmed', async () => {
+  // The bead's acceptance asks for the production path: createEscalationNotifier -> PmWaker.noteStall -> the real
+  // BdPendingWakeStore (outside confirmation review). The notifier wires wakePm to noteStall, as the scheduler does.
+  const clock = { t: Date.parse('2026-11-16T12:00:00Z') };
+  const bd = leasedBd(clock);
+  const sent: Array<{ msgId: string; detail: string }> = [];
+  let calls = 0;
+  const sink = {
+    wake: async (input: { wakeId: string; detail: string }) => {
+      calls += 1;
+      sent.push({ msgId: input.wakeId, detail: input.detail });
+      return calls === 1 ? { ok: false, error: 'iroh down' } : { ok: true, accepted: true, applicationDelivered: true };
+    },
+  };
+  const waker = new PmWaker({
+    projectIdentifier: 'project', lookupAgentId: () => 'pm', sink: sink as never,
+    pendingWakeStore: new BdPendingWakeStore(bd.run, { now: () => clock.t }),
+    store: { load: () => ({ firstSeenAt: new Date(clock.t).toISOString(), lastWokenAt: null, lastByReason: {} }), save: () => {} },
+    backlog: () => null, emit: () => {}, minIntervalMs: 0, backstopMs: 10 ** 12, now: () => clock.t,
+    logger: { warn: () => undefined, info: () => undefined },
+  });
+  const comments: string[] = [];
+  const escalate = createEscalationNotifier({ wakePm: (bead, why) => waker.noteStall(bead, why), commentOnBead: async (bead) => { comments.push(bead); } });
+  const tick = async () => { waker.onTick({ result: { scheduler: { dispatched: [] } } } as never); await waker.idle(); };
+  await waker.idle();
+  await escalate({ workBeadId: 'wa', contextId: 'c1', reason: 'review exhausted' });
+  await tick(); // saved, sent, failed: held
+  await escalate({ workBeadId: 'wb', contextId: 'c2', reason: 'tester blocked' }); // while the wake for wa is held
+  clock.t += 60_000 + 600_000;
+  await tick(); // reclaimed, the same message retried and confirmed
+  expect(sent[1]!.detail).toContain('wa');
+  expect(sent[1]!.detail).not.toContain('wb');
+  clock.t += 60_000;
+  await tick();
+  expect(sent, 'the escalation noted while the first wake was held gets its own wake').toHaveLength(3);
+  expect(sent[2]!.detail).toContain('wb');
+  expect(sent[2]!.detail).toContain('tester blocked');
+  expect(sent[2]!.detail, 'the delivered escalation is not repeated').not.toContain('wa');
+  expect(comments).toEqual(['wa', 'wb']);
+  waker.dispose();
+});
+
