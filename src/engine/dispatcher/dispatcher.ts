@@ -70,6 +70,10 @@ export interface FormulaDispatcherOptions {
    */
   readonly idPrefix: string;
   readonly maxParallelSteps?: number;
+  /** How long cancel() waits for stopped turns to return before recording their steps itself (default DEFAULT_CANCEL_UNWIND_MS). */
+  readonly cancelUnwindMs?: number;
+  /** How long an attempt's cleanup waits for a session stop (default ATTEMPT_STOP_TIMEOUT_MS). */
+  readonly attemptStopTimeoutMs?: number;
   readonly maxConcurrentMolecules?: number;
   /**
    * Optional per-dispatch provider resolver (vibesync-f5g / vibesync-8hk).
@@ -152,6 +156,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
       walker: this.walker,
       emit: this.emit,
       emitRuntimeSessionEvent: this.emitRuntimeSessionEvent,
+      ...(opts.attemptStopTimeoutMs !== undefined ? { stopTimeoutMs: opts.attemptStopTimeoutMs } : {}),
     });
     this.idPrefix = opts.idPrefix;
     this.maxParallelSteps = normalizeMaxParallelSteps(opts.maxParallelSteps);
@@ -191,6 +196,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
       defaultProvider: this.defaultProvider,
       providerResolver: this.providerResolver,
       emit: this.emit,
+      ...(opts.cancelUnwindMs !== undefined ? { cancelUnwindMs: opts.cancelUnwindMs } : {}),
     });
     this.resumeCoordinator = new ResumeCoordinator({
       walker: this.walker,
@@ -313,10 +319,15 @@ export class FormulaDispatcher implements ReadyStepRunner {
         outputs: args.outputs,
         rolesByName: new Map(input.pack.roles.map((role) => [role.name, role])),
         startedSteps: new Set(),
+        inFlight: new Set(),
+        cancelInProgress: false,
         running: 0,
         failed: false,
         failure: undefined,
         cancelled: false,
+        rootClosed: false,
+        closedUnder: false,
+        claimedElsewhere: false,
         finalized: false,
         resolve,
         reject,
@@ -358,12 +369,16 @@ export class FormulaDispatcher implements ReadyStepRunner {
     // policy has ruled on it (reopen, or a final outcome stamp) that closed
     // blocker must not release its dependents.
     if (await this.hasBlockerPendingRetry(ready.step.id)) return 'skipped';
+    // Asked again after that read: a sibling turn may have stopped the run meanwhile (cancelled, failed, closed under or
+    // claimed elsewhere), and a step admitted now must not reserve its try or record an attempt (CodeRabbit, PR #188).
+    if (cannotStartSteps(run)) return 'skipped';
     // A review round (vibesync-9lzk.24) reopens a step with fresh retry
     // counters, so the round is part of the key or the re-run would be skipped.
     const tryKey = readyStepTryKey(ready.step);
     if (hasStartedTryOrAtParallelLimit(run, tryKey, this.maxParallelSteps)) return 'skipped';
     run.startedSteps.add(tryKey);
     run.running++;
+    run.inFlight.add(ready.step.id);
     let outcome: StepRunOutcome = 'finished';
     try {
       // A failed try that the retry policy allows another of REOPENS the step
@@ -375,6 +390,9 @@ export class FormulaDispatcher implements ReadyStepRunner {
         outputs: run.outputs,
         rolesByName: run.rolesByName,
         provider: run.provider,
+        cancelled: () => run.cancelled,
+        closedUnder: () => { run.closedUnder = true; },
+        claimedElsewhere: () => { run.claimedElsewhere = true; },
         ...(run.input.workdir !== undefined ? { workdir: run.input.workdir } : {}),
       });
     } catch (error) {
@@ -385,6 +403,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
       outcome = 'failed';
     } finally {
       run.running--;
+      run.inFlight.delete(ready.step.id);
     }
     await this.settler.settleMolecule(run);
     return outcome;
@@ -473,7 +492,8 @@ function isSoftFailedStep(step: BeadRow): boolean {
 }
 
 function cannotStartSteps(run: MoleculeRun | undefined): boolean {
-  return !run || run.failed || run.cancelled;
+  // A run that found a step closed under it or held elsewhere starts nothing more: it is ending (outside review, PR #188).
+  return !run || run.failed || run.cancelled || run.closedUnder || run.claimedElsewhere;
 }
 
 function readyStepTryKey(step: BeadRow): string {

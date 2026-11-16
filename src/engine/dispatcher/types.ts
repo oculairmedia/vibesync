@@ -71,6 +71,23 @@ export type StepRunArgs = {
   readonly outputs: Record<string, string>;
   readonly rolesByName: ReadonlyMap<string, RoleConfig>;
   readonly provider: RuntimeProvider;
+  /**
+   * True once the run has been told to cancel (MoleculeRun.cancelled). The step
+   * turn asks before every write: under a cancelled run it writes nothing, and
+   * cancel() records the step once the turn has returned (vibesync-6zos.3).
+   */
+  readonly cancelled: () => boolean;
+  /**
+   * The turn found its step closed under it by someone else (bd refused the start and this run was not cancelled).
+   * The run must then end through its root, never as completed (fourth outside review of PR #188).
+   */
+  readonly closedUnder?: () => void;
+  /**
+   * The turn found its step held by someone else (bd refused the start because the step is in_progress: another
+   * dispatcher claimed it). That owner runs it and closes the root; this run stops, writing nothing (CodeRabbit on
+   * PR #188: treating this as closedUnder made the run close the root and sweep the owner's active step).
+   */
+  readonly claimedElsewhere?: () => void;
 };
 
 export type StepRunFailure = { readonly signal: FailureSignal; readonly error: unknown; readonly failureClass: string | null; readonly code?: string };
@@ -119,10 +136,31 @@ export interface MoleculeRun {
    * run twice. Not a counter: nothing here decides whether to retry.
    */
   readonly startedSteps: Set<string>;
+  /**
+   * Step beads with a turn of this process in flight. While a step is here its
+   * turn is the ONLY writer of its record: cancel() waits for the turn to
+   * return (it writes nothing once the run is cancelled) before it records the
+   * step as cancelled.
+   */
+  readonly inFlight: Set<string>;
+  /**
+   * True while cancel() is still stopping sessions, waiting for turns, recording
+   * steps and closing the root. The run is not settled (its run() caller is not
+   * told) until this is false again: the stopped turns return in the middle of
+   * cancel(), and a caller told then would read a root that is still open.
+   */
+  cancelInProgress: boolean;
   running: number;
   failed: boolean;
   failure: unknown;
+  /** Never cleared once set: a turn that saw it has given its step up to cancel() (outside review of PR #188). */
   cancelled: boolean;
+  /** The root has been closed as cancelled (by cancel() or, if that failed part-way, by settlement). */
+  rootClosed: boolean;
+  /** A step of this run was closed by someone else (another dispatcher's sweep): the run ends through its root. */
+  closedUnder: boolean;
+  /** A step of this run is held by another dispatcher: this run stops without writing; the owner settles the root. */
+  claimedElsewhere: boolean;
   finalized: boolean;
   readonly resolve: (result: DispatchResult) => void;
   readonly reject: (error: unknown) => void;
@@ -192,6 +230,12 @@ export interface RuntimeSessionEventContext {
 export interface StepAttemptOutput {
   readonly text: string;
   readonly eventCount: number;
+  /**
+   * True when no session was started or its turn was abandoned: bd refused the start (the step is no longer open),
+   * or the run was cancelled. There is no agent reply; the turn must not judge or write anything (third outside
+   * review of PR #188: an empty reply was judged and written when another dispatcher had closed the step).
+   */
+  readonly notStarted?: true;
 }
 
 export type StepAttemptArgs = {
@@ -210,4 +254,6 @@ export type StepAttemptArgs = {
   readonly projectIdentifier?: string;
   readonly turnTimeoutMs?: number;
   readonly workdir?: string;
+  /** True once the run is cancelled: the attempt then writes nothing more on the step (outside review of PR #188). */
+  readonly cancelled?: () => boolean;
 };

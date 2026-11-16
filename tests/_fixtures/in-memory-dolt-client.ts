@@ -150,8 +150,11 @@ export class InMemoryDoltClient {
       .slice(0, limit);
   }
 
-  async markStepRunning(stepId: string): Promise<void> {
+  /** As BdMoleculeWriter.markStepRunning (`--if-status open`): a step that is no longer open is not started. */
+  async markStepRunning(stepId: string): Promise<boolean> {
+    if (this.requireBead(stepId).status !== 'open') return false;
     this.updateBead(stepId, { status: 'in_progress' });
+    return true;
   }
 
   async recordStepTask(stepId: string, task: {
@@ -237,7 +240,9 @@ export class InMemoryDoltClient {
 
   async closeOpenStep(stepId: string, reason: string, force = false): Promise<void> {
     const row = this.requireBead(stepId);
-    if (row.status !== 'open') throw new Error(`InMemoryDoltClient: ${stepId} is not open`);
+    // Real bd closes an in_progress bead as well as an open one (checked 2026-11-15, with and without --force);
+    // only an already-closed one is refused here.
+    if (row.status === 'closed') throw new Error(`InMemoryDoltClient: ${stepId} is already closed`);
     const blocker = !force ? this.blockingEdges(stepId).find((edge) => this.beads.get(edge.depends_on_id)?.status !== 'closed') : undefined;
     if (blocker) throw new Error(`cannot close blocked issue: ${stepId} is blocked by [${blocker.depends_on_id}]`);
     this.updateBead(stepId, { status: 'closed', closed_at: new Date(), metadata: { ...row.metadata, close_reason: reason } });
@@ -274,13 +279,29 @@ export class InMemoryDoltClient {
     rootId: string,
     status: 'closed',
     outcome: MoleculeOutcome,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const row = this.requireBead(rootId);
+    // As the real writer does (`--if-status open`): a root already closed is not written again.
+    // As bd's --if-status open: anything not open (closed, or claimed in_progress) is refused.
+    if (row.status !== 'open') return false;
+    // As the real writer does (BdMoleculeWriter.closeOpenSteps, vibesync-9lzk.60): a run that
+    // fails or is cancelled closes its steps that are still open, with the reason `run <outcome>`.
+    // Without this the stand-in left a step open under a closed root where real bd does not.
+    if (outcome === 'failed' || outcome === 'cancelled') {
+      for (const step of await this.findStepsForMolecule(rootId)) {
+        if (step.status !== 'closed') await this.closeOpenStep(step.id, `run ${outcome}`, true);
+      }
+    }
+    // Asked again after the awaited sweep, with no await before the write: real bd's `--if-status open` is atomic, so
+    // a closer that lost the race while sweeping must be refused here (CodeRabbit on PR #188).
+    const current = this.requireBead(rootId);
+    if (current.status !== 'open') return false;
     this.updateBead(rootId, {
       status,
       closed_at: new Date(),
-      metadata: mergeExec(row.metadata, { outcome }),
+      metadata: mergeExec(current.metadata, { outcome }),
     });
+    return true;
   }
 
   private blockingEdges(stepId: string): DependencyRow[] {

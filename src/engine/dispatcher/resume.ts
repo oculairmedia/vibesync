@@ -96,7 +96,10 @@ export class ResumeCoordinator {
     if (kind === undefined) return;
     const reason = await this.verifyResumedDelivery({ ...args, kind });
     if (reason === null) return;
-    await this.deps.walker.markMoleculeRootStatus(moleculeId, 'closed', 'failed');
+    // Another closer may have closed the root first: its outcome stands, and this resume announces nothing for it
+    // (fourth outside review of PR #188). The caller is still told the delivery was not met.
+    const closedHere = await this.deps.walker.markMoleculeRootStatus(moleculeId, 'closed', 'failed');
+    if (!closedHere) throw new FormulaDispatchError(`FormulaDispatcher: ${reason} (the root was already closed elsewhere)`, moleculeId);
     this.deps.emit('dispatcher/formula.failed', moleculeId, undefined, {
       moleculeId, error: reason, resumed: true,
       ...(motivatingBeadId ? { motivating_bead: motivatingBeadId } : {}),

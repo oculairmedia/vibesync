@@ -1,3 +1,4 @@
+import { ATTEMPT_STOP_TIMEOUT_MS } from './util.js';
 import type { MoleculeWalker } from '../molecule/index.js';
 import type { RuntimeProvider, SessionEvent, SessionHandle } from '../runtime/index.js';
 import { AttemptFailure, type RuntimeSessionEventContext, type StepAttemptArgs, type StepAttemptOutput } from './types.js';
@@ -6,7 +7,12 @@ export interface StepAttemptDeps {
   readonly walker: MoleculeWalker;
   readonly emit: (kind: string, moleculeId: string | undefined, taskId: string | undefined, payload: Readonly<Record<string, unknown>>) => void;
   readonly emitRuntimeSessionEvent: (event: SessionEvent, context: RuntimeSessionEventContext) => void;
+  /** Overrides ATTEMPT_STOP_TIMEOUT_MS (tests). */
+  readonly stopTimeoutMs?: number;
 }
+
+/** The attempt never produced a reply: nothing to judge, nothing to write. */
+const NOT_STARTED: StepAttemptOutput = { text: '', eventCount: 0, notStarted: true };
 
 export class StepAttemptRunner {
   constructor(private readonly deps: StepAttemptDeps) {}
@@ -16,13 +22,48 @@ export class StepAttemptRunner {
     let handle: SessionHandle | null = null;
     try {
       handle = await this.startStepAttempt(args);
+      // Not started: the step was closed under it, or the run was cancelled meanwhile. NOT_STARTED, not an empty reply:
+      // the turn writes nothing for it, whether or not THIS run was cancelled.
+      if (handle === null) return NOT_STARTED;
+      // The session id is recorded only after the prompt, so cancel() may not be able to name this session: once the
+      // run is cancelled the attempt ends itself, and the finally below stops the session it holds (second outside
+      // review of PR #188).
+      if (args.cancelled?.()) return NOT_STARTED;
       const promptResult = await args.provider.prompt(handle, [{ type: 'text', text: args.rendered }]);
+      if (args.cancelled?.()) return NOT_STARTED;
       const traceConversationId = promptResult.conversationId;
       await this.recordStepAttemptTask(args, handle, promptResult.taskId, traceConversationId);
+      // That write took a while: a cancel claimed during it may have read the steps before the session id landed, so it
+      // could not stop this session. Ask before observing: the observe loop only checks between events, and a silent
+      // agent sends none (third outside review of PR #188).
+      if (args.cancelled?.()) return NOT_STARTED;
       const observed = await this.observeStepAttempt(args, handle, promptResult.taskId, traceConversationId);
       return { text: observed.text, eventCount: observed.eventCount };
     } finally {
-      if (handle) await args.provider.stop(handle);
+      if (handle) await this.stopBounded(args, handle);
+    }
+  }
+
+  /**
+   * Stop the session, but never wait longer than ATTEMPT_STOP_TIMEOUT_MS: the turn must be able to return (outside
+   * review of PR #188). A stop that does not answer in time is reported, not waited on; one that fails is rethrown,
+   * as before.
+   */
+  private async stopBounded(args: StepAttemptArgs, handle: SessionHandle): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<'timeout'>((resolve) => { timer = setTimeout(() => resolve('timeout'), this.deps.stopTimeoutMs ?? ATTEMPT_STOP_TIMEOUT_MS); });
+    try {
+      const outcome = await Promise.race([args.provider.stop(handle).then(() => 'stopped' as const), timedOut]);
+      if (outcome === 'timeout') {
+        this.deps.emit('dispatcher/step.stop_timeout', args.moleculeId, args.stepId, {
+          stepName: args.stepName,
+          stepId: args.stepId,
+          sessionId: handle.id,
+          waitedMs: this.deps.stopTimeoutMs ?? ATTEMPT_STOP_TIMEOUT_MS,
+        });
+      }
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -35,8 +76,12 @@ export class StepAttemptRunner {
     });
   }
 
-  private async startStepAttempt(args: StepAttemptArgs): Promise<SessionHandle> {
-    await this.deps.walker.startStep(args.stepId);
+  /** Null when the step was no longer open (the root close got there first): then no session is started. */
+  private async startStepAttempt(args: StepAttemptArgs): Promise<SessionHandle | null> {
+    // Not started when bd refused (the step is no longer open) or this run was cancelled during the write. Both halves
+    // are needed: a cancel of this run sets `cancelled`, but another dispatcher on the same tracker (the restart path)
+    // can close the step while this run is never marked cancelled, and then only bd's refusal stops the start.
+    if (!(await this.deps.walker.startStep(args.stepId)) || args.cancelled?.()) return null;
     return args.provider.start(this.stepAttemptSessionSpec(args));
   }
 
@@ -75,6 +120,8 @@ export class StepAttemptRunner {
     conversationId: string | undefined,
   ): Promise<void> {
     if (!taskId && !conversationId) return;
+    // A prompt can resolve after cancel() has recorded the step and closed the root: write nothing on it then.
+    if (args.cancelled?.()) return;
     await this.deps.walker.recordStepTask(args.stepId, {
       ...(taskId ? { taskId } : {}),
       providerKind: handle.providerKind,
@@ -109,6 +156,7 @@ export class StepAttemptRunner {
       agentActed = didAgentAct(event, agentActed);
       this.handleStepAttemptEvent(event, agentActed);
       if (event.kind === 'turn-done') break;
+      if (args.cancelled?.()) break;
     }
     return { text, eventCount };
   }
