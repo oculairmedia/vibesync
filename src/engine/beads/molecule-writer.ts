@@ -221,7 +221,14 @@ export class BdMoleculeWriter {
         this.bd(['update', rootId, '--status', status, '--force', '--if-status', 'open', '--metadata', ref, '--actor', ACTOR]));
       return true;
     } catch (error) {
-      if (error instanceof CliExitError && error.exitCode === BD_PRECONDITION_FAILED) return false;
+      // bd's refusal means the root was not open. Only a root that is now CLOSED means "another closer won"; one claimed
+      // or blocked by someone is not closed at all, and must not be reported as if it were (fourth outside review of
+      // PR #188).
+      if (error instanceof CliExitError && error.exitCode === BD_PRECONDITION_FAILED) {
+        const now = await this.reader.getBead(rootId);
+        if (now?.status === 'closed') return false;
+        throw new Error(`markMoleculeRootStatus: ${rootId} was not closed: bd refused because its status is "${now?.status ?? 'unknown'}", not open`, { cause: error });
+      }
       throw error;
     }
   }

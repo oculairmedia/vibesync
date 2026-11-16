@@ -68,16 +68,31 @@ describe('BdMoleculeWriter.markMoleculeRootStatus closes the root only if it is 
   });
 
   it("bd's precondition exit (13) on the root write means another closer won: false, not an error", async () => {
+    // Another closer closes the root between the writer's first read and its write: the re-read sees it closed.
+    let reads = 0;
     const writer = new BdMoleculeWriter(async (args) => {
       if (args[0] === 'update') throw new CliExitError('status mismatch', 13);
       return '';
-    }, { getBead: async () => openRoot, findStepsForMolecule: async () => [] });
+    }, { getBead: async () => (reads++ === 0 ? openRoot : closedRoot), findStepsForMolecule: async () => [] });
     expect(await writer.markMoleculeRootStatus('r-1', 'closed', 'completed')).toBe(false);
     const failing = new BdMoleculeWriter(async (args) => {
       if (args[0] === 'update') throw new CliExitError('dolt down', 1);
       return '';
     }, { getBead: async () => openRoot, findStepsForMolecule: async () => [] });
     await expect(failing.markMoleculeRootStatus('r-1', 'closed', 'completed')).rejects.toThrow('dolt down');
+  });
+});
+
+describe('exit 13 on the root close means "closed elsewhere" only if the root really is closed', () => {
+  it('a root that is not open and not closed (claimed, blocked) is an error, not "closed elsewhere"', async () => {
+    // Fourth outside review (Fable): --if-status open also refuses a root in_progress or blocked. Reporting that as
+    // "closed elsewhere" leaves the root open while the run is told it was closed.
+    const claimed = { id: 'r-1', status: 'in_progress', issue_type: 'molecule_root', metadata: { exec: {} } } as never;
+    const writer = new BdMoleculeWriter(async (args) => {
+      if (args[0] === 'update') throw new CliExitError('status mismatch', 13);
+      return '';
+    }, { getBead: async () => claimed, findStepsForMolecule: async () => [] });
+    await expect(writer.markMoleculeRootStatus('r-1', 'closed', 'completed')).rejects.toThrow();
   });
 });
 

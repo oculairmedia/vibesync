@@ -77,6 +77,11 @@ export type StepRunArgs = {
    * cancel() records the step once the turn has returned (vibesync-6zos.3).
    */
   readonly cancelled: () => boolean;
+  /**
+   * The turn found its step closed under it by someone else (bd refused the start and this run was not cancelled).
+   * The run must then end through its root, never as completed (fourth outside review of PR #188).
+   */
+  readonly closedUnder?: () => void;
 };
 
 export type StepRunFailure = { readonly signal: FailureSignal; readonly error: unknown; readonly failureClass: string | null; readonly code?: string };
@@ -146,6 +151,8 @@ export interface MoleculeRun {
   cancelled: boolean;
   /** The root has been closed as cancelled (by cancel() or, if that failed part-way, by settlement). */
   rootClosed: boolean;
+  /** A step of this run was closed by someone else (another dispatcher's sweep): the run ends through its root. */
+  closedUnder: boolean;
   finalized: boolean;
   readonly resolve: (result: DispatchResult) => void;
   readonly reject: (error: unknown) => void;

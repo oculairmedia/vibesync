@@ -77,7 +77,12 @@ export class StepTurnRunner {
     if (args.cancelled()) return;
     // The attempt never ran (bd refused the start, or the run was cancelled): there is no reply. Write nothing; the
     // step is closed by whoever closed it, and settlement reads the root (third outside review of PR #188).
-    if (turn.output?.notStarted) return;
+    if (turn.output?.notStarted) {
+      // This run was not cancelled (asked just above), so the step was closed by someone else: the run ends through
+      // its root (settlement), never as completed.
+      args.closedUnder?.();
+      return;
+    }
     let failure = turn.failure;
 
     if (turn.output !== null) {

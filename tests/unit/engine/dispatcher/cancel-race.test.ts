@@ -1369,6 +1369,131 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
     expect(h.events.filter((e) => e.kind === 'dispatcher/formula.cancelled'), 'no cancelled event for a root it did not close').toHaveLength(0);
   });
 
+  it("another dispatcher's cancel sweep, landing before its root close, does not let this run claim completion", async () => {
+    // Fourth outside review (GPT): B's cancel sweeps the step closed, then pauses before its root write. A's start is
+    // refused (NOT_STARTED, nothing written), A settles, finds every step closed, and wins the root CAS with
+    // `completed`: a step that never ran, recorded as a completed run.
+    const marking = deferred();
+    const rootHeld = deferred();
+    const h = harness({ ending: 'reply' });
+    const markRunning = h.store.markStepRunning.bind(h.store);
+    h.store.markStepRunning = async (id: string) => { await marking.enter(); return markRunning(id); };
+    const markRoot = h.store.markMoleculeRootStatus.bind(h.store);
+    h.store.markMoleculeRootStatus = async (rootId, status, outcome) => {
+      if (outcome === 'cancelled') {
+        // B's sweep, as the real writer does it, BEFORE its root write; then B pauses.
+        for (const step of await h.store.findStepsForMolecule(rootId)) {
+          if (step.status !== 'closed') await h.store.closeOpenStep(step.id, 'run cancelled', true);
+        }
+        await rootHeld.enter();
+      }
+      return markRoot(rootId, status, outcome);
+    };
+    let moleculeId = '';
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    const told = pending.then(() => 'resolved', () => 'rejected');
+    await until(() => marking.reached(), "A's start write is in flight");
+    const other = newDriven(h.store, { idPrefix: 'mol', provider: h.provider, walker: new MoleculeWalker(h.store), eventBus: new EventBus({ noPersist: true }) });
+    const bCancel = other.cancel(moleculeId).catch(() => undefined);
+    await until(() => rootHeld.reached(), "B has swept the step and is about to close the root");
+    marking.open(); // A's start is refused: the step is closed
+    const within = <T,>(p: Promise<T>, what: string) => Promise.race([p, new Promise<string>((resolve) => setTimeout(() => resolve(`TIMED OUT: ${what}`), 2000))]);
+    const t = await within(told, 'run() to be told');
+    rootHeld.open();
+    await bCancel;
+    await settle();
+    const outcome = ((await h.store.getBead(moleculeId))?.metadata['exec'] as Record<string, unknown> | undefined)?.['outcome'];
+    expect(outcome, 'a run whose only step never ran is never recorded as completed').not.toBe('completed');
+    expect(t, 'the caller is not told the run succeeded').not.toBe('resolved');
+    expect(h.events.some((e) => e.kind === 'dispatcher/formula.completed')).toBe(false);
+    h.release();
+  });
+
+  it("a refused start while ANOTHER dispatcher is still sweeping a multi-step run does not leave this run hanging", async () => {
+    // Fourth outside review (Fable): B's sweep has closed `left` but not `right` when A's start of `left` is refused.
+    // A settles once, finds `right` open, does nothing, and nothing ever asks it to settle again: run() hangs.
+    const marking = deferred();
+    const sweepHeld = deferred();
+    const h = harness({ ending: 'reply' });
+    const markRunning = h.store.markStepRunning.bind(h.store);
+    let moleculeId = '';
+    h.store.markStepRunning = async (id: string) => {
+      if (moleculeId !== '' && id === newMoleculeStepId(moleculeId, 'left')) await marking.enter();
+      return markRunning(id);
+    };
+    const markRoot = h.store.markMoleculeRootStatus.bind(h.store);
+    h.store.markMoleculeRootStatus = async (rootId, status, outcome) => {
+      if (outcome === 'cancelled') {
+        // B's sweep, closing `left` first, then pausing before `right` and the root.
+        await h.store.closeOpenStep(newMoleculeStepId(rootId, 'left'), 'run cancelled', true);
+        await sweepHeld.enter();
+      }
+      return markRoot(rootId, status, outcome);
+    };
+    const chain: Formula = { name: 'chain', description: '', whenToUse: '', steps: [step('left', 0), { ...step('right', 0), dependsOn: ['left'] }] } as Formula;
+    const pending = h.dispatcher.run({ formula: chain, pack: pack(['left', 'right']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    const told = pending.then(() => 'resolved', () => 'rejected');
+    await until(() => marking.reached(), "A's start of `left` is in flight");
+    const other = newDriven(h.store, { idPrefix: 'mol', provider: h.provider, walker: new MoleculeWalker(h.store), eventBus: new EventBus({ noPersist: true }) });
+    const bCancel = other.cancel(moleculeId).catch(() => undefined);
+    await until(() => sweepHeld.reached(), 'B has closed `left` and paused');
+    marking.open(); // A's start of `left` is refused
+    await settle();
+    sweepHeld.open(); // B finishes: closes `right` and the root
+    await bCancel;
+    const within = <T,>(p: Promise<T>, what: string) => Promise.race([p, new Promise<string>((resolve) => setTimeout(() => resolve(`TIMED OUT: ${what}`), 3000))]);
+    expect(await within(told, 'run() to be told'), 'the run ends: it is told the outcome that stands').toBe('rejected');
+    expect(h.dispatcher.liveMoleculeIds()).not.toContain(moleculeId);
+    h.release();
+  });
+
+  it('a step closed under the run by a writer that never closes the root: the run fails after its wait, never completes', async () => {
+    // The fallback of settleClosedUnder: the other writer closed the step and stopped. After the wait, this run closes
+    // the root itself, as FAILED (never completed: its step never ran), and announces it.
+    const marking = deferred();
+    const h = harness({ ending: 'reply', cancelUnwindMs: 200 });
+    const markRunning = h.store.markStepRunning.bind(h.store);
+    h.store.markStepRunning = async (id: string) => { await marking.enter(); return markRunning(id); };
+    let moleculeId = '';
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    const told = pending.then(() => 'resolved', (e: unknown) => `rejected: ${String((e as Error).message)}`);
+    await until(() => marking.reached(), "the step's start write is in flight");
+    // Another writer closes the step and nothing else: the root stays open.
+    await h.store.closeOpenStep(newMoleculeStepId(moleculeId, 'worker'), 'closed by hand', true);
+    marking.open(); // refused
+    const within = <T,>(p: Promise<T>, what: string) => Promise.race([p, new Promise<string>((resolve) => setTimeout(() => resolve(`TIMED OUT: ${what}`), 3000))]);
+    const t = await within(told, 'run() to be told');
+    expect(t).toMatch(/^rejected: .*closed by another writer/);
+    const root = await h.store.getBead(moleculeId);
+    expect(root?.status).toBe('closed');
+    expect((root?.metadata['exec'] as Record<string, unknown>)['outcome'], 'failed, never completed').toBe('failed');
+    expect(h.events.some((e) => e.kind === 'dispatcher/formula.failed')).toBe(true);
+    expect(h.events.some((e) => e.kind === 'dispatcher/formula.completed')).toBe(false);
+  });
+
+  it("a step closed under the run while the other closer is still finishing: this run waits, and the other's cancel stands", async () => {
+    // Why settleClosedUnder waits: B's sweep has closed the step and B's root write is still to come. Without the wait,
+    // this run would close the root as `failed` first and B's `cancelled` would lose the CAS.
+    const marking = deferred();
+    const h = harness({ ending: 'reply', cancelUnwindMs: 2000 });
+    const markRunning = h.store.markStepRunning.bind(h.store);
+    h.store.markStepRunning = async (id: string) => { await marking.enter(); return markRunning(id); };
+    let moleculeId = '';
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    const told = pending.then(() => 'resolved', (e: unknown) => `rejected: ${String((e as Error).message)}`);
+    await until(() => marking.reached(), "the step's start write is in flight");
+    // B sweeps the step closed; its root write lands 300 ms later.
+    await h.store.closeOpenStep(newMoleculeStepId(moleculeId, 'worker'), 'run cancelled', true);
+    const bRoot = new Promise<void>((resolve) => setTimeout(() => { void h.store.markMoleculeRootStatus(moleculeId, 'closed', 'cancelled').then(() => resolve()); }, 300));
+    marking.open(); // refused: this run settles as closed-under and must wait
+    const within = <T,>(p: Promise<T>, what: string) => Promise.race([p, new Promise<string>((resolve) => setTimeout(() => resolve(`TIMED OUT: ${what}`), 4000))]);
+    const t = await within(told, 'run() to be told');
+    await bRoot;
+    expect(t, 'told the outcome B recorded').toContain('already closed elsewhere (outcome: cancelled)');
+    expect(((await h.store.getBead(moleculeId))?.metadata['exec'] as Record<string, unknown>)['outcome'], "B's cancel stands").toBe('cancelled');
+    expect(h.events.some((e) => e.kind === 'dispatcher/formula.failed'), 'this run announced no failure').toBe(false);
+  });
+
   it('a cancel whose tracker writes fail does not discard the run silently: the run ends failed, the error is not swallowed', async () => {
     const h = harness({ ending: 'reply', releaseOnStop: true });
     let moleculeId = '';

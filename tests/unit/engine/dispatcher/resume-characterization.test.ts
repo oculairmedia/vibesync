@@ -52,6 +52,23 @@ describe('FormulaDispatcher.resume characterization', () => {
     expect(h.events.at(-1)?.payload).toMatchObject({ moleculeId: view.rootId, resumed: true });
   });
 
+  it('a resume whose delivery is not met, of a root another closer already closed, announces no failure', async () => {
+    // Fourth outside review (GPT, Fable): resume ignored the root close's answer and emitted formula.failed for a
+    // root whose outcome another closer had recorded.
+    const h = harness();
+    const view = await rootWithSteps(h.store, ['worker'], { delivers: 'archive' });
+    await h.walker.finishStep(newMoleculeStepId(view.rootId, 'worker'), { output: 'saved output', eventCount: 2, resumed: true });
+    const markRoot = h.store.markMoleculeRootStatus.bind(h.store);
+    // Another closer records `cancelled` just before resume's own close.
+    h.store.markMoleculeRootStatus = async (rootId, status, outcome) => {
+      if (outcome === 'failed') await markRoot(rootId, status, 'cancelled');
+      return markRoot(rootId, status, outcome);
+    };
+    await h.dispatcher.resume(view.rootId).catch(() => undefined);
+    expect(h.events.some((event) => event.kind === 'dispatcher/formula.failed'), 'no failed event').toBe(false);
+    expect(((await h.store.getBead(view.rootId))?.metadata['exec'] as Record<string, unknown>)['outcome']).toBe('cancelled');
+  });
+
   it('fails closed for a persisted unknown delivery kind', async () => {
     const h = harness();
     const view = await rootWithSteps(h.store, ['worker'], { delivers: 'archive' });

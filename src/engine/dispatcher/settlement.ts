@@ -101,9 +101,42 @@ export class MoleculeSettler {
       this.rejectCancelledMolecule(run);
       return true;
     }
+    if (run.closedUnder) {
+      await this.settleClosedUnder(run);
+      return true;
+    }
     if (!run.failed) return false;
     await this.rejectFailedMolecule(run);
     return true;
+  }
+
+  /**
+   * A step was closed under this run by someone else (another dispatcher's cancel). Its steps may all be closed, but
+   * not because they ran, so the run must never complete (fourth outside review of PR #188). The other closer is
+   * normally mid-way through closing the root: wait for it briefly, then report the outcome it recorded. If it never
+   * closes the root, the run fails, through the conditional close.
+   */
+  private async settleClosedUnder(run: MoleculeRun): Promise<void> {
+    run.finalized = true;
+    this.deps.live.delete(run.moleculeId);
+    const deadline = Date.now() + (this.deps.cancelUnwindMs ?? DEFAULT_CANCEL_UNWIND_MS);
+    for (;;) {
+      const root = await this.deps.walker.readStep(run.moleculeId);
+      if (root?.status === 'closed') { await this.rejectClosedElsewhere(run); return; }
+      if (Date.now() >= deadline) break;
+      await sleep(CANCEL_UNWIND_POLL_MS);
+    }
+    run.failure = new FormulaDispatchError(`FormulaDispatcher: a step of molecule ${run.moleculeId} was closed by another writer, which did not close the root`, run.moleculeId);
+    this.finalizing.add(run.moleculeId);
+    let closedHere: boolean;
+    try {
+      closedHere = await this.deps.walker.markMoleculeRootStatus(run.moleculeId, 'closed', 'failed');
+    } finally {
+      this.finalizing.delete(run.moleculeId);
+    }
+    if (!closedHere) { await this.rejectClosedElsewhere(run); return; }
+    this.deps.emit('dispatcher/formula.failed', run.moleculeId, undefined, { moleculeId: run.moleculeId, error: stringifyError(run.failure) });
+    run.reject(run.failure);
   }
 
   private rejectCancelledMolecule(run: MoleculeRun): void {

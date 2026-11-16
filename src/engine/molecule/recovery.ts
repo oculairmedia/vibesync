@@ -60,7 +60,10 @@ export async function recoverInterruptedMolecules(store: RecoveryStore, emit: Re
       // ("cannot close blocked issue: B is blocked by [A]"), so close in
       // dependency order: every step after the steps it waits on.
       for (const step of await blockersFirst(store, steps)) await store.markStepFailed(step.id, STEP_TRACE, 'interrupted');
-      await store.markMoleculeRootStatus(root.id, 'closed', 'interrupted');
+      // Another closer may have closed the root while recovery ran: its outcome stands, so the root is neither reported
+      // nor announced as interrupted (fourth outside review of PR #188). A store that returns nothing is treated as
+      // having closed it.
+      if ((await store.markMoleculeRootStatus(root.id, 'closed', 'interrupted')) === false) continue;
       interrupted.push(root.id);
       const motivating = motivatingBead(root);
       emit(root.id, {
