@@ -663,27 +663,311 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
     await expectCancelled(h.store, right, 'right');
   });
 
-  it('a cancel refused after it claimed the run gives the run back: the run finishes normally and can still be cancelled', async () => {
-    // claimCancel marks the run before its first await; if cancel() then refuses (here: nothing running yet),
-    // a mark left behind would make the run unsettleable and every later cancel refused.
-    const h = harness({ ending: 'reply', releaseOnStop: true });
+  it('a live run with nothing in_progress is cancelled, not refused; a second cancel is refused as already cancelled', async () => {
+    // The read that would find the running step is made to come back empty, so cancel() stops no session; the
+    // turn is released by the test, as its session would otherwise run to its end. cancel() must not refuse (a
+    // live run is never refused for having nothing in_progress; outside review of PR #188), and the run must end.
+    const h = harness({ ending: 'reply', cancelUnwindMs: 200 });
     const findRunning = h.store.findRunningStepsForMolecule.bind(h.store);
     let moleculeId = '';
     let empty = true;
     h.store.findRunningStepsForMolecule = async (rootId: string) => (empty ? [] : findRunning(rootId));
     const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
-    pending.catch(() => undefined);
+    const told = pending.then(() => 'resolved', () => 'rejected');
     await until(async () => moleculeId !== '' && (await h.store.getBead(newMoleculeStepId(moleculeId, 'worker')))?.status === 'in_progress', 'worker in progress');
 
-    const refused = await h.dispatcher.cancel(moleculeId).then(() => 'ok', (error: unknown) => String((error as Error).message));
-    expect(refused).toContain('no running steps');
+    const cancelling = h.dispatcher.cancel(moleculeId).then((r) => r, (error: unknown) => String((error as Error).message));
+    await settle();
+    // While the first cancel is under way, a second one is refused as "already being cancelled".
+    const during = await h.dispatcher.cancel(moleculeId).then(() => 'ok', (error: unknown) => String((error as Error).message));
+    expect(during).toMatch(/already being cancelled/);
+    h.release();
+    expect(await cancelling).toMatchObject({ moleculeId });
     empty = false;
-    // The mark was given back: a second cancel is not refused as "already being cancelled".
-    expect(await h.dispatcher.cancel(moleculeId)).toEqual({ moleculeId, cancelledStepCount: 1 });
-    await pending.catch(() => undefined);
+    expect(await told).toBe('rejected');
+    // After it the run has ended (no longer live) and its root is closed: a further cancel is refused, and changes nothing.
+    const after = await h.dispatcher.cancel(moleculeId).then(() => 'ok', (error: unknown) => String((error as Error).message));
+    expect(after).toContain('has no running steps to cancel');
     await settle();
     expect((await h.store.getBead(moleculeId))?.status).toBe('closed');
+    // cancel() never saw the step as running (the read was empty), so the root close swept it up: closed with the
+    // reason `run cancelled`, and no result written over it. Nothing reads a step's own trace to call a run
+    // cancelled (the routes read the root's outcome), and a second writer on the step is what PR #188 removes.
+    const step = await h.store.getBead(newMoleculeStepId(moleculeId, 'worker'));
+    expect(step?.status).toBe('closed');
+    expect(step?.metadata['close_reason']).toBe('run cancelled');
+    expect((step?.metadata['exec'] as Record<string, unknown>)['output_payload']).toBeUndefined();
     expect(h.dispatcher.liveMoleculeIds()).not.toContain(moleculeId);
+  });
+
+  it('a second cancel after a first one gave up waiting is refused and does not un-cancel the run', async () => {
+    // Review on PR #188, round 2: after a timed-out cancel, cancelInProgress is false but cancelled is true and a turn
+    // is still out. A second cancel used to claim the run, be refused (nothing running), and clear `cancelled`
+    // when it gave the run back, so the late turn wrote its result under the closed root.
+    const h = harness({ ending: 'reply', cancelUnwindMs: 150 });
+    let moleculeId = '';
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    pending.catch(() => undefined);
+    const stepId = () => newMoleculeStepId(moleculeId, 'worker');
+    await until(async () => moleculeId !== '' && (await h.store.getBead(stepId()))?.status === 'in_progress', 'worker in progress');
+
+    await h.dispatcher.cancel(moleculeId); // gives up waiting; the turn is still out
+    const second = await h.dispatcher.cancel(moleculeId).then(() => 'ok', (error: unknown) => String((error as Error).message));
+    expect(second).toContain('already');
+    h.release(); // the late turn returns
+    await pending.catch(() => undefined);
+    await settle();
+    await expectCancelled(h.store, stepId(), 'after the late turn');
+  });
+
+  it('two cancels in the same tick with no live run (after a restart): exactly one runs', async () => {
+    const h = harness({ ending: 'reply' });
+    let moleculeId = '';
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    pending.catch(() => undefined);
+    await until(async () => moleculeId !== '' && (await h.store.getBead(newMoleculeStepId(moleculeId, 'worker')))?.status === 'in_progress', 'worker in progress');
+    // A fresh dispatcher on the same store has no live run for this molecule: the restart path.
+    const restarted = newDriven(h.store, { idPrefix: 'mol', provider: h.provider, walker: new MoleculeWalker(h.store), eventBus: new EventBus({ noPersist: true }) });
+    const results = await Promise.allSettled([restarted.cancel(moleculeId), restarted.cancel(moleculeId)]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const refused = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(String((refused[0]!.reason as Error).message)).toContain('already being cancelled');
+    h.release();
+    await pending.catch(() => undefined);
+  });
+
+  it('a turn that returns while a cancel holds its claim, and the read then finds nothing in_progress: the run still ends', async () => {
+    // Review on PR #188, round 2. The turn returns during the claim (run.cancelled is set), so it writes nothing and
+    // its settlement is held. If cancel() is then refused, nothing used to settle the run again: it stayed live,
+    // its step in_progress, until a restart.
+    const reading = deferred();
+    const h = harness({ ending: 'reply' });
+    const findRunning = h.store.findRunningStepsForMolecule.bind(h.store);
+    let moleculeId = '';
+    let refuse = false;
+    h.store.findRunningStepsForMolecule = async (rootId: string) => {
+      if (refuse) { await reading.enter(); return []; }
+      return findRunning(rootId);
+    };
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    const told = pending.then(() => 'resolved', () => 'rejected');
+    await until(async () => moleculeId !== '' && (await h.store.getBead(newMoleculeStepId(moleculeId, 'worker')))?.status === 'in_progress', 'worker in progress');
+
+    refuse = true;
+    const cancelling = h.dispatcher.cancel(moleculeId).then(() => 'ok', (error: unknown) => String((error as Error).message));
+    await until(() => reading.reached(), 'cancel holds its claim and is reading the running steps');
+    h.release(); // the turn returns now, during the claim
+    await settle();
+    reading.open(); // the read comes back empty
+    const within = <T,>(p: Promise<T>, what: string) => Promise.race([p, new Promise<string>((resolve) => setTimeout(() => resolve(`TIMED OUT: ${what}`), 3000))]);
+    // Not refused: a live run is cancelled even when the read finds nothing in_progress (outside review of PR #188).
+    expect(await within(cancelling, 'cancel() to return')).toBe('ok');
+    await settle();
+
+    expect(await within(told, 'run() to be told'), 'run() is told the run ended').toMatch(/^(resolved|rejected)$/);
+    expect(h.dispatcher.liveMoleculeIds()).not.toContain(moleculeId);
+    expect((await h.store.getBead(moleculeId))?.status, 'the root is closed').toBe('closed');
+  });
+
+  it('a cancel between two steps of a chain (nothing in_progress yet) ends the run: it is not refused and does not strand it', async () => {
+    // Outside review (Fable, GPT) of PR #188: `worker` is admitted, then cancel() lands while its attempt record is
+    // being written, before markStepRunning. Nothing is in_progress, so cancel() was refused; the turn had seen
+    // `cancelled` and started nothing, and its try key was already taken, so the run could never continue.
+    const holding = deferred();
+    const h = harness({ ending: 'reply', releaseOnStop: true });
+    const recordAttempt = h.store.recordStepAttempt.bind(h.store);
+    let moleculeId = '';
+    let held = false;
+    h.store.recordStepAttempt = async (id: string, attempt: number) => {
+      await recordAttempt(id, attempt);
+      if (!held) { held = true; await holding.enter(); }
+    };
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    const told = pending.then(() => 'resolved', () => 'rejected');
+    await until(() => holding.reached(), 'worker is between admission and its turn');
+    const cancelling = h.dispatcher.cancel(moleculeId).then(() => 'ok', (error: unknown) => String((error as Error).message));
+    await settle();
+    holding.open();
+    const within = <T,>(p: Promise<T>, what: string) => Promise.race([p, new Promise<string>((resolve) => setTimeout(() => resolve(`TIMED OUT: ${what}`), 3000))]);
+    expect(await within(cancelling, 'cancel() to return')).toBe('ok');
+    expect(await within(told, 'run() to be told')).toBe('rejected');
+    expect((await h.store.getBead(moleculeId))?.status).toBe('closed');
+    expect((await h.store.getBead(newMoleculeStepId(moleculeId, 'worker')))?.status).toBe('closed');
+    expect(h.dispatcher.liveMoleculeIds()).not.toContain(moleculeId);
+    expect(h.provider.recorder.starts, 'no session was started').toHaveLength(0);
+  });
+
+  it('a cancel while a step its role closed with a declared failure is unruled: the run ends cancelled, never stuck, never completed', async () => {
+    // Outside review (Fable): the role closes its own step declaring a failure_class; cancel() claims the run; the
+    // turn returns INSIDE the claim (held at cancel's first read) and writes nothing, so the failure is never ruled
+    // on. Observed on 82fd087 (2026-11-15): cancel() was refused (nothing in_progress) and gave the run back, and the
+    // run was STUCK: run() never told, root open. Fable predicted it could instead end `completed` with no output;
+    // that outcome was not observed here, so this test asserts both: the run ends, as cancelled, and never completed.
+    const reading = deferred();
+    const h = harness({
+      ending: 'reply',
+      before: async (spec, store) => {
+        const id = String(spec.extra?.['stepId']);
+        store.setStepMetadata(id, { failure_class: 'bad' });
+        await store.markStepDone(id, { declared: true });
+      },
+    });
+    const findRunning = h.store.findRunningStepsForMolecule.bind(h.store);
+    let moleculeId = '';
+    let hold = false;
+    h.store.findRunningStepsForMolecule = async (rootId: string) => {
+      if (hold) { hold = false; await reading.enter(); }
+      return findRunning(rootId);
+    };
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    pending.catch(() => undefined);
+    await until(async () => moleculeId !== '' && (await h.store.getBead(newMoleculeStepId(moleculeId, 'worker')))?.status === 'closed', 'the role closed its step');
+    hold = true;
+    const cancelling = h.dispatcher.cancel(moleculeId).catch(() => undefined);
+    await until(() => reading.reached(), 'cancel holds its claim at its first read');
+    h.release(); // the turn returns inside the claim
+    await settle();
+    reading.open();
+    const within = <T,>(p: Promise<T>, what: string) => Promise.race([p, new Promise<string>((resolve) => setTimeout(() => resolve(`TIMED OUT: ${what}`), 3000))]);
+    expect(await within(cancelling.then(() => 'returned'), 'cancel() to return')).toBe('returned');
+    expect(await within(pending.then(() => 'resolved', () => 'rejected'), 'run() to be told'), 'the run ends').toBe('rejected');
+    await settle();
+    const outcome = ((await h.store.getBead(moleculeId))?.metadata['exec'] as Record<string, unknown> | undefined)?.['outcome'];
+    expect(outcome, 'ended as cancelled, never completed').toBe('cancelled');
+    expect((await h.store.getBead(moleculeId))?.status).toBe('closed');
+    expect(h.events.some((event) => event.kind === 'dispatcher/formula.completed')).toBe(false);
+  });
+
+  it('a cancel that fails part-way stays a cancel: a late turn cannot overwrite the step it already recorded as cancelled', async () => {
+    // Outside review (Fable, GPT): the turn outlives cancel's wait; cancel records the step as cancelled, then its
+    // root write fails. 82fd087 marked the run failed and CLEARED `cancelled`, so the late turn, returning, saw the
+    // run as not cancelled and wrote its result over the `cancelled` record.
+    const h = harness({ ending: 'reply', cancelUnwindMs: 150 });
+    let moleculeId = '';
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    const told = pending.then(() => 'resolved', () => 'rejected');
+    const stepId = () => newMoleculeStepId(moleculeId, 'worker');
+    await until(async () => moleculeId !== '' && (await h.store.getBead(stepId()))?.status === 'in_progress', 'worker in progress');
+    const markRoot = h.store.markMoleculeRootStatus.bind(h.store);
+    let failOnce = true;
+    h.store.markMoleculeRootStatus = async (rootId, status, outcome) => {
+      if (failOnce && outcome === 'cancelled') { failOnce = false; throw new Error('tracker down'); }
+      return markRoot(rootId, status, outcome);
+    };
+
+    const result = await h.dispatcher.cancel(moleculeId).then(() => 'ok', (error: unknown) => String((error as Error).message));
+    expect(result).toContain('tracker down');
+    await expectCancelled(h.store, stepId(), 'recorded by cancel before its root write failed');
+    h.release(); // the late turn returns now
+    await pending.catch(() => undefined);
+    await settle();
+    await expectCancelled(h.store, stepId(), 'after the late turn returned');
+    expect(await told).toBe('rejected');
+    const root = await h.store.getBead(moleculeId);
+    expect(root?.status).toBe('closed');
+    expect((root?.metadata['exec'] as Record<string, unknown>)['outcome']).toBe('cancelled');
+  });
+
+  it('a session stop that never returns does not hold cancel() open: it ends within its wait', async () => {
+    // Outside review (GPT): cancel() awaited each provider.stop before its bounded wait even began, so one stop that
+    // never settles held the run open for ever and refused every later cancel.
+    const h = harness({ ending: 'reply', cancelUnwindMs: 200 });
+    h.provider.stop = () => new Promise<void>(() => {}); // never settles
+    let moleculeId = '';
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    pending.catch(() => undefined);
+    await until(async () => moleculeId !== '' && (await h.store.getBead(newMoleculeStepId(moleculeId, 'worker')))?.status === 'in_progress', 'worker in progress');
+    const within = <T,>(p: Promise<T>, what: string) => Promise.race([p, new Promise<string>((resolve) => setTimeout(() => resolve(`TIMED OUT: ${what}`), 2000))]);
+    const result = await within(h.dispatcher.cancel(moleculeId).then(() => 'returned', (e: unknown) => `failed: ${String((e as Error).message)}`), 'cancel() to return');
+    expect(result, 'cancel() is bounded by its wait').not.toMatch(/^TIMED OUT/);
+    expect((await h.store.getBead(moleculeId))?.status).toBe('closed');
+  });
+
+  it('a prompt that resolves after the run was cancelled writes no task or session details on the step', async () => {
+    // Outside review (GPT): the attempt writes the turn's task and session (recordStepTask) after provider.prompt
+    // resolves, without asking whether the run was cancelled. A prompt that resolves after cancel() has recorded
+    // the step and closed the root used to write onto the closed, cancelled step.
+    const prompting = deferred();
+    const h = harness({ ending: 'reply', cancelUnwindMs: 150 });
+    const basePrompt = h.provider.prompt.bind(h.provider);
+    h.provider.prompt = async (handle, content) => { await prompting.enter(); return basePrompt(handle, content); };
+    let moleculeId = '';
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    pending.catch(() => undefined);
+    await until(() => prompting.reached(), 'the attempt is waiting on its prompt');
+    const stepId = newMoleculeStepId(moleculeId, 'worker');
+    await h.dispatcher.cancel(moleculeId); // gives up waiting; records the step; closes the root
+    await expectCancelled(h.store, stepId, 'after cancel');
+    const before = JSON.stringify((await h.store.getBead(stepId))?.metadata);
+    prompting.open(); // the prompt resolves now, with a task id
+    h.release();
+    await pending.catch(() => undefined);
+    await settle();
+    expect(JSON.stringify((await h.store.getBead(stepId))?.metadata), 'the cancelled step is not written again').toBe(before);
+    expect(h.events.filter((event) => event.kind === 'dispatcher/step.task_recorded')).toHaveLength(0);
+  });
+
+  it('after a restart (no live run), a session stop that never returns does not hold cancel() open', async () => {
+    // The same finding on the restart path: cancel() there awaited each stop with no bound at all.
+    const h = harness({ ending: 'reply' });
+    let moleculeId = '';
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    pending.catch(() => undefined);
+    await until(async () => moleculeId !== '' && (await h.store.getBead(newMoleculeStepId(moleculeId, 'worker')))?.status === 'in_progress', 'worker in progress');
+    await until(async () => Boolean(((await h.store.getBead(newMoleculeStepId(moleculeId, 'worker')))?.metadata['exec'] as Record<string, unknown> | undefined)?.['session_id']), 'worker has a session');
+    const stuck = { ...h.provider, stop: () => new Promise<void>(() => {}) };
+    const restarted = newDriven(h.store, { idPrefix: 'mol', provider: stuck, walker: new MoleculeWalker(h.store), eventBus: new EventBus({ noPersist: true }), cancelUnwindMs: 200 });
+    const within = <T,>(p: Promise<T>, what: string) => Promise.race([p, new Promise<string>((resolve) => setTimeout(() => resolve(`TIMED OUT: ${what}`), 2000))]);
+    const result = await within(restarted.cancel(moleculeId).then(() => 'returned', (e: unknown) => `failed: ${String((e as Error).message)}`), 'cancel() to return');
+    expect(result, 'cancel() after a restart is bounded too').toBe('returned');
+    expect((await h.store.getBead(moleculeId))?.status).toBe('closed');
+    h.release();
+    await pending.catch(() => undefined);
+  });
+
+  it('a cancel accepted while the run is settling as completed wins: the run ends cancelled, never completed', async () => {
+    // Second outside review (GPT, Fable): settlement checks `cancelled` first, then awaits isComplete(). Now that a
+    // live cancel with nothing running is accepted, a cancel landing in that await is accepted, and settlement used
+    // to go on to completeMolecule: the caller got success and the root was written `completed`.
+    const completing = deferred();
+    const h = harness({ ending: 'reply' });
+    let moleculeId = '';
+    let held = false;
+    // Settlement's isComplete() reads the run through walker.load() -> getBeadDependencies(root): hold that read,
+    // once the step is closed (so this is the settlement read, not an earlier one).
+    const deps = h.store.getBeadDependencies.bind(h.store);
+    h.store.getBeadDependencies = async (id: string) => {
+      const rows = await deps(id);
+      if (!held && moleculeId !== '' && id === moleculeId && (await h.store.getBead(newMoleculeStepId(moleculeId, 'worker')))?.status === 'closed') {
+        held = true;
+        await completing.enter();
+      }
+      return rows;
+    };
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    const told = pending.then(() => 'resolved', () => 'rejected');
+    await until(async () => moleculeId !== '', 'run started');
+    h.release();
+    await until(() => completing.reached(), 'settlement is reading whether the run is complete');
+    const cancelling = h.dispatcher.cancel(moleculeId).then(() => 'ok', (error: unknown) => String((error as Error).message));
+    await settle();
+    completing.open();
+    const within = <T,>(p: Promise<T>, what: string) => Promise.race([p, new Promise<string>((resolve) => setTimeout(() => resolve(`TIMED OUT: ${what}`), 3000))]);
+    const c = await within(cancelling, 'cancel() to return');
+    const t = await within(told, 'run() to be told');
+    await settle();
+    const outcome = ((await h.store.getBead(moleculeId))?.metadata['exec'] as Record<string, unknown> | undefined)?.['outcome'];
+    if (c === 'ok') {
+      // The cancel was accepted, so it must win.
+      expect(t, 'the caller is not told success').toBe('rejected');
+      expect(outcome).toBe('cancelled');
+      expect(h.events.some((e) => e.kind === 'dispatcher/formula.completed')).toBe(false);
+    } else {
+      // Or it was refused because the run had already finished: then the run is completed, consistently.
+      expect(c).not.toMatch(/^TIMED OUT/);
+      expect(t).toBe('resolved');
+      expect(outcome).toBe('completed');
+    }
   });
 
   it('a cancel whose tracker writes fail does not discard the run silently: the run ends failed, the error is not swallowed', async () => {

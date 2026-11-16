@@ -30,6 +30,12 @@ function canSettle(run: MoleculeRun): boolean {
 const CANCEL_UNWIND_POLL_MS = 20;
 
 export class MoleculeSettler {
+  /**
+   * Molecules a cancel() is working on right now, live run or not (after a restart there is none). Claimed
+   * synchronously, before cancel()'s first await, and released when it returns (review on PR #188, round 2).
+   */
+  private readonly cancelling = new Set<string>();
+
   constructor(private readonly deps: MoleculeSettlerDeps) {}
 
   /**
@@ -72,6 +78,12 @@ export class MoleculeSettler {
 
   private async settleKnownMoleculeOutcome(run: MoleculeRun): Promise<boolean> {
     if (run.cancelled) {
+      // cancel() may have failed part-way, before the root was closed. The outcome stays `cancelled` (the run was
+      // cancelled: un-cancelling it would hand its steps back to turns that have already given them up), and
+      // closing the root is retried here, as the last writer. If it fails again, rejectSettlementError gives up
+      // the live run and boot recovery finishes the root.
+      if (!run.rootClosed) await this.closeCancelledRoot(run.moleculeId);
+      run.rootClosed = true;
       this.rejectCancelledMolecule(run);
       return true;
     }
@@ -165,70 +177,81 @@ export class MoleculeSettler {
   async cancel(moleculeId: string): Promise<CancelResult> {
     // Claimed before the first await, so a second cancel() in the same tick is refused (review on PR #188).
     const liveRun = this.claimCancel(moleculeId);
-    let root: BeadRow;
-    let running: readonly BeadRow[];
     try {
-      // The flag is set BEFORE the running steps are read: a step admitted after this point sees the run as
-      // cancelled and does not start; one admitted before it is in_progress by the time it is read.
-      ({ root, running } = await this.requireCancellable(moleculeId));
-    } catch (error) {
-      if (liveRun) this.unclaimCancel(liveRun);
-      throw error;
-    }
-    let closed = false;
-    try {
-      const provider = await this.resolveCancelProvider(liveRun, root, running);
-      await this.stopRunningSessions(running, provider);
-      if (liveRun) await this.waitForTurnsToReturn(liveRun);
-      // Read fresh after the wait, not the list read at the start: a step admitted just before the flag was set
-      // can land as in_progress after that first read; its turn wrote nothing (the run is cancelled), so cancel()
-      // is the only writer left for it (review on PR #188).
-      const cancelledStepCount = await this.recordStepsStillRunning(moleculeId, await this.deps.walker.findRunning(moleculeId));
-      await this.deps.walker.markMoleculeRootStatus(moleculeId, 'closed', 'cancelled');
-      closed = true;
-      this.deps.emit('dispatcher/formula.cancelled', moleculeId, undefined, {
-        moleculeId,
-        cancelledStepCount,
-      });
-      return { moleculeId, cancelledStepCount };
-    } catch (error) {
-      // cancel() failed part-way (a stop, a tracker write): the run must not be discarded as if it had been
-      // cancelled cleanly. It settles as FAILED, which closes the root with that outcome and tells run().
-      if (liveRun && !closed) {
-        liveRun.failed = true;
-        liveRun.failure = error;
-        liveRun.cancelled = false;
-      }
-      throw error;
+      return liveRun ? await this.cancelLiveRun(liveRun) : await this.cancelWithoutLiveRun(moleculeId);
     } finally {
-      // Also when cancel() failed part-way: the run must not stay unsettled for ever.
-      if (liveRun) await this.releaseAfterCancel(liveRun);
+      this.cancelling.delete(moleculeId);
     }
   }
 
-  /** Mark the live run as being cancelled, synchronously; refuse if a cancel already holds it. */
-  private claimCancel(moleculeId: string): MoleculeRun | undefined {
-    const liveRun = this.deps.live.get(moleculeId);
-    if (!liveRun) return undefined;
-    if (liveRun.cancelInProgress) throw new FormulaCancellationConflictError(`FormulaDispatcher: molecule ${moleculeId} is already being cancelled`, moleculeId);
-    liveRun.cancelInProgress = true;
-    liveRun.cancelled = true;
-    return liveRun;
+  /**
+   * A run of this process. Its `cancelled` flag was set in claimCancel and is NEVER cleared: a turn that saw it
+   * has given its step up to cancel(), and that promise cannot be taken back (outside review of PR #188). So a
+   * live run is never refused for having nothing in_progress (a cancel between two steps is still a cancel), and
+   * a cancel that fails part-way stays a cancel: settlement closes the root as `cancelled`, retryably.
+   */
+  private async cancelLiveRun(run: MoleculeRun): Promise<CancelResult> {
+    const moleculeId = run.moleculeId;
+    try {
+      const running = await this.deps.walker.findRunning(moleculeId);
+      // The stops are asked for, not waited on: a stop that never settles must not hold the run open (outside review
+      // of PR #188). The bounded wait for the turns below is what decides when cancel() moves on.
+      this.requestStops(running, run.provider);
+      await this.waitForTurnsToReturn(run);
+      // Read fresh after the wait: a step admitted just before the flag can land as in_progress after the first read.
+      const cancelledStepCount = await this.recordStepsStillRunning(moleculeId, await this.deps.walker.findRunning(moleculeId));
+      await this.closeCancelledRoot(moleculeId);
+      run.rootClosed = true;
+      this.deps.emit('dispatcher/formula.cancelled', moleculeId, undefined, { moleculeId, cancelledStepCount });
+      return { moleculeId, cancelledStepCount };
+    } finally {
+      // Also when cancel() failed part-way: the run settles as cancelled, and closes its root if cancel() did not.
+      await this.releaseAfterCancel(run);
+    }
   }
 
-  /** cancel() refused after claiming (not found, nothing running): give the run back as it was. */
-  private unclaimCancel(run: MoleculeRun): void {
-    run.cancelInProgress = false;
-    run.cancelled = false;
-  }
-
-  /** The molecule's root, its running steps and its live run; throws when there is nothing to cancel or a cancel is already under way. */
-  private async requireCancellable(moleculeId: string): Promise<{ readonly root: BeadRow; readonly running: readonly BeadRow[] }> {
+  /**
+   * No run of this process (after a restart). Here "nothing in_progress" does mean there is nothing to stop; the
+   * root is closed all the same if it is still open, so a cancel whose root write failed can be retried.
+   */
+  private async cancelWithoutLiveRun(moleculeId: string): Promise<CancelResult> {
     const view = await this.deps.walker.load(moleculeId);
     if (!view) throw new FormulaDispatchError(`FormulaDispatcher: molecule ${moleculeId} not found`, moleculeId);
     const running = await this.deps.walker.findRunning(moleculeId);
-    if (running.length === 0) throw new FormulaCancellationConflictError(`FormulaDispatcher: molecule ${moleculeId} has no running steps to cancel`, moleculeId);
-    return { root: view.root, running };
+    if (running.length === 0 && view.root.status === 'closed') {
+      throw new FormulaCancellationConflictError(`FormulaDispatcher: molecule ${moleculeId} has no running steps to cancel`, moleculeId);
+    }
+    const provider = await this.resolveCancelProvider(undefined, view.root, running);
+    // Asked for, not waited on, as on the live-run path: a stop that never settles must not hold cancel() open.
+    this.requestStops(running, provider);
+    const cancelledStepCount = await this.recordStepsStillRunning(moleculeId, await this.deps.walker.findRunning(moleculeId));
+    await this.closeCancelledRoot(moleculeId);
+    this.deps.emit('dispatcher/formula.cancelled', moleculeId, undefined, { moleculeId, cancelledStepCount });
+    return { moleculeId, cancelledStepCount };
+  }
+
+  /** Close the root as cancelled. The writer also closes every step that is not closed yet (open or in_progress). */
+  private async closeCancelledRoot(moleculeId: string): Promise<void> {
+    await this.deps.walker.markMoleculeRootStatus(moleculeId, 'closed', 'cancelled');
+  }
+
+  /**
+   * Claim the molecule for this cancel(), synchronously; refuse if another cancel() holds it, or if its live run
+   * was already cancelled. For a live run, set `cancelled` now and for good.
+   */
+  private claimCancel(moleculeId: string): MoleculeRun | undefined {
+    const liveRun = this.deps.live.get(moleculeId);
+    if (this.cancelling.has(moleculeId) || liveRun?.cancelInProgress) {
+      throw new FormulaCancellationConflictError(`FormulaDispatcher: molecule ${moleculeId} is already being cancelled`, moleculeId);
+    }
+    if (liveRun?.cancelled) {
+      throw new FormulaCancellationConflictError(`FormulaDispatcher: molecule ${moleculeId} was already cancelled`, moleculeId);
+    }
+    this.cancelling.add(moleculeId);
+    if (!liveRun) return undefined;
+    liveRun.cancelInProgress = true;
+    liveRun.cancelled = true;
+    return liveRun;
   }
 
   /** cancel() is over: the run may settle. Tells the run() caller unless a turn outlived the wait; that turn's return will. */
@@ -237,12 +260,20 @@ export class MoleculeSettler {
     await this.settleMolecule(run);
   }
 
-  private async stopRunningSessions(running: readonly BeadRow[], provider: RuntimeProvider): Promise<void> {
+  /** Ask each running step's session to stop, without waiting; a failure or a stop that never returns is logged. */
+  private requestStops(running: readonly BeadRow[], provider: RuntimeProvider): void {
     for (const step of running) {
       const exec = readExec(step);
       const sessionId = readString(exec.session_id);
       const providerKind = readString(exec.provider_kind);
-      if (sessionId && providerKind) await provider.stop({ id: sessionId, providerKind });
+      if (!sessionId || !providerKind) continue;
+      provider.stop({ id: sessionId, providerKind }).catch((error: unknown) => {
+        this.deps.emit('dispatcher/cancel.stop_failed', readString(readExec(step).molecule) ?? undefined, undefined, {
+          stepId: step.id,
+          sessionId,
+          error: stringifyError(error),
+        });
+      });
     }
   }
 

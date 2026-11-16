@@ -322,6 +322,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
         failed: false,
         failure: undefined,
         cancelled: false,
+        rootClosed: false,
         finalized: false,
         resolve,
         reject,

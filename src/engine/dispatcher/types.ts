@@ -142,7 +142,10 @@ export interface MoleculeRun {
   running: number;
   failed: boolean;
   failure: unknown;
+  /** Never cleared once set: a turn that saw it has given its step up to cancel() (outside review of PR #188). */
   cancelled: boolean;
+  /** The root has been closed as cancelled (by cancel() or, if that failed part-way, by settlement). */
+  rootClosed: boolean;
   finalized: boolean;
   readonly resolve: (result: DispatchResult) => void;
   readonly reject: (error: unknown) => void;
@@ -230,4 +233,6 @@ export type StepAttemptArgs = {
   readonly projectIdentifier?: string;
   readonly turnTimeoutMs?: number;
   readonly workdir?: string;
+  /** True once the run is cancelled: the attempt then writes nothing more on the step (outside review of PR #188). */
+  readonly cancelled?: () => boolean;
 };

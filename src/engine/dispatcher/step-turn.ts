@@ -118,6 +118,7 @@ export class StepTurnRunner {
           ? { turnTimeoutMs: stepSpec.turnTimeoutMs ?? args.input.stepTimeoutMs }
           : {}),
         ...(args.workdir !== undefined ? { workdir: args.workdir } : {}),
+        cancelled: args.cancelled,
       });
       return { output, failure: null };
     } catch (error) {

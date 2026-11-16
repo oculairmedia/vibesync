@@ -201,10 +201,15 @@ export class BdMoleculeWriter {
       this.bd(['update', rootId, '--status', status, '--force', '--metadata', ref, '--actor', ACTOR]));
   }
 
+  /**
+   * Close every step of the run that is not closed yet, open or in_progress: the root close is the last writer, and a
+   * step left in_progress under a closed root has no one else to close it (a turn that saw the run cancelled wrote
+   * nothing; outside review of PR #188).
+   */
   private async closeOpenSteps(rootId: string, outcome: 'failed' | 'cancelled'): Promise<void> {
     const steps = await this.reader.findStepsForMolecule(rootId);
     for (const step of steps) {
-      if (step.status !== 'open') continue;
+      if (step.status === 'closed') continue;
       await this.bd(['close', step.id, '--force', '--reason', `run ${outcome}`]);
     }
   }

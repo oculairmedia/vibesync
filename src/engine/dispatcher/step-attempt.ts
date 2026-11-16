@@ -75,6 +75,8 @@ export class StepAttemptRunner {
     conversationId: string | undefined,
   ): Promise<void> {
     if (!taskId && !conversationId) return;
+    // A prompt can resolve after cancel() has recorded the step and closed the root: write nothing on it then.
+    if (args.cancelled?.()) return;
     await this.deps.walker.recordStepTask(args.stepId, {
       ...(taskId ? { taskId } : {}),
       providerKind: handle.providerKind,

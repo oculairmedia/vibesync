@@ -237,7 +237,9 @@ export class InMemoryDoltClient {
 
   async closeOpenStep(stepId: string, reason: string, force = false): Promise<void> {
     const row = this.requireBead(stepId);
-    if (row.status !== 'open') throw new Error(`InMemoryDoltClient: ${stepId} is not open`);
+    // Real bd closes an in_progress bead as well as an open one (checked 2026-11-15, with and without --force);
+    // only an already-closed one is refused here.
+    if (row.status === 'closed') throw new Error(`InMemoryDoltClient: ${stepId} is already closed`);
     const blocker = !force ? this.blockingEdges(stepId).find((edge) => this.beads.get(edge.depends_on_id)?.status !== 'closed') : undefined;
     if (blocker) throw new Error(`cannot close blocked issue: ${stepId} is blocked by [${blocker.depends_on_id}]`);
     this.updateBead(stepId, { status: 'closed', closed_at: new Date(), metadata: { ...row.metadata, close_reason: reason } });
@@ -281,7 +283,7 @@ export class InMemoryDoltClient {
     // Without this the stand-in left a step open under a closed root where real bd does not.
     if (outcome === 'failed' || outcome === 'cancelled') {
       for (const step of await this.findStepsForMolecule(rootId)) {
-        if (step.status === 'open') await this.closeOpenStep(step.id, `run ${outcome}`, true);
+        if (step.status !== 'closed') await this.closeOpenStep(step.id, `run ${outcome}`, true);
       }
     }
     this.updateBead(rootId, {
