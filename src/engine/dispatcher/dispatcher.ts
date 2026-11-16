@@ -489,7 +489,8 @@ function isSoftFailedStep(step: BeadRow): boolean {
 }
 
 function cannotStartSteps(run: MoleculeRun | undefined): boolean {
-  return !run || run.failed || run.cancelled;
+  // A run that found a step closed under it or held elsewhere starts nothing more: it is ending (outside review, PR #188).
+  return !run || run.failed || run.cancelled || run.closedUnder || run.claimedElsewhere;
 }
 
 function readyStepTryKey(step: BeadRow): string {

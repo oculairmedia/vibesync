@@ -282,7 +282,8 @@ export class InMemoryDoltClient {
   ): Promise<boolean> {
     const row = this.requireBead(rootId);
     // As the real writer does (`--if-status open`): a root already closed is not written again.
-    if (row.status === 'closed') return false;
+    // As bd's --if-status open: anything not open (closed, or claimed in_progress) is refused.
+    if (row.status !== 'open') return false;
     // As the real writer does (BdMoleculeWriter.closeOpenSteps, vibesync-9lzk.60): a run that
     // fails or is cancelled closes its steps that are still open, with the reason `run <outcome>`.
     // Without this the stand-in left a step open under a closed root where real bd does not.
@@ -294,7 +295,7 @@ export class InMemoryDoltClient {
     // Asked again after the awaited sweep, with no await before the write: real bd's `--if-status open` is atomic, so
     // a closer that lost the race while sweeping must be refused here (CodeRabbit on PR #188).
     const current = this.requireBead(rootId);
-    if (current.status === 'closed') return false;
+    if (current.status !== 'open') return false;
     this.updateBead(rootId, {
       status,
       closed_at: new Date(),

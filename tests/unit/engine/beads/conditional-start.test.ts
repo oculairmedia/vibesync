@@ -114,3 +114,15 @@ describe('the in-memory stand-in keeps the first root close, as real bd does', (
   });
 });
 
+describe('the in-memory stand-in refuses to close a root that is not open, as bd --if-status open does', () => {
+  it('a claimed (in_progress) root is not closed', async () => {
+    const { InMemoryDoltClient } = await import('../../../_fixtures/in-memory-dolt-client.js');
+    const { MoleculeWalker } = await import('../../../../src/engine/molecule/index.js');
+    const store = new InMemoryDoltClient();
+    const view = await new MoleculeWalker(store).dispatch({ prefix: 'mol', formulaName: 'f', title: 't', steps: [{ name: 'a', role: 'a', promptTemplate: 'p' }] });
+    store.beads.set(view.rootId, { ...(await store.getBead(view.rootId))!, status: 'in_progress' });
+    expect(await store.markMoleculeRootStatus(view.rootId, 'closed', 'failed')).toBe(false);
+    expect((await store.getBead(view.rootId))?.status).toBe('in_progress');
+  });
+});
+

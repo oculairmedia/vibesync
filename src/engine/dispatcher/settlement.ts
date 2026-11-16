@@ -121,7 +121,11 @@ export class MoleculeSettler {
   private rejectClaimedElsewhere(run: MoleculeRun): void {
     run.finalized = true;
     this.deps.live.delete(run.moleculeId);
-    run.reject(new FormulaDispatchError(`FormulaDispatcher: a step of molecule ${run.moleculeId} is held by another dispatcher, which owns the run now`, run.moleculeId));
+    // Visible, so a run left with no owner (the other dispatcher claimed the step and then died) can be traced: losing
+    // the claim does not prove the other dispatcher is alive (outside review of PR #188). Boot recovery or a cancel
+    // closes such a run.
+    this.deps.emit('dispatcher/run.claimed_elsewhere', run.moleculeId, undefined, { moleculeId: run.moleculeId });
+    run.reject(new FormulaDispatchError(`FormulaDispatcher: a step of molecule ${run.moleculeId} is held by another writer (its start was refused); this run stopped without writing`, run.moleculeId));
   }
 
   /**

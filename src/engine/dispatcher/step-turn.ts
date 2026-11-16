@@ -81,7 +81,9 @@ export class StepTurnRunner {
       // This run was not cancelled (asked just above). bd refused the start because the step is not open: read which.
       // CLOSED: someone closed it under this run, which then ends through its root (settlement), never as completed.
       // IN_PROGRESS: another dispatcher claimed it and owns that work; this run stops and writes nothing (CodeRabbit).
-      const now = await this.deps.walker.readStep(args.step.id);
+      // A failed read must not fail the run: that would close the root and sweep a step another dispatcher may hold. An
+      // unknown status goes the way that writes nothing (outside review of PR #188, Fable).
+      const now = await this.deps.walker.readStep(args.step.id).catch(() => null);
       if (args.cancelled()) return;
       if (now?.status === 'closed') args.closedUnder?.();
       else args.claimedElsewhere?.();

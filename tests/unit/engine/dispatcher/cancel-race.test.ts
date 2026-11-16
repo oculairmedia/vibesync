@@ -1523,8 +1523,57 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
     expect(h.events.some((e) => e.kind === 'dispatcher/formula.failed'), 'no failure announced for a run someone else owns').toBe(false);
     // And this run is not left hanging: it stops, tells its caller why, and leaves the live map.
     const within = <T,>(p: Promise<T>, what: string) => Promise.race([p, new Promise<string>((resolve) => setTimeout(() => resolve(`TIMED OUT: ${what}`), 2000))]);
-    expect(await within(told, 'run() to be told')).toMatch(/^rejected: .*held by another dispatcher/);
+    expect(await within(told, 'run() to be told')).toMatch(/^rejected: .*held by another writer/);
     expect(h.dispatcher.liveMoleculeIds()).not.toContain(moleculeId);
+  });
+
+  it('a refused start whose re-read of the step fails stops the run without closing the root or sweeping the step', async () => {
+    // Outside review (Fable) of the claimed-elsewhere fix: the re-read after the refusal had no error handling. A failed
+    // read threw, set run.failed, and the run then closed the root as failed and swept a step another dispatcher holds.
+    const h = harness({ ending: 'reply', cancelUnwindMs: 200 });
+    const markRunning = h.store.markStepRunning.bind(h.store);
+    let moleculeId = '';
+    h.store.markStepRunning = async (id: string) => { await markRunning(id); return markRunning(id); }; // claimed elsewhere
+    const getBead = h.store.getBead.bind(h.store);
+    let refused = false;
+    h.store.getBead = async (id: string) => {
+      if (refused && moleculeId !== '' && id === newMoleculeStepId(moleculeId, 'worker')) throw new Error('bd unavailable');
+      return getBead(id);
+    };
+    const realMark = h.store.markStepRunning;
+    h.store.markStepRunning = async (id: string) => { const r = await realMark(id); if (!r) refused = true; return r; };
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    const told = pending.then(() => 'resolved', (e: unknown) => `rejected: ${String((e as Error).message)}`);
+    const within = <T,>(p: Promise<T>, what: string) => Promise.race([p, new Promise<string>((resolve) => setTimeout(() => resolve(`TIMED OUT: ${what}`), 2000))]);
+    const t = await within(told, 'run() to be told');
+    refused = false;
+    expect(t).toMatch(/^rejected: /);
+    expect((await h.store.getBead(moleculeId))?.status, 'the root is not closed').toBe('open');
+    expect((await h.store.getBead(newMoleculeStepId(moleculeId, 'worker')))?.status, 'the held step is not swept').toBe('in_progress');
+    expect(h.events.some((e) => e.kind === 'dispatcher/formula.failed'), 'no failure announced').toBe(false);
+    expect(h.events.some((e) => e.kind === 'dispatcher/run.claimed_elsewhere'), 'the stop is visible as an event').toBe(true);
+  });
+
+  it('a run whose step is held elsewhere starts no further step while a sibling is still running', async () => {
+    // Outside review (Fable): cannotStartSteps ignored closedUnder/claimedElsewhere. In a fan of three with two slots,
+    // `left` is held elsewhere while `right` still runs; the run cannot settle yet, and the third step must not start
+    // under a run that has already stopped.
+    const h = harness({ ending: 'reply' });
+    const markRunning = h.store.markStepRunning.bind(h.store);
+    let moleculeId = '';
+    h.store.markStepRunning = async (id: string) => {
+      if (moleculeId !== '' && id === newMoleculeStepId(moleculeId, 'left')) { await markRunning(id); }
+      return markRunning(id);
+    };
+    const fan3 = formula(['left', 'right', 'third'], 2);
+    const pending = h.dispatcher.run({ formula: fan3, pack: pack(['left', 'right', 'third']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    pending.catch(() => undefined);
+    await until(async () => moleculeId !== '' && (await h.store.getBead(newMoleculeStepId(moleculeId, 'right')))?.status === 'in_progress', '`right` is running');
+    await settle();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect((await h.store.getBead(newMoleculeStepId(moleculeId, 'third')))?.status, 'the third step did not start').toBe('open');
+    expect(h.provider.recorder.starts.map((s) => s.role), 'no session for the third step').not.toContain('third');
+    h.release();
   });
 
   it('a cancel whose tracker writes fail does not discard the run silently: the run ends failed, the error is not swallowed', async () => {
