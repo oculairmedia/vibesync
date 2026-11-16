@@ -23,6 +23,20 @@ async function cookRunning(store: InMemoryDoltClient, motivatingBeadId?: string)
 }
 
 describe('recoverInterruptedMolecules', () => {
+  it('a root that is not open (claimed: in_progress) is not touched: its steps are not closed under a root left open', async () => {
+    // CodeRabbit on PR #188: recovery selected open AND in_progress roots, closed their steps as interrupted, then the
+    // root close (--if-status open) refused the in_progress root: steps closed, root left open, reported failed on every
+    // boot. Nothing in the engine sets a root in_progress; recovery now takes only the roots it can close.
+    const store = new InMemoryDoltClient();
+    const a = await cookRunning(store, 'work-1');
+    store.beads.set(a.rootId, { ...(await store.getBead(a.rootId))!, status: 'in_progress' });
+    const coderBefore = (await store.getBead(a.id('coder')))?.status;
+    const report = await recoverInterruptedMolecules(store as never, () => undefined);
+    expect(report.interrupted).not.toContain(a.rootId);
+    expect((await store.getBead(a.id('coder')))?.status, 'its steps are left as they were').toBe(coderBefore);
+    expect((await store.getBead(a.rootId))?.status).toBe('in_progress');
+  });
+
   it('a root that another closer closes while recovery runs is not reported or announced as interrupted', async () => {
     // Fourth outside review (GPT, Fable): recovery ignored the root close's answer and announced `interrupted` for a
     // root whose outcome another closer had recorded.

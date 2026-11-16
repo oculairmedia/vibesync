@@ -1501,6 +1501,32 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
     expect(h.events.some((e) => e.kind === 'dispatcher/formula.failed'), 'this run announced no failure').toBe(false);
   });
 
+  it('a start lost to ANOTHER dispatcher that claimed the same step does not close the root or sweep its step', async () => {
+    // CodeRabbit on e78c063: two dispatchers read the same open step; the other's conditional start wins (the step is
+    // in_progress, still being run by its owner). This run's start is refused for that reason, not because the step
+    // was closed. Treating it as closedUnder made this run close the root as `failed` after its wait and sweep the
+    // owner's active step.
+    const h = harness({ ending: 'reply', cancelUnwindMs: 200 });
+    const markRunning = h.store.markStepRunning.bind(h.store);
+    let moleculeId = '';
+    h.store.markStepRunning = async (id: string) => {
+      // The other dispatcher claims the step first; this run's compare-and-set then finds it in_progress, not open.
+      await markRunning(id);
+      return markRunning(id);
+    };
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    const told = pending.then(() => 'resolved', (e: unknown) => `rejected: ${String((e as Error).message)}`);
+    await until(async () => moleculeId !== '' && (await h.store.getBead(newMoleculeStepId(moleculeId, 'worker')))?.status === 'in_progress', 'the other dispatcher holds the step');
+    await new Promise((resolve) => setTimeout(resolve, 600)); // past this run's wait
+    expect((await h.store.getBead(moleculeId))?.status, 'the root is left to its owner').toBe('open');
+    expect((await h.store.getBead(newMoleculeStepId(moleculeId, 'worker')))?.status, "the owner's step is not swept").toBe('in_progress');
+    expect(h.events.some((e) => e.kind === 'dispatcher/formula.failed'), 'no failure announced for a run someone else owns').toBe(false);
+    // And this run is not left hanging: it stops, tells its caller why, and leaves the live map.
+    const within = <T,>(p: Promise<T>, what: string) => Promise.race([p, new Promise<string>((resolve) => setTimeout(() => resolve(`TIMED OUT: ${what}`), 2000))]);
+    expect(await within(told, 'run() to be told')).toMatch(/^rejected: .*held by another dispatcher/);
+    expect(h.dispatcher.liveMoleculeIds()).not.toContain(moleculeId);
+  });
+
   it('a cancel whose tracker writes fail does not discard the run silently: the run ends failed, the error is not swallowed', async () => {
     const h = harness({ ending: 'reply', releaseOnStop: true });
     let moleculeId = '';

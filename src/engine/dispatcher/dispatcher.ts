@@ -327,6 +327,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
         cancelled: false,
         rootClosed: false,
         closedUnder: false,
+        claimedElsewhere: false,
         finalized: false,
         resolve,
         reject,
@@ -388,6 +389,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
         provider: run.provider,
         cancelled: () => run.cancelled,
         closedUnder: () => { run.closedUnder = true; },
+        claimedElsewhere: () => { run.claimedElsewhere = true; },
         ...(run.input.workdir !== undefined ? { workdir: run.input.workdir } : {}),
       });
     } catch (error) {

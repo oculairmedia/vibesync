@@ -39,7 +39,12 @@ export interface RecoveryReport {
   readonly failed: ReadonlyArray<{ readonly moleculeId: string; readonly error: string }>;
 }
 
-const OPEN_STATUSES = ['open', 'in_progress'] as const;
+/**
+ * Only roots recovery can close. The root close is a compare-and-set on `open` (`bd update --if-status open`), and
+ * nothing in the engine sets a root in_progress; a root someone claimed is theirs, and closing its steps under a root
+ * left open would strand it and report it failed on every boot (CodeRabbit on PR #188).
+ */
+const OPEN_STATUSES = ['open'] as const;
 const STEP_TRACE = 'interrupted: vibesync restarted while this step was pending; the work bead is re-run';
 /** Generous ceiling; a host has a handful of live molecules at most. */
 const MAX_ROOTS = 500;

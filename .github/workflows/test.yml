@@ -130,8 +130,18 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # The checker is downloaded and checksum-checked here, then handed to the script by a RELATIVE path from a folder
+      # other than specs/: the script must make it absolute before it changes directory (CodeRabbit on PR #188). If
+      # that line is ever removed, Java cannot find the checker from specs/ and this job fails.
+      - name: Download the pinned checker
+        run: |
+          mkdir -p .tlc
+          version=$(sed -n 's/^TLA2TOOLS_VERSION=//p' scripts/ci/tlc.sh)
+          curl -fsSL -o .tlc/tla2tools.jar "https://github.com/tlaplus/tlaplus/releases/download/v${version}/tla2tools.jar"
+
       - name: Model-check the specs (TLC)
-        run: scripts/ci/tlc.sh
+        working-directory: .tlc
+        run: ../scripts/ci/tlc.sh tla2tools.jar
 
   # The bd-backed integration suites (vibesync-yhs0) run in their own job so the
   # required `test (20.x)` job stays fast: these suites wait out real bd lease

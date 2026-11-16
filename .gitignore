@@ -67,3 +67,4 @@ target/
 
 # Removed Teams runtime project-scoped task store (legacy runtime state)
 .lteams/
+.tlc/

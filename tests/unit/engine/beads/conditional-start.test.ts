@@ -96,3 +96,21 @@ describe('exit 13 on the root close means "closed elsewhere" only if the root re
   });
 });
 
+describe('the in-memory stand-in keeps the first root close, as real bd does', () => {
+  it('two closers racing across the sweep: only the first records its outcome; the second is refused', async () => {
+    // CodeRabbit on PR #188: the stand-in checked "still open" before its awaited sweep, not after, so both closers won.
+    const { InMemoryDoltClient } = await import('../../../_fixtures/in-memory-dolt-client.js');
+    const { MoleculeWalker } = await import('../../../../src/engine/molecule/index.js');
+    const store = new InMemoryDoltClient();
+    const view = await new MoleculeWalker(store).dispatch({ prefix: 'mol', formulaName: 'f', title: 't', steps: [{ name: 'a', role: 'a', promptTemplate: 'p' }] });
+    await store.markStepDone(`${view.rootId}-a`, { output: 'x' });
+    const [first, second] = await Promise.all([
+      store.markMoleculeRootStatus(view.rootId, 'closed', 'cancelled'),
+      store.markMoleculeRootStatus(view.rootId, 'closed', 'completed'),
+    ]);
+    expect([first, second].filter(Boolean), 'exactly one closer won').toHaveLength(1);
+    const outcome = ((await store.getBead(view.rootId))?.metadata['exec'] as Record<string, unknown>)['outcome'];
+    expect(outcome, 'the winner is the one that returned true').toBe(first ? 'cancelled' : 'completed');
+  });
+});
+

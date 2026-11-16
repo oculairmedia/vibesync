@@ -82,6 +82,12 @@ export type StepRunArgs = {
    * The run must then end through its root, never as completed (fourth outside review of PR #188).
    */
   readonly closedUnder?: () => void;
+  /**
+   * The turn found its step held by someone else (bd refused the start because the step is in_progress: another
+   * dispatcher claimed it). That owner runs it and closes the root; this run stops, writing nothing (CodeRabbit on
+   * PR #188: treating this as closedUnder made the run close the root and sweep the owner's active step).
+   */
+  readonly claimedElsewhere?: () => void;
 };
 
 export type StepRunFailure = { readonly signal: FailureSignal; readonly error: unknown; readonly failureClass: string | null; readonly code?: string };
@@ -153,6 +159,8 @@ export interface MoleculeRun {
   rootClosed: boolean;
   /** A step of this run was closed by someone else (another dispatcher's sweep): the run ends through its root. */
   closedUnder: boolean;
+  /** A step of this run is held by another dispatcher: this run stops without writing; the owner settles the root. */
+  claimedElsewhere: boolean;
   finalized: boolean;
   readonly resolve: (result: DispatchResult) => void;
   readonly reject: (error: unknown) => void;

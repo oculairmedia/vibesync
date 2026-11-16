@@ -6,8 +6,10 @@
  * Java and a 2 MB download, so this suite only pins the wiring that a later
  * edit could silently undo.
  */
-import { readFileSync, readdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const workflow = readFileSync(resolve('.github/workflows/test.yml'), 'utf8');
@@ -29,7 +31,9 @@ describe('TLA+ model check in CI (vibesync-6zos.3)', () => {
   it('has its own job that runs the script, on every pull request and push', () => {
     const tlc = job('tlc');
     expect(tlc).not.toBe('');
-    expect(tlc).toContain('run: scripts/ci/tlc.sh');
+    // Run with a RELATIVE checker path from outside specs/, so CI proves the script makes it absolute (PR #188).
+    expect(tlc).toContain('working-directory: .tlc');
+    expect(tlc).toContain('run: ../scripts/ci/tlc.sh tla2tools.jar');
     expect(tlc).toContain('actions/setup-java@');
     expect(tlc).not.toMatch(/continue-on-error|if:\s/); // never skipped, never allowed to fail
   });
@@ -68,6 +72,8 @@ describe('TLA+ model check in CI (vibesync-6zos.3)', () => {
     }
     // Review on #188: each half of the design in the code is shown necessary (fan shape).
     expect(result.get('fan.single-writer-snapshot')).toBe('fail ClosedRootHasOnlyClosedSteps');
+    // Isolated on the current design the snapshot recording holds, because of the full sweep (CodeRabbit on PR #188).
+    expect(result.get('fan.single-writer-snapshot-swept')).toBe('pass');
     // The old refusal (claim, then refuse and give the run back) strands a step: outside review of PR #188.
     expect(result.get('chain.single-writer-cancel-refuse')).toBe('fail NoStrandedStep');
     // With the compare-and-set start and the full sweep, the model holds without the pre-start re-check (sessions are covered by unit tests).
@@ -92,4 +98,26 @@ describe('TLA+ model check in CI (vibesync-6zos.3)', () => {
     expect(spec).toContain('ONE dispatcher');
     expect(spec).toContain('src/engine/dispatcher');
   });
+
+  // Needs the pinned checker jar (the script verifies its checksum before running it). CI's tlc job downloads it; here it
+  // is read from TLA2TOOLS_JAR. Without one this case is skipped, and says so.
+  const pinnedJar = process.env['TLA2TOOLS_JAR'] ?? '';
+  it.skipIf(pinnedJar === '')('resolves a relative checker path before it changes directory (CodeRabbit on PR #188)', () => {
+    // The script cds into the specs folder before running the checker. A relative jar path given on the command line
+    // must be made absolute first, or Java is told to load a file that does not exist there. A stand-in "java" records
+    // the class path it was given; the real checker is not run.
+    const dir = mkdtempSync(join(tmpdir(), 'tlc-relpath-'));
+    try {
+      copyFileSync(pinnedJar, join(dir, 'tla2tools.jar'));
+      const fakeJava = join(dir, 'java');
+      writeFileSync(fakeJava, `#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ "$1" = "-cp" ]; then shift; printf '%s\\n' "$1" >> "${dir}/cp.log"; fi; shift; done\necho "Model checking completed. No error has been found."\n`, { mode: 0o755 });
+      const run = spawnSync('bash', [resolve('scripts/ci/tlc.sh'), 'tla2tools.jar'], { cwd: dir, env: { ...process.env, JAVA: fakeJava }, encoding: 'utf8', timeout: 60_000 });
+      expect(existsSync(join(dir, 'cp.log')), `the checker was started (script said: ${(run.stderr || run.stdout).slice(0, 200)})`).toBe(true);
+      const classPaths = readFileSync(join(dir, 'cp.log'), 'utf8').split('\n').filter(Boolean);
+      for (const cp of classPaths) expect(cp, 'an absolute path to the jar given relative to the caller').toBe(join(dir, 'tla2tools.jar'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
 });

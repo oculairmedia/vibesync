@@ -78,9 +78,13 @@ export class StepTurnRunner {
     // The attempt never ran (bd refused the start, or the run was cancelled): there is no reply. Write nothing; the
     // step is closed by whoever closed it, and settlement reads the root (third outside review of PR #188).
     if (turn.output?.notStarted) {
-      // This run was not cancelled (asked just above), so the step was closed by someone else: the run ends through
-      // its root (settlement), never as completed.
-      args.closedUnder?.();
+      // This run was not cancelled (asked just above). bd refused the start because the step is not open: read which.
+      // CLOSED: someone closed it under this run, which then ends through its root (settlement), never as completed.
+      // IN_PROGRESS: another dispatcher claimed it and owns that work; this run stops and writes nothing (CodeRabbit).
+      const now = await this.deps.walker.readStep(args.step.id);
+      if (args.cancelled()) return;
+      if (now?.status === 'closed') args.closedUnder?.();
+      else args.claimedElsewhere?.();
       return;
     }
     let failure = turn.failure;

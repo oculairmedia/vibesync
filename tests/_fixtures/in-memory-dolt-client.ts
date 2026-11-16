@@ -291,10 +291,14 @@ export class InMemoryDoltClient {
         if (step.status !== 'closed') await this.closeOpenStep(step.id, `run ${outcome}`, true);
       }
     }
+    // Asked again after the awaited sweep, with no await before the write: real bd's `--if-status open` is atomic, so
+    // a closer that lost the race while sweeping must be refused here (CodeRabbit on PR #188).
+    const current = this.requireBead(rootId);
+    if (current.status === 'closed') return false;
     this.updateBead(rootId, {
       status,
       closed_at: new Date(),
-      metadata: mergeExec(row.metadata, { outcome }),
+      metadata: mergeExec(current.metadata, { outcome }),
     });
     return true;
   }

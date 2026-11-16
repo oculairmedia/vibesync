@@ -101,6 +101,10 @@ export class MoleculeSettler {
       this.rejectCancelledMolecule(run);
       return true;
     }
+    if (run.claimedElsewhere) {
+      this.rejectClaimedElsewhere(run);
+      return true;
+    }
     if (run.closedUnder) {
       await this.settleClosedUnder(run);
       return true;
@@ -108,6 +112,16 @@ export class MoleculeSettler {
     if (!run.failed) return false;
     await this.rejectFailedMolecule(run);
     return true;
+  }
+
+  /**
+   * A step of this run is held by another dispatcher, which owns that work and will settle the root. This run stops:
+   * it writes and announces nothing, and tells run() why (CodeRabbit on PR #188).
+   */
+  private rejectClaimedElsewhere(run: MoleculeRun): void {
+    run.finalized = true;
+    this.deps.live.delete(run.moleculeId);
+    run.reject(new FormulaDispatchError(`FormulaDispatcher: a step of molecule ${run.moleculeId} is held by another dispatcher, which owns the run now`, run.moleculeId));
   }
 
   /**
