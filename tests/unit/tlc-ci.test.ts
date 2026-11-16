@@ -70,7 +70,8 @@ describe('TLA+ model check in CI (vibesync-6zos.3)', () => {
       // The stated limit: a tracker write slower than cancel()'s wait.
       expect(result.get(`${shape}.single-writer-slow-write`)).toBe('fail StepResultIsFinal');
     }
-    // Review on #188: each half of the design in the code is shown necessary (fan shape).
+    // The snapshot design as it was (old flags) fails. This does NOT show fresh cancellation records are necessary today:
+    // with the full sweep, snapshot recording holds (next line). The sweep is the part shown necessary (CodeRabbit, PR #188).
     expect(result.get('fan.single-writer-snapshot')).toBe('fail ClosedRootHasOnlyClosedSteps');
     // Isolated on the current design the snapshot recording holds, because of the full sweep (CodeRabbit on PR #188).
     expect(result.get('fan.single-writer-snapshot-swept')).toBe('pass');

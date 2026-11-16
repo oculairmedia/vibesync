@@ -43,9 +43,10 @@ fan.fence-atomic-settled fail StepResultIsFinal
 chain.fence-atomic-cancelling pass
 fan.fence-atomic-cancelling fail ClosedRootHasOnlyClosedSteps
 
-# Review on #188, the two halves of the design in the code, each shown necessary.
-# cancel() recording only the steps it read when it began (the code before the review):
-# a step admitted just before the run was marked cancelled is left in_progress.
+# What the model shows about the two parts of the design in the code (corrected after CodeRabbit on PR #188): the
+# full root-close sweep IS shown necessary (weakening it makes fan.single-writer-snapshot-swept fail); fresh
+# cancellation records are NOT shown necessary while the sweep is in place (snapshot recording on the current design
+# passes). Fresh records stay because they record each running step as cancelled, rather than leaving it to the sweep.
 # The snapshot design AS IT WAS (before PR #188's review): the root close swept only open steps and the start was not a
 # compare-and-set. Under those flags, recording only the steps read at the start leaves a step in_progress under the
 # closed root. This configuration records the old design; it does NOT show the snapshot change alone is unsafe now.
