@@ -150,8 +150,11 @@ export class InMemoryDoltClient {
       .slice(0, limit);
   }
 
-  async markStepRunning(stepId: string): Promise<void> {
+  /** As BdMoleculeWriter.markStepRunning (`--if-status open`): a step that is no longer open is not started. */
+  async markStepRunning(stepId: string): Promise<boolean> {
+    if (this.requireBead(stepId).status !== 'open') return false;
     this.updateBead(stepId, { status: 'in_progress' });
+    return true;
   }
 
   async recordStepTask(stepId: string, task: {

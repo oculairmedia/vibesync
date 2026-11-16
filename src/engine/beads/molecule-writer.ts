@@ -14,6 +14,7 @@
  * Measured on bd 1.3.2: ~190 ms per update, ~500 ms per step create. A formula
  * step is an LLM turn of minutes, so this is well under 1% of a run.
  */
+import { BD_PRECONDITION_FAILED, CliExitError } from './cli.js';
 import { INFRA_RETRIES_KEY, LAST_FAILURE_CLASS_KEY, RETRY_ATTEMPT_KEY, RETRY_OUTCOME_KEY, REVIEW_ROUND_KEY, FAILURE_CLASS_KEY } from '../retry/policy.js';
 import type { MoleculeOutcome } from '../molecule/molecule.js';
 import type { BeadRow } from '../store/index.js';
@@ -101,8 +102,19 @@ export class BdMoleculeWriter {
     await this.bd(['dep', 'add', args.id, args.parentRootId, '--type', 'parent-child', '--actor', ACTOR]);
   }
 
-  async markStepRunning(stepId: string): Promise<void> {
-    await this.bd(['update', stepId, '--status', 'in_progress', '--actor', ACTOR]);
+  /**
+   * Start a step, only if it is still open (bd's compare-and-set). Returns false when bd refused because the step
+   * is no longer open: the root close (a cancelled or failed run) got there first, and a delayed start must not
+   * reopen it (second outside review of PR #188). Any other failure is thrown.
+   */
+  async markStepRunning(stepId: string): Promise<boolean> {
+    try {
+      await this.bd(['update', stepId, '--status', 'in_progress', '--if-status', 'open', '--actor', ACTOR]);
+      return true;
+    } catch (error) {
+      if (error instanceof CliExitError && error.exitCode === BD_PRECONDITION_FAILED) return false;
+      throw error;
+    }
   }
 
   async recordStepTask(stepId: string, task: {

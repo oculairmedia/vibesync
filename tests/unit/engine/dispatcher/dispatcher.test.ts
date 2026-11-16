@@ -796,7 +796,10 @@ describe('FormulaDispatcher', () => {
       await waitForCondition(() => alternateProvider.recorder.starts.length === 1);
       const stepId = newMoleculeStepId(moleculeId, 'worker');
       const walker = new MoleculeWalker(store);
-      await walker.startStep(stepId);
+      // The process "died" with this step in_progress. Set that directly, as the restart case at line ~866 does:
+      // by now the first turn has already closed the step, and starting a closed step is refused (it is the late
+      // reopen PR #188 removes), so walker.startStep no longer forces it back.
+      store.beads.set(stepId, { ...(await store.getBead(stepId))!, status: 'in_progress' });
       await walker.recordStepTask(stepId, {
         taskId: 'task-resume-project', providerKind: 'fake-runtime', sessionId: 'fake-runtime:worker-previous',
       });
@@ -828,7 +831,10 @@ describe('FormulaDispatcher', () => {
       await waitForCondition(() => alternateProvider.recorder.starts.length === 1);
       const stepId = newMoleculeStepId(moleculeId, 'worker');
       const walker = new MoleculeWalker(store);
-      await walker.startStep(stepId);
+      // The process "died" with this step in_progress. Set that directly, as the restart case at line ~866 does:
+      // by now the first turn has already closed the step, and starting a closed step is refused (it is the late
+      // reopen PR #188 removes), so walker.startStep no longer forces it back.
+      store.beads.set(stepId, { ...(await store.getBead(stepId))!, status: 'in_progress' });
       await walker.recordStepTask(stepId, {
         taskId: 'task-cancel-project', providerKind: 'fake-runtime', sessionId: 'fake-runtime:worker-previous',
       });

@@ -28,6 +28,17 @@ export function redactArgs(args: readonly string[]): string[] {
 /** Runs a CLI with the given args and resolves with stdout. Rejects on failure. */
 export type CommandRunner = (args: readonly string[]) => Promise<string>;
 
+/** A CLI that ran and exited non-zero. `exitCode` lets a caller tell a refusal (bd's --if-status: 13) from a failure. */
+export class CliExitError extends Error {
+  constructor(message: string, readonly exitCode: number | null) {
+    super(message);
+    this.name = 'CliExitError';
+  }
+}
+
+/** bd's exit code for a `--if-status` / `--if-assignee` precondition that no longer held: nothing was written. */
+export const BD_PRECONDITION_FAILED = 13;
+
 export interface CliRunnerOptions {
   readonly binary: string;
   readonly cwd?: string;
@@ -52,9 +63,11 @@ export function createCliRunner(opts: CliRunnerOptions): CommandRunner {
       });
       return stdout;
     } catch (err) {
-      const e = err as { message?: string; stderr?: string };
+      const e = err as { message?: string; stderr?: string; code?: unknown };
       const detail = ((e.stderr ?? '').trim() || e.message || String(err)).slice(0, ERROR_DETAIL_MAX);
-      throw new Error(`${opts.binary} ${redactArgs(args).join(' ')} failed: ${detail}`);
+      // execFile puts a non-zero exit status in `code` (a number); a spawn error such as ENOENT puts a string there.
+      const exitCode = typeof e.code === 'number' ? e.code : null;
+      throw new CliExitError(`${opts.binary} ${redactArgs(args).join(' ')} failed: ${detail}`, exitCode);
     }
   };
 }

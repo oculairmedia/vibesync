@@ -16,7 +16,15 @@ export class StepAttemptRunner {
     let handle: SessionHandle | null = null;
     try {
       handle = await this.startStepAttempt(args);
+      // Not started: the step was closed under it (or the run was cancelled meanwhile). Nothing to observe; what is
+      // returned is never written, as the run is cancelled or the step is closed.
+      if (handle === null) return { text: '', eventCount: 0 };
+      // The session id is recorded only after the prompt, so cancel() may not be able to name this session: once the
+      // run is cancelled the attempt ends itself, and the finally below stops the session it holds (second outside
+      // review of PR #188). What it returns is never written: a cancelled run's turn writes nothing.
+      if (args.cancelled?.()) return { text: '', eventCount: 0 };
       const promptResult = await args.provider.prompt(handle, [{ type: 'text', text: args.rendered }]);
+      if (args.cancelled?.()) return { text: '', eventCount: 0 };
       const traceConversationId = promptResult.conversationId;
       await this.recordStepAttemptTask(args, handle, promptResult.taskId, traceConversationId);
       const observed = await this.observeStepAttempt(args, handle, promptResult.taskId, traceConversationId);
@@ -35,8 +43,12 @@ export class StepAttemptRunner {
     });
   }
 
-  private async startStepAttempt(args: StepAttemptArgs): Promise<SessionHandle> {
-    await this.deps.walker.startStep(args.stepId);
+  /** Null when the step was no longer open (the root close got there first): then no session is started. */
+  private async startStepAttempt(args: StepAttemptArgs): Promise<SessionHandle | null> {
+    // Not started when bd refused (the step is no longer open) or this run was cancelled during the write. Both halves
+    // are needed: a cancel of this run sets `cancelled`, but another dispatcher on the same tracker (the restart path)
+    // can close the step while this run is never marked cancelled, and then only bd's refusal stops the start.
+    if (!(await this.deps.walker.startStep(args.stepId)) || args.cancelled?.()) return null;
     return args.provider.start(this.stepAttemptSessionSpec(args));
   }
 
@@ -111,6 +123,7 @@ export class StepAttemptRunner {
       agentActed = didAgentAct(event, agentActed);
       this.handleStepAttemptEvent(event, agentActed);
       if (event.kind === 'turn-done') break;
+      if (args.cancelled?.()) break;
     }
     return { text, eventCount };
   }

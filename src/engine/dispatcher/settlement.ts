@@ -35,6 +35,12 @@ export class MoleculeSettler {
    * synchronously, before cancel()'s first await, and released when it returns (review on PR #188, round 2).
    */
   private readonly cancelling = new Set<string>();
+  /**
+   * Molecules whose final outcome (completed or failed) is being written. The run has already left `live`, so a
+   * cancel() in that window would take the restart path and could close the root over the outcome run() was told
+   * (second outside review of PR #188). cancel() refuses while a molecule is here.
+   */
+  private readonly finalizing = new Set<string>();
 
   constructor(private readonly deps: MoleculeSettlerDeps) {}
 
@@ -65,6 +71,9 @@ export class MoleculeSettler {
       await this.settleMolecule(run);
       return;
     }
+    // Asked again after the awaits above (completeness, delivery): a cancel accepted meanwhile must win. It is still
+    // in progress, and its own release settles the run as cancelled (second outside review of PR #188).
+    if (run.cancelled) return;
     await this.completeMolecule(run);
   }
 
@@ -82,7 +91,8 @@ export class MoleculeSettler {
       // cancelled: un-cancelling it would hand its steps back to turns that have already given them up), and
       // closing the root is retried here, as the last writer. If it fails again, rejectSettlementError gives up
       // the live run and boot recovery finishes the root.
-      if (!run.rootClosed) await this.closeCancelledRoot(run.moleculeId);
+      // cancelledStepCount 0: cancel() failed before it could count what it recorded; the root close swept the rest.
+      if (!run.rootClosed) await this.closeCancelledRoot(run.moleculeId, 0);
       run.rootClosed = true;
       this.rejectCancelledMolecule(run);
       return true;
@@ -93,7 +103,7 @@ export class MoleculeSettler {
   }
 
   private rejectCancelledMolecule(run: MoleculeRun): void {
-    // cancel() has closed the root as 'cancelled' and emitted formula.cancelled
+    // The root has been closed as 'cancelled' and formula.cancelled emitted (closeCancelledRoot, by cancel() or above)
     // (settleMolecule does not get here while cancelInProgress). The step it
     // stopped may well have thrown on the way down; that must not turn the
     // cancelled root into a 'failed' one.
@@ -104,8 +114,13 @@ export class MoleculeSettler {
 
   private async rejectFailedMolecule(run: MoleculeRun): Promise<void> {
     run.finalized = true;
+    this.finalizing.add(run.moleculeId);
     this.deps.live.delete(run.moleculeId);
-    await this.deps.walker.markMoleculeRootStatus(run.moleculeId, 'closed', 'failed');
+    try {
+      await this.deps.walker.markMoleculeRootStatus(run.moleculeId, 'closed', 'failed');
+    } finally {
+      this.finalizing.delete(run.moleculeId);
+    }
     this.deps.emit('dispatcher/formula.failed', run.moleculeId, undefined, {
       moleculeId: run.moleculeId,
       error: stringifyError(run.failure),
@@ -122,8 +137,13 @@ export class MoleculeSettler {
   private async completeMolecule(run: MoleculeRun): Promise<void> {
     if (run.finalized) return;
     run.finalized = true;
+    this.finalizing.add(run.moleculeId);
     this.deps.live.delete(run.moleculeId);
-    await this.deps.walker.markMoleculeRootStatus(run.moleculeId, 'closed', 'completed');
+    try {
+      await this.deps.walker.markMoleculeRootStatus(run.moleculeId, 'closed', 'completed');
+    } finally {
+      this.finalizing.delete(run.moleculeId);
+    }
     this.deps.emit('dispatcher/formula.completed', run.moleculeId, undefined, {
       moleculeId: run.moleculeId,
       durationMs: Date.now() - run.startedAt,
@@ -200,9 +220,8 @@ export class MoleculeSettler {
       await this.waitForTurnsToReturn(run);
       // Read fresh after the wait: a step admitted just before the flag can land as in_progress after the first read.
       const cancelledStepCount = await this.recordStepsStillRunning(moleculeId, await this.deps.walker.findRunning(moleculeId));
-      await this.closeCancelledRoot(moleculeId);
+      await this.closeCancelledRoot(moleculeId, cancelledStepCount);
       run.rootClosed = true;
-      this.deps.emit('dispatcher/formula.cancelled', moleculeId, undefined, { moleculeId, cancelledStepCount });
       return { moleculeId, cancelledStepCount };
     } finally {
       // Also when cancel() failed part-way: the run settles as cancelled, and closes its root if cancel() did not.
@@ -225,14 +244,18 @@ export class MoleculeSettler {
     // Asked for, not waited on, as on the live-run path: a stop that never settles must not hold cancel() open.
     this.requestStops(running, provider);
     const cancelledStepCount = await this.recordStepsStillRunning(moleculeId, await this.deps.walker.findRunning(moleculeId));
-    await this.closeCancelledRoot(moleculeId);
-    this.deps.emit('dispatcher/formula.cancelled', moleculeId, undefined, { moleculeId, cancelledStepCount });
+    await this.closeCancelledRoot(moleculeId, cancelledStepCount);
     return { moleculeId, cancelledStepCount };
   }
 
-  /** Close the root as cancelled. The writer also closes every step that is not closed yet (open or in_progress). */
-  private async closeCancelledRoot(moleculeId: string): Promise<void> {
+  /**
+   * Close the root as cancelled and announce it with formula.cancelled. The ONLY place either happens, so the event
+   * cannot go missing on one path (it did when settlement closed the root after a part-way failure; second outside
+   * review of PR #188). The writer also closes every step that is not closed yet (open or in_progress).
+   */
+  private async closeCancelledRoot(moleculeId: string, cancelledStepCount: number): Promise<void> {
     await this.deps.walker.markMoleculeRootStatus(moleculeId, 'closed', 'cancelled');
+    this.deps.emit('dispatcher/formula.cancelled', moleculeId, undefined, { moleculeId, cancelledStepCount });
   }
 
   /**
@@ -241,6 +264,9 @@ export class MoleculeSettler {
    */
   private claimCancel(moleculeId: string): MoleculeRun | undefined {
     const liveRun = this.deps.live.get(moleculeId);
+    if (this.finalizing.has(moleculeId)) {
+      throw new FormulaCancellationConflictError(`FormulaDispatcher: molecule ${moleculeId} is already finishing`, moleculeId);
+    }
     if (this.cancelling.has(moleculeId) || liveRun?.cancelInProgress) {
       throw new FormulaCancellationConflictError(`FormulaDispatcher: molecule ${moleculeId} is already being cancelled`, moleculeId);
     }
