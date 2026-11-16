@@ -1375,7 +1375,7 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
     // `completed`: a step that never ran, recorded as a completed run.
     const marking = deferred();
     const rootHeld = deferred();
-    const h = harness({ ending: 'reply' });
+    const h = harness({ ending: 'reply', cancelUnwindMs: 3000 });
     const markRunning = h.store.markStepRunning.bind(h.store);
     h.store.markStepRunning = async (id: string) => { await marking.enter(); return markRunning(id); };
     const markRoot = h.store.markMoleculeRootStatus.bind(h.store);
@@ -1397,10 +1397,17 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
     const bCancel = other.cancel(moleculeId).catch(() => undefined);
     await until(() => rootHeld.reached(), "B has swept the step and is about to close the root");
     marking.open(); // A's start is refused: the step is closed
+    // A decides WHILE B is still paused before its root write: the old code completed the run here.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const duringHold = ((await h.store.getBead(moleculeId))?.metadata['exec'] as Record<string, unknown> | undefined)?.['outcome'];
+    expect(duringHold, 'A did not close the root as completed while B was paused').toBeUndefined();
     const within = <T,>(p: Promise<T>, what: string) => Promise.race([p, new Promise<string>((resolve) => setTimeout(() => resolve(`TIMED OUT: ${what}`), 2000))]);
-    const t = await within(told, 'run() to be told');
-    rootHeld.open();
+    rootHeld.open(); // B closes the root as cancelled; A, waiting on the root, then reports that outcome
     await bCancel;
+    // Asserted on the real answer, after B's root close (fifth outside review: a 2 s wait against the 5 s default
+    // cancel wait let this pass on a timeout string).
+    const t = await within(told, 'run() to be told');
+    expect(t, 'the caller is told the run ended').toBe('rejected');
     await settle();
     const outcome = ((await h.store.getBead(moleculeId))?.metadata['exec'] as Record<string, unknown> | undefined)?.['outcome'];
     expect(outcome, 'a run whose only step never ran is never recorded as completed').not.toBe('completed');

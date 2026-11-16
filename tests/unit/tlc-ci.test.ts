@@ -87,6 +87,9 @@ describe('TLA+ model check in CI (vibesync-6zos.3)', () => {
     const spec = readFileSync(resolve('specs/MoleculeLifecycle.tla'), 'utf8');
     for (const name of ['ClosedRootHasOnlyClosedSteps', 'StepResultIsFinal', 'NoUnruledStepAtRest', 'EventuallySettles']) expect(spec).toContain(`${name} ==`);
     expect(spec).toContain('Not modelled:');
+    // The limits outside review found (PR #188, rounds 3-5) stay written down: one dispatcher, unfenced late writes.
+    expect(spec).toContain('LIMITS:');
+    expect(spec).toContain('ONE dispatcher');
     expect(spec).toContain('src/engine/dispatcher');
   });
 });
