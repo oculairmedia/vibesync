@@ -68,7 +68,10 @@ describe('TLA+ model check in CI (vibesync-6zos.3)', () => {
     }
     // Review on #188: each half of the design in the code is shown necessary (fan shape).
     expect(result.get('fan.single-writer-snapshot')).toBe('fail ClosedRootHasOnlyClosedSteps');
-    expect(result.get('fan.single-writer-timeout-no-recheck')).toBe('fail ClosedRootHasOnlyClosedSteps');
+    // The old refusal (claim, then refuse and give the run back) strands a step: outside review of PR #188.
+    expect(result.get('chain.single-writer-cancel-refuse')).toBe('fail NoStrandedStep');
+    // With the compare-and-set start and the full sweep, the model holds without the pre-start re-check (sessions are covered by unit tests).
+    expect(result.get('fan.single-writer-timeout-no-recheck')).toBe('pass');
     expect(result.get('fan.fence-atomic-cancelling')).toBe('fail ClosedRootHasOnlyClosedSteps');
     // A gate with nothing that must fail could never show the checker working.
     expect(expected.filter(([, want]) => want === 'fail').length).toBeGreaterThanOrEqual(8);
