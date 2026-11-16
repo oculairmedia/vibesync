@@ -477,6 +477,10 @@ export class PmWaker {
     if (!claim.record || claim.record.status === 'closed') {
       this.durablePending.delete(record.id);
       this.carried.delete(record.payload.msgId);
+      // The saved message is gone (another process delivered it, or it was closed). Forget its retry state too, or the
+      // next wake for this reason re-sends that old message: it would not name what is pending now, and its
+      // confirmation would acknowledge nothing (outside review of the e57f.3 fix).
+      this.forgetRetry(record.payload.reason);
       return;
     }
     if (!claim.authorized) return;
@@ -585,14 +589,19 @@ export class PmWaker {
       lastByReason: { ...this.state.lastByReason, [reason]: at },
     };
     this.persist();
-    this.retryWakeId.delete(reason);
-    this.retryInput.delete(reason);
-    this.failedAt.delete(reason);
+    this.forgetRetry(reason);
     for (const key of [...this.skipNoticed]) if (key.startsWith(`${reason}:`)) this.skipNoticed.delete(key);
     const carried = this.carried.get(input.wakeId);
     this.carried.delete(input.wakeId);
     this.forgetDeliveredStalls(carried?.stalls);
     this.forgetDeliveredEvents(carried?.eventsUpTo);
+  }
+
+  /** Forget a reason's retry state: the next wake for it is built fresh from what is pending. */
+  private forgetRetry(reason: WakeReason): void {
+    this.retryWakeId.delete(reason);
+    this.retryInput.delete(reason);
+    this.failedAt.delete(reason);
   }
 
   /** Drop the stalls a confirmed wake named. A bead that has stalled again since, for another reason, stays. */

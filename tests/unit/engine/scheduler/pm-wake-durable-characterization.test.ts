@@ -216,7 +216,6 @@ it('durable: a stall that arrives while a saved stall wake is being retried gets
   expect(f.enqueued).toHaveLength(1); // retried, not replaced
   expect(f.enqueued[0]!.detail).toContain('wa');
   expect(f.enqueued[0]!.detail).not.toContain('wb');
-  expect(rememberedWakes(h.waker), 'a confirmed wake is forgotten').toBe(0);
 
   h.clock.t += 60_000; // the next tick is a later moment, as on the real loop (a wake id carries its time)
   await h.tick(); // wb was never in that message
@@ -229,6 +228,8 @@ it('durable: a stall that arrives while a saved stall wake is being retried gets
   await h.tick();
   await h.tick();
   expect(f.enqueued.filter((e) => e.reason === 'stall')).toHaveLength(2); // and nothing is repeated after that
+  // Last, so the old code fails on the dropped stall above, not here: what a wake carried is not kept once it is settled.
+  expect(rememberedWakes(h.waker), 'no memory kept for a confirmed wake (no leak)').toBe(0);
   h.waker.dispose();
 });
 
@@ -258,8 +259,10 @@ it('durable: confirming a wake recovered after a restart drops nothing noted sin
   h.waker.dispose();
 });
 
-it('durable: a saved wake that turns out to be closed already clears nothing', async () => {
-  // Another process delivered it, or it was closed by hand: this process cannot know what it carried was read.
+it('durable (guard, not a reproduction): a saved wake found closed clears nothing and keeps no memory of it', async () => {
+  // Another process delivered it, or it was closed by hand: this process cannot know what it carried was read. The old
+  // code also cleared nothing here; this pins the new snapshot's cleanup (no leak), so on the old code it fails only
+  // on the missing field.
   const saved = new Map<string, PendingWakeRecord>();
   const enqueued: string[] = [];
   let closeNext = true;
@@ -276,10 +279,69 @@ it('durable: a saved wake that turns out to be closed already clears nothing', a
   h.waker.noteStall('wa', 'first');
   await h.tick(); // saved, then found closed: dropped, not sent
   expect(enqueued).toHaveLength(1);
-  expect(rememberedWakes(h.waker), 'a dropped wake is forgotten').toBe(0);
   await h.tick(); // wa is still pending: it is woken for again
   expect(enqueued).toHaveLength(2);
   expect(enqueued[1]).toContain('wa');
+  expect(rememberedWakes(h.waker), 'no memory kept for a dropped wake (no leak)').toBe(0);
+  h.waker.dispose();
+});
+
+it('durable: after a failed send whose saved wake another process then closes, a new stall gets a fresh wake that names it, and is acknowledged', async () => {
+  // Outside review (GPT, Fable) of PR for e57f.3: dropping a saved wake found closed cleared its snapshot but kept the
+  // saved retry input, so the next send reused the old message (old wake id, old detail, no snapshot): it did not name the
+  // new stall, and its confirmation acknowledged nothing.
+  const enqueued: Array<{ wakeId: string; detail: string }> = [];
+  const saved = new Map<string, PendingWakeRecord>();
+  let sends = 0;
+  const h = harness({
+    enqueue: async (input) => {
+      enqueued.push({ wakeId: input.wakeId, detail: input.detail });
+      const r = record(input.wakeId, { payload: { projectIdentifier: 'project', agentId: 'pm', msgId: input.wakeId, reason: input.reason, detail: input.detail, body: input.detail, createdAt: new Date(0).toISOString() } });
+      saved.set(r.id, r);
+      return r;
+    },
+    claim: async (id) => ({ authorized: true, record: saved.get(id) ?? null }),
+    sendClaimed: async (r) => {
+      sends += 1;
+      if (sends === 1) return { authorized: true, record: r, outcome: { ok: false, error: 'iroh down' } };
+      return delivered(r);
+    },
+  });
+  await h.waker.idle();
+  h.waker.noteStall('wa', 'first');
+  await h.tick(); // saved and sent; the send fails, so the retry input for `stall` is kept
+  // Another process delivers and closes that saved wake.
+  for (const [id, r] of saved) saved.set(id, { ...r, status: 'closed' } as PendingWakeRecord);
+  await h.tick(); // the saved wake is found closed and dropped
+  h.waker.noteStall('wb', 'second');
+  h.clock.t += PM_WAKE_RETRY_BACKOFF_MS + 1000; // past the stall retry back-off the failed send started
+  await h.tick(); // a stall wake for what is pending now
+  const last = enqueued.at(-1)!;
+  expect(last.detail, 'the new wake names the new stall').toContain('wb');
+  expect(enqueued.filter((e) => e.wakeId === last.wakeId), 'a fresh wake id, not the old message re-sent').toHaveLength(1);
+  h.clock.t += 1000;
+  await h.tick();
+  // Once confirmed, both stalls are acknowledged: no stall wake again (a backstop may follow; it is due every second here).
+  expect(enqueued.filter((e) => e.wakeId.startsWith('project-stall-')), 'no stall wake after the confirmed one').toHaveLength(2);
+  h.waker.dispose();
+});
+
+it('durable: a stall whose reason changes while its wake is being retried keeps the new reason pending after the ack', async () => {
+  // The bead's acceptance 3 on the durable path (outside review): wa is carried with reason `first`, then re-noted as
+  // `second` before the retry confirms. The ack must drop only what was carried; wa(second) stays and gets its own wake.
+  const f = failsFirstSend();
+  const h = harness(f.pending);
+  await h.waker.idle();
+  h.waker.noteStall('wa', 'first');
+  await h.tick(); // saved, sent, not confirmed
+  h.waker.noteStall('wa', 'second'); // the same bead stalls again, for another reason, while the wake is pending
+  await h.tick(); // the saved wake (carrying wa: first) is retried and confirmed
+  expect(f.enqueued[0]!.detail).toContain('first');
+  h.clock.t += 60_000;
+  await h.tick();
+  expect(f.enqueued, 'a second stall wake, for the new reason').toHaveLength(2);
+  expect(f.enqueued[1]!.detail).toContain('wa');
+  expect(f.enqueued[1]!.detail).toContain('second');
   h.waker.dispose();
 });
 
