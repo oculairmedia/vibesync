@@ -1576,6 +1576,39 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
     h.release();
   });
 
+  it('a step admitted just before its run stopped records no attempt (ownership re-checked after the blocker read)', async () => {
+    // CodeRabbit on 42d7db8: runReadyStep checks cannotStartSteps, then awaits hasBlockerPendingRetry. A sibling turn can
+    // stop the run (claimedElsewhere) during that await; the step then reserved its try and recorded an attempt.
+    const h = harness({ ending: 'reply' });
+    const markRunning = h.store.markStepRunning.bind(h.store);
+    let moleculeId = '';
+    // `left`'s start is refused: another dispatcher holds it -> this run stops (claimedElsewhere).
+    h.store.markStepRunning = async (id: string) => {
+      if (moleculeId !== '' && id === newMoleculeStepId(moleculeId, 'left')) await markRunning(id);
+      return markRunning(id);
+    };
+    // Hold `right` inside its blocker read until `left` has stopped the run.
+    const reading = deferred();
+    const blockers = h.store.getBeadDependencies.bind(h.store);
+    let held = false;
+    h.store.getBeadDependencies = async (id: string) => {
+      if (!held && moleculeId !== '' && id === newMoleculeStepId(moleculeId, 'right')) { held = true; await reading.enter(); }
+      return blockers(id);
+    };
+    const attempts: string[] = [];
+    const recordAttempt = h.store.recordStepAttempt.bind(h.store);
+    h.store.recordStepAttempt = async (id: string, attempt: number) => { attempts.push(id); return recordAttempt(id, attempt); };
+    const pending = h.dispatcher.run({ formula: formula(['left', 'right'], 2), pack: pack(['left', 'right']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    pending.catch(() => undefined);
+    await until(() => reading.reached(), '`right` is inside its blocker read');
+    await until(() => !h.dispatcher.liveMoleculeIds().includes(moleculeId), '`left` stopped the run (claimed elsewhere)');
+    reading.open();
+    await settle();
+    expect(attempts, 'no attempt recorded on `right` after the run stopped').not.toContain(newMoleculeStepId(moleculeId, 'right'));
+    expect(h.provider.recorder.starts.map((sp) => sp.role)).not.toContain('right');
+    h.release();
+  });
+
   it('a cancel whose tracker writes fail does not discard the run silently: the run ends failed, the error is not swallowed', async () => {
     const h = harness({ ending: 'reply', releaseOnStop: true });
     let moleculeId = '';

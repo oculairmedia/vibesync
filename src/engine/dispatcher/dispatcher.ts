@@ -369,6 +369,9 @@ export class FormulaDispatcher implements ReadyStepRunner {
     // policy has ruled on it (reopen, or a final outcome stamp) that closed
     // blocker must not release its dependents.
     if (await this.hasBlockerPendingRetry(ready.step.id)) return 'skipped';
+    // Asked again after that read: a sibling turn may have stopped the run meanwhile (cancelled, failed, closed under or
+    // claimed elsewhere), and a step admitted now must not reserve its try or record an attempt (CodeRabbit, PR #188).
+    if (cannotStartSteps(run)) return 'skipped';
     // A review round (vibesync-9lzk.24) reopens a step with fresh retry
     // counters, so the round is part of the key or the re-run would be skipped.
     const tryKey = readyStepTryKey(ready.step);
