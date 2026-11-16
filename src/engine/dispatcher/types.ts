@@ -215,6 +215,12 @@ export interface RuntimeSessionEventContext {
 export interface StepAttemptOutput {
   readonly text: string;
   readonly eventCount: number;
+  /**
+   * True when no session was started or its turn was abandoned: bd refused the start (the step is no longer open),
+   * or the run was cancelled. There is no agent reply; the turn must not judge or write anything (third outside
+   * review of PR #188: an empty reply was judged and written when another dispatcher had closed the step).
+   */
+  readonly notStarted?: true;
 }
 
 export type StepAttemptArgs = {

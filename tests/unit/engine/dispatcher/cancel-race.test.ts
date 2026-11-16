@@ -101,6 +101,7 @@ function harness(args: {
   readonly before?: (spec: SessionSpec, store: InMemoryDoltClient) => Promise<void>;
   readonly stepJudge?: StepReplyJudge;
   readonly turnLimitPreserver?: TurnLimitPreserver;
+  readonly attemptStopTimeoutMs?: number;
 }): Harness {
   const store = new InMemoryDoltClient();
   let release: () => void = () => {};
@@ -115,6 +116,7 @@ function harness(args: {
   const dispatcher = newDriven(store, {
     idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus, maxParallelSteps: 2,
     ...(args.cancelUnwindMs !== undefined ? { cancelUnwindMs: args.cancelUnwindMs } : {}),
+    ...(args.attemptStopTimeoutMs !== undefined ? { attemptStopTimeoutMs: args.attemptStopTimeoutMs } : {}),
     ...(args.stepJudge ? { stepJudge: args.stepJudge } : {}),
     ...(args.turnLimitPreserver ? { turnLimitPreserver: args.turnLimitPreserver } : {}),
   });
@@ -1211,6 +1213,160 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
     await settle();
     expect(h.provider.recorder.starts, 'no session was started').toHaveLength(0);
     h.release();
+  });
+
+  it('a refused start after ANOTHER dispatcher cancelled the run is not judged, written or completed over that cancel', async () => {
+    // Third outside review (GPT): the refused start returned an ordinary empty output. This run was never marked
+    // cancelled, so the turn judged that empty reply, wrote it as the step's result, and settlement then found every
+    // step closed and wrote the root `completed` over the other dispatcher's `cancelled`.
+    const marking = deferred();
+    const h = harness({ ending: 'reply' });
+    const markRunning = h.store.markStepRunning.bind(h.store);
+    h.store.markStepRunning = async (id: string) => { await marking.enter(); return markRunning(id); };
+    let moleculeId = '';
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    const told = pending.then(() => 'resolved', () => 'rejected');
+    await until(() => marking.reached(), "the step's running write is in flight");
+    const stepId = newMoleculeStepId(moleculeId, 'worker');
+    const other = newDriven(h.store, { idPrefix: 'mol', provider: h.provider, walker: new MoleculeWalker(h.store), eventBus: new EventBus({ noPersist: true }) });
+    await other.cancel(moleculeId);
+    const stepAfterCancel = JSON.stringify((await h.store.getBead(stepId))?.metadata);
+    marking.open(); // refused: the step is closed
+    const within = <T,>(p: Promise<T>, what: string) => Promise.race([p, new Promise<string>((resolve) => setTimeout(() => resolve(`TIMED OUT: ${what}`), 2000))]);
+    const t = await within(told, 'run() to be told');
+    await settle();
+    expect(h.provider.recorder.starts, 'no session was started').toHaveLength(0);
+    expect(t, 'the caller is not told the run succeeded').not.toBe('resolved');
+    expect(JSON.stringify((await h.store.getBead(stepId))?.metadata), 'no result written over the closed step').toBe(stepAfterCancel);
+    const outcome = ((await h.store.getBead(moleculeId))?.metadata['exec'] as Record<string, unknown> | undefined)?.['outcome'];
+    expect(outcome, "the other dispatcher's cancel stands").toBe('cancelled');
+    expect(h.events.some((e) => e.kind === 'dispatcher/formula.completed'), 'no completed event').toBe(false);
+    h.release();
+  });
+
+  it('a session stop that never returns does not keep the run() caller waiting after a cancel', async () => {
+    // Outside review, rounds 2 and 3 (GPT, Fable): cancel() no longer awaits the stops, but the attempt's own finally
+    // awaited provider.stop(handle). A stop that never settles kept the turn in flight for ever, so the run never
+    // settled: run() stayed pending and the run stayed live.
+    const h = harness({ ending: 'reply', cancelUnwindMs: 150, attemptStopTimeoutMs: 200 });
+    h.provider.stop = () => new Promise<void>(() => {}); // never settles
+    let moleculeId = '';
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    const told = pending.then(() => 'resolved', () => 'rejected');
+    await until(async () => moleculeId !== '' && Boolean(((await h.store.getBead(newMoleculeStepId(moleculeId, 'worker')))?.metadata['exec'] as Record<string, unknown> | undefined)?.['session_id']), 'the session is running');
+    await h.dispatcher.cancel(moleculeId);
+    h.release(); // the agent's turn ends; the attempt's finally then asks for a stop that never returns
+    const within = <T,>(p: Promise<T>, what: string) => Promise.race([p, new Promise<string>((resolve) => setTimeout(() => resolve(`TIMED OUT: ${what}`), 2000))]);
+    expect(await within(told, 'run() to be told'), 'the caller is told the run was cancelled').toBe('rejected');
+    expect(h.dispatcher.liveMoleculeIds()).not.toContain(moleculeId);
+    expect(h.events.some((e) => e.kind === 'dispatcher/step.stop_timeout'), 'the unanswered stop is reported').toBe(true);
+  });
+
+  it('a run cancelled while its reply is being judged does not run the delivery check', async () => {
+    // Third outside review (Fable): settlement re-checked `cancelled` only AFTER checkDelivery, which can call a
+    // verifier (and wait on CI) and emit formula.delivered for a run that was cancelled.
+    const completing = deferred();
+    const store = new InMemoryDoltClient();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const provider = newFakeProvider({ kind: 'fake-runtime', script: () => turn(gate, 'reply') });
+    const eventBus = new EventBus({ noPersist: true });
+    const events: Event[] = [];
+    eventBus.subscribe((event) => events.push(event));
+    let verified = 0;
+    const dispatcher = newDriven(store, {
+      idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus,
+      deliveryVerifier: { verify: async () => { verified += 1; return { ok: true as const, artifact: 'https://github.com/o/r/pull/1' }; } },
+    } as never);
+    const delivering = { ...formula(['worker']), delivers: 'pull_request' } as unknown as Formula;
+    let moleculeId = '';
+    let held = false;
+    const deps = store.getBeadDependencies.bind(store);
+    store.getBeadDependencies = async (id: string) => {
+      const rows = await deps(id);
+      if (!held && moleculeId !== '' && id === moleculeId && (await store.getBead(newMoleculeStepId(moleculeId, 'worker')))?.status === 'closed') { held = true; await completing.enter(); }
+      return rows;
+    };
+    // cancel()'s first read is held too, so the cancel is accepted but still in progress when settlement goes on.
+    const reading = deferred();
+    const findRunning = store.findRunningStepsForMolecule.bind(store);
+    let holdCancel = false;
+    store.findRunningStepsForMolecule = async (rootId: string) => {
+      if (holdCancel) { holdCancel = false; await reading.enter(); }
+      return findRunning(rootId);
+    };
+    const told = dispatcher.run({ formula: delivering, pack: pack(['worker']), input: 'go', motivatingBeadId: 'w', onStarted: (id) => { moleculeId = id; } }).then(() => 'resolved', () => 'rejected');
+    await until(async () => moleculeId !== '', 'run started');
+    release();
+    await until(() => completing.reached(), 'settlement is reading completeness, before the delivery check');
+    holdCancel = true;
+    const cancelling = dispatcher.cancel(moleculeId).catch(() => undefined);
+    await until(() => reading.reached(), 'cancel is accepted and holding at its first read');
+    completing.open(); // settlement resumes while the accepted cancel is still in progress
+    await settle();
+    reading.open();
+    await cancelling;
+    expect(await told).toBe('rejected');
+    expect(verified, 'the delivery verifier was not called for a cancelled run').toBe(0);
+    expect(events.some((e) => e.kind === 'dispatcher/formula.delivered')).toBe(false);
+  });
+
+  it('a cancel claimed while the session id is being recorded, with a silent agent, still ends the turn', async () => {
+    // Third outside review (Fable): a cancel claimed during recordStepTask can read the steps before the session id
+    // lands, so it stops nothing; the observe loop then waits for an event a silent agent never sends.
+    const recording = deferred();
+    const store = new InMemoryDoltClient();
+    let silence: () => void = () => {};
+    const silent = new Promise<void>((resolve) => { silence = resolve; });
+    async function* quiet(): AsyncIterable<SessionEvent> { await silent; yield { kind: 'turn-done', ts: new Date().toISOString() }; }
+    const provider = newFakeProvider({ kind: 'fake-runtime', script: () => quiet() });
+    const recordTask = store.recordStepTask.bind(store);
+    store.recordStepTask = async (...a: Parameters<typeof recordTask>) => { await recording.enter(); return recordTask(...a); };
+    const dispatcher = newDriven(store, { idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }), cancelUnwindMs: 150 });
+    let moleculeId = '';
+    const told = dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } }).then(() => 'resolved', () => 'rejected');
+    await until(() => recording.reached(), 'the session id is being recorded');
+    await dispatcher.cancel(moleculeId);
+    recording.open();
+    const within = <T,>(p: Promise<T>, what: string) => Promise.race([p, new Promise<string>((resolve) => setTimeout(() => resolve(`TIMED OUT: ${what}`), 2000))]);
+    expect(await within(told, 'run() to be told')).toBe('rejected');
+    silence();
+  });
+
+  it('a run that fails after ANOTHER dispatcher closed its root reports that outcome and writes nothing', async () => {
+    // The failed path of "closed elsewhere": the root close is refused, so this run must not announce `failed` or
+    // overwrite the outcome the other closer recorded.
+    const h = harness({ ending: 'error' });
+    let moleculeId = '';
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    const told = pending.then(() => 'resolved', (e: unknown) => String((e as Error).message));
+    await until(async () => moleculeId !== '' && (await h.store.getBead(newMoleculeStepId(moleculeId, 'worker')))?.status === 'in_progress', 'worker in progress');
+    // Another closer records `cancelled` on the root, directly.
+    await h.store.markMoleculeRootStatus(moleculeId, 'closed', 'cancelled');
+    h.release(); // the turn fails: this run settles as failed and finds the root already closed
+    const t = await told;
+    expect(t, 'run() is told the outcome that stands').toContain('already closed elsewhere (outcome: cancelled)');
+    expect(((await h.store.getBead(moleculeId))?.metadata['exec'] as Record<string, unknown>)['outcome']).toBe('cancelled');
+    expect(h.events.some((e) => e.kind === 'dispatcher/formula.failed'), 'no failed event').toBe(false);
+  });
+
+  it('a cancel of a run whose root someone else already closed announces nothing', async () => {
+    // closeCancelledRoot emits formula.cancelled only when THIS call closed the root.
+    const h = harness({ ending: 'reply', releaseOnStop: true });
+    let moleculeId = '';
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    pending.catch(() => undefined);
+    await until(async () => moleculeId !== '' && (await h.store.getBead(newMoleculeStepId(moleculeId, 'worker')))?.status === 'in_progress', 'worker in progress');
+    const markRoot = h.store.markMoleculeRootStatus.bind(h.store);
+    // The root is closed by someone else just before this cancel's own root write.
+    h.store.markMoleculeRootStatus = async (rootId, status, outcome) => {
+      if (outcome === 'cancelled') await markRoot(rootId, status, 'completed');
+      return markRoot(rootId, status, outcome);
+    };
+    await h.dispatcher.cancel(moleculeId).catch(() => undefined);
+    await pending.catch(() => undefined);
+    await settle();
+    expect(h.events.filter((e) => e.kind === 'dispatcher/formula.cancelled'), 'no cancelled event for a root it did not close').toHaveLength(0);
   });
 
   it('a cancel whose tracker writes fail does not discard the run silently: the run ends failed, the error is not swallowed', async () => {

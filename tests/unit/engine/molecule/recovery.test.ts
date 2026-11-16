@@ -96,7 +96,7 @@ describe('recoverInterruptedMolecules', () => {
         if (prop === 'markMoleculeRootStatus') {
           return async (rootId: string, ...rest: unknown[]) => {
             if (rootId === a.rootId) throw new Error('bd unavailable');
-            return (target.markMoleculeRootStatus as (...x: unknown[]) => Promise<void>).call(target, rootId, ...rest);
+            return (target.markMoleculeRootStatus as (...x: unknown[]) => Promise<boolean>).call(target, rootId, ...rest);
           };
         }
         return Reflect.get(target, prop, receiver);

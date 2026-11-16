@@ -47,3 +47,37 @@ describe('BdMoleculeWriter.markStepRunning starts a step only if it is still ope
     await expect(plain.markStepRunning('s-1')).rejects.toThrow('spawn failed');
   });
 });
+
+describe('BdMoleculeWriter.markMoleculeRootStatus closes the root only if it is still open', () => {
+  const openRoot = { id: 'r-1', status: 'open', issue_type: 'molecule_root', metadata: { exec: {} } } as never;
+  const closedRoot = { id: 'r-1', status: 'closed', issue_type: 'molecule_root', metadata: { exec: { outcome: 'cancelled' } } } as never;
+
+  it('asks bd for the compare-and-set and reports that this call closed it', async () => {
+    const calls: string[][] = [];
+    const writer = new BdMoleculeWriter(async (args) => { calls.push([...args]); return ''; }, { getBead: async () => openRoot, findStepsForMolecule: async () => [] });
+    expect(await writer.markMoleculeRootStatus('r-1', 'closed', 'completed')).toBe(true);
+    const update = calls.find((a) => a[0] === 'update')!;
+    expect(update[update.indexOf('--if-status') + 1]).toBe('open');
+  });
+
+  it('a root already closed is not written at all, and its steps are not swept', async () => {
+    const calls: string[][] = [];
+    const writer = new BdMoleculeWriter(async (args) => { calls.push([...args]); return ''; }, { getBead: async () => closedRoot, findStepsForMolecule: async () => [{ id: 's-1', status: 'open' } as never] });
+    expect(await writer.markMoleculeRootStatus('r-1', 'closed', 'failed')).toBe(false);
+    expect(calls, 'no bd write at all').toEqual([]);
+  });
+
+  it("bd's precondition exit (13) on the root write means another closer won: false, not an error", async () => {
+    const writer = new BdMoleculeWriter(async (args) => {
+      if (args[0] === 'update') throw new CliExitError('status mismatch', 13);
+      return '';
+    }, { getBead: async () => openRoot, findStepsForMolecule: async () => [] });
+    expect(await writer.markMoleculeRootStatus('r-1', 'closed', 'completed')).toBe(false);
+    const failing = new BdMoleculeWriter(async (args) => {
+      if (args[0] === 'update') throw new CliExitError('dolt down', 1);
+      return '';
+    }, { getBead: async () => openRoot, findStepsForMolecule: async () => [] });
+    await expect(failing.markMoleculeRootStatus('r-1', 'closed', 'completed')).rejects.toThrow('dolt down');
+  });
+});
+

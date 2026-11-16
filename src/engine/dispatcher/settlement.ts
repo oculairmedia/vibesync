@@ -61,6 +61,10 @@ export class MoleculeSettler {
   private async settleMoleculeOutcome(run: MoleculeRun): Promise<void> {
     if (await this.settleKnownMoleculeOutcome(run)) return;
     if (!(await this.deps.walker.isComplete(run.moleculeId)) || run.finalized) return;
+    // A cancel accepted during that read wins, before the delivery check: it can call a verifier (and wait on CI) and
+    // emit formula.delivered, neither of which a cancelled run should do (third outside review of PR #188). The cancel
+    // is still in progress; its own release settles the run as cancelled.
+    if (run.cancelled) return;
     // vibesync-9lzk.21: every step finished, but a formula that declares a
     // delivery only completes once that artifact verifiably exists.
     const undelivered = await this.checkDelivery(run);
@@ -71,8 +75,8 @@ export class MoleculeSettler {
       await this.settleMolecule(run);
       return;
     }
-    // Asked again after the awaits above (completeness, delivery): a cancel accepted meanwhile must win. It is still
-    // in progress, and its own release settles the run as cancelled (second outside review of PR #188).
+    // Asked again after the delivery check, which awaits: a cancel accepted meanwhile must win (second outside review of
+    // PR #188). It is still in progress, and its own release settles the run as cancelled.
     if (run.cancelled) return;
     await this.completeMolecule(run);
   }
@@ -116,11 +120,13 @@ export class MoleculeSettler {
     run.finalized = true;
     this.finalizing.add(run.moleculeId);
     this.deps.live.delete(run.moleculeId);
+    let closedHere: boolean;
     try {
-      await this.deps.walker.markMoleculeRootStatus(run.moleculeId, 'closed', 'failed');
+      closedHere = await this.deps.walker.markMoleculeRootStatus(run.moleculeId, 'closed', 'failed');
     } finally {
       this.finalizing.delete(run.moleculeId);
     }
+    if (!closedHere) { await this.rejectClosedElsewhere(run); return; }
     this.deps.emit('dispatcher/formula.failed', run.moleculeId, undefined, {
       moleculeId: run.moleculeId,
       error: stringifyError(run.failure),
@@ -139,11 +145,13 @@ export class MoleculeSettler {
     run.finalized = true;
     this.finalizing.add(run.moleculeId);
     this.deps.live.delete(run.moleculeId);
+    let closedHere: boolean;
     try {
-      await this.deps.walker.markMoleculeRootStatus(run.moleculeId, 'closed', 'completed');
+      closedHere = await this.deps.walker.markMoleculeRootStatus(run.moleculeId, 'closed', 'completed');
     } finally {
       this.finalizing.delete(run.moleculeId);
     }
+    if (!closedHere) { await this.rejectClosedElsewhere(run); return; }
     this.deps.emit('dispatcher/formula.completed', run.moleculeId, undefined, {
       moleculeId: run.moleculeId,
       durationMs: Date.now() - run.startedAt,
@@ -254,8 +262,20 @@ export class MoleculeSettler {
    * review of PR #188). The writer also closes every step that is not closed yet (open or in_progress).
    */
   private async closeCancelledRoot(moleculeId: string, cancelledStepCount: number): Promise<void> {
-    await this.deps.walker.markMoleculeRootStatus(moleculeId, 'closed', 'cancelled');
+    // A root someone else already closed keeps its outcome, and this cancel announces nothing for it.
+    if (!(await this.deps.walker.markMoleculeRootStatus(moleculeId, 'closed', 'cancelled'))) return;
     this.deps.emit('dispatcher/formula.cancelled', moleculeId, undefined, { moleculeId, cancelledStepCount });
+  }
+
+  /**
+   * The root was already closed by another closer (a second dispatcher, the restart path) when this run went to close
+   * it: its outcome stands. Tell run() that outcome, as an error naming it, and write and announce nothing (third
+   * outside review of PR #188: the two closers used to overwrite each other's outcome).
+   */
+  private async rejectClosedElsewhere(run: MoleculeRun): Promise<void> {
+    const root = await this.deps.walker.readStep(run.moleculeId).catch(() => null);
+    const outcome = readString(readExec(root ?? ({ metadata: {} } as BeadRow)).outcome) ?? 'unknown';
+    run.reject(new FormulaDispatchError(`FormulaDispatcher: molecule ${run.moleculeId} was already closed elsewhere (outcome: ${outcome})`, run.moleculeId));
   }
 
   /**

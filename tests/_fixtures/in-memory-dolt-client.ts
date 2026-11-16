@@ -279,8 +279,10 @@ export class InMemoryDoltClient {
     rootId: string,
     status: 'closed',
     outcome: MoleculeOutcome,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const row = this.requireBead(rootId);
+    // As the real writer does (`--if-status open`): a root already closed is not written again.
+    if (row.status === 'closed') return false;
     // As the real writer does (BdMoleculeWriter.closeOpenSteps, vibesync-9lzk.60): a run that
     // fails or is cancelled closes its steps that are still open, with the reason `run <outcome>`.
     // Without this the stand-in left a step open under a closed root where real bd does not.
@@ -294,6 +296,7 @@ export class InMemoryDoltClient {
       closed_at: new Date(),
       metadata: mergeExec(row.metadata, { outcome }),
     });
+    return true;
   }
 
   private blockingEdges(stepId: string): DependencyRow[] {

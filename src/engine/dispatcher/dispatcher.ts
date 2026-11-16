@@ -72,6 +72,8 @@ export interface FormulaDispatcherOptions {
   readonly maxParallelSteps?: number;
   /** How long cancel() waits for stopped turns to return before recording their steps itself (default DEFAULT_CANCEL_UNWIND_MS). */
   readonly cancelUnwindMs?: number;
+  /** How long an attempt's cleanup waits for a session stop (default ATTEMPT_STOP_TIMEOUT_MS). */
+  readonly attemptStopTimeoutMs?: number;
   readonly maxConcurrentMolecules?: number;
   /**
    * Optional per-dispatch provider resolver (vibesync-f5g / vibesync-8hk).
@@ -154,6 +156,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
       walker: this.walker,
       emit: this.emit,
       emitRuntimeSessionEvent: this.emitRuntimeSessionEvent,
+      ...(opts.attemptStopTimeoutMs !== undefined ? { stopTimeoutMs: opts.attemptStopTimeoutMs } : {}),
     });
     this.idPrefix = opts.idPrefix;
     this.maxParallelSteps = normalizeMaxParallelSteps(opts.maxParallelSteps);

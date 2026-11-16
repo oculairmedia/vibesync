@@ -184,7 +184,8 @@ export interface MoleculeStore {
   appendNoteToBead(beadId: string, note: string): Promise<void>;
   addCommentToBead(beadId: string, comment: string): Promise<void>;
   // lcp-s0wi: mark a molecule root bead as terminal with an outcome.
-  markMoleculeRootStatus(rootId: string, status: 'closed', outcome: MoleculeOutcome): Promise<void>;
+  /** False when the root was already closed (another closer won): its outcome stands and nothing was written. */
+  markMoleculeRootStatus(rootId: string, status: 'closed', outcome: MoleculeOutcome): Promise<boolean>;
 }
 
 /**
@@ -399,8 +400,8 @@ export class MoleculeWalker {
     rootId: string,
     status: 'closed',
     outcome: MoleculeOutcome,
-  ): Promise<void> {
-    await this.store.markMoleculeRootStatus(rootId, status, outcome);
+  ): Promise<boolean> {
+    return this.store.markMoleculeRootStatus(rootId, status, outcome);
   }
 
   /**

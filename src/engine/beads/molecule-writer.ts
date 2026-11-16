@@ -206,11 +206,24 @@ export class BdMoleculeWriter {
    * legitimately leaves steps that never ran, and bd otherwise refuses to close
    * a parent with open children.
    */
-  async markMoleculeRootStatus(rootId: string, status: 'closed', outcome: MoleculeOutcome): Promise<void> {
+  /**
+   * Close the root with its outcome, only if it is still open (bd's compare-and-set, `--if-status open`). Returns false
+   * when the root was already closed: another closer got there first (a second dispatcher, the restart path), and its
+   * outcome stands (third outside review of PR #188: two closers used to overwrite each other). The step sweep is
+   * skipped for a root already closed, and the refusal of the root write remains the final word if two race.
+   */
+  async markMoleculeRootStatus(rootId: string, status: 'closed', outcome: MoleculeOutcome): Promise<boolean> {
     const bead = await this.require(rootId);
+    if (bead.status === 'closed') return false;
     if (outcome === 'failed' || outcome === 'cancelled') await this.closeOpenSteps(rootId, outcome);
-    await withMetadataFile({ exec: { ...execOf(bead), outcome } }, (ref) =>
-      this.bd(['update', rootId, '--status', status, '--force', '--metadata', ref, '--actor', ACTOR]));
+    try {
+      await withMetadataFile({ exec: { ...execOf(bead), outcome } }, (ref) =>
+        this.bd(['update', rootId, '--status', status, '--force', '--if-status', 'open', '--metadata', ref, '--actor', ACTOR]));
+      return true;
+    } catch (error) {
+      if (error instanceof CliExitError && error.exitCode === BD_PRECONDITION_FAILED) return false;
+      throw error;
+    }
   }
 
   /**
@@ -222,7 +235,7 @@ export class BdMoleculeWriter {
     const steps = await this.reader.findStepsForMolecule(rootId);
     for (const step of steps) {
       if (step.status === 'closed') continue;
-      await this.bd(['close', step.id, '--force', '--reason', `run ${outcome}`]);
+      await this.bd(['close', step.id, '--force', '--reason', `run ${outcome}`, '--actor', ACTOR]);
     }
   }
 

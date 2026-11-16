@@ -68,11 +68,10 @@ describe('FormulaDispatcher', () => {
       getBead: (id) => store.getBead(id),
       findStepsForMolecule: (rootId) => store.findStepsForMolecule(rootId),
     });
-    const markRoot = walker.markMoleculeRootStatus.bind(walker);
-    walker.markMoleculeRootStatus = async (rootId, status, result) => {
-      await rootWriter.markMoleculeRootStatus(rootId, status, result);
-      await markRoot(rootId, status, result);
-    };
+    // The real writer closes the root through the fake bd above (which writes the in-memory store), so its answer is
+    // the one the dispatcher acts on. A second close of the walker's own store would now be refused (the root is
+    // already closed: `--if-status open`), so it is not made.
+    walker.markMoleculeRootStatus = (rootId, status, result) => rootWriter.markMoleculeRootStatus(rootId, status, result);
     const eventBus = new EventBus({ noPersist: true });
     const dispatcher = newDriven(store, { idPrefix: 'mol', provider, walker, eventBus });
     let moleculeId = '';

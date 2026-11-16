@@ -27,7 +27,7 @@ export interface RecoveryStore {
   getBeadDependencies(id: string): Promise<ReadonlyArray<{ readonly issue_id: string; readonly depends_on_id: string; readonly type: string }>>;
   getBead(id: string): Promise<BeadRow | null>;
   markStepFailed(stepId: string, errorTrace: string, retryOutcome?: string): Promise<void>;
-  markMoleculeRootStatus(rootId: string, status: 'closed', outcome: 'interrupted'): Promise<void>;
+  markMoleculeRootStatus(rootId: string, status: 'closed', outcome: 'interrupted'): Promise<boolean | void>;
 }
 
 export interface RecoveryEmitter {

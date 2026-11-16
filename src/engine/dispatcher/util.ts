@@ -40,6 +40,13 @@ export const STEP_CANCELLED_TRACE = 'cancelled';
  */
 export const DEFAULT_CANCEL_UNWIND_MS = 5_000;
 
+/**
+ * How long an attempt's own cleanup waits for provider.stop before it gives up and lets the turn return. A stop that
+ * never settles must not keep the turn in flight for ever: then the run never settles and run() never returns
+ * (outside review of PR #188, rounds 2 and 3). The session may still be running; the event says so.
+ */
+export const ATTEMPT_STOP_TIMEOUT_MS = 10_000;
+
 export function readExec(row: BeadRow): Record<string, unknown> {
   const exec = row.metadata.exec;
   return exec && typeof exec === 'object' ? exec as Record<string, unknown> : {};
