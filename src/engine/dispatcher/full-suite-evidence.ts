@@ -29,24 +29,38 @@ export interface FullSuiteEvidenceInput {
   readonly stepStartedAt: Date;
   /** Every test file in the repository, relative to it (e.g. `tests/unit/x.test.ts`). */
   readonly testFiles: readonly string[];
+  /**
+   * The checkout the step ran in. When given, a report entry counts only at exactly `<workdir>/<file>`, so a report from
+   * another checkout does not prove this one (outside review). Without it, entries match by relative-path suffix.
+   */
+  readonly workdir?: string;
 }
 
 /** Null when the report proves a passing full-suite run; otherwise why not, naming what is missing. */
 export function fullSuiteShortfall(input: FullSuiteEvidenceInput): string | null {
-  const { report, stepStartedAt, testFiles } = input;
+  const { report, stepStartedAt, testFiles, workdir } = input;
   if (report === null) return 'full suite not run: no test report was written';
   if (typeof report.startTime !== 'number' || report.startTime < stepStartedAt.getTime()) {
     return 'full suite not run during this step: the test report is older than the step';
   }
   const files = report.testResults ?? [];
   const reported = new Set(files.map((f) => normalize(f.name ?? '')));
-  const missing = testFiles.filter((f) => ![...reported].some((r) => r.endsWith(`/${normalize(f)}`) || r === normalize(f)));
+  const root = workdir === undefined ? undefined : normalize(workdir).replace(/\/+$/, '');
+  const present = (f: string): boolean => (root !== undefined
+    ? reported.has(`${root}/${normalize(f)}`)
+    : [...reported].some((r) => r.endsWith(`/${normalize(f)}`) || r === normalize(f)));
+  const missing = testFiles.filter((f) => !present(f));
   if (missing.length > 0) {
     return `full suite not run: ${missing.length} of ${testFiles.length} test files are not in the report (e.g. ${missing.slice(0, 3).join(', ')})`;
   }
   const unloaded = files.filter((f) => (f.assertionResults?.length ?? 0) === 0);
   if (unloaded.length > 0) {
     return `the suite did not load ${unloaded.length} test file(s): ${unloaded.slice(0, 3).map((f) => shortName(f.name)).join(', ')}`;
+  }
+  // A file whose suite failed (a hook threw, an error outside a test) can list only passing tests (outside review).
+  const suiteFailed = files.find((f) => f.status === 'failed' && !(f.assertionResults ?? []).some((a) => a.status === 'failed'));
+  if (suiteFailed) {
+    return `the full suite has failures: ${shortName(suiteFailed.name)} failed outside its tests${suiteFailed.message ? ` (${suiteFailed.message.split('\n')[0]!.slice(0, 120)})` : ''}`;
   }
   for (const f of files) {
     const failed = (f.assertionResults ?? []).find((a) => a.status === 'failed');

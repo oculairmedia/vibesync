@@ -61,4 +61,19 @@ describe('fullSuiteShortfall (vibesync-6zos.7)', () => {
     const extra = full({ testResults: [...(full().testResults ?? []), entry('tests/unit/gone.test.ts', [{ status: 'passed' }])] });
     expect(fullSuiteShortfall({ report: extra, stepStartedAt: STARTED, testFiles: FILES })).toBeNull();
   });
+
+  it('a report from ANOTHER checkout does not count: report paths must be under this workdir (outside review, GPT)', () => {
+    const elsewhere = full({ testResults: (full().testResults ?? []).map((f) => ({ ...f, name: String(f.name).replace('/work/repo/', '/other/checkout/') })) });
+    expect(fullSuiteShortfall({ report: elsewhere, stepStartedAt: STARTED, testFiles: FILES, workdir: '/work/repo' })).toMatch(/full suite not run/);
+  });
+
+  it('a file whose suite failed (status failed, e.g. a hook threw) fails it even with only passing tests (outside review, GPT)', () => {
+    const hookFailed = full({ testResults: [
+      entry('tests/unit/a.test.ts', [{ status: 'passed' }]),
+      { ...entry('tests/unit/b.test.ts', [{ status: 'passed' }]), status: 'failed', message: 'beforeAll hook failed' },
+      entry('tests/integration/opt-in.test.ts', [{ status: 'skipped' }]),
+    ] });
+    expect(fullSuiteShortfall({ report: hookFailed, stepStartedAt: STARTED, testFiles: FILES, workdir: '/work/repo' })).toMatch(/tests\/unit\/b\.test\.ts/);
+  });
 });
+

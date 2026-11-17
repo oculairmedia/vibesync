@@ -277,7 +277,7 @@ export class StepTurnRunner {
     try {
       const [report, testFiles] = await Promise.all([source.readReport(workBeadId), source.listTestFiles(args.workdir)]);
       if (testFiles.length === 0) return `full suite not proven: no test files found under ${args.workdir}`;
-      return fullSuiteShortfall({ report, stepStartedAt: attemptStartedAt, testFiles });
+      return fullSuiteShortfall({ report, stepStartedAt: attemptStartedAt, testFiles, workdir: args.workdir });
     } catch (error) {
       return `full suite not proven: the evidence could not be read (${stringifyError(error)})`;
     }
