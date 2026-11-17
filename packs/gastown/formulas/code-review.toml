@@ -10,6 +10,8 @@ wait_for = "completion"
 [[formula.code-review.steps]]
 role = "coder"
 prompt_template = "prompts/coder-system.md"
+# vibesync-6zos.7: the engine checks the vitest report, not the reply.
+requires_full_suite = true
 depends_on = "reviewer"
 wait_for = "completion"
 # vibesync-lcp-98y8: coder steps can legitimately run long (substantial refactors, large PRs)

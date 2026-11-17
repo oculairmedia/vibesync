@@ -63,6 +63,13 @@ export interface StepSpec {
    */
   readonly planOnly?: boolean;
   /**
+   * vibesync-6zos.7: the step must prove a full run of the test suite. When it finishes, the dispatcher reads the vitest
+   * JSON report at `/tmp/vitest-<work bead>.json` and fails the step closed unless that report was written during the
+   * step, lists every test file in the workdir, and shows no failed test and no file that failed to load. TOML
+   * `requires_full_suite = true`. Soak runs 2 and 4: the coder ran only the files it touched.
+   */
+  readonly requiresFullSuite?: boolean;
+  /**
    * Bounded review loop (vibesync-9lzk.24): when this step ends BLOCKED, reopen
    * the named earlier step (the coder) for another round instead of failing
    * the run. TOML `loops_back_to = "coder"`, `max_rounds = 3`. The run fails

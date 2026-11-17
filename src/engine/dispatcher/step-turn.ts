@@ -26,6 +26,7 @@ import {
 } from './types.js';
 import { StepAttemptRunner } from './step-attempt.js';
 import { StepVerdictReader } from './step-verdict.js';
+import { fullSuiteShortfall, type VitestReport } from './full-suite-evidence.js';
 import { GitTurnLimitPreserver, NO_UNCOMMITTED_WORK, WIP_NOT_CHECKED, turnLimitRecord, type TurnLimitPreserver, type TurnLimitRecordStore } from './turn-limit.js';
 import { readStepName, sleep, softFailMarker, stringifyError } from './util.js';
 
@@ -38,6 +39,19 @@ export interface StepTurnDeps {
   readonly turnLimitPreserver?: TurnLimitPreserver;
   /** The tracker a run's work bead lives in (its project's bd, or the engine's store). */
   readonly turnLimitRecordStore: (projectIdentifier: string | undefined) => Pick<TurnLimitRecordStore, 'addCommentToBead'>;
+  /**
+   * vibesync-6zos.7: reads a step's full-suite evidence (the vitest report for the work bead, and the test files in the
+   * workdir). Absent: a step that requires the full suite cannot prove it, so it fails closed.
+   */
+  readonly fullSuiteEvidence?: FullSuiteEvidenceSource;
+}
+
+/** Where a step's full-suite evidence comes from (vibesync-6zos.7). */
+export interface FullSuiteEvidenceSource {
+  /** The parsed report for this work bead, or null when there is none or it cannot be parsed. */
+  readReport(workBeadId: string): Promise<VitestReport | null>;
+  /** Every test file under the workdir, relative to it. */
+  listTestFiles(workdir: string): Promise<readonly string[]>;
 }
 
 /**
@@ -45,6 +59,22 @@ export interface StepTurnDeps {
  * loop reopened the round, or the run was cancelled and the turn writes nothing.
  */
 const SETTLED = 'settled';
+
+/** vibesync-6zos.7: how many tries a step gets to prove the full suite before the run escalates. */
+export const FULL_SUITE_ATTEMPTS = 2;
+
+/** The step did not prove a full-suite run. A StepBlockedError, so once its tries are used up the run escalates. */
+export class FullSuiteUnprovenError extends StepBlockedError {}
+
+/** The note a retried step gets when its previous try was sent back for missing full-suite evidence. */
+// No attempt check: every path that puts a step back to attempt 1 (a new review round, a success) clears error_trace, so a
+// first try never carries an old reason (a mutation dropping an `attempt <= 1` check changed no outcome; vibesync-6zos.7).
+function fullSuiteRetryNote(step: { readonly metadata?: Readonly<Record<string, unknown>> } | undefined): string {
+  const exec = step?.metadata?.['exec'];
+  const trace = exec && typeof exec === 'object' ? (exec as Record<string, unknown>)['error_trace'] : undefined;
+  if (typeof trace !== 'string' || !/full suite|suite did not load/.test(trace)) return '';
+  return `\n\nTHE ENGINE SENT YOUR PREVIOUS ATTEMPT BACK: ${trace}\nRun the FULL test suite from the workdir and write its JSON report to the path your instructions name; the engine reads that report, not your reply.\n`;
+}
 
 export class StepTurnRunner {
   constructor(private readonly deps: StepTurnDeps) {}
@@ -181,7 +211,7 @@ export class StepTurnRunner {
         step_id: args.step.id,
         attempt,
       },
-    }) + (this.deps.projectMemory ? renderProjectMemory(await this.readProjectMemory(args.input.projectIdentifier, { moleculeId: args.moleculeId, stepId: args.step.id, stepName })) : '') + STEP_OUTCOME_INSTRUCTIONS;
+    }) + fullSuiteRetryNote(args.step) + (this.deps.projectMemory ? renderProjectMemory(await this.readProjectMemory(args.input.projectIdentifier, { moleculeId: args.moleculeId, stepId: args.step.id, stepName })) : '') + STEP_OUTCOME_INSTRUCTIONS;
   }
 
   /**
@@ -234,11 +264,39 @@ export class StepTurnRunner {
       : null;
     const overstepFailure = this.overstepVerdict(overstepped);
     if (overstepFailure !== null) return overstepFailure;
+    // vibesync-6zos.7: a step that must run the full suite proves it with the report, not its reply. Checked before the
+    // reply's verdict, so a step that did not prove it cannot be approved by what it says.
+    const unproven = blocker === null && declared === null && stepSpec.requiresFullSuite
+      ? await this.fullSuiteShortfall(args, attemptStartedAt)
+      : null;
+    if (unproven !== null) return { signal: { origin: 'stopped' }, error: new FullSuiteUnprovenError(unproven), failureClass: null };
     const blockerVerdict = await this.blockerVerdict(context, blocker, output.text);
     if (blockerVerdict !== null) return blockerVerdict;
     const declaredFailure = this.declaredFailureVerdict(declared);
     if (declaredFailure !== null) return declaredFailure;
     return null;
+  }
+
+  /** Why this step has not proven a full-suite run, or null when it has (vibesync-6zos.7). Fails closed. */
+  private async fullSuiteShortfall(args: StepRunArgs, attemptStartedAt: Date): Promise<string | null> {
+    const source = this.deps.fullSuiteEvidence;
+    const workBeadId = args.input.motivatingBeadId;
+    if (!source) return 'full suite not proven: no evidence reader is configured';
+    // A run started with neither a work bead nor a workdir (e.g. POST /formulas/:name/run with only an input) has no checkout
+    // and no report to check: nothing to prove against. It is not checked, and the gap is recorded so it stays visible.
+    // A run WITH a work bead but no workdir is broken wiring, not that case: it fails closed.
+    if (!workBeadId && !args.workdir) {
+      this.deps.emit('dispatcher/full-suite.not_checked', args.moleculeId, args.step.id, { reason: 'no work bead and no workdir' });
+      return null;
+    }
+    if (!workBeadId || !args.workdir) return 'full suite not proven: the step has a work bead but no workdir (or a workdir but no work bead) to check';
+    try {
+      const [report, testFiles] = await Promise.all([source.readReport(workBeadId), source.listTestFiles(args.workdir)]);
+      if (testFiles.length === 0) return `full suite not proven: no test files found under ${args.workdir}`;
+      return fullSuiteShortfall({ report, stepStartedAt: attemptStartedAt, testFiles, workdir: args.workdir });
+    } catch (error) {
+      return `full suite not proven: the evidence could not be read (${stringifyError(error)})`;
+    }
   }
 
   private overstepVerdict(overstepped: string | null): StepRunFailure | null {
@@ -302,6 +360,16 @@ export class StepTurnRunner {
     failure: StepRunFailure,
   ): Promise<void> {
     if (failure.code === 'turn_timeout') await this.escalateTurnLimit(context, state, failure);
+    // vibesync-6zos.7: a step that did not prove the full suite goes back to the coder (its own step, not a review round),
+    // told what was missing, for up to FULL_SUITE_ATTEMPTS tries whatever the formula's retry policy says; after that the
+    // run escalates with the reason (finishStepFailure: it is a StepBlockedError).
+    if (failure.error instanceof FullSuiteUnprovenError && state.attempt < FULL_SUITE_ATTEMPTS) {
+      await this.retryStepFailure(
+        { stepRun: context, policy, state, failure, kind: 'agent', reason: stringifyError(failure.error) },
+        { action: 'retry', next: { attempt: state.attempt + 1, infraRetries: state.infraRetries }, backoffMs: 0 },
+      );
+      return;
+    }
     // A failure_class means the agent ran and declared it; cancel/stop still wins.
     const classified = classifyFailure(failure.signal);
     const kind = failure.failureClass !== null && classified !== 'terminal' ? 'agent' : classified;

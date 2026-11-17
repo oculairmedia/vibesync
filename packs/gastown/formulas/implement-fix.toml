@@ -6,6 +6,8 @@ when_to_use = "when a bead contains a written brief for a bounded code change wi
 [[formula.implement-fix.steps]]
 role = "coder"
 prompt_template = "prompts/coder-system.md"
+# vibesync-6zos.7: the engine checks the vitest report, not the reply.
+requires_full_suite = true
 wait_for = "completion"
 
 [[formula.implement-fix.steps]]

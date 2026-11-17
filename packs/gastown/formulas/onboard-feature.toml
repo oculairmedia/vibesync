@@ -13,6 +13,8 @@ plan_only = true
 [[formula.onboard-feature.steps]]
 role = "coder"
 prompt_template = "prompts/coder-system.md"
+# vibesync-6zos.7: the engine checks the vitest report, not the reply.
+requires_full_suite = true
 depends_on = "mayor"
 wait_for = "completion"
 
