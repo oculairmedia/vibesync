@@ -23,6 +23,7 @@ import type { BootSchedulerOptions } from '../../../../src/engine/scheduler/boot
 import { StepDispatcher, type ReadyStepSource } from '../../../../src/engine/scheduler/step-dispatcher.js';
 import type { SessionEvent, SessionSpec } from '../../../../src/engine/runtime/index.js';
 import type { App, HandleContext, OrchestrationApi, RouteContext } from '../../../../src/app/types/api.js';
+import { passingFullSuiteEvidence } from '../../../_fixtures/full-suite-evidence.js';
 import { newFakeProvider } from '../../../_fixtures/fake-provider.js';
 import { InMemoryDoltClient } from '../../../_fixtures/in-memory-dolt-client.js';
 
@@ -117,7 +118,8 @@ describe('the dispatcher no longer drives its own molecules (vibesync-efee)', ()
     const store = new InMemoryDoltClient();
     const provider = newFakeProvider({ kind: 'fake', script });
     const walker = new MoleculeWalker(store);
-    const dispatcher = new FormulaDispatcher({ idPrefix: 'mol', provider, walker, eventBus: new EventBus({ noPersist: true }) });
+    // The shipped formulas' coder step has requires_full_suite (vibesync-6zos.7): this run's coder left a passing report.
+    const dispatcher = new FormulaDispatcher({ idPrefix: 'mol', provider, walker, eventBus: new EventBus({ noPersist: true }), fullSuiteEvidence: passingFullSuiteEvidence() });
     let settled = false;
     const run = dispatcher.run({ formula: formula(), pack: pack(), input: 'go' });
     run.then(() => { settled = true; }, () => { settled = true; });

@@ -1,3 +1,5 @@
+import { vitestReportEvidence } from './full-suite-evidence.js';
+import type { FullSuiteEvidenceSource } from './step-turn.js';
 import type { EventBus } from '../events/index.js';
 
 import type { MoleculeWalker } from '../molecule/index.js';
@@ -116,6 +118,8 @@ export interface FormulaDispatcherOptions {
   readonly projectBindings?: ProjectBindingResolver;
   readonly turnLimitPreserver?: TurnLimitPreserver;
   readonly turnLimitRecordStore?: TurnLimitRecordStore;
+  /** vibesync-6zos.7: reads the full-suite evidence of steps with `requires_full_suite`. Default: the vitest report in /tmp. */
+  readonly fullSuiteEvidence?: FullSuiteEvidenceSource;
   /**
    * Called (never throws) right after a molecule is cooked and registered, so
    * the step loop can pick up its first ready steps promptly instead of waiting
@@ -188,6 +192,7 @@ export class FormulaDispatcher implements ReadyStepRunner {
       // work bead lives in that project's bd), the engine's store only for its own runs.
       turnLimitRecordStore: (projectIdentifier) =>
         opts.turnLimitRecordStore ?? this.projectBindings(projectIdentifier).workBeads ?? this.walker,
+      fullSuiteEvidence: opts.fullSuiteEvidence ?? vitestReportEvidence(),
     });
     this.settler = new MoleculeSettler({
       walker: this.walker,

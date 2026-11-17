@@ -26,6 +26,7 @@ import {
 } from './types.js';
 import { StepAttemptRunner } from './step-attempt.js';
 import { StepVerdictReader } from './step-verdict.js';
+import { fullSuiteShortfall, type VitestReport } from './full-suite-evidence.js';
 import { GitTurnLimitPreserver, NO_UNCOMMITTED_WORK, WIP_NOT_CHECKED, turnLimitRecord, type TurnLimitPreserver, type TurnLimitRecordStore } from './turn-limit.js';
 import { readStepName, sleep, softFailMarker, stringifyError } from './util.js';
 
@@ -38,6 +39,19 @@ export interface StepTurnDeps {
   readonly turnLimitPreserver?: TurnLimitPreserver;
   /** The tracker a run's work bead lives in (its project's bd, or the engine's store). */
   readonly turnLimitRecordStore: (projectIdentifier: string | undefined) => Pick<TurnLimitRecordStore, 'addCommentToBead'>;
+  /**
+   * vibesync-6zos.7: reads a step's full-suite evidence (the vitest report for the work bead, and the test files in the
+   * workdir). Absent: a step that requires the full suite cannot prove it, so it fails closed.
+   */
+  readonly fullSuiteEvidence?: FullSuiteEvidenceSource;
+}
+
+/** Where a step's full-suite evidence comes from (vibesync-6zos.7). */
+export interface FullSuiteEvidenceSource {
+  /** The parsed report for this work bead, or null when there is none or it cannot be parsed. */
+  readReport(workBeadId: string): Promise<VitestReport | null>;
+  /** Every test file under the workdir, relative to it. */
+  listTestFiles(workdir: string): Promise<readonly string[]>;
 }
 
 /**
@@ -234,11 +248,39 @@ export class StepTurnRunner {
       : null;
     const overstepFailure = this.overstepVerdict(overstepped);
     if (overstepFailure !== null) return overstepFailure;
+    // vibesync-6zos.7: a step that must run the full suite proves it with the report, not its reply. Checked before the
+    // reply's verdict, so a step that did not prove it cannot be approved by what it says.
+    const unproven = blocker === null && declared === null && stepSpec.requiresFullSuite
+      ? await this.fullSuiteShortfall(args, attemptStartedAt)
+      : null;
+    if (unproven !== null) return { signal: { origin: 'stopped' }, error: new StepBlockedError(unproven), failureClass: null };
     const blockerVerdict = await this.blockerVerdict(context, blocker, output.text);
     if (blockerVerdict !== null) return blockerVerdict;
     const declaredFailure = this.declaredFailureVerdict(declared);
     if (declaredFailure !== null) return declaredFailure;
     return null;
+  }
+
+  /** Why this step has not proven a full-suite run, or null when it has (vibesync-6zos.7). Fails closed. */
+  private async fullSuiteShortfall(args: StepRunArgs, attemptStartedAt: Date): Promise<string | null> {
+    const source = this.deps.fullSuiteEvidence;
+    const workBeadId = args.input.motivatingBeadId;
+    if (!source) return 'full suite not proven: no evidence reader is configured';
+    // A run started with neither a work bead nor a workdir (e.g. POST /formulas/:name/run with only an input) has no checkout
+    // and no report to check: nothing to prove against. It is not checked, and the gap is recorded so it stays visible.
+    // A run WITH a work bead but no workdir is broken wiring, not that case: it fails closed.
+    if (!workBeadId && !args.workdir) {
+      this.deps.emit('dispatcher/full-suite.not_checked', args.moleculeId, args.step.id, { reason: 'no work bead and no workdir' });
+      return null;
+    }
+    if (!workBeadId || !args.workdir) return 'full suite not proven: the step has a work bead but no workdir (or a workdir but no work bead) to check';
+    try {
+      const [report, testFiles] = await Promise.all([source.readReport(workBeadId), source.listTestFiles(args.workdir)]);
+      if (testFiles.length === 0) return `full suite not proven: no test files found under ${args.workdir}`;
+      return fullSuiteShortfall({ report, stepStartedAt: attemptStartedAt, testFiles });
+    } catch (error) {
+      return `full suite not proven: the evidence could not be read (${stringifyError(error)})`;
+    }
   }
 
   private overstepVerdict(overstepped: string | null): StepRunFailure | null {

@@ -204,6 +204,7 @@ function parseStep(
   const retry = readRetry(fields, formulaName);
   const turnTimeoutMs = fields.optionalNonNegativeInteger('turn_timeout_ms');
   const planOnly = fields.optionalBoolean('plan_only');
+  const requiresFullSuite = fields.optionalBoolean('requires_full_suite');
   const loop = readReviewLoop(fields);
   return {
     name,
@@ -214,6 +215,7 @@ function parseStep(
     ...retry,
     ...(turnTimeoutMs !== undefined ? { turnTimeoutMs } : {}),
     ...(planOnly === true ? { planOnly: true } : {}),
+    ...(requiresFullSuite === true ? { requiresFullSuite: true } : {}),
     ...loop,
   };
 }
