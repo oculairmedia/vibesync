@@ -87,8 +87,12 @@ export interface FormulaResolver {
 
 /** Source of ready work + candidate metadata, backed by BeadsAdapter. */
 export interface ReadyBeadSource {
-  /** Work bead ids that are dependency-unblocked (bd ready). */
-  readyWorkBeadIds(): Promise<Set<string>>;
+  /**
+   * Work bead ids that are dependency-unblocked (bd ready). `logExcluded: false` skips naming the excluded ones: a tick
+   * reads twice (schedule, then the loop). The schedule read runs on EVERY tick (the loop skips its read when paused,
+   * locked or at capacity), so it names them, and the loop's read is the quiet one (vibesync-9lzk.56, CodeRabbit).
+   */
+  readyWorkBeadIds(opts?: { readonly logExcluded?: boolean }): Promise<Set<string>>;
   /** Priority (0=P0…), downstream unblock count, and touched files for a bead. */
   metadataFor(workBeadId: string): Promise<{
     readonly priority: number;
@@ -118,6 +122,8 @@ export interface SchedulerDaemonDeps {
   readonly formulaResolver: FormulaResolver;
   readonly readyBeads: ReadyBeadSource;
   readonly contextStore: SlingContextStore;
+  /** The label that makes a work bead eligible; removed when its run escalates (vibesync-9lzk.56). Empty = none. */
+  readonly readyLabel?: string;
   readonly poolMembers: readonly PoolMemberIdentity[];
   readonly github: GitHubPort;
   /**
@@ -261,13 +267,17 @@ export class SchedulerDaemon {
 
     this.scheduler = new SchedulerLoop({
       config: deps.config,
+      ...(deps.readyLabel ? { readyLabel: deps.readyLabel } : {}),
       capacity: capacitySource,
       contextStore: {
         queryPending: () => this.sling.queryPending(),
         closeContext: (id, reason) => this.sling.closeContext(id, reason),
+        ...(deps.readyLabel && deps.contextStore.removeLabel
+          ? { removeReadyLabel: (workBeadId: string) => deps.contextStore.removeLabel!(workBeadId, deps.readyLabel!) }
+          : {}),
         recordDispatchFailure: (id, err) => this.recordFailure(id, err),
       },
-      readyWork: { readyWorkBeadIds: () => deps.readyBeads.readyWorkBeadIds() },
+      readyWork: { readyWorkBeadIds: () => deps.readyBeads.readyWorkBeadIds({ logExcluded: false }) },
       candidateMetadata: { metadataFor: (r) => deps.readyBeads.metadataFor(r.params.work_bead_id) },
       executor: { execute: (c) => executor.start(c) },
       // Trigger (c): a settled run frees capacity — ask for a prompt tick.

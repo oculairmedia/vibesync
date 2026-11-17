@@ -29,7 +29,9 @@ export const SLING_CONTEXT_LABEL = 'vibesync:sling-context';
 export const SLING_CONTEXT_VERSION = 1 as const;
 
 /** Reasons a sling context may be closed. Maps to the state machine terminals. */
-export type SlingCloseReason = 'dispatched' | 'circuit-broken' | 'cleared' | 'escalated';
+// `escalated-label-kept` (vibesync-9lzk.56): a run escalated but its ready label could not be removed, so the context
+// keeps excluding the bead (a plain `escalated` context does not).
+export type SlingCloseReason = 'dispatched' | 'circuit-broken' | 'cleared' | 'escalated' | 'escalated-label-kept';
 
 /** Circuit-breaker threshold: consecutive dispatch failures that trip a close. */
 export const CIRCUIT_BREAKER_THRESHOLD = 3;
@@ -84,6 +86,12 @@ export interface SlingContextRecord {
  * is what makes the work bead pristine (atomic-claim invariant).
  */
 export interface SlingContextStore {
+  /**
+   * Remove `label` from the WORK bead and re-read it: true only when the bead no longer carries it (vibesync-9lzk.56).
+   * The one write the scheduler makes to a work bead, when its run escalates. Optional: a store without it can never
+   * confirm the removal, so an escalated context stays excluding (`escalated-label-kept`).
+   */
+  removeLabel?(workBeadId: string, label: string): Promise<boolean>;
   /**
    * Atomically create a single sling-context bead: an ephemeral bead labelled
    * SLING_CONTEXT_LABEL, with `description` = JSON(params) and a `tracks`

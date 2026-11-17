@@ -16,6 +16,7 @@ import {
 } from '../../../../src/engine/scheduler/daemon.js';
 import type { FormulaDispatcher } from '../../../../src/engine/dispatcher/dispatcher.js';
 import { FormulaEscalationError } from '../../../../src/engine/dispatcher/dispatcher.js';
+import { createEscalationNotifier } from '../../../../src/engine/scheduler/escalation-notify.js';
 import {
   tryParseParams,
   type SlingContextStore,
@@ -40,11 +41,32 @@ type CtxRow = { id: string; description: string; tracks: string; open: boolean; 
 function makeStore(): SlingContextStore & {
   terminalWorkBeadIds(): Set<string>;
   rows: CtxRow[];
+  /** Work beads that do NOT carry the ready label (vibesync-9lzk.56). Every bead starts labelled. */
+  unlabelled: Set<string>;
+  /** Make the next label removal fail. */
+  failLabelRemoval: boolean;
+  removals: string[];
+  /** The label each removal asked for: the daemon's configured ready label. */
+  removedLabels: string[];
 } {
   const rows: CtxRow[] = [];
   let seq = 0;
-  return {
+  const unlabelled = new Set<string>();
+  const removals: string[] = [];
+  const removedLabels: string[] = [];
+  const store = {
     rows,
+    unlabelled,
+    removals,
+    removedLabels,
+    failLabelRemoval: false,
+    async removeLabel(workBeadId: string, label: string): Promise<boolean> {
+      removals.push(workBeadId);
+      removedLabels.push(label);
+      if (store.failLabelRemoval) throw new Error('bd: label remove failed');
+      unlabelled.add(workBeadId);
+      return true;
+    },
     async createSlingContext(input) {
       const id = `ctx-${++seq}`;
       rows.push({ id, description: input.description, tracks: input.tracksWorkBeadId, open: true });
@@ -63,16 +85,18 @@ function makeStore(): SlingContextStore & {
     terminalWorkBeadIds() {
       const out = new Set<string>();
       for (const r of rows) {
-        if (r.open || r.reason === 'cleared') continue;
+        // As BdSlingContextStore.listTerminalWorkBeadIds: `cleared` and plain `escalated` do not exclude (9lzk.56).
+        if (r.open || r.reason === 'cleared' || r.reason === 'escalated') continue;
         const p = tryParseParams(r.description);
         if (p) out.add(p.work_bead_id);
       }
       return out;
     },
   };
+  return store;
 }
 
-function harness(opts: { beads: string[]; poolSize: number; store?: ReturnType<typeof makeStore>; onRunEscalated?: SchedulerDaemonDeps['onRunEscalated'] }) {
+function harness(opts: { beads: string[]; poolSize: number; store?: ReturnType<typeof makeStore>; onRunEscalated?: SchedulerDaemonDeps['onRunEscalated']; paused?: boolean }) {
   const runs: Deferred[] = [];
   const merged: number[] = [];
   const probeCalls: string[] = [];
@@ -81,6 +105,8 @@ function harness(opts: { beads: string[]; poolSize: number; store?: ReturnType<t
   const logs: Array<{ level: 'info' | 'warn'; o: unknown; m: string }> = [];
   const store = opts.store ?? makeStore();
   const ready = new Set(opts.beads);
+  /** One entry per ready read in a tick: true when that read may name excluded beads (vibesync-9lzk.56). */
+  const readReads: boolean[] = [];
   const concurrentByBead = new Map<string, number>();
   let maxConcurrentByBead = 0;
 
@@ -124,13 +150,16 @@ function harness(opts: { beads: string[]; poolSize: number; store?: ReturnType<t
       },
     },
     readyBeads: {
-      async readyWorkBeadIds() {
+      async readyWorkBeadIds(opts?: { readonly logExcluded?: boolean }) {
+        readReads.push(opts?.logExcluded !== false);
         const terminal = store.terminalWorkBeadIds();
-        return new Set([...ready].filter((id) => !terminal.has(id)));
+        // `bd ready --label scheduler:eligible`: a bead without the label is not ready.
+        return new Set([...ready].filter((id) => !terminal.has(id) && !store.unlabelled.has(id)));
       },
       async metadataFor() { return { priority: 2, unblockCount: 0, files: [] }; },
     },
     contextStore: store,
+    readyLabel: 'scheduler:eligible', // as boot passes config.readyLabel (vibesync-9lzk.56)
     poolMembers: Array.from({ length: opts.poolSize }, (_, i) => ({ agentId: `a${i}`, role: 'coder' })),
     github: {
       async fetchFacts() { return facts; },
@@ -140,7 +169,7 @@ function harness(opts: { beads: string[]; poolSize: number; store?: ReturnType<t
     requiredCheckNames: () => ['ci'],
     livenessProbe: { async probe(slot) { probeCalls.push(slot.workBeadId); return verdicts.get(slot.workBeadId) ?? 'alive'; } },
     escalation: { async onIsolated() {}, async onRepeatedRecovery() {}, async onBlocked() {} },
-    config: () => ({ poolSize: opts.poolSize, batchSize: 10, paused: false }),
+    config: () => ({ poolSize: opts.poolSize, batchSize: 10, paused: opts.paused ?? false }),
     logger: {
       info: (o, m) => { logs.push({ level: 'info', o, m }); },
       warn: (o, m) => { logs.push({ level: 'warn', o, m }); },
@@ -149,6 +178,7 @@ function harness(opts: { beads: string[]; poolSize: number; store?: ReturnType<t
 
   const daemon = new SchedulerDaemon(deps);
   return {
+    readReads,
     daemon, runs, merged, probeCalls, logs, store, verdicts,
     maxConcurrentByBead: () => maxConcurrentByBead,
     runsFor: (id: string) => runs.filter((r) => r.beadId === id),
@@ -312,6 +342,91 @@ describe('SchedulerDaemon — dispatch off the tick (vibesync-q50w)', () => {
     } finally {
       process.off('unhandledRejection', onUnhandled);
     }
+  });
+
+  it('5e. (vibesync-9lzk.56) an escalated run removes the ready label, so it is not re-run; re-labelling it runs it again', async () => {
+    const h = track(harness({ beads: ['we'], poolSize: 1 }));
+    await tickReturns(h.daemon);
+    h.runsFor('we')[0]!.reject(new FormulaEscalationError('FormulaDispatcher: step "reviewer" escalated: review loop exhausted', 'mol-we'));
+    await vi.waitFor(() => { expect(h.store.rows.filter((r) => r.tracks === 'we').map((r) => r.reason)).toEqual(['escalated']); }, { timeout: 1500 });
+    expect(h.store.removals, 'the engine asked to remove the label').toEqual(['we']);
+    expect(h.store.removedLabels, 'the configured ready label, not another').toEqual(['scheduler:eligible']);
+    for (let i = 0; i < 3; i += 1) { await tickReturns(h.daemon); await sleep(10); }
+    expect(h.runsFor('we'), 'not re-run while the label is off').toHaveLength(1);
+    h.store.unlabelled.delete('we'); // the PM re-labels it: "run it again"
+    await vi.waitFor(async () => { await tickReturns(h.daemon); expect(h.runsFor('we')).toHaveLength(2); }, { timeout: 1500 });
+    h.runsFor('we')[1]!.resolve('done');
+    await sleep(10);
+  });
+
+  it('5f. (vibesync-9lzk.56) a failed label removal fails closed: the context excludes, the bead is not re-run, the wake names the failure', async () => {
+    const seen: string[] = [];
+    const store = makeStore();
+    store.failLabelRemoval = true;
+    const h = track(harness({ beads: ['we'], poolSize: 1, store, onRunEscalated: (i) => { seen.push(i.reason); } }));
+    await tickReturns(h.daemon);
+    h.runsFor('we')[0]!.reject(new FormulaEscalationError('FormulaDispatcher: step "reviewer" escalated: review loop exhausted', 'mol-we'));
+    await vi.waitFor(() => { expect(h.store.rows.filter((r) => r.tracks === 'we').map((r) => r.reason)).toEqual(['escalated-label-kept']); }, { timeout: 1500 });
+    expect(h.store.removals, 'the removal was attempted (and refused by the store), not skipped for lack of wiring').toEqual(['we']);
+    for (let i = 0; i < 3; i += 1) { await tickReturns(h.daemon); await sleep(10); }
+    expect(h.runsFor('we'), 'the label is still on, so the context must keep excluding it').toHaveLength(1);
+    expect(seen).toHaveLength(1);
+    expect(seen[0], 'the PM is told the label could not be removed').toMatch(/scheduler:eligible|label/);
+  });
+
+  it('5g. (vibesync-9lzk.56) through the REAL notifier: a failed label removal is named in the PM wake itself, even after a long reason', async () => {
+    // Outside review (GPT): the explanation was appended after a newline, and the notifier sends only the first line of the
+    // reason to the PM (escalation-notify.ts), so the wake never said that re-labelling will not work. The comment is capped
+    // at 1500 characters, so a long reason could push it out of the comment too.
+    const wakes: string[] = [];
+    const comments: string[] = [];
+    const notify = createEscalationNotifier({ wakePm: (_id, detail) => { wakes.push(detail); }, commentOnBead: async (_id, text) => { comments.push(text); } });
+    const store = makeStore();
+    store.failLabelRemoval = true;
+    const h = track(harness({ beads: ['we'], poolSize: 1, store, onRunEscalated: notify }));
+    await tickReturns(h.daemon);
+    h.runsFor('we')[0]!.reject(new FormulaEscalationError(`FormulaDispatcher: step "reviewer" escalated: ${'x'.repeat(2000)}`, 'mol-we'));
+    await vi.waitFor(() => { expect(wakes).toHaveLength(1); }, { timeout: 1500 });
+    expect(wakes[0], 'the PM wake names the configured label').toContain('scheduler:eligible removal NOT confirmed');
+    expect(wakes[0], 'the PM wake says the bead stays excluded and re-labelling will not run it').toMatch(/label/i);
+    expect(wakes[0]).toMatch(/clear/i);
+    // The removal may have gone through before the confirmation read failed: clearing the context alone would not make the
+    // bead ready again, so the wake says to make sure it carries the label too (CodeRabbit).
+    expect(wakes[0], 'tells the PM to make sure the label is on').toContain('make sure it carries scheduler:eligible');
+    expect(comments[0], 'the bead comment says it too, despite the long reason').toMatch(/scheduler:eligible removal NOT confirmed/);
+  });
+
+  it('5h. (vibesync-9lzk.56) a tick names excluded ready beads once, not once per ready read', async () => {
+    // Outside review (Fable): the daemon reads the ready list twice per tick (scheduleReady, then the loop's runTick), and
+    // each read logged every excluded bead, so each one appeared twice per tick, every 30 s, for as long as it stays ready.
+    const h = track(harness({ beads: ['a'], poolSize: 1 }));
+    await tickReturns(h.daemon);
+    expect(h.readReads.length, 'the tick read the ready list more than once').toBeGreaterThan(1);
+    expect(h.readReads.filter(Boolean), 'only one of those reads may name excluded beads').toHaveLength(1);
+  });
+
+  it.each([
+    ['a paused scheduler', { paused: true, poolSize: 1, busy: false }],
+    ['a full pool', { paused: false, poolSize: 1, busy: true }],
+  ])('5j. (vibesync-9lzk.56) a tick with %s still names excluded ready beads once (CodeRabbit)', async (_label, c) => {
+    // The loop skips its own ready read when paused or at capacity; the read that names exclusions must still happen.
+    const h = track(harness({ beads: c.busy ? ['running', 'other'] : ['a'], poolSize: c.poolSize, paused: c.paused }));
+    if (c.busy) {
+      await tickReturns(h.daemon); // starts `running`, filling the only slot
+      h.readReads.length = 0;
+    }
+    await tickReturns(h.daemon);
+    expect(h.readReads.filter(Boolean), 'one read named excluded beads on this tick').toHaveLength(1);
+  });
+
+  it('5i. (vibesync-9lzk.56) a confirmed removal tells the PM, in the wake itself, that re-adding the label runs it again', async () => {
+    const wakes: string[] = [];
+    const notify = createEscalationNotifier({ wakePm: (_id, detail) => { wakes.push(detail); }, commentOnBead: async () => {} });
+    const h = track(harness({ beads: ['we'], poolSize: 1, onRunEscalated: notify }));
+    await tickReturns(h.daemon);
+    h.runsFor('we')[0]!.reject(new FormulaEscalationError(`FormulaDispatcher: step "reviewer" escalated: ${'x'.repeat(400)}`, 'mol-we'));
+    await vi.waitFor(() => { expect(wakes).toHaveLength(1); }, { timeout: 1500 });
+    expect(wakes[0]).toContain('scheduler:eligible removed; re-add it to run again');
   });
 
   it('5c. (vibesync-9lzk.53) an escalated run notifies the observer once with the bead and the reason; a plain failure does not', async () => {

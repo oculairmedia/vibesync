@@ -128,7 +128,12 @@ export interface SchedulerContextStore {
   /** Open sling contexts (SCHEDULED). Same as SlingContextManager.queryPending. */
   queryPending(): Promise<SlingContextRecord[]>;
   /** Close a context (dispatched | circuit-broken). */
-  closeContext(contextId: string, reason: 'dispatched' | 'circuit-broken' | 'escalated'): Promise<void>;
+  closeContext(contextId: string, reason: 'dispatched' | 'circuit-broken' | 'escalated' | 'escalated-label-kept'): Promise<void>;
+  /**
+   * Remove the ready label from the work bead and confirm it is gone (vibesync-9lzk.56). Absent, or false, or throwing:
+   * the label is taken to be still on, and an escalated context is closed `escalated-label-kept` (still excluding).
+   */
+  removeReadyLabel?(workBeadId: string): Promise<boolean>;
   /**
    * Record a failed dispatch attempt: increment dispatch_failures and store
    * last_failure on the CONTEXT bead (never the work bead). Returns the new
@@ -152,6 +157,8 @@ export interface SchedulerLoopDeps {
   readonly config: () => SchedulerConfig;
   readonly capacity: CapacitySource;
   readonly contextStore: SchedulerContextStore;
+  /** The ready label's name, for the PM wake when a run escalates (vibesync-9lzk.56). */
+  readonly readyLabel?: string;
   readonly readyWork: ReadyWorkSource;
   readonly candidateMetadata: CandidateMetadataSource;
   readonly executor: DispatchExecutor;
@@ -385,6 +392,17 @@ export class SchedulerLoop {
     while (this.settlements.size > 0) await Promise.all([...this.settlements]);
   }
 
+  private async removeReadyLabel(workBeadId: string): Promise<LabelRemoval> {
+    const remove = this.deps.contextStore.removeReadyLabel;
+    if (!remove) return { ok: false, why: 'no label removal configured' };
+    try {
+      return (await remove.call(this.deps.contextStore, workBeadId)) ? { ok: true } : { ok: false, why: 'still on the bead after removal' };
+    } catch (err) {
+      this.deps.logger?.warn?.({ workBeadId, error: errMessage(err) }, 'scheduler: could not remove the ready label from an escalated bead');
+      return { ok: false, why: errMessage(err) };
+    }
+  }
+
   /**
    * Off-tick settlement. The bead leaves the in-flight set only AFTER its
    * context has been closed (success / circuit-broken) or its failure counted,
@@ -400,17 +418,25 @@ export class SchedulerLoop {
           'scheduler: run settled — context closed (dispatched)',
         );
       } else if (error instanceof EscalatedRunError) {
-        // vibesync-9lzk.43: the run stopped to wait for a person. Close the
-        // context terminal so the bead is not dispatched again until someone
-        // re-labels it; this is not a dispatch failure and does not count
-        // toward the circuit breaker.
-        await this.deps.contextStore.closeContext(candidate.contextId, 'escalated');
+        // vibesync-9lzk.43: the run stopped to wait for a person; not a dispatch failure, not counted by the breaker.
+        // vibesync-9lzk.56: remove the ready label first, confirmed by a re-read, and only then close the context plain
+        // `escalated`, which no longer excludes the bead: putting the label back is the PM's "run it again". If the
+        // removal cannot be confirmed the context is closed `escalated-label-kept` (still excluding) and the PM is told.
+        // A crash between the two leaves an open context and no label: not ready, so nothing re-runs.
+        const labelGone = await this.removeReadyLabel(candidate.workBeadId);
+        await this.deps.contextStore.closeContext(candidate.contextId, labelGone.ok ? 'escalated' : 'escalated-label-kept');
         this.deps.logger?.warn?.(
-          { workBeadId: candidate.workBeadId, contextId: candidate.contextId, error: errMessage(error) },
+          { workBeadId: candidate.workBeadId, contextId: candidate.contextId, error: errMessage(error), readyLabelRemoved: labelGone.ok },
           'scheduler: run escalated — context closed, not retried',
         );
+        // The notifier sends the PM only the first line of the reason (240 characters) and caps the bead comment at 1500, so the
+        // failed removal goes FIRST, on the first line (outside review): re-labelling alone will not run this bead again.
+        const label = this.deps.readyLabel || 'ready label';
+        const reason = 'why' in labelGone
+          ? `${label} removal NOT confirmed (${labelGone.why.slice(0, 80)}): bead stays excluded; to run it again, clear its sling context and make sure it carries ${label}. ${errMessage(error)}`
+          : `${label} removed; re-add it to run again. ${errMessage(error)}`;
         try {
-          await this.deps.onRunEscalated?.({ workBeadId: candidate.workBeadId, contextId: candidate.contextId, reason: errMessage(error) });
+          await this.deps.onRunEscalated?.({ workBeadId: candidate.workBeadId, contextId: candidate.contextId, reason });
         } catch (err) {
           this.deps.logger?.warn?.({ workBeadId: candidate.workBeadId, error: errMessage(err) }, 'scheduler: onRunEscalated observer failed');
         }
@@ -436,6 +462,9 @@ export class SchedulerLoop {
     }
   }
 }
+
+/** Confirmed: the ready label is no longer on the work bead. Anything else is "still on", with the reason. */
+type LabelRemoval = { readonly ok: true } | { readonly ok: false; readonly why: string };
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);

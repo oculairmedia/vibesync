@@ -83,13 +83,28 @@ export class BdSlingContextStore implements SlingContextStore {
     })).filter((r) => r.id.length > 0);
   }
 
+  /** Remove `label` from the work bead, then re-read it: true only if it no longer carries the label (9lzk.56). */
+  async removeLabel(workBeadId: string, label: string): Promise<boolean> {
+    await this.bd(['update', workBeadId, '--remove-label', label, '--json']);
+    const rows = asRows(parseJsonOutput(await this.bd(['show', workBeadId, '--json']), 'bd show (work bead)'), 'bd show (work bead)');
+    // Confirmed only by a read of THAT bead whose labels are a list without the label (outside review): a reply for another
+    // bead, or with labels in another shape, does not establish that the label is gone. bd omits `labels` when there are none.
+    if (rows.length !== 1 || rows[0]!['id'] !== workBeadId) return false;
+    const labels = rows[0]!['labels'];
+    if (labels === undefined) return true;
+    return Array.isArray(labels) && !labels.includes(label);
+  }
+
   async closeSlingContext(contextId: string, reason: SlingCloseReason): Promise<void> {
     await this.bd(['close', contextId, '--reason', reason, '--json']);
   }
 
   /**
-   * Work bead ids that already have a TERMINAL sling context (dispatched or
-   * circuit-broken; `cleared` re-opens eligibility). The work bead is never
+   * Work bead ids that already have a TERMINAL sling context (dispatched, circuit-broken, or escalated-label-kept;
+   * `cleared` re-opens eligibility). A plain `escalated` context does NOT exclude (vibesync-9lzk.56): the engine
+   * removes `scheduler:eligible` when a run escalates and closes the context `escalated` only after it re-read the bead
+   * without the label, so a bead carrying the label again means someone re-labelled it to run again. When the removal
+   * failed the context is closed `escalated-label-kept`, which still excludes. The work bead is never
    * modified by the scheduler, so without this memory a bead that stays in
    * `bd ready` after dispatch would be re-scheduled — and re-run by an LLM —
    * on every tick.
@@ -100,7 +115,8 @@ export class BdSlingContextStore implements SlingContextStore {
     ]);
     const ids = new Set<string>();
     for (const row of asRows(parseJsonOutput(out, 'bd list (closed sling contexts)'), 'bd list (closed sling contexts)')) {
-      if (typeof row['close_reason'] === 'string' && row['close_reason'].toLowerCase().startsWith('cleared')) continue;
+      const reason = typeof row['close_reason'] === 'string' ? row['close_reason'].toLowerCase() : '';
+      if (reason.startsWith('cleared') || reason === 'escalated') continue;
       const params = tryParseParams(String(row['description'] ?? ''));
       if (params) ids.add(params.work_bead_id);
     }
@@ -123,11 +139,10 @@ export interface BdReadyBeadSourceOptions {
 
 export class BdReadyBeadSource implements ReadyBeadSource {
   private lastReady = new Map<string, Row>();
-  private readonly loggedExcludedWorkBeadIds = new Set<string>();
 
   constructor(private readonly opts: BdReadyBeadSourceOptions) {}
 
-  async readyWorkBeadIds(): Promise<Set<string>> {
+  async readyWorkBeadIds(opts?: { readonly logExcluded?: boolean }): Promise<Set<string>> {
     const args = [
       'ready', '--json', '--limit', '0',
       '--exclude-label', SLING_CONTEXT_LABEL,
@@ -141,10 +156,8 @@ export class BdReadyBeadSource implements ReadyBeadSource {
       const id = String(row['id'] ?? '');
       if (!id) continue;
       if (excluded.has(id)) {
-        if (!this.loggedExcludedWorkBeadIds.has(id)) {
-          this.loggedExcludedWorkBeadIds.add(id);
-          this.opts.logger?.info?.({ workBeadId: id, reason: 'terminal-sling-context' }, 'scheduler: ready bead excluded');
-        }
+        // Named on EVERY tick while it stays excluded: once per process hid a re-labelled bead for 30 minutes (9lzk.56).
+        if (opts?.logExcluded !== false) this.opts.logger?.info?.({ workBeadId: id, reason: 'terminal-sling-context' }, 'scheduler: ready bead excluded');
         continue;
       }
       next.set(id, row);

@@ -54,26 +54,33 @@ describe('BdReadyBeadSource', () => {
     expect(bd.calls[0]).not.toContain('--label');
   });
 
-  it('logs each excluded ready bead once and works without a logger', async () => {
+  it('names each excluded ready bead on EVERY tick while it stays excluded, and works without a logger (vibesync-9lzk.56)', async () => {
+    // Logging it once per process hid a re-labelled bead for 30 minutes of bare `no-ready` ticks (9lzk.56).
     const logs: unknown[][] = [];
     const bd = runner(() => JSON.stringify([{ id: 'done' }, { id: 'done-2' }]));
     const src = new BdReadyBeadSource({
-      bd: bd.run,
-      readyLabel: '',
-      excludeWorkBeadIds: async () => new Set(['done', 'done-2']),
+      bd: bd.run, readyLabel: '', excludeWorkBeadIds: async () => new Set(['done', 'done-2']),
       logger: { info: (...args: unknown[]) => logs.push(args) },
     });
-
     await src.readyWorkBeadIds();
     await src.readyWorkBeadIds();
-    expect(logs).toEqual([
-      [{ workBeadId: 'done', reason: 'terminal-sling-context' }, 'scheduler: ready bead excluded'],
-      [{ workBeadId: 'done-2', reason: 'terminal-sling-context' }, 'scheduler: ready bead excluded'],
-    ]);
-
+    const line = (id: string) => [{ workBeadId: id, reason: 'terminal-sling-context' }, 'scheduler: ready bead excluded'];
+    expect(logs, 'both beads, on both ticks').toEqual([line('done'), line('done-2'), line('done'), line('done-2')]);
     const silent = new BdReadyBeadSource({ bd: bd.run, readyLabel: '', excludeWorkBeadIds: async () => new Set(['done']) });
     await expect(silent.readyWorkBeadIds()).resolves.toEqual(new Set(['done-2']));
   });
+
+  it('a read asked not to log (logExcluded: false) still excludes the bead but names nothing (vibesync-9lzk.56)', async () => {
+    // The daemon's schedule read passes logExcluded: false so a tick names an excluded bead once (outside review: twice).
+    const logs: unknown[][] = [];
+    const bd = runner(() => JSON.stringify([{ id: 'done' }, { id: 'live' }]));
+    const src = new BdReadyBeadSource({ bd: bd.run, readyLabel: '', excludeWorkBeadIds: async () => new Set(['done']), logger: { info: (...a: unknown[]) => logs.push(a) } });
+    await expect(src.readyWorkBeadIds({ logExcluded: false })).resolves.toEqual(new Set(['live']));
+    expect(logs, 'nothing named on the quiet read').toEqual([]);
+    await src.readyWorkBeadIds();
+    expect(logs, 'the default read still names it').toHaveLength(1);
+  });
+
 
   it('propagates bd failures (the daemon logs them)', async () => {
     const src = new BdReadyBeadSource({ bd: async () => { throw new Error('boom'); }, readyLabel: '', excludeWorkBeadIds: async () => new Set() });
@@ -345,3 +352,52 @@ describe('GhCliGitHubPort repo allowlist (vibesync-5c8y)', () => {
     expect(calls.at(-1)).toEqual(expect.arrayContaining(['pr', 'merge']));
   });
 });
+
+describe('which closed sling contexts exclude their work bead (vibesync-9lzk.56)', () => {
+  const ctx = (id: string, work: string, reason: string) => ({ id, status: 'closed', close_reason: reason, description: params(work) });
+  it('dispatched, circuit-broken and escalated-label-kept exclude; escalated and cleared do not', async () => {
+    // The engine now removes scheduler:eligible when a run escalates, so a plain `escalated` context with the label back
+    // on the bead means the PM re-labelled it to run again. `escalated-label-kept` (the removal failed) still excludes.
+    const bd = runner(() => JSON.stringify([
+      ctx('c1', 'w-dispatched', 'dispatched'),
+      ctx('c2', 'w-broken', 'circuit-broken'),
+      ctx('c3', 'w-kept', 'escalated-label-kept'),
+      ctx('c4', 'w-escalated', 'escalated'),
+      ctx('c5', 'w-cleared', 'cleared'),
+    ]));
+    const store = new BdSlingContextStore(bd.run);
+    const excluded = await store.listTerminalWorkBeadIds();
+    expect([...excluded].sort()).toEqual(['w-broken', 'w-dispatched', 'w-kept']);
+  });
+});
+
+describe('BdSlingContextStore.removeLabel confirms by re-reading the work bead (vibesync-9lzk.56)', () => {
+  // Checked against real bd on a scratch tracker: `update --remove-label` drops only that label, `show --json` lists the
+  // rest, and the bead leaves `bd ready --label`. Here a fake bd answers `show` so each outcome can be forced.
+  const bdWith = (labelsAfter: string[] | null) => runner((args) => {
+    if (args[0] === 'update') return '{}';
+    if (args[0] === 'show') return JSON.stringify(labelsAfter === null ? [] : [{ id: 'w1', labels: labelsAfter }]);
+    return '[]';
+  });
+  it('asks bd to remove exactly that label, and is true when the re-read bead no longer carries it', async () => {
+    const bd = bdWith(['other']);
+    expect(await new BdSlingContextStore(bd.run).removeLabel('w1', 'scheduler:eligible')).toBe(true);
+    expect(bd.calls[0]).toEqual(expect.arrayContaining(['update', 'w1', '--remove-label', 'scheduler:eligible']));
+    expect(bd.calls[1]).toEqual(expect.arrayContaining(['show', 'w1']));
+  });
+  it('is false when the re-read bead still carries the label (the removal did not take)', async () => {
+    expect(await new BdSlingContextStore(bdWith(['scheduler:eligible', 'other']).run).removeLabel('w1', 'scheduler:eligible')).toBe(false);
+  });
+  it('is false when bd answers for another bead, or with labels in another shape (outside review)', async () => {
+    const other = runner((args) => (args[0] === 'show' ? JSON.stringify([{ id: 'w2', labels: ['other'] }]) : '{}'));
+    expect(await new BdSlingContextStore(other.run).removeLabel('w1', 'scheduler:eligible')).toBe(false);
+    const odd = runner((args) => (args[0] === 'show' ? JSON.stringify([{ id: 'w1', labels: 'scheduler:eligible' }]) : '{}'));
+    expect(await new BdSlingContextStore(odd.run).removeLabel('w1', 'scheduler:eligible')).toBe(false);
+    const none = runner((args) => (args[0] === 'show' ? JSON.stringify([{ id: 'w1' }]) : '{}'));
+    expect(await new BdSlingContextStore(none.run).removeLabel('w1', 'scheduler:eligible'), 'bd omits labels when there are none').toBe(true);
+  });
+  it('is false when the work bead cannot be read back', async () => {
+    expect(await new BdSlingContextStore(bdWith(null).run).removeLabel('w1', 'scheduler:eligible')).toBe(false);
+  });
+});
+
