@@ -27,15 +27,16 @@ export interface RecoveryStore {
   getBeadDependencies(id: string): Promise<ReadonlyArray<{ readonly issue_id: string; readonly depends_on_id: string; readonly type: string }>>;
   getBead(id: string): Promise<BeadRow | null>;
   markStepFailed(stepId: string, errorTrace: string, retryOutcome?: string): Promise<void>;
-  markMoleculeRootStatus(rootId: string, status: 'closed', outcome: 'interrupted'): Promise<boolean | void>;
+  markMoleculeRootStatus(rootId: string, status: 'closed', outcome: 'interrupted' | 'cancelled'): Promise<boolean | void>;
 }
 
 export interface RecoveryEmitter {
-  (moleculeId: string, payload: Readonly<Record<string, unknown>>): void;
+  (moleculeId: string, payload: Readonly<Record<string, unknown>>, eventKind?: string): void;
 }
 
 export interface RecoveryReport {
   readonly interrupted: readonly string[];
+  readonly cancelled: readonly string[];
   readonly failed: ReadonlyArray<{ readonly moleculeId: string; readonly error: string }>;
 }
 
@@ -57,9 +58,17 @@ const MAX_ROOTS = 500;
 export async function recoverInterruptedMolecules(store: RecoveryStore, emit: RecoveryEmitter): Promise<RecoveryReport> {
   const roots = await store.listMoleculeRoots({ statuses: OPEN_STATUSES, limit: MAX_ROOTS });
   const interrupted: string[] = [];
+  const cancelled: string[] = [];
   const failed: Array<{ moleculeId: string; error: string }> = [];
   for (const root of roots) {
     try {
+      const exec = root.metadata['exec'];
+      if (exec && typeof exec === 'object' && typeof (exec as Record<string, unknown>).cancel_requested_at === 'string' && (exec as Record<string, unknown>).cancel_requested_at !== '') {
+        if ((await store.markMoleculeRootStatus(root.id, 'closed', 'cancelled')) === false) continue;
+        cancelled.push(root.id);
+        emit(root.id, { moleculeId: root.id, cancelledStepCount: 0, recoveredAfterRestart: true }, 'dispatcher/formula.cancelled');
+        continue;
+      }
       const steps = await unfinishedSteps(store, root.id);
       // bd refuses to close a step that is still blocked by an open step
       // ("cannot close blocked issue: B is blocked by [A]"), so close in
@@ -81,7 +90,7 @@ export async function recoverInterruptedMolecules(store: RecoveryStore, emit: Re
       failed.push({ moleculeId: root.id, error: err instanceof Error ? err.message : String(err) });
     }
   }
-  return { interrupted, failed };
+  return { interrupted, cancelled, failed };
 }
 
 /** Every child step that is not closed (ready, blocked, or in progress). */

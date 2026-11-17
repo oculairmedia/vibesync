@@ -233,6 +233,12 @@ export class BdMoleculeWriter {
     }
   }
 
+  async markMoleculeRootCancelRequested(rootId: string): Promise<void> {
+    const bead = await this.require(rootId);
+    await withMetadataFile({ ...bead.metadata, exec: { ...execOf(bead), cancel_requested_at: new Date().toISOString() } }, (ref) =>
+      this.bd(['update', rootId, '--metadata', ref, '--actor', ACTOR]));
+  }
+
   /**
    * Close every step of the run that is not closed yet, open or in_progress: the root close is the last writer, and a
    * step left in_progress under a closed root has no one else to close it (a turn that saw the run cancelled wrote

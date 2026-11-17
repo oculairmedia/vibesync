@@ -304,6 +304,12 @@ export class InMemoryDoltClient {
     return true;
   }
 
+  async markMoleculeRootCancelRequested(rootId: string): Promise<void> {
+    const bead = await this.getBead(rootId);
+    if (!bead) throw new Error(`missing bead ${rootId}`);
+    this.beads.set(rootId, { ...bead, metadata: { ...bead.metadata, exec: { ...(bead.metadata.exec as Record<string, unknown> ?? {}), cancel_requested_at: new Date().toISOString() } } });
+  }
+
   private blockingEdges(stepId: string): DependencyRow[] {
     return this.dependencies.filter((edge) => edge.issue_id === stepId && edge.type === 'blocks');
   }

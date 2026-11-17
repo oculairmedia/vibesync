@@ -27,7 +27,7 @@ import { describe, expect, it } from 'vitest';
 
 import { EventBus, type Event } from '../../../../src/engine/events/index.js';
 import type { Formula } from '../../../../src/engine/formula/index.js';
-import { MoleculeWalker, newMoleculeStepId } from '../../../../src/engine/molecule/index.js';
+import { MoleculeWalker, newMoleculeStepId, recoverInterruptedMolecules } from '../../../../src/engine/molecule/index.js';
 import type { Pack } from '../../../../src/engine/packs/index.js';
 import type { SessionEvent, SessionSpec } from '../../../../src/engine/runtime/index.js';
 import type { StepReplyJudge } from '../../../../src/engine/verdict/index.js';
@@ -85,6 +85,7 @@ interface Harness {
   readonly store: InMemoryDoltClient;
   readonly provider: FakeProvider;
   readonly events: Event[];
+  readonly eventBus: EventBus;
   readonly dispatcher: ReturnType<typeof newDriven>;
   /** Lets the gated turns return. */
   readonly release: () => void;
@@ -120,7 +121,7 @@ function harness(args: {
     ...(args.stepJudge ? { stepJudge: args.stepJudge } : {}),
     ...(args.turnLimitPreserver ? { turnLimitPreserver: args.turnLimitPreserver } : {}),
   });
-  return { store, provider, events, dispatcher, release };
+  return { store, provider, events, eventBus, dispatcher, release };
 }
 
 function deferred(): { readonly promise: Promise<void>; readonly open: () => void; readonly reached: () => boolean; readonly enter: () => Promise<void> } {
@@ -736,6 +737,107 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
     expect(String((refused[0]!.reason as Error).message)).toContain('already being cancelled');
     h.release();
     await pending.catch(() => undefined);
+  });
+
+  it('persists cancellation before stops on live and restart paths, and recovery honors the marker after both closes fail', async () => {
+    const store = new InMemoryDoltClient();
+    const view = await new MoleculeWalker(store).dispatch({ prefix: 'mol', formulaName: 'f', title: 't', steps: [step('worker', 0)] });
+    const moleculeId = view.rootId;
+    await store.markStepRunning(`${moleculeId}-worker`);
+    const rootRow = await store.getBead(moleculeId);
+    store.beads.set(moleculeId, { ...rootRow!, created_at: new Date(Date.now() + 1) });
+    const writes: string[] = [];
+    const order: string[] = [];
+    const provider = newFakeProvider({ kind: 'fake-runtime' });
+    const stop = provider.stop.bind(provider);
+    provider.stop = async (handle) => { order.push('stop'); return stop(handle); };
+    store.markMoleculeRootCancelRequested = async (id) => {
+      writes.push('marker');
+      order.push('marker');
+      const root = await store.getBead(id);
+      if (!root) throw new Error('missing root');
+      store.beads.set(id, { ...root, metadata: { ...root.metadata, exec: { ...(root.metadata.exec as Record<string, unknown>), cancel_requested_at: new Date().toISOString() } } });
+    };
+    let closeAttempts = 0;
+    const failRootClose = async () => { closeAttempts++; throw new Error('root write unavailable'); };
+    store.markMoleculeRootStatus = failRootClose;
+    const events: Event[] = [];
+    const eventBus = new EventBus({ noPersist: true });
+    eventBus.subscribe((event) => events.push(event));
+    const dispatcher = newDriven(store, { idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus });
+    const cancel = await dispatcher.cancel(moleculeId).then(() => 'resolved', () => 'rejected');
+    expect(cancel).toBe('rejected');
+    // The accepted cancel's close and the settlement retry are both attempted before the returned rejection.
+    expect(closeAttempts).toBeGreaterThanOrEqual(1);
+    expect(order[0]).toBe('marker');
+    expect(order.indexOf('marker')).toBe(0);
+    expect((await store.getBead(moleculeId))?.status).toBe('open');
+    expect((await store.getBead(moleculeId))?.metadata).toMatchObject({ exec: { cancel_requested_at: expect.any(String) } });
+    store.beads.set('work-root-for-list', { ...(await store.getBead(moleculeId))!, id: 'work-root-for-list', created_at: new Date(Date.now() - 1000) });
+
+    const emitted: Array<{ moleculeId: string; payload: Record<string, unknown>; eventKind?: string }> = [];
+    const recoveryStore = new Proxy(store, {
+      get(target, prop, receiver) {
+        if (prop === 'markMoleculeRootStatus') return async (id: string, status: 'closed', outcome: 'cancelled' | 'interrupted') => {
+          if (outcome === 'cancelled') return (InMemoryDoltClient.prototype.markMoleculeRootStatus as (...args: unknown[]) => Promise<boolean>).call(target, id, status, outcome);
+          return failRootClose();
+        };
+        if (prop === 'listMoleculeRoots') return async () => {
+          const root = await target.getBead(moleculeId);
+          return root ? [root] : [];
+        };
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const report = await recoverInterruptedMolecules(recoveryStore as never, (id, payload, eventKind) => emitted.push({ moleculeId: id, payload, eventKind }));
+    expect(report.cancelled).toContain(moleculeId);
+    expect(report.interrupted).not.toContain(moleculeId);
+    expect(await store.getBead(moleculeId)).toMatchObject({ status: 'closed', metadata: { exec: { outcome: 'cancelled' } } });
+    expect(emitted.find((event) => event.moleculeId === moleculeId)).toMatchObject({ eventKind: 'dispatcher/formula.cancelled', payload: { cancelledStepCount: 0, recoveredAfterRestart: true } });
+    expect(writes).toEqual(['marker']);
+    expect(events.some((event) => event.kind === 'dispatcher/formula.interrupted')).toBe(false);
+  });
+
+  it('writes the marker before stopping sessions when cancelling without a live run', async () => {
+    const store = new InMemoryDoltClient();
+    const view = await new MoleculeWalker(store).dispatch({ prefix: 'mol', formulaName: 'f', title: 't', steps: [step('worker', 0)] });
+    await store.markStepRunning(`${view.rootId}-worker`);
+    const stepRow = await store.getBead(`${view.rootId}-worker`);
+    store.beads.set(`${view.rootId}-worker`, { ...stepRow!, metadata: { ...stepRow!.metadata, exec: { ...(stepRow!.metadata.exec as Record<string, unknown>), session_id: 'session-1', provider_kind: 'fake-runtime' } } });
+    const order: string[] = [];
+    store.markMoleculeRootCancelRequested = async (id) => {
+      order.push('marker');
+      const root = await store.getBead(id);
+      if (root) store.beads.set(id, { ...root, metadata: { ...root.metadata, exec: { ...(root.metadata.exec as Record<string, unknown>), cancel_requested_at: new Date().toISOString() } } });
+    };
+    const provider = newFakeProvider({ kind: 'fake-runtime' });
+    const stop = provider.stop.bind(provider);
+    provider.stop = async (handle) => { order.push('stop'); return stop(handle); };
+    const eventBus = new EventBus({ noPersist: true });
+    const dispatcher = newDriven(store, { idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus });
+
+    await dispatcher.cancel(view.rootId);
+
+    expect(order[0]).toBe('marker');
+    expect(order.indexOf('marker')).toBeLessThan(order.indexOf('stop'));
+  });
+
+  it('a failed marker write is logged without preventing the no-live-run cancel', async () => {
+    const h = harness({ ending: 'reply' });
+    const moleculeId = await new Promise<string>((resolve) => {
+      const run = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: resolve });
+      void run.then(() => undefined, () => undefined);
+      setTimeout(h.release, 25);
+    });
+    await until(() => !h.dispatcher.liveMoleculeIds().includes(moleculeId), 'run settles without a live run');
+    const root = await h.store.getBead(moleculeId);
+    h.store.beads.set(moleculeId, { ...root!, status: 'open' });
+    h.store.markMoleculeRootCancelRequested = async () => { throw new Error('marker unavailable'); };
+    const events: Event[] = [];
+    h.eventBus.subscribe((event) => events.push(event));
+    await h.dispatcher.cancel(moleculeId);
+    expect((await h.store.getBead(moleculeId))?.status).toBe('closed');
+    expect(events.some((event) => event.kind === 'dispatcher/formula.cancel_marker_failed')).toBe(true);
   });
 
   it('a turn that returns while a cancel holds its claim, and the read then finds nothing in_progress: the run still ends', async () => {

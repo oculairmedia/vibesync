@@ -83,6 +83,30 @@ describe('BdMoleculeWriter.markMoleculeRootStatus closes the root only if it is 
   });
 });
 
+describe('BdMoleculeWriter.markMoleculeRootCancelRequested', () => {
+  it('writes the timestamp while preserving the existing exec metadata', async () => {
+    const root = { id: 'r-1', status: 'open', issue_type: 'molecule_root', metadata: { owner: 'test', exec: { formula: 'f', outcome: 'pending' } } } as never;
+    const calls: string[][] = [];
+    let writtenMetadata: Record<string, unknown> | undefined;
+    const writer = new BdMoleculeWriter(async (args) => {
+      calls.push([...args]);
+      const ref = args[args.indexOf('--metadata') + 1]!;
+      writtenMetadata = JSON.parse(await import('node:fs/promises').then(({ readFile }) => readFile(ref.slice(1), 'utf8'))) as Record<string, unknown>;
+      return '';
+    }, { getBead: async () => root, findStepsForMolecule: async () => [] });
+
+    await writer.markMoleculeRootCancelRequested('r-1');
+
+    const update = calls[0]!;
+    expect(update.slice(0, 2)).toEqual(['update', 'r-1']);
+    expect(update).toContain('--metadata');
+    expect(writtenMetadata).toMatchObject({ owner: 'test', exec: { formula: 'f', outcome: 'pending' } });
+    const exec = writtenMetadata!.exec as Record<string, unknown>;
+    expect(exec.cancel_requested_at).toEqual(expect.any(String));
+    expect(Number.isNaN(Date.parse(exec.cancel_requested_at as string))).toBe(false);
+  });
+});
+
 describe('exit 13 on the root close means "closed elsewhere" only if the root really is closed', () => {
   it('a root that is not open and not closed (claimed, blocked) is an error, not "closed elsewhere"', async () => {
     // Fourth outside review (Fable): --if-status open also refuses a root in_progress or blocked. Reporting that as

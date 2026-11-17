@@ -96,8 +96,10 @@ export class MoleculeSettler {
       // closing the root is retried here, as the last writer. If it fails again, rejectSettlementError gives up
       // the live run and boot recovery finishes the root.
       // cancelledStepCount 0: cancel() failed before it could count what it recorded; the root close swept the rest.
-      if (!run.rootClosed) await this.closeCancelledRoot(run.moleculeId, 0);
-      run.rootClosed = true;
+      if (!run.rootClosed) {
+        await this.closeCancelledRoot(run.moleculeId, 0);
+        run.rootClosed = true;
+      }
       this.rejectCancelledMolecule(run);
       return true;
     }
@@ -272,6 +274,7 @@ export class MoleculeSettler {
   private async cancelLiveRun(run: MoleculeRun): Promise<CancelResult> {
     const moleculeId = run.moleculeId;
     try {
+      await this.markCancelRequested(moleculeId);
       const running = await this.deps.walker.findRunning(moleculeId);
       // The stops are asked for, not waited on: a stop that never settles must not hold the run open (outside review
       // of PR #188). The bounded wait for the turns below is what decides when cancel() moves on.
@@ -293,6 +296,7 @@ export class MoleculeSettler {
    * root is closed all the same if it is still open, so a cancel whose root write failed can be retried.
    */
   private async cancelWithoutLiveRun(moleculeId: string): Promise<CancelResult> {
+    await this.markCancelRequested(moleculeId);
     const view = await this.deps.walker.load(moleculeId);
     if (!view) throw new FormulaDispatchError(`FormulaDispatcher: molecule ${moleculeId} not found`, moleculeId);
     const running = await this.deps.walker.findRunning(moleculeId);
@@ -305,6 +309,17 @@ export class MoleculeSettler {
     const cancelledStepCount = await this.recordStepsStillRunning(moleculeId, await this.deps.walker.findRunning(moleculeId));
     await this.closeCancelledRoot(moleculeId, cancelledStepCount);
     return { moleculeId, cancelledStepCount };
+  }
+
+  private async markCancelRequested(moleculeId: string): Promise<void> {
+    try {
+      await this.deps.walker.markMoleculeRootCancelRequested(moleculeId);
+    } catch (error) {
+      this.deps.emit('dispatcher/formula.cancel_marker_failed', moleculeId, undefined, {
+        moleculeId,
+        error: stringifyError(error),
+      });
+    }
   }
 
   /**

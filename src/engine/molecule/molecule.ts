@@ -193,6 +193,7 @@ export interface MoleculeStore {
   // lcp-s0wi: mark a molecule root bead as terminal with an outcome.
   /** False when the root was already closed (another closer won): its outcome stands and nothing was written. */
   markMoleculeRootStatus(rootId: string, status: 'closed', outcome: MoleculeOutcome): Promise<boolean>;
+  markMoleculeRootCancelRequested(rootId: string): Promise<void>;
 }
 
 /**
@@ -409,6 +410,10 @@ export class MoleculeWalker {
     outcome: MoleculeOutcome,
   ): Promise<boolean> {
     return this.store.markMoleculeRootStatus(rootId, status, outcome);
+  }
+
+  async markMoleculeRootCancelRequested(rootId: string): Promise<void> {
+    await this.store.markMoleculeRootCancelRequested(rootId);
   }
 
   /**
