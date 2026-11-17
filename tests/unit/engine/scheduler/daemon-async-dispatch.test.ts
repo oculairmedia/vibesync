@@ -96,7 +96,7 @@ function makeStore(): SlingContextStore & {
   return store;
 }
 
-function harness(opts: { beads: string[]; poolSize: number; store?: ReturnType<typeof makeStore>; onRunEscalated?: SchedulerDaemonDeps['onRunEscalated'] }) {
+function harness(opts: { beads: string[]; poolSize: number; store?: ReturnType<typeof makeStore>; onRunEscalated?: SchedulerDaemonDeps['onRunEscalated']; paused?: boolean }) {
   const runs: Deferred[] = [];
   const merged: number[] = [];
   const probeCalls: string[] = [];
@@ -169,7 +169,7 @@ function harness(opts: { beads: string[]; poolSize: number; store?: ReturnType<t
     requiredCheckNames: () => ['ci'],
     livenessProbe: { async probe(slot) { probeCalls.push(slot.workBeadId); return verdicts.get(slot.workBeadId) ?? 'alive'; } },
     escalation: { async onIsolated() {}, async onRepeatedRecovery() {}, async onBlocked() {} },
-    config: () => ({ poolSize: opts.poolSize, batchSize: 10, paused: false }),
+    config: () => ({ poolSize: opts.poolSize, batchSize: 10, paused: opts.paused ?? false }),
     logger: {
       info: (o, m) => { logs.push({ level: 'info', o, m }); },
       warn: (o, m) => { logs.push({ level: 'warn', o, m }); },
@@ -387,10 +387,13 @@ describe('SchedulerDaemon — dispatch off the tick (vibesync-q50w)', () => {
     await tickReturns(h.daemon);
     h.runsFor('we')[0]!.reject(new FormulaEscalationError(`FormulaDispatcher: step "reviewer" escalated: ${'x'.repeat(2000)}`, 'mol-we'));
     await vi.waitFor(() => { expect(wakes).toHaveLength(1); }, { timeout: 1500 });
-    expect(wakes[0], 'the PM wake names the configured label').toContain('scheduler:eligible NOT removed');
+    expect(wakes[0], 'the PM wake names the configured label').toContain('scheduler:eligible removal NOT confirmed');
     expect(wakes[0], 'the PM wake says the bead stays excluded and re-labelling will not run it').toMatch(/label/i);
     expect(wakes[0]).toMatch(/clear/i);
-    expect(comments[0], 'the bead comment says it too, despite the long reason').toMatch(/scheduler:eligible NOT removed/);
+    // The removal may have gone through before the confirmation read failed: clearing the context alone would not make the
+    // bead ready again, so the wake says to make sure it carries the label too (CodeRabbit).
+    expect(wakes[0], 'tells the PM to make sure the label is on').toContain('make sure it carries scheduler:eligible');
+    expect(comments[0], 'the bead comment says it too, despite the long reason').toMatch(/scheduler:eligible removal NOT confirmed/);
   });
 
   it('5h. (vibesync-9lzk.56) a tick names excluded ready beads once, not once per ready read', async () => {
@@ -400,6 +403,20 @@ describe('SchedulerDaemon — dispatch off the tick (vibesync-q50w)', () => {
     await tickReturns(h.daemon);
     expect(h.readReads.length, 'the tick read the ready list more than once').toBeGreaterThan(1);
     expect(h.readReads.filter(Boolean), 'only one of those reads may name excluded beads').toHaveLength(1);
+  });
+
+  it.each([
+    ['a paused scheduler', { paused: true, poolSize: 1, busy: false }],
+    ['a full pool', { paused: false, poolSize: 1, busy: true }],
+  ])('5j. (vibesync-9lzk.56) a tick with %s still names excluded ready beads once (CodeRabbit)', async (_label, c) => {
+    // The loop skips its own ready read when paused or at capacity; the read that names exclusions must still happen.
+    const h = track(harness({ beads: c.busy ? ['running', 'other'] : ['a'], poolSize: c.poolSize, paused: c.paused }));
+    if (c.busy) {
+      await tickReturns(h.daemon); // starts `running`, filling the only slot
+      h.readReads.length = 0;
+    }
+    await tickReturns(h.daemon);
+    expect(h.readReads.filter(Boolean), 'one read named excluded beads on this tick').toHaveLength(1);
   });
 
   it('5i. (vibesync-9lzk.56) a confirmed removal tells the PM, in the wake itself, that re-adding the label runs it again', async () => {

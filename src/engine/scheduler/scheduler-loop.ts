@@ -433,7 +433,7 @@ export class SchedulerLoop {
         // failed removal goes FIRST, on the first line (outside review): re-labelling alone will not run this bead again.
         const label = this.deps.readyLabel || 'ready label';
         const reason = 'why' in labelGone
-          ? `${label} NOT removed (${labelGone.why.slice(0, 80)}): bead stays excluded; clear its sling context to run it again. ${errMessage(error)}`
+          ? `${label} removal NOT confirmed (${labelGone.why.slice(0, 80)}): bead stays excluded; to run it again, clear its sling context and make sure it carries ${label}. ${errMessage(error)}`
           : `${label} removed; re-add it to run again. ${errMessage(error)}`;
         try {
           await this.deps.onRunEscalated?.({ workBeadId: candidate.workBeadId, contextId: candidate.contextId, reason });

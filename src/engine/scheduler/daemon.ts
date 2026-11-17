@@ -89,7 +89,8 @@ export interface FormulaResolver {
 export interface ReadyBeadSource {
   /**
    * Work bead ids that are dependency-unblocked (bd ready). `logExcluded: false` skips naming the excluded ones: a tick
-   * reads twice (schedule, then the loop), and only the loop's read names them, once per tick (vibesync-9lzk.56).
+   * reads twice (schedule, then the loop). The schedule read runs on EVERY tick (the loop skips its read when paused,
+   * locked or at capacity), so it names them, and the loop's read is the quiet one (vibesync-9lzk.56, CodeRabbit).
    */
   readyWorkBeadIds(opts?: { readonly logExcluded?: boolean }): Promise<Set<string>>;
   /** Priority (0=P0…), downstream unblock count, and touched files for a bead. */
@@ -276,7 +277,7 @@ export class SchedulerDaemon {
           : {}),
         recordDispatchFailure: (id, err) => this.recordFailure(id, err),
       },
-      readyWork: { readyWorkBeadIds: () => deps.readyBeads.readyWorkBeadIds() },
+      readyWork: { readyWorkBeadIds: () => deps.readyBeads.readyWorkBeadIds({ logExcluded: false }) },
       candidateMetadata: { metadataFor: (r) => deps.readyBeads.metadataFor(r.params.work_bead_id) },
       executor: { execute: (c) => executor.start(c) },
       // Trigger (c): a settled run frees capacity — ask for a prompt tick.
@@ -600,7 +601,7 @@ export class SchedulerDaemon {
    */
   private async scheduleReady(): Promise<void> {
     this.lastReadyIds = null; // unknown until this tick's read succeeds
-    const ready = await this.deps.readyBeads.readyWorkBeadIds({ logExcluded: false });
+    const ready = await this.deps.readyBeads.readyWorkBeadIds();
     this.lastReadyIds = ready;
     for (const workBeadId of ready) {
       if (this.stopping) break;
