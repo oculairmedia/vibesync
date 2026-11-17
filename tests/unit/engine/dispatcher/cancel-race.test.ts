@@ -798,6 +798,48 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
     expect(events.some((event) => event.kind === 'dispatcher/formula.interrupted')).toBe(false);
   });
 
+  it('a live cancel retries both failed root closes and recovery preserves cancellation', async () => {
+    const store = new InMemoryDoltClient();
+    const gate = deferred();
+    const base = newFakeProvider({ kind: 'fake-runtime', script: () => turn(gate.promise, 'reply') });
+    const provider: FakeProvider = { ...base, stop: async (handle) => { await base.stop(handle); gate.open(); } };
+    let rootCloseAttempts = 0;
+    const markRoot = store.markMoleculeRootStatus.bind(store);
+    store.markMoleculeRootStatus = async (...args) => {
+      if (args[2] === 'cancelled') {
+        rootCloseAttempts++;
+        if (rootCloseAttempts <= 2) throw new Error('root write unavailable');
+      }
+      return markRoot(...args);
+    };
+    const walker = new MoleculeWalker(store);
+    const eventBus = new EventBus({ noPersist: true });
+    const events: Event[] = [];
+    eventBus.subscribe((event) => events.push(event));
+    const dispatcher = newDriven(store, { idPrefix: 'mol', provider, walker, eventBus, cancelUnwindMs: 10 });
+    let moleculeId = '';
+    const pending = dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    void pending.catch(() => undefined);
+    await until(async () => moleculeId !== '' && (await store.getBead(newMoleculeStepId(moleculeId, 'worker')))?.status === 'in_progress', 'worker in progress');
+
+    const cancel = dispatcher.cancel(moleculeId).then(() => 'resolved', () => 'rejected');
+    await until(() => rootCloseAttempts >= 2, 'both cancelled-root closes failed');
+    const root = await store.getBead(moleculeId);
+    expect(rootCloseAttempts).toBe(2);
+    expect(root?.status).toBe('open');
+    expect(root?.metadata).toMatchObject({ exec: { cancel_requested_at: expect.any(String) } });
+    expect(await cancel).toBe('rejected');
+    await pending.catch(() => undefined);
+
+    const emitted: Array<{ moleculeId: string; payload: Record<string, unknown>; eventKind?: string }> = [];
+    const report = await recoverInterruptedMolecules(store, (id, payload, eventKind) => emitted.push({ moleculeId: id, payload, eventKind }));
+    expect(report.cancelled).toContain(moleculeId);
+    expect(report.interrupted).not.toContain(moleculeId);
+    expect(await store.getBead(moleculeId)).toMatchObject({ status: 'closed', metadata: { exec: { outcome: 'cancelled' } } });
+    expect(emitted.find((event) => event.moleculeId === moleculeId)?.eventKind).toBe('dispatcher/formula.cancelled');
+    expect(events.some((event) => event.kind === 'dispatcher/formula.interrupted')).toBe(false);
+  });
+
   it('writes the marker before stopping sessions when cancelling without a live run', async () => {
     const store = new InMemoryDoltClient();
     const view = await new MoleculeWalker(store).dispatch({ prefix: 'mol', formulaName: 'f', title: 't', steps: [step('worker', 0)] });
@@ -820,6 +862,28 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
 
     expect(order[0]).toBe('marker');
     expect(order.indexOf('marker')).toBeLessThan(order.indexOf('stop'));
+  });
+
+  it('writes the marker before stopping sessions when cancelling a live run', async () => {
+    const store = new InMemoryDoltClient();
+    const order: string[] = [];
+    const markerWrite = store.markMoleculeRootCancelRequested.bind(store);
+    store.markMoleculeRootCancelRequested = async (id) => { order.push('marker'); return markerWrite(id); };
+    const gate = deferred();
+    const base = newFakeProvider({ kind: 'fake-runtime', script: () => turn(gate.promise, 'reply') });
+    const provider: FakeProvider = { ...base, stop: async (handle) => { order.push('stop'); await base.stop(handle); gate.open(); } };
+    const eventBus = new EventBus({ noPersist: true });
+    const dispatcher = newDriven(store, { idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus });
+    let moleculeId = '';
+    const pending = dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    void pending.catch(() => undefined);
+    await until(async () => moleculeId !== '' && (await store.getBead(newMoleculeStepId(moleculeId, 'worker')))?.status === 'in_progress', 'worker in progress');
+    const cancelling = dispatcher.cancel(moleculeId);
+    await until(() => order.includes('stop'), 'provider stop requested');
+    expect(order.indexOf('marker')).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('marker')).toBeLessThan(order.indexOf('stop'));
+    await cancelling;
+    await pending.catch(() => undefined);
   });
 
   it('a failed marker write is logged without preventing the no-live-run cancel', async () => {
