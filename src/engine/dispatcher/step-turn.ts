@@ -60,6 +60,22 @@ export interface FullSuiteEvidenceSource {
  */
 const SETTLED = 'settled';
 
+/** vibesync-6zos.7: how many tries a step gets to prove the full suite before the run escalates. */
+export const FULL_SUITE_ATTEMPTS = 2;
+
+/** The step did not prove a full-suite run. A StepBlockedError, so once its tries are used up the run escalates. */
+export class FullSuiteUnprovenError extends StepBlockedError {}
+
+/** The note a retried step gets when its previous try was sent back for missing full-suite evidence. */
+// No attempt check: every path that puts a step back to attempt 1 (a new review round, a success) clears error_trace, so a
+// first try never carries an old reason (a mutation dropping an `attempt <= 1` check changed no outcome; vibesync-6zos.7).
+function fullSuiteRetryNote(step: { readonly metadata?: Readonly<Record<string, unknown>> } | undefined): string {
+  const exec = step?.metadata?.['exec'];
+  const trace = exec && typeof exec === 'object' ? (exec as Record<string, unknown>)['error_trace'] : undefined;
+  if (typeof trace !== 'string' || !/full suite|suite did not load/.test(trace)) return '';
+  return `\n\nTHE ENGINE SENT YOUR PREVIOUS ATTEMPT BACK: ${trace}\nRun the FULL test suite from the workdir and write its JSON report to the path your instructions name; the engine reads that report, not your reply.\n`;
+}
+
 export class StepTurnRunner {
   constructor(private readonly deps: StepTurnDeps) {}
 
@@ -195,7 +211,7 @@ export class StepTurnRunner {
         step_id: args.step.id,
         attempt,
       },
-    }) + (this.deps.projectMemory ? renderProjectMemory(await this.readProjectMemory(args.input.projectIdentifier, { moleculeId: args.moleculeId, stepId: args.step.id, stepName })) : '') + STEP_OUTCOME_INSTRUCTIONS;
+    }) + fullSuiteRetryNote(args.step) + (this.deps.projectMemory ? renderProjectMemory(await this.readProjectMemory(args.input.projectIdentifier, { moleculeId: args.moleculeId, stepId: args.step.id, stepName })) : '') + STEP_OUTCOME_INSTRUCTIONS;
   }
 
   /**
@@ -253,7 +269,7 @@ export class StepTurnRunner {
     const unproven = blocker === null && declared === null && stepSpec.requiresFullSuite
       ? await this.fullSuiteShortfall(args, attemptStartedAt)
       : null;
-    if (unproven !== null) return { signal: { origin: 'stopped' }, error: new StepBlockedError(unproven), failureClass: null };
+    if (unproven !== null) return { signal: { origin: 'stopped' }, error: new FullSuiteUnprovenError(unproven), failureClass: null };
     const blockerVerdict = await this.blockerVerdict(context, blocker, output.text);
     if (blockerVerdict !== null) return blockerVerdict;
     const declaredFailure = this.declaredFailureVerdict(declared);
@@ -344,6 +360,16 @@ export class StepTurnRunner {
     failure: StepRunFailure,
   ): Promise<void> {
     if (failure.code === 'turn_timeout') await this.escalateTurnLimit(context, state, failure);
+    // vibesync-6zos.7: a step that did not prove the full suite goes back to the coder (its own step, not a review round),
+    // told what was missing, for up to FULL_SUITE_ATTEMPTS tries whatever the formula's retry policy says; after that the
+    // run escalates with the reason (finishStepFailure: it is a StepBlockedError).
+    if (failure.error instanceof FullSuiteUnprovenError && state.attempt < FULL_SUITE_ATTEMPTS) {
+      await this.retryStepFailure(
+        { stepRun: context, policy, state, failure, kind: 'agent', reason: stringifyError(failure.error) },
+        { action: 'retry', next: { attempt: state.attempt + 1, infraRetries: state.infraRetries }, backoffMs: 0 },
+      );
+      return;
+    }
     // A failure_class means the agent ran and declared it; cancel/stop still wins.
     const classified = classifyFailure(failure.signal);
     const kind = failure.failureClass !== null && classified !== 'terminal' ? 'agent' : classified;

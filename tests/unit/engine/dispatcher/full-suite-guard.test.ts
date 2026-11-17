@@ -15,7 +15,10 @@ const stepTurn = readFileSync(resolve('src/engine/dispatcher/step-turn.ts'), 'ut
 describe('full-suite evidence guard (vibesync-6zos.7)', () => {
   it('the step verdict path runs the check for steps that require the full suite, and fails them closed', () => {
     expect(stepTurn).toMatch(/stepSpec\.requiresFullSuite\s*\n?\s*\?\s*await this\.fullSuiteShortfall\(/);
-    expect(stepTurn).toMatch(/if \(unproven !== null\) return \{ signal: \{ origin: 'stopped' \}, error: new StepBlockedError\(unproven\)/);
+    expect(stepTurn).toMatch(/if \(unproven !== null\) return \{ signal: \{ origin: 'stopped' \}, error: new FullSuiteUnprovenError\(unproven\)/);
+    // A short report is sent back to the coder, bounded, and the retry prompt carries the reason (both outside reviews).
+    expect(stepTurn).toMatch(/failure\.error instanceof FullSuiteUnprovenError && state\.attempt < FULL_SUITE_ATTEMPTS/);
+    expect(stepTurn).toMatch(/\}\) \+ fullSuiteRetryNote\(args\.step\) \+/);
   });
 
   it.each(['code-review', 'implement-fix', 'onboard-feature'])('the shipped %s formula requires the full suite of its coder step', (name) => {

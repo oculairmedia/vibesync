@@ -79,7 +79,7 @@ describe('requires_full_suite steps (vibesync-6zos.7)', () => {
     const thrown = await h.run().catch((e: unknown) => e);
     expect(thrown).toBeInstanceOf(FormulaDispatchError);
     expect(await stepTrace(h.store, thrown)).toMatch(/full suite not run: 2 of 3 test files are not in the report/);
-    expect(h.reads).toEqual([BEAD]);
+    expect(h.reads, 'sent back to the coder once, then escalated').toEqual([BEAD, BEAD]);
   });
 
   it("a report showing a failure fails the step with that failure's file and test name", async () => {
@@ -145,4 +145,37 @@ describe('requires_full_suite steps (vibesync-6zos.7)', () => {
     expect(thrown).toBeInstanceOf(FormulaDispatchError);
     expect(await stepTrace(h.store, thrown)).toMatch(/evidence could not be read \(EACCES: permission denied\)/);
   });
+
+  it('a coder whose report falls short is sent back to run again, told why, and the run completes once it proves the suite (both outside reviews)', async () => {
+    // The bead: the work goes back to the coder; not a reviewer block, no review round, no escalation to the PM.
+    const store = new InMemoryDoltClient();
+    const provider = newFakeProvider({ kind: 'fake', script: () => reply('Done. STEP OUTCOME: DONE') });
+    // The text each coder turn was SENT (the session's prompt input), as the recipient gets it.
+    const sent = () => provider.recorder.prompts.map((p) => (Array.isArray(p.content) ? p.content : [p.content]).map((c) => (typeof c === 'string' ? c : (c as { text?: string }).text ?? '')).join(''));
+    let reads = 0;
+    const complete = reportOf([
+      entry('tests/unit/a.test.ts', [{ status: 'passed' }]),
+      entry('tests/unit/config.test.ts', [{ status: 'passed' }]),
+      entry('tests/integration/opt-in.test.ts', [{ status: 'skipped' }]),
+    ]);
+    const partial = reportOf([entry('tests/unit/a.test.ts', [{ status: 'passed' }])]);
+    const dispatcher = newDriven(store, {
+      idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }),
+      fullSuiteEvidence: { async readReport() { reads += 1; return reads === 1 ? partial() : complete(); }, async listTestFiles() { return FILES; } },
+    });
+    const result = await dispatcher.run({ formula: coderOnly(true), pack: pack(), input: 'go', motivatingBeadId: BEAD, workdir: '/work' });
+    expect(result).toMatchObject({ outputs: { coder: expect.any(String) } });
+    expect(sent(), 'the coder ran a second time').toHaveLength(2);
+    expect(sent()[0], 'the first try has no note').not.toMatch(/SENT YOUR PREVIOUS ATTEMPT BACK/);
+    expect(sent()[1], 'and was told what was missing').toMatch(/SENT YOUR PREVIOUS ATTEMPT BACK: .*full suite not run: 2 of 3 test files are not in the report/);
+  });
+
+  it('a coder that never proves the suite is not sent back forever: the run fails after the bounded retries', async () => {
+    const h = harness(reportOf([entry('tests/unit/a.test.ts', [{ status: 'passed' }])]));
+    const thrown = await h.run().catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(FormulaDispatchError);
+    expect(h.reads.length, 'a bounded number of tries, more than one').toBeGreaterThan(1);
+    expect(h.reads.length).toBeLessThanOrEqual(3);
+  });
 });
+
