@@ -87,8 +87,11 @@ export interface FormulaResolver {
 
 /** Source of ready work + candidate metadata, backed by BeadsAdapter. */
 export interface ReadyBeadSource {
-  /** Work bead ids that are dependency-unblocked (bd ready). */
-  readyWorkBeadIds(): Promise<Set<string>>;
+  /**
+   * Work bead ids that are dependency-unblocked (bd ready). `logExcluded: false` skips naming the excluded ones: a tick
+   * reads twice (schedule, then the loop), and only the loop's read names them, once per tick (vibesync-9lzk.56).
+   */
+  readyWorkBeadIds(opts?: { readonly logExcluded?: boolean }): Promise<Set<string>>;
   /** Priority (0=P0…), downstream unblock count, and touched files for a bead. */
   metadataFor(workBeadId: string): Promise<{
     readonly priority: number;
@@ -263,6 +266,7 @@ export class SchedulerDaemon {
 
     this.scheduler = new SchedulerLoop({
       config: deps.config,
+      ...(deps.readyLabel ? { readyLabel: deps.readyLabel } : {}),
       capacity: capacitySource,
       contextStore: {
         queryPending: () => this.sling.queryPending(),
@@ -596,7 +600,7 @@ export class SchedulerDaemon {
    */
   private async scheduleReady(): Promise<void> {
     this.lastReadyIds = null; // unknown until this tick's read succeeds
-    const ready = await this.deps.readyBeads.readyWorkBeadIds();
+    const ready = await this.deps.readyBeads.readyWorkBeadIds({ logExcluded: false });
     this.lastReadyIds = ready;
     for (const workBeadId of ready) {
       if (this.stopping) break;

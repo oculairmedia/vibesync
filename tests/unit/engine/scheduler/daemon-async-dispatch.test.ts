@@ -105,6 +105,8 @@ function harness(opts: { beads: string[]; poolSize: number; store?: ReturnType<t
   const logs: Array<{ level: 'info' | 'warn'; o: unknown; m: string }> = [];
   const store = opts.store ?? makeStore();
   const ready = new Set(opts.beads);
+  /** One entry per ready read in a tick: true when that read may name excluded beads (vibesync-9lzk.56). */
+  const readReads: boolean[] = [];
   const concurrentByBead = new Map<string, number>();
   let maxConcurrentByBead = 0;
 
@@ -148,7 +150,8 @@ function harness(opts: { beads: string[]; poolSize: number; store?: ReturnType<t
       },
     },
     readyBeads: {
-      async readyWorkBeadIds() {
+      async readyWorkBeadIds(opts?: { readonly logExcluded?: boolean }) {
+        readReads.push(opts?.logExcluded !== false);
         const terminal = store.terminalWorkBeadIds();
         // `bd ready --label scheduler:eligible`: a bead without the label is not ready.
         return new Set([...ready].filter((id) => !terminal.has(id) && !store.unlabelled.has(id)));
@@ -175,6 +178,7 @@ function harness(opts: { beads: string[]; poolSize: number; store?: ReturnType<t
 
   const daemon = new SchedulerDaemon(deps);
   return {
+    readReads,
     daemon, runs, merged, probeCalls, logs, store, verdicts,
     maxConcurrentByBead: () => maxConcurrentByBead,
     runsFor: (id: string) => runs.filter((r) => r.beadId === id),
@@ -383,9 +387,29 @@ describe('SchedulerDaemon — dispatch off the tick (vibesync-q50w)', () => {
     await tickReturns(h.daemon);
     h.runsFor('we')[0]!.reject(new FormulaEscalationError(`FormulaDispatcher: step "reviewer" escalated: ${'x'.repeat(2000)}`, 'mol-we'));
     await vi.waitFor(() => { expect(wakes).toHaveLength(1); }, { timeout: 1500 });
+    expect(wakes[0], 'the PM wake names the configured label').toContain('scheduler:eligible NOT removed');
     expect(wakes[0], 'the PM wake says the bead stays excluded and re-labelling will not run it').toMatch(/label/i);
     expect(wakes[0]).toMatch(/clear/i);
-    expect(comments[0], 'the bead comment says it too, despite the long reason').toMatch(/ready label NOT removed/);
+    expect(comments[0], 'the bead comment says it too, despite the long reason').toMatch(/scheduler:eligible NOT removed/);
+  });
+
+  it('5h. (vibesync-9lzk.56) a tick names excluded ready beads once, not once per ready read', async () => {
+    // Outside review (Fable): the daemon reads the ready list twice per tick (scheduleReady, then the loop's runTick), and
+    // each read logged every excluded bead, so each one appeared twice per tick, every 30 s, for as long as it stays ready.
+    const h = track(harness({ beads: ['a'], poolSize: 1 }));
+    await tickReturns(h.daemon);
+    expect(h.readReads.length, 'the tick read the ready list more than once').toBeGreaterThan(1);
+    expect(h.readReads.filter(Boolean), 'only one of those reads may name excluded beads').toHaveLength(1);
+  });
+
+  it('5i. (vibesync-9lzk.56) a confirmed removal tells the PM, in the wake itself, that re-adding the label runs it again', async () => {
+    const wakes: string[] = [];
+    const notify = createEscalationNotifier({ wakePm: (_id, detail) => { wakes.push(detail); }, commentOnBead: async () => {} });
+    const h = track(harness({ beads: ['we'], poolSize: 1, onRunEscalated: notify }));
+    await tickReturns(h.daemon);
+    h.runsFor('we')[0]!.reject(new FormulaEscalationError(`FormulaDispatcher: step "reviewer" escalated: ${'x'.repeat(400)}`, 'mol-we'));
+    await vi.waitFor(() => { expect(wakes).toHaveLength(1); }, { timeout: 1500 });
+    expect(wakes[0]).toContain('scheduler:eligible removed; re-add it to run again');
   });
 
   it('5c. (vibesync-9lzk.53) an escalated run notifies the observer once with the bead and the reason; a plain failure does not', async () => {

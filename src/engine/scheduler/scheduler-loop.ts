@@ -157,6 +157,8 @@ export interface SchedulerLoopDeps {
   readonly config: () => SchedulerConfig;
   readonly capacity: CapacitySource;
   readonly contextStore: SchedulerContextStore;
+  /** The ready label's name, for the PM wake when a run escalates (vibesync-9lzk.56). */
+  readonly readyLabel?: string;
   readonly readyWork: ReadyWorkSource;
   readonly candidateMetadata: CandidateMetadataSource;
   readonly executor: DispatchExecutor;
@@ -390,12 +392,6 @@ export class SchedulerLoop {
     while (this.settlements.size > 0) await Promise.all([...this.settlements]);
   }
 
-  /**
-   * Off-tick settlement. The bead leaves the in-flight set only AFTER its
-   * context has been closed (success / circuit-broken) or its failure counted,
-   * so a concurrent tick can neither re-plan it early nor see a stale open
-   * context for a finished run.
-   */
   private async removeReadyLabel(workBeadId: string): Promise<LabelRemoval> {
     const remove = this.deps.contextStore.removeReadyLabel;
     if (!remove) return { ok: false, why: 'no label removal configured' };
@@ -407,6 +403,12 @@ export class SchedulerLoop {
     }
   }
 
+  /**
+   * Off-tick settlement. The bead leaves the in-flight set only AFTER its
+   * context has been closed (success / circuit-broken) or its failure counted,
+   * so a concurrent tick can neither re-plan it early nor see a stale open
+   * context for a finished run.
+   */
   private async onRunSettled(candidate: DispatchCandidate, error: unknown): Promise<void> {
     try {
       if (error === null) {
@@ -429,7 +431,10 @@ export class SchedulerLoop {
         );
         // The notifier sends the PM only the first line of the reason (240 characters) and caps the bead comment at 1500, so the
         // failed removal goes FIRST, on the first line (outside review): re-labelling alone will not run this bead again.
-        const reason = 'why' in labelGone ? `ready label NOT removed (${labelGone.why.slice(0, 80)}): bead stays excluded; clear its sling context to run it again. ${errMessage(error)}` : errMessage(error);
+        const label = this.deps.readyLabel || 'ready label';
+        const reason = 'why' in labelGone
+          ? `${label} NOT removed (${labelGone.why.slice(0, 80)}): bead stays excluded; clear its sling context to run it again. ${errMessage(error)}`
+          : `${label} removed; re-add it to run again. ${errMessage(error)}`;
         try {
           await this.deps.onRunEscalated?.({ workBeadId: candidate.workBeadId, contextId: candidate.contextId, reason });
         } catch (err) {

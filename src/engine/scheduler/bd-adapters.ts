@@ -142,7 +142,7 @@ export class BdReadyBeadSource implements ReadyBeadSource {
 
   constructor(private readonly opts: BdReadyBeadSourceOptions) {}
 
-  async readyWorkBeadIds(): Promise<Set<string>> {
+  async readyWorkBeadIds(opts?: { readonly logExcluded?: boolean }): Promise<Set<string>> {
     const args = [
       'ready', '--json', '--limit', '0',
       '--exclude-label', SLING_CONTEXT_LABEL,
@@ -157,7 +157,7 @@ export class BdReadyBeadSource implements ReadyBeadSource {
       if (!id) continue;
       if (excluded.has(id)) {
         // Named on EVERY tick while it stays excluded: once per process hid a re-labelled bead for 30 minutes (9lzk.56).
-        this.opts.logger?.info?.({ workBeadId: id, reason: 'terminal-sling-context' }, 'scheduler: ready bead excluded');
+        if (opts?.logExcluded !== false) this.opts.logger?.info?.({ workBeadId: id, reason: 'terminal-sling-context' }, 'scheduler: ready bead excluded');
         continue;
       }
       next.set(id, row);

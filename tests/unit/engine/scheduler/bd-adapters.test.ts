@@ -70,6 +70,17 @@ describe('BdReadyBeadSource', () => {
     await expect(silent.readyWorkBeadIds()).resolves.toEqual(new Set(['done-2']));
   });
 
+  it('a read asked not to log (logExcluded: false) still excludes the bead but names nothing (vibesync-9lzk.56)', async () => {
+    // The daemon's schedule read passes logExcluded: false so a tick names an excluded bead once (outside review: twice).
+    const logs: unknown[][] = [];
+    const bd = runner(() => JSON.stringify([{ id: 'done' }, { id: 'live' }]));
+    const src = new BdReadyBeadSource({ bd: bd.run, readyLabel: '', excludeWorkBeadIds: async () => new Set(['done']), logger: { info: (...a: unknown[]) => logs.push(a) } });
+    await expect(src.readyWorkBeadIds({ logExcluded: false })).resolves.toEqual(new Set(['live']));
+    expect(logs, 'nothing named on the quiet read').toEqual([]);
+    await src.readyWorkBeadIds();
+    expect(logs, 'the default read still names it').toHaveLength(1);
+  });
+
 
   it('propagates bd failures (the daemon logs them)', async () => {
     const src = new BdReadyBeadSource({ bd: async () => { throw new Error('boom'); }, readyLabel: '', excludeWorkBeadIds: async () => new Set() });
