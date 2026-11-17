@@ -87,8 +87,12 @@ export class BdSlingContextStore implements SlingContextStore {
   async removeLabel(workBeadId: string, label: string): Promise<boolean> {
     await this.bd(['update', workBeadId, '--remove-label', label, '--json']);
     const rows = asRows(parseJsonOutput(await this.bd(['show', workBeadId, '--json']), 'bd show (work bead)'), 'bd show (work bead)');
-    const labels = rows[0]?.['labels'];
-    return rows.length === 1 && !(Array.isArray(labels) && labels.includes(label));
+    // Confirmed only by a read of THAT bead whose labels are a list without the label (outside review): a reply for another
+    // bead, or with labels in another shape, does not establish that the label is gone. bd omits `labels` when there are none.
+    if (rows.length !== 1 || rows[0]!['id'] !== workBeadId) return false;
+    const labels = rows[0]!['labels'];
+    if (labels === undefined) return true;
+    return Array.isArray(labels) && !labels.includes(label);
   }
 
   async closeSlingContext(contextId: string, reason: SlingCloseReason): Promise<void> {

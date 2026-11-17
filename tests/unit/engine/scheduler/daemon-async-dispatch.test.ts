@@ -16,6 +16,7 @@ import {
 } from '../../../../src/engine/scheduler/daemon.js';
 import type { FormulaDispatcher } from '../../../../src/engine/dispatcher/dispatcher.js';
 import { FormulaEscalationError } from '../../../../src/engine/dispatcher/dispatcher.js';
+import { createEscalationNotifier } from '../../../../src/engine/scheduler/escalation-notify.js';
 import {
   tryParseParams,
   type SlingContextStore,
@@ -367,6 +368,24 @@ describe('SchedulerDaemon — dispatch off the tick (vibesync-q50w)', () => {
     expect(h.runsFor('we'), 'the label is still on, so the context must keep excluding it').toHaveLength(1);
     expect(seen).toHaveLength(1);
     expect(seen[0], 'the PM is told the label could not be removed').toMatch(/scheduler:eligible|label/);
+  });
+
+  it('5g. (vibesync-9lzk.56) through the REAL notifier: a failed label removal is named in the PM wake itself, even after a long reason', async () => {
+    // Outside review (GPT): the explanation was appended after a newline, and the notifier sends only the first line of the
+    // reason to the PM (escalation-notify.ts), so the wake never said that re-labelling will not work. The comment is capped
+    // at 1500 characters, so a long reason could push it out of the comment too.
+    const wakes: string[] = [];
+    const comments: string[] = [];
+    const notify = createEscalationNotifier({ wakePm: (_id, detail) => { wakes.push(detail); }, commentOnBead: async (_id, text) => { comments.push(text); } });
+    const store = makeStore();
+    store.failLabelRemoval = true;
+    const h = track(harness({ beads: ['we'], poolSize: 1, store, onRunEscalated: notify }));
+    await tickReturns(h.daemon);
+    h.runsFor('we')[0]!.reject(new FormulaEscalationError(`FormulaDispatcher: step "reviewer" escalated: ${'x'.repeat(2000)}`, 'mol-we'));
+    await vi.waitFor(() => { expect(wakes).toHaveLength(1); }, { timeout: 1500 });
+    expect(wakes[0], 'the PM wake says the bead stays excluded and re-labelling will not run it').toMatch(/label/i);
+    expect(wakes[0]).toMatch(/clear/i);
+    expect(comments[0], 'the bead comment says it too, despite the long reason').toMatch(/ready label NOT removed/);
   });
 
   it('5c. (vibesync-9lzk.53) an escalated run notifies the observer once with the bead and the reason; a plain failure does not', async () => {

@@ -377,6 +377,14 @@ describe('BdSlingContextStore.removeLabel confirms by re-reading the work bead (
   it('is false when the re-read bead still carries the label (the removal did not take)', async () => {
     expect(await new BdSlingContextStore(bdWith(['scheduler:eligible', 'other']).run).removeLabel('w1', 'scheduler:eligible')).toBe(false);
   });
+  it('is false when bd answers for another bead, or with labels in another shape (outside review)', async () => {
+    const other = runner((args) => (args[0] === 'show' ? JSON.stringify([{ id: 'w2', labels: ['other'] }]) : '{}'));
+    expect(await new BdSlingContextStore(other.run).removeLabel('w1', 'scheduler:eligible')).toBe(false);
+    const odd = runner((args) => (args[0] === 'show' ? JSON.stringify([{ id: 'w1', labels: 'scheduler:eligible' }]) : '{}'));
+    expect(await new BdSlingContextStore(odd.run).removeLabel('w1', 'scheduler:eligible')).toBe(false);
+    const none = runner((args) => (args[0] === 'show' ? JSON.stringify([{ id: 'w1' }]) : '{}'));
+    expect(await new BdSlingContextStore(none.run).removeLabel('w1', 'scheduler:eligible'), 'bd omits labels when there are none').toBe(true);
+  });
   it('is false when the work bead cannot be read back', async () => {
     expect(await new BdSlingContextStore(bdWith(null).run).removeLabel('w1', 'scheduler:eligible')).toBe(false);
   });

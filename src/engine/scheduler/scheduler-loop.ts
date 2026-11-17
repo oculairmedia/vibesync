@@ -427,7 +427,9 @@ export class SchedulerLoop {
           { workBeadId: candidate.workBeadId, contextId: candidate.contextId, error: errMessage(error), readyLabelRemoved: labelGone.ok },
           'scheduler: run escalated — context closed, not retried',
         );
-        const reason = 'why' in labelGone ? `${errMessage(error)}\n(the scheduler:eligible label could not be removed (${labelGone.why}): the bead stays excluded until its sling context is cleared)` : errMessage(error);
+        // The notifier sends the PM only the first line of the reason (240 characters) and caps the bead comment at 1500, so the
+        // failed removal goes FIRST, on the first line (outside review): re-labelling alone will not run this bead again.
+        const reason = 'why' in labelGone ? `ready label NOT removed (${labelGone.why.slice(0, 80)}): bead stays excluded; clear its sling context to run it again. ${errMessage(error)}` : errMessage(error);
         try {
           await this.deps.onRunEscalated?.({ workBeadId: candidate.workBeadId, contextId: candidate.contextId, reason });
         } catch (err) {
