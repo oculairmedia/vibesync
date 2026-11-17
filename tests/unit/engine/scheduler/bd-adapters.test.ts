@@ -54,26 +54,22 @@ describe('BdReadyBeadSource', () => {
     expect(bd.calls[0]).not.toContain('--label');
   });
 
-  it('logs each excluded ready bead once and works without a logger', async () => {
+  it('names each excluded ready bead on EVERY tick while it stays excluded, and works without a logger (vibesync-9lzk.56)', async () => {
+    // Logging it once per process hid a re-labelled bead for 30 minutes of bare `no-ready` ticks (9lzk.56).
     const logs: unknown[][] = [];
     const bd = runner(() => JSON.stringify([{ id: 'done' }, { id: 'done-2' }]));
     const src = new BdReadyBeadSource({
-      bd: bd.run,
-      readyLabel: '',
-      excludeWorkBeadIds: async () => new Set(['done', 'done-2']),
+      bd: bd.run, readyLabel: '', excludeWorkBeadIds: async () => new Set(['done', 'done-2']),
       logger: { info: (...args: unknown[]) => logs.push(args) },
     });
-
     await src.readyWorkBeadIds();
     await src.readyWorkBeadIds();
-    expect(logs).toEqual([
-      [{ workBeadId: 'done', reason: 'terminal-sling-context' }, 'scheduler: ready bead excluded'],
-      [{ workBeadId: 'done-2', reason: 'terminal-sling-context' }, 'scheduler: ready bead excluded'],
-    ]);
-
+    const line = (id: string) => [{ workBeadId: id, reason: 'terminal-sling-context' }, 'scheduler: ready bead excluded'];
+    expect(logs, 'both beads, on both ticks').toEqual([line('done'), line('done-2'), line('done'), line('done-2')]);
     const silent = new BdReadyBeadSource({ bd: bd.run, readyLabel: '', excludeWorkBeadIds: async () => new Set(['done']) });
     await expect(silent.readyWorkBeadIds()).resolves.toEqual(new Set(['done-2']));
   });
+
 
   it('propagates bd failures (the daemon logs them)', async () => {
     const src = new BdReadyBeadSource({ bd: async () => { throw new Error('boom'); }, readyLabel: '', excludeWorkBeadIds: async () => new Set() });
@@ -345,3 +341,22 @@ describe('GhCliGitHubPort repo allowlist (vibesync-5c8y)', () => {
     expect(calls.at(-1)).toEqual(expect.arrayContaining(['pr', 'merge']));
   });
 });
+
+describe('which closed sling contexts exclude their work bead (vibesync-9lzk.56)', () => {
+  const ctx = (id: string, work: string, reason: string) => ({ id, status: 'closed', close_reason: reason, description: params(work) });
+  it('dispatched, circuit-broken and escalated-label-kept exclude; escalated and cleared do not', async () => {
+    // The engine now removes scheduler:eligible when a run escalates, so a plain `escalated` context with the label back
+    // on the bead means the PM re-labelled it to run again. `escalated-label-kept` (the removal failed) still excludes.
+    const bd = runner(() => JSON.stringify([
+      ctx('c1', 'w-dispatched', 'dispatched'),
+      ctx('c2', 'w-broken', 'circuit-broken'),
+      ctx('c3', 'w-kept', 'escalated-label-kept'),
+      ctx('c4', 'w-escalated', 'escalated'),
+      ctx('c5', 'w-cleared', 'cleared'),
+    ]));
+    const store = new BdSlingContextStore(bd.run);
+    const excluded = await store.listTerminalWorkBeadIds();
+    expect([...excluded].sort()).toEqual(['w-broken', 'w-dispatched', 'w-kept']);
+  });
+});
+

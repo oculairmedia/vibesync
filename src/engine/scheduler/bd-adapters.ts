@@ -88,8 +88,11 @@ export class BdSlingContextStore implements SlingContextStore {
   }
 
   /**
-   * Work bead ids that already have a TERMINAL sling context (dispatched or
-   * circuit-broken; `cleared` re-opens eligibility). The work bead is never
+   * Work bead ids that already have a TERMINAL sling context (dispatched, circuit-broken, or escalated-label-kept;
+   * `cleared` re-opens eligibility). A plain `escalated` context does NOT exclude (vibesync-9lzk.56): the engine
+   * removes `scheduler:eligible` when a run escalates and closes the context `escalated` only after it re-read the bead
+   * without the label, so a bead carrying the label again means someone re-labelled it to run again. When the removal
+   * failed the context is closed `escalated-label-kept`, which still excludes. The work bead is never
    * modified by the scheduler, so without this memory a bead that stays in
    * `bd ready` after dispatch would be re-scheduled — and re-run by an LLM —
    * on every tick.
@@ -100,7 +103,8 @@ export class BdSlingContextStore implements SlingContextStore {
     ]);
     const ids = new Set<string>();
     for (const row of asRows(parseJsonOutput(out, 'bd list (closed sling contexts)'), 'bd list (closed sling contexts)')) {
-      if (typeof row['close_reason'] === 'string' && row['close_reason'].toLowerCase().startsWith('cleared')) continue;
+      const reason = typeof row['close_reason'] === 'string' ? row['close_reason'].toLowerCase() : '';
+      if (reason.startsWith('cleared') || reason === 'escalated') continue;
       const params = tryParseParams(String(row['description'] ?? ''));
       if (params) ids.add(params.work_bead_id);
     }
@@ -123,7 +127,6 @@ export interface BdReadyBeadSourceOptions {
 
 export class BdReadyBeadSource implements ReadyBeadSource {
   private lastReady = new Map<string, Row>();
-  private readonly loggedExcludedWorkBeadIds = new Set<string>();
 
   constructor(private readonly opts: BdReadyBeadSourceOptions) {}
 
@@ -141,10 +144,8 @@ export class BdReadyBeadSource implements ReadyBeadSource {
       const id = String(row['id'] ?? '');
       if (!id) continue;
       if (excluded.has(id)) {
-        if (!this.loggedExcludedWorkBeadIds.has(id)) {
-          this.loggedExcludedWorkBeadIds.add(id);
-          this.opts.logger?.info?.({ workBeadId: id, reason: 'terminal-sling-context' }, 'scheduler: ready bead excluded');
-        }
+        // Named on EVERY tick while it stays excluded: once per process hid a re-labelled bead for 30 minutes (9lzk.56).
+        this.opts.logger?.info?.({ workBeadId: id, reason: 'terminal-sling-context' }, 'scheduler: ready bead excluded');
         continue;
       }
       next.set(id, row);
