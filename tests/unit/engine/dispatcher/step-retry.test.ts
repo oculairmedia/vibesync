@@ -124,10 +124,13 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
     const comments: string[] = [];
     const beadComments: string[] = [];
     const wakes: string[] = [];
+    const labelRemovals: string[] = [];
     const contextStore: SchedulerContextStore = {
       async queryPending() { return contexts.filter((c) => c.status === 'open'); },
       async closeContext(id, reason) { closed.push(reason); const context = contexts.find((c) => c.id === id); if (context) (context as { status: string }).status = 'closed'; },
       async recordDispatchFailure() { throw new Error('escalation must not count as dispatch failure'); },
+      // vibesync-9lzk.56: an escalation removes the work bead's ready label first; confirmed, the context closes `escalated`.
+      async removeReadyLabel(workBeadId) { labelRemovals.push(workBeadId); return true; },
     };
     const notifier = createEscalationNotifier({ wakePm: (_id, detail) => { wakes.push(detail); }, commentOnBead: async (_id, text) => { comments.push(text); } });
     let starts = 0;
@@ -154,6 +157,7 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
 
     expect(starts).toBe(1);
     expect(closed).toEqual(['escalated']);
+    expect(labelRemovals, 'the ready label was removed from the escalated work bead').toEqual(['work-1']);
     expect(contexts[0]!.params.dispatch_failures).toBe(0);
     expect(comments.join('\n')).toContain('partial.txt');
     expect(comments.join('\n')).toContain('WIP branch');
@@ -335,12 +339,14 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
     let closeReason = '';
     let failures = 0;
     let starts = 0;
+    const cleanRemovals: string[] = [];
     const scheduler = new SchedulerLoop({
       config: () => ({ poolSize: 1, batchSize: 1, paused: false }), capacity: { activeCount: 0 },
       contextStore: {
         async queryPending() { return context.status === 'open' ? [context] : []; },
         async closeContext(_id, reason) { closeReason = reason; (context as { status: string }).status = 'closed'; },
         async recordDispatchFailure() { failures += 1; return failures; },
+        async removeReadyLabel(workBeadId) { cleanRemovals.push(workBeadId); return true; },
       },
       readyWork: { async readyWorkBeadIds() { return new Set(['clean']); } },
       candidateMetadata: { async metadataFor() { return { priority: 1, unblockCount: 0, files: [] }; } },
@@ -353,6 +359,7 @@ describe('per-step retry policy on the bead (vibesync-ynmp)', () => {
     await scheduler.drainRuns();
     await scheduler.runTick();
     expect(closeReason).toBe('escalated');
+    expect(cleanRemovals, 'the ready label was removed from the escalated work bead').toEqual(['clean']);
     expect(failures).toBe(0);
     expect(starts).toBe(1);
     expect(execFileSync('git', ['--git-dir', bare, 'branch', '--list', 'wip/clean/*'], { encoding: 'utf8' }).trim()).toBe('');

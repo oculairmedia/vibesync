@@ -214,6 +214,8 @@ function daemonDeps(
   return {
     dispatcher: opts.dispatcher,
     ...adapters,
+    // vibesync-9lzk.56: removed from the work bead when its run escalates.
+    readyLabel: config.readyLabel,
     poolMembers: [...members],
     allowedRepos: config.allowedRepos,
     requiredCheckNames: () => config.requiredChecks,

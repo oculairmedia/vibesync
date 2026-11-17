@@ -360,3 +360,25 @@ describe('which closed sling contexts exclude their work bead (vibesync-9lzk.56)
   });
 });
 
+describe('BdSlingContextStore.removeLabel confirms by re-reading the work bead (vibesync-9lzk.56)', () => {
+  // Checked against real bd on a scratch tracker: `update --remove-label` drops only that label, `show --json` lists the
+  // rest, and the bead leaves `bd ready --label`. Here a fake bd answers `show` so each outcome can be forced.
+  const bdWith = (labelsAfter: string[] | null) => runner((args) => {
+    if (args[0] === 'update') return '{}';
+    if (args[0] === 'show') return JSON.stringify(labelsAfter === null ? [] : [{ id: 'w1', labels: labelsAfter }]);
+    return '[]';
+  });
+  it('asks bd to remove exactly that label, and is true when the re-read bead no longer carries it', async () => {
+    const bd = bdWith(['other']);
+    expect(await new BdSlingContextStore(bd.run).removeLabel('w1', 'scheduler:eligible')).toBe(true);
+    expect(bd.calls[0]).toEqual(expect.arrayContaining(['update', 'w1', '--remove-label', 'scheduler:eligible']));
+    expect(bd.calls[1]).toEqual(expect.arrayContaining(['show', 'w1']));
+  });
+  it('is false when the re-read bead still carries the label (the removal did not take)', async () => {
+    expect(await new BdSlingContextStore(bdWith(['scheduler:eligible', 'other']).run).removeLabel('w1', 'scheduler:eligible')).toBe(false);
+  });
+  it('is false when the work bead cannot be read back', async () => {
+    expect(await new BdSlingContextStore(bdWith(null).run).removeLabel('w1', 'scheduler:eligible')).toBe(false);
+  });
+});
+

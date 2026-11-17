@@ -83,6 +83,14 @@ export class BdSlingContextStore implements SlingContextStore {
     })).filter((r) => r.id.length > 0);
   }
 
+  /** Remove `label` from the work bead, then re-read it: true only if it no longer carries the label (9lzk.56). */
+  async removeLabel(workBeadId: string, label: string): Promise<boolean> {
+    await this.bd(['update', workBeadId, '--remove-label', label, '--json']);
+    const rows = asRows(parseJsonOutput(await this.bd(['show', workBeadId, '--json']), 'bd show (work bead)'), 'bd show (work bead)');
+    const labels = rows[0]?.['labels'];
+    return rows.length === 1 && !(Array.isArray(labels) && labels.includes(label));
+  }
+
   async closeSlingContext(contextId: string, reason: SlingCloseReason): Promise<void> {
     await this.bd(['close', contextId, '--reason', reason, '--json']);
   }

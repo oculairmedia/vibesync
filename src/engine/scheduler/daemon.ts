@@ -118,6 +118,8 @@ export interface SchedulerDaemonDeps {
   readonly formulaResolver: FormulaResolver;
   readonly readyBeads: ReadyBeadSource;
   readonly contextStore: SlingContextStore;
+  /** The label that makes a work bead eligible; removed when its run escalates (vibesync-9lzk.56). Empty = none. */
+  readonly readyLabel?: string;
   readonly poolMembers: readonly PoolMemberIdentity[];
   readonly github: GitHubPort;
   /**
@@ -265,6 +267,9 @@ export class SchedulerDaemon {
       contextStore: {
         queryPending: () => this.sling.queryPending(),
         closeContext: (id, reason) => this.sling.closeContext(id, reason),
+        ...(deps.readyLabel && deps.contextStore.removeLabel
+          ? { removeReadyLabel: (workBeadId: string) => deps.contextStore.removeLabel!(workBeadId, deps.readyLabel!) }
+          : {}),
         recordDispatchFailure: (id, err) => this.recordFailure(id, err),
       },
       readyWork: { readyWorkBeadIds: () => deps.readyBeads.readyWorkBeadIds() },

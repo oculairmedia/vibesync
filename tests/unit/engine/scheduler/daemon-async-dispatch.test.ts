@@ -40,11 +40,32 @@ type CtxRow = { id: string; description: string; tracks: string; open: boolean; 
 function makeStore(): SlingContextStore & {
   terminalWorkBeadIds(): Set<string>;
   rows: CtxRow[];
+  /** Work beads that do NOT carry the ready label (vibesync-9lzk.56). Every bead starts labelled. */
+  unlabelled: Set<string>;
+  /** Make the next label removal fail. */
+  failLabelRemoval: boolean;
+  removals: string[];
+  /** The label each removal asked for: the daemon's configured ready label. */
+  removedLabels: string[];
 } {
   const rows: CtxRow[] = [];
   let seq = 0;
-  return {
+  const unlabelled = new Set<string>();
+  const removals: string[] = [];
+  const removedLabels: string[] = [];
+  const store = {
     rows,
+    unlabelled,
+    removals,
+    removedLabels,
+    failLabelRemoval: false,
+    async removeLabel(workBeadId: string, label: string): Promise<boolean> {
+      removals.push(workBeadId);
+      removedLabels.push(label);
+      if (store.failLabelRemoval) throw new Error('bd: label remove failed');
+      unlabelled.add(workBeadId);
+      return true;
+    },
     async createSlingContext(input) {
       const id = `ctx-${++seq}`;
       rows.push({ id, description: input.description, tracks: input.tracksWorkBeadId, open: true });
@@ -63,13 +84,15 @@ function makeStore(): SlingContextStore & {
     terminalWorkBeadIds() {
       const out = new Set<string>();
       for (const r of rows) {
-        if (r.open || r.reason === 'cleared') continue;
+        // As BdSlingContextStore.listTerminalWorkBeadIds: `cleared` and plain `escalated` do not exclude (9lzk.56).
+        if (r.open || r.reason === 'cleared' || r.reason === 'escalated') continue;
         const p = tryParseParams(r.description);
         if (p) out.add(p.work_bead_id);
       }
       return out;
     },
   };
+  return store;
 }
 
 function harness(opts: { beads: string[]; poolSize: number; store?: ReturnType<typeof makeStore>; onRunEscalated?: SchedulerDaemonDeps['onRunEscalated'] }) {
@@ -126,11 +149,13 @@ function harness(opts: { beads: string[]; poolSize: number; store?: ReturnType<t
     readyBeads: {
       async readyWorkBeadIds() {
         const terminal = store.terminalWorkBeadIds();
-        return new Set([...ready].filter((id) => !terminal.has(id)));
+        // `bd ready --label scheduler:eligible`: a bead without the label is not ready.
+        return new Set([...ready].filter((id) => !terminal.has(id) && !store.unlabelled.has(id)));
       },
       async metadataFor() { return { priority: 2, unblockCount: 0, files: [] }; },
     },
     contextStore: store,
+    readyLabel: 'scheduler:eligible', // as boot passes config.readyLabel (vibesync-9lzk.56)
     poolMembers: Array.from({ length: opts.poolSize }, (_, i) => ({ agentId: `a${i}`, role: 'coder' })),
     github: {
       async fetchFacts() { return facts; },
@@ -312,6 +337,36 @@ describe('SchedulerDaemon — dispatch off the tick (vibesync-q50w)', () => {
     } finally {
       process.off('unhandledRejection', onUnhandled);
     }
+  });
+
+  it('5e. (vibesync-9lzk.56) an escalated run removes the ready label, so it is not re-run; re-labelling it runs it again', async () => {
+    const h = track(harness({ beads: ['we'], poolSize: 1 }));
+    await tickReturns(h.daemon);
+    h.runsFor('we')[0]!.reject(new FormulaEscalationError('FormulaDispatcher: step "reviewer" escalated: review loop exhausted', 'mol-we'));
+    await vi.waitFor(() => { expect(h.store.rows.filter((r) => r.tracks === 'we').map((r) => r.reason)).toEqual(['escalated']); }, { timeout: 1500 });
+    expect(h.store.removals, 'the engine asked to remove the label').toEqual(['we']);
+    expect(h.store.removedLabels, 'the configured ready label, not another').toEqual(['scheduler:eligible']);
+    for (let i = 0; i < 3; i += 1) { await tickReturns(h.daemon); await sleep(10); }
+    expect(h.runsFor('we'), 'not re-run while the label is off').toHaveLength(1);
+    h.store.unlabelled.delete('we'); // the PM re-labels it: "run it again"
+    await vi.waitFor(async () => { await tickReturns(h.daemon); expect(h.runsFor('we')).toHaveLength(2); }, { timeout: 1500 });
+    h.runsFor('we')[1]!.resolve('done');
+    await sleep(10);
+  });
+
+  it('5f. (vibesync-9lzk.56) a failed label removal fails closed: the context excludes, the bead is not re-run, the wake names the failure', async () => {
+    const seen: string[] = [];
+    const store = makeStore();
+    store.failLabelRemoval = true;
+    const h = track(harness({ beads: ['we'], poolSize: 1, store, onRunEscalated: (i) => { seen.push(i.reason); } }));
+    await tickReturns(h.daemon);
+    h.runsFor('we')[0]!.reject(new FormulaEscalationError('FormulaDispatcher: step "reviewer" escalated: review loop exhausted', 'mol-we'));
+    await vi.waitFor(() => { expect(h.store.rows.filter((r) => r.tracks === 'we').map((r) => r.reason)).toEqual(['escalated-label-kept']); }, { timeout: 1500 });
+    expect(h.store.removals, 'the removal was attempted (and refused by the store), not skipped for lack of wiring').toEqual(['we']);
+    for (let i = 0; i < 3; i += 1) { await tickReturns(h.daemon); await sleep(10); }
+    expect(h.runsFor('we'), 'the label is still on, so the context must keep excluding it').toHaveLength(1);
+    expect(seen).toHaveLength(1);
+    expect(seen[0], 'the PM is told the label could not be removed').toMatch(/scheduler:eligible|label/);
   });
 
   it('5c. (vibesync-9lzk.53) an escalated run notifies the observer once with the bead and the reason; a plain failure does not', async () => {
