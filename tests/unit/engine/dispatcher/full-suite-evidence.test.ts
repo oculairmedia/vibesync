@@ -75,5 +75,10 @@ describe('fullSuiteShortfall (vibesync-6zos.7)', () => {
     ] });
     expect(fullSuiteShortfall({ report: hookFailed, stepStartedAt: STARTED, testFiles: FILES, workdir: '/work/repo' })).toMatch(/tests\/unit\/b\.test\.ts/);
   });
+
+  it('a report where every test was skipped proves nothing: at least one test must pass (CodeRabbit)', () => {
+    const allSkipped = full({ testResults: FILES.map((f) => entry(f, [{ status: 'skipped' }])) });
+    expect(fullSuiteShortfall({ report: allSkipped, stepStartedAt: STARTED, testFiles: FILES, workdir: '/work/repo' })).toMatch(/no test passed/);
+  });
 });
 

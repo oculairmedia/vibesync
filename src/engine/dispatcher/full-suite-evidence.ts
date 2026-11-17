@@ -67,6 +67,9 @@ export function fullSuiteShortfall(input: FullSuiteEvidenceInput): string | null
     if (failed) return `the full suite has failures: ${shortName(f.name)}: ${failed.fullName ?? failed.title ?? 'a test'}`;
   }
   if ((report.numFailedTests ?? 0) > 0) return `the full suite has ${report.numFailedTests} failing test(s)`;
+  // A report where nothing passed (every test skipped, by a filter or a config) proves nothing (CodeRabbit). A mix of
+  // passed and skipped stays valid: opt-in suites skip their tests.
+  if (!files.some((f) => (f.assertionResults ?? []).some((a) => a.status === 'passed'))) return 'full suite not proven: no test passed (every test was skipped)';
   return null;
 }
 
