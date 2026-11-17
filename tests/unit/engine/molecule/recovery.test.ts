@@ -59,9 +59,9 @@ describe('recoverInterruptedMolecules', () => {
     const store = new InMemoryDoltClient();
     const a = await cookRunning(store, 'work-1');
     const b = await cookRunning(store);
-    const emitted: Array<{ moleculeId: string; payload: Record<string, unknown> }> = [];
+    const emitted: Array<{ moleculeId: string; payload: Record<string, unknown>; eventKind?: string }> = [];
 
-    const report = await recoverInterruptedMolecules(store as never, (moleculeId, payload) => emitted.push({ moleculeId, payload }));
+    const report = await recoverInterruptedMolecules(store as never, (moleculeId, payload, eventKind) => emitted.push({ moleculeId, payload, eventKind }));
 
     expect([...report.interrupted].sort()).toEqual([a.rootId, b.rootId].sort());
     expect(report.failed).toEqual([]);
@@ -74,6 +74,23 @@ describe('recoverInterruptedMolecules', () => {
     }
     expect(emitted.find((e) => e.moleculeId === a.rootId)?.payload).toMatchObject({ motivating_bead: 'work-1' });
     expect(emitted.find((e) => e.moleculeId === b.rootId)?.payload).not.toHaveProperty('motivating_bead');
+  });
+
+  it('recovers a marked cancellation as cancelled and leaves unmarked roots interrupted', async () => {
+    const store = new InMemoryDoltClient();
+    const cancelled = await cookRunning(store);
+    const interrupted = await cookRunning(store);
+    const root = await store.getBead(cancelled.rootId);
+    store.beads.set(cancelled.rootId, { ...root!, metadata: { ...root!.metadata, exec: { ...(root!.metadata.exec as object), cancel_requested_at: new Date().toISOString() } } });
+    const emitted: Array<{ moleculeId: string; payload: Record<string, unknown>; eventKind?: string }> = [];
+
+    const report = await recoverInterruptedMolecules(store as never, (moleculeId, payload, eventKind) => emitted.push({ moleculeId, payload, eventKind }));
+
+    expect(report.cancelled).toEqual([cancelled.rootId]);
+    expect(report.interrupted).toEqual([interrupted.rootId]);
+    expect(await store.getBead(cancelled.rootId)).toMatchObject({ status: 'closed', metadata: { exec: { outcome: 'cancelled' } } });
+    expect(emitted.find((event) => event.moleculeId === cancelled.rootId)).toMatchObject({ eventKind: 'dispatcher/formula.cancelled', payload: { cancelledStepCount: 0, recoveredAfterRestart: true } });
+    expect(emitted.find((event) => event.moleculeId === interrupted.rootId)?.eventKind).toBeUndefined();
   });
 
   it('closes blockers before the steps they block, whatever order the store returns them in', async () => {
