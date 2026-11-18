@@ -215,6 +215,11 @@ describe('ESLint baseline gate', () => {
     const joinAbsoluteFixture = "writeFileSync(path.join(repoRoot, '/tests', 'probe.ts'), 'probe');";
     const resolveAbsoluteFixture = "writeFileSync(path.resolve(repoRoot, 'tests', '/scratch/probe.ts'), 'probe');";
     const leavesCheckoutFixture = "writeFileSync(path.join(repoRoot, '..', 'tests', 'probe.ts'), 'probe');";
+    // CodeRabbit on #194, seventh round: a rename touches BOTH paths (moving a repo file out removes it from the checkout); a copy
+    // only writes its destination.
+    const renameOutFixture = "renameSync(path.join(repoRoot, 'tests', 'probe.ts'), path.join(tempDir, 'probe.ts'));";
+    const renameInFixture = "renameSync(path.join(tempDir, 'probe.ts'), path.join(repoRoot, 'tests', 'probe.ts'));";
+    const renameTempOnlyFixture = "renameSync(path.join(tempDir, 'a.ts'), path.join(tempDir, 'b.ts'));";
     const reassignedOutOfRepoFixture = "let probe = path.join(repoRoot, 'tests', 'a.ts'); probe = path.join(tempDir, 'b.ts'); writeFileSync(probe, 'x');";
     const safePattern = `
       const repoRoot = process.cwd();
@@ -224,7 +229,7 @@ describe('ESLint baseline gate', () => {
     // A parser recovers from broken input, so a fixture with a stray newline in a string could pass for the wrong reason (CodeRabbit,
     // outside the diff on #194): every fixture must be valid TypeScript before it is judged. transpileModule reports syntax errors
     // through the public API.
-    const fixtures: Record<string, string> = { originalUnsafePattern, safePattern, safeCopy, unsafeCopy, semicolonFixture, segmentFixture, assignedSegmentsFixture, regexFixture, tempSegmentsFixture, contentMentionFixture, postfixFixture, templateFixture, appendFixture, templateBoundaryFixture, dotSegmentFixture, dotDotFixture, redeclaredFixture, reassignedIntoRepoFixture, reassignedOutOfRepoFixture, joinAbsoluteFixture, resolveAbsoluteFixture, leavesCheckoutFixture };
+    const fixtures: Record<string, string> = { originalUnsafePattern, safePattern, safeCopy, unsafeCopy, semicolonFixture, segmentFixture, assignedSegmentsFixture, regexFixture, tempSegmentsFixture, contentMentionFixture, postfixFixture, templateFixture, appendFixture, templateBoundaryFixture, dotSegmentFixture, dotDotFixture, redeclaredFixture, reassignedIntoRepoFixture, reassignedOutOfRepoFixture, joinAbsoluteFixture, resolveAbsoluteFixture, leavesCheckoutFixture, renameOutFixture, renameInFixture, renameTempOnlyFixture };
     for (const [name, text] of Object.entries(fixtures)) {
       const syntaxErrors = ts.transpileModule(text, { reportDiagnostics: true, fileName: `${name}.ts`, compilerOptions: { target: ts.ScriptTarget.Latest } }).diagnostics ?? [];
       expect(syntaxErrors.length, `fixture ${name} is not valid TypeScript`).toBe(0);
@@ -247,6 +252,9 @@ describe('ESLint baseline gate', () => {
     expect(findUnsafeWrites(joinAbsoluteFixture), 'join glues a leading-slash segment on: still under tests').not.toEqual([]);
     expect(findUnsafeWrites(resolveAbsoluteFixture), 'resolve restarts at an absolute segment: outside the checkout').toEqual([]);
     expect(findUnsafeWrites(leavesCheckoutFixture), 'a path that leaves the checkout is not a write under its tests directory').toEqual([]);
+    expect(findUnsafeWrites(renameOutFixture), 'moving a repo file out of the checkout mutates it').not.toEqual([]);
+    expect(findUnsafeWrites(renameInFixture), 'moving a file into the checkout mutates it').not.toEqual([]);
+    expect(findUnsafeWrites(renameTempOnlyFixture), 'a rename between temp paths is fine').toEqual([]);
     expect(findUnsafeWrites(safeCopy)).toEqual([]);
     expect(findUnsafeWrites(unsafeCopy)).not.toEqual([]);
     expect(findUnsafeWrites(originalUnsafePattern)).not.toEqual([]);
@@ -273,14 +281,16 @@ function writeBaselineCheckHelper(temporaryDir: string): string {
 }
 
 const WRITER_NAMES = new Set(['writeFileSync', 'appendFileSync', 'mkdirSync', 'cpSync', 'copyFileSync', 'renameSync', 'writeFile', 'appendFile', 'mkdir', 'cp', 'copyFile', 'rename', 'createWriteStream']);
-const DESTINATION_ONLY = new Set(['cpSync', 'copyFileSync', 'renameSync', 'cp', 'copyFile', 'rename']);
+// A copy writes only its destination; a rename also removes its source, so it touches both paths (CodeRabbit on #194, seventh round).
+const DESTINATION_ONLY = new Set(['cpSync', 'copyFileSync', 'cp', 'copyFile']);
+const BOTH_PATHS = new Set(['renameSync', 'rename']);
 const REPO_DIRS = new Set(['src', 'tests', 'scripts']);
 
 /**
  * Source text of every file-writing call whose DESTINATION is a path under the repository's src, tests or scripts. Read with the
  * TypeScript parser, so strings, templates, regex literals and comments are what they are (the hand-written scanner this
  * replaces went wrong three times on them: a ';' in a string, an escaped bracket in a regex, `n++ / 2`; CodeRabbit on #194).
- * A copy or rename is judged by its destination argument, every other writer by its first. A destination counts as a repo
+ * A copy is judged by its destination argument, a rename by both its paths, every other writer by its first. A destination counts as a repo
  * path when it is built from `repoRoot` with a first segment in REPO_DIRS (a literal like 'tests/x.ts' or separate segments),
  * or is a variable assigned such a path. Still a targeted check, not a proof: it cannot follow every way of building a path, and follows variables in source order, not by scope.
  */
@@ -331,8 +341,8 @@ function unsafeRepoWrites(source: string): string[] {
     if (ts.isCallExpression(node)) {
       const callee = ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : ts.isIdentifier(node.expression) ? node.expression.text : '';
       if (WRITER_NAMES.has(callee)) {
-        const destination = DESTINATION_ONLY.has(callee) ? node.arguments[1] : node.arguments[0];
-        if (isRepoPath(destination)) out.push(node.getText(file));
+        const touched = BOTH_PATHS.has(callee) ? [node.arguments[0], node.arguments[1]] : DESTINATION_ONLY.has(callee) ? [node.arguments[1]] : [node.arguments[0]];
+        if (touched.some((arg) => isRepoPath(arg))) out.push(node.getText(file));
       }
     }
     ts.forEachChild(node, visit);
