@@ -23,6 +23,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { getEventListeners } from 'node:events';
 import { describe, expect, it } from 'vitest';
 
 import { EventBus, type Event } from '../../../../src/engine/events/index.js';
@@ -156,6 +157,46 @@ async function expectCancelled(store: InMemoryDoltClient, stepId: string, when: 
 }
 
 describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3)', () => {
+  it('settles a cancelled silent observation even when stop never returns', async () => {
+    const store = new InMemoryDoltClient();
+    let observing = false;
+    const base = newFakeProvider({ script: async function* () {
+      observing = true;
+      await new Promise<void>(() => {});
+      yield { kind: 'turn-done', ts: new Date().toISOString() };
+    } });
+    const provider = { ...base, stop: async () => new Promise<void>(() => {}) };
+    const dispatcher = newDriven(store, { idPrefix: 'mol', provider, walker: new MoleculeWalker(store),
+      eventBus: new EventBus({ noPersist: true }), cancelUnwindMs: 150, attemptStopTimeoutMs: 20 });
+    let moleculeId = '';
+    const pending = dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    const result = pending.then(() => 'resolved', (error: unknown) => error);
+    await until(() => observing, 'silent observation started');
+    await dispatcher.cancel(moleculeId);
+    const outcome = await Promise.race([result, new Promise<'not told'>((resolve) => setTimeout(() => resolve('not told'), 300))]);
+    expect(outcome).toBeInstanceOf(Error);
+    expect(String(outcome)).toMatch(/cancel/i);
+    expect((await store.getBead(moleculeId))?.status).toBe('closed');
+    expect(dispatcher.getActiveMoleculeCount()).toBe(0);
+  });
+
+  it('cleans the listener after a slow normal stream and ignores a later abort', async () => {
+    const h = harness({ ending: 'reply' });
+    let moleculeId = '';
+    const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    const live = (h.dispatcher as unknown as { live: Map<string, { cancelController: AbortController }> }).live;
+    await until(() => moleculeId !== '' && !!live.get(moleculeId) && h.provider.recorder.prompts.length > 0, 'observing');
+    const controller = live.get(moleculeId)!.cancelController;
+    await until(() => getEventListeners(controller.signal, 'abort').length === 1, 'listener attached');
+    h.release();
+    const result = await pending;
+    expect(result.outputs).toEqual({ worker: 'done' });
+    expect(controller.signal.aborted).toBe(false);
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+    controller.abort();
+    expect((await exec(h.store, moleculeId))['outcome']).toBe('completed');
+    expect(h.dispatcher.getActiveMoleculeCount()).toBe(0);
+  });
   const endings: ReadonlyArray<readonly [string, Ending, number]> = [
     ['an error', 'error', 0],
     ['a normal reply', 'reply', 0],
