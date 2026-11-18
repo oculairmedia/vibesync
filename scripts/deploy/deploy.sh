@@ -119,6 +119,7 @@ CFG=$(cd "$R" && set -a && . ./.env && set +a && bun -e "import { loadConfig } f
 echo "config loader: $CFG"; [ "$CFG" = "config ok" ] || fail "config does not load"
 ok=0; for p in 3571 3572 3573; do (cd "$R" && BOOT_CHECK_PORT=$p scripts/ci/boot-check.sh 60 >/dev/null 2>&1) && ok=$((ok+1)); [ $ok -ge 2 ] && break; done
 echo "boot-check (orchestration off) passes: $ok"; [ "$ok" -ge 2 ] || fail "boot check"
+gate "role persona check" bash -c 'cd "$1" && set -a && . ./.env && set +a && bun scripts/roles/check-role-agents.ts --project vibesync' _ "$R"
 gate "engine boot check (orchestration on, Dolt stopped)" env BOOT_CHECK_PORT=3574 timeout 200 bash -c 'cd "$1" && scripts/ci/engine-boot-check.sh "$2" 120' _ "$R" "$BD"
 (cd "$R" && git status --short | grep -v node_modules | grep -q .) && fail "release tree dirty after checks"
 Q=$(quiet); [ "$Q" = "0/0/0/0" ] || fail "engine no longer quiet: $Q"
