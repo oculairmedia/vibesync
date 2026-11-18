@@ -147,16 +147,39 @@ export class StepAttemptRunner {
     let text = '';
     let eventCount = 0;
     let agentActed = false;
-    for await (const event of args.provider.observe(handle)) {
-      eventCount++;
-      this.deps.emitRuntimeSessionEvent(event, buildStepAttemptEventPayload(args, handle, taskId, conversationId));
-      if (event.kind === 'message-delta') {
-        text += event.text;
+    const iterator = args.provider.observe(handle)[Symbol.asyncIterator]();
+    let onCancel: (() => void) | undefined;
+    let exhausted = false;
+    let interrupted = false;
+    const cancelled = new Promise<null>((resolve) => {
+      onCancel = () => resolve(null);
+      if (args.cancelSignal?.aborted) onCancel();
+      else args.cancelSignal?.addEventListener('abort', onCancel, { once: true });
+    });
+    try {
+      while (true) {
+        const next = iterator.next();
+        const result = await Promise.race([next, cancelled]);
+        if (result === null) {
+          interrupted = true;
+          void next.catch(() => undefined);
+          break;
+        }
+        if (result.done) { exhausted = true; break; }
+        const event = result.value;
+        eventCount++;
+        this.deps.emitRuntimeSessionEvent(event, buildStepAttemptEventPayload(args, handle, taskId, conversationId));
+        if (event.kind === 'message-delta') {
+          text += event.text;
+        }
+        agentActed = didAgentAct(event, agentActed);
+        this.handleStepAttemptEvent(event, agentActed);
+        if (event.kind === 'turn-done') break;
+        if (args.cancelled?.()) { interrupted = true; break; }
       }
-      agentActed = didAgentAct(event, agentActed);
-      this.handleStepAttemptEvent(event, agentActed);
-      if (event.kind === 'turn-done') break;
-      if (args.cancelled?.()) break;
+    } finally {
+      if (onCancel) args.cancelSignal?.removeEventListener('abort', onCancel);
+      if (!exhausted && !interrupted && iterator.return) await iterator.return();
     }
     return { text, eventCount };
   }

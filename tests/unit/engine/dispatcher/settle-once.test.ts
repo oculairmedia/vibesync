@@ -55,7 +55,7 @@ async function until(predicate: () => Promise<boolean> | boolean, what: string):
 const settle = async () => { for (let i = 0; i < 30; i++) await new Promise((resolve) => setTimeout(resolve, 0)); };
 
 /** Two steps side by side: `left` fails as soon as it is released, `right` replies when it is released. */
-function harness(cancelUnwindMs?: number) {
+function harness(cancelUnwindMs?: number, stopNeverSettles = false) {
   const store = new InMemoryDoltClient();
   const gates = { left: () => {}, right: () => {} };
   const waits = {
@@ -73,6 +73,7 @@ function harness(cancelUnwindMs?: number) {
       yield { kind: 'turn-done', ts };
     })(),
   });
+  if (stopNeverSettles) provider.stop = () => new Promise(() => undefined);
   const eventBus = new EventBus({ noPersist: true });
   const events: Event[] = [];
   eventBus.subscribe((event) => events.push(event));
@@ -144,7 +145,7 @@ describe('a run settles once, and only when none of its turns is in flight', () 
   it('a turn that returns after the run has already settled does not settle it again', async () => {
     // The one way a run reaches settleMolecule after it settled: cancel()'s wait runs out with a turn
     // still out, the run settles, and the turn (which holds its run for the whole turn) returns later.
-    const h = harness(150);
+    const h = harness(150, true);
     const closes: string[] = [];
     const markRoot = h.store.markMoleculeRootStatus.bind(h.store);
     h.store.markMoleculeRootStatus = async (rootId, status, outcome) => { closes.push(outcome); return markRoot(rootId, status, outcome); };
