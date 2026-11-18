@@ -363,6 +363,7 @@ export class MoleculeSettler {
     if (!liveRun) return undefined;
     liveRun.cancelInProgress = true;
     liveRun.cancelled = true;
+    liveRun.cancelController.abort();
     return liveRun;
   }
 

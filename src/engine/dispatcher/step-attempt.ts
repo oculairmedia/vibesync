@@ -147,16 +147,40 @@ export class StepAttemptRunner {
     let text = '';
     let eventCount = 0;
     let agentActed = false;
-    for await (const event of args.provider.observe(handle)) {
-      eventCount++;
-      this.deps.emitRuntimeSessionEvent(event, buildStepAttemptEventPayload(args, handle, taskId, conversationId));
-      if (event.kind === 'message-delta') {
-        text += event.text;
+    const iterator = args.provider.observe(handle)[Symbol.asyncIterator]();
+    const signal = args.cancelSignal;
+    let onAbort: (() => void) | undefined;
+    const cancelled = new Promise<'cancelled'>((resolve) => {
+      onAbort = () => resolve('cancelled');
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener('abort', onAbort, { once: true });
+    });
+    let interrupted = false;
+    let completed = false;
+    try {
+      while (true) {
+        const next = iterator.next();
+        const result = await Promise.race([next, cancelled]);
+        if (result === 'cancelled') {
+          interrupted = true;
+          void next.catch(() => undefined);
+          break;
+        }
+        if (result.done) { completed = true; break; }
+        const event = result.value;
+        eventCount++;
+        this.deps.emitRuntimeSessionEvent(event, buildStepAttemptEventPayload(args, handle, taskId, conversationId));
+        if (event.kind === 'message-delta') {
+          text += event.text;
+        }
+        agentActed = didAgentAct(event, agentActed);
+        this.handleStepAttemptEvent(event, agentActed);
+        if (event.kind === 'turn-done') break;
+        if (args.cancelled?.()) { interrupted = true; break; }
       }
-      agentActed = didAgentAct(event, agentActed);
-      this.handleStepAttemptEvent(event, agentActed);
-      if (event.kind === 'turn-done') break;
-      if (args.cancelled?.()) break;
+    } finally {
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+      if (!interrupted && !signal?.aborted && !completed && iterator.return) await iterator.return();
     }
     return { text, eventCount };
   }
