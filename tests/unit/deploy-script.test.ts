@@ -47,7 +47,7 @@ const STUB_BODIES: Record<string, string> = {
   curl: '[ "$(cat "$SANDBOX_STATE/ready" 2>/dev/null)" = "1" ] && printf \'{"status":"healthy","orchestration":{"ready":true}}\'',
   // The bd on PATH says the engine is busy: a quiet check that used it instead of the configured bd would stop the deploy.
   bd: 'echo \'[{"id":"from-the-bd-on-PATH"}]\'',
-  bun: '[ "$1" = "-e" ] && echo "config ok"',
+  bun: 'if [ "$1" = "-e" ]; then echo "config ok"; elif [ "$1" = "scripts/roles/check-role-agents.ts" ]; then if [ -e "$SANDBOX_STATE/roles-fail" ]; then echo "role drift"; exit 1; fi; echo "roles ok"; fi',
   npm: '',
 };
 const ENV_SECRET = 'do-not-print-me-7f3a';
@@ -216,7 +216,7 @@ beforeAll(() => {
 
 /** Every test starts with the service on the live release, ready, and no fault planted. */
 beforeEach(() => {
-  for (const name of ['swap-fails-for', 'swap-fails-before-reload-for', 'swap-fails-after-config-for', 'swap-changes-nothing-for', 'comes-up-not-ready', 'restart-during-staging', 'engine-boot-fails', 'busy-on', 'busy-during-staging']) rmSync(join(state, name), { force: true });
+  for (const name of ['swap-fails-for', 'swap-fails-before-reload-for', 'swap-fails-after-config-for', 'swap-changes-nothing-for', 'comes-up-not-ready', 'restart-during-staging', 'engine-boot-fails', 'roles-fail', 'busy-on', 'busy-during-staging']) rmSync(join(state, name), { force: true });
   if (existsSync(join(state, 'mainpid'))) stop(mainPid());
   serveFrom(liveDir);
   writeFileSync(join(state, 'loaded-release'), liveDir);
@@ -388,6 +388,16 @@ describe('deploy.sh stops before the swap', () => {
     const result = deploy(mainSha);
     expect(result.stdout).toContain('STOP (nothing swapped): the release .env does not pin VIBESYNC_PM_WAKE_STATE_PATH');
     expect(result.status).toBe(1);
+    expect(stubCalls().slice(before).filter((call) => call.startsWith('swap '))).toEqual([]);
+    expect(servingDir()).toBe(liveDir);
+  });
+
+  it('stops before swap when the role persona check fails', () => {
+    flag('roles-fail');
+    const before = stubCalls().length;
+    const result = deploy(mainSha);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('STOP (nothing swapped): role persona check failed (exit 1)');
     expect(stubCalls().slice(before).filter((call) => call.startsWith('swap '))).toEqual([]);
     expect(servingDir()).toBe(liveDir);
   });
