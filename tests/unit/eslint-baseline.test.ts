@@ -14,8 +14,8 @@ describe('ESLint baseline gate', () => {
     const existingFile = path.join(temporaryDir, 'tests/unit/eslint-baseline-existing.lint.ts');
     try {
       const baseline = JSON.parse(readFileSync(path.join(repoRoot, 'eslint-baseline.json'), 'utf8')) as Record<string, number>;
-      baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-explicit-any'] = 2;
-      baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-unused-vars'] = 2;
+      baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-explicit-any'] = 1;
+      baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-unused-vars'] = 1;
       writeFileSync(path.join(temporaryDir, 'eslint-baseline.json'), JSON.stringify(baseline));
 
       const checkInRepo = writeBaselineCheckHelper(temporaryDir);
@@ -24,7 +24,7 @@ describe('ESLint baseline gate', () => {
       const existingResult = spawnSync(process.execPath, [checkInRepo], {
         cwd: temporaryDir,
         encoding: 'utf8',
-        env: { ...process.env, ESLINT_EXTRA_FILE: existingFile, ESLINT_BASELINE_PATH: path.join(temporaryDir, 'eslint-baseline.json') },
+        env: { ...process.env, ESLINT_BASELINE_PATH: path.join(temporaryDir, 'eslint-baseline.json') },
       });
       expect(existingResult.status, existingResult.stderr).toBe(0);
       // Non-vacuity: with the baseline entries removed the SAME file must be rejected, so it really was linted and produced
@@ -36,7 +36,7 @@ describe('ESLint baseline gate', () => {
       const rejected = spawnSync(process.execPath, [checkInRepo], {
         cwd: temporaryDir,
         encoding: 'utf8',
-        env: { ...process.env, ESLINT_EXTRA_FILE: existingFile, ESLINT_BASELINE_PATH: path.join(temporaryDir, 'eslint-baseline-stripped.json') },
+        env: { ...process.env, ESLINT_BASELINE_PATH: path.join(temporaryDir, 'eslint-baseline-stripped.json') },
       });
       expect(rejected.status).toBe(1);
       expect(rejected.stderr).toContain('tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-explicit-any');
@@ -51,8 +51,8 @@ describe('ESLint baseline gate', () => {
     const newFile = path.join(temporaryDir, 'tests/unit/eslint-baseline-new.lint.ts');
     try {
       const baseline = JSON.parse(readFileSync(path.join(repoRoot, 'eslint-baseline.json'), 'utf8')) as Record<string, number>;
-      baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-explicit-any'] = 2;
-      baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-unused-vars'] = 2;
+      baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-explicit-any'] = 1;
+      baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-unused-vars'] = 1;
       writeFileSync(path.join(temporaryDir, 'eslint-baseline.json'), JSON.stringify(baseline));
       const checkInRepo = writeBaselineCheckHelper(temporaryDir);
 
@@ -60,7 +60,7 @@ describe('ESLint baseline gate', () => {
       const newResult = spawnSync(process.execPath, [checkInRepo], {
         cwd: temporaryDir,
         encoding: 'utf8',
-        env: { ...process.env, ESLINT_EXTRA_FILE: newFile, ESLINT_BASELINE_PATH: path.join(temporaryDir, 'eslint-baseline.json') },
+        env: { ...process.env, ESLINT_BASELINE_PATH: path.join(temporaryDir, 'eslint-baseline.json') },
       });
       expect(newResult.status).toBe(1);
       expect(newResult.stderr).toContain('ESLint introduced');
@@ -76,8 +76,8 @@ describe('ESLint baseline gate', () => {
     const malformedFile = path.join(temporaryDir, 'tests/unit/eslint-baseline-malformed.lint.ts');
     try {
       const baseline = JSON.parse(readFileSync(path.join(repoRoot, 'eslint-baseline.json'), 'utf8')) as Record<string, number>;
-      baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-explicit-any'] = 2;
-      baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-unused-vars'] = 2;
+      baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-explicit-any'] = 1;
+      baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-unused-vars'] = 1;
       writeFileSync(path.join(temporaryDir, 'eslint-baseline.json'), JSON.stringify(baseline));
       const checkInRepo = writeBaselineCheckHelper(temporaryDir);
 
@@ -85,7 +85,7 @@ describe('ESLint baseline gate', () => {
       const malformedResult = spawnSync(process.execPath, [checkInRepo], {
         cwd: temporaryDir,
         encoding: 'utf8',
-        env: { ...process.env, ESLINT_EXTRA_FILE: malformedFile, ESLINT_BASELINE_PATH: path.join(temporaryDir, 'eslint-baseline.json') },
+        env: { ...process.env, ESLINT_BASELINE_PATH: path.join(temporaryDir, 'eslint-baseline.json') },
       });
       expect(malformedResult.status).toBe(1);
       expect(malformedResult.stderr, 'names the malformed file as fatal').toContain('ESLint reported fatal or unclassified diagnostics:\ntests/unit/eslint-baseline-malformed.lint.ts');
@@ -220,6 +220,10 @@ describe('ESLint baseline gate', () => {
     const renameOutFixture = "renameSync(path.join(repoRoot, 'tests', 'probe.ts'), path.join(tempDir, 'probe.ts'));";
     const renameInFixture = "renameSync(path.join(tempDir, 'probe.ts'), path.join(repoRoot, 'tests', 'probe.ts'));";
     const renameTempOnlyFixture = "renameSync(path.join(tempDir, 'a.ts'), path.join(tempDir, 'b.ts'));";
+    // CodeRabbit on #194, ninth round: a fully static template path is evaluated like path.join (a '.' or '..' segment), and every writer
+    // name is pinned on its own, promise forms included.
+    const templateDotFixture = "renameSync(" + BACKTICK + "${repoRoot}/./tests/probe.ts" + BACKTICK + ", path.join(tempDir, 'probe.ts'));";
+    const templateDotDotFixture = "writeFileSync(" + BACKTICK + "${repoRoot}/tests/../scratch/probe.ts" + BACKTICK + ", 'probe');";
     const reassignedOutOfRepoFixture = "let probe = path.join(repoRoot, 'tests', 'a.ts'); probe = path.join(tempDir, 'b.ts'); writeFileSync(probe, 'x');";
     const safePattern = `
       const repoRoot = process.cwd();
@@ -229,7 +233,7 @@ describe('ESLint baseline gate', () => {
     // A parser recovers from broken input, so a fixture with a stray newline in a string could pass for the wrong reason (CodeRabbit,
     // outside the diff on #194): every fixture must be valid TypeScript before it is judged. transpileModule reports syntax errors
     // through the public API.
-    const fixtures: Record<string, string> = { originalUnsafePattern, safePattern, safeCopy, unsafeCopy, semicolonFixture, segmentFixture, assignedSegmentsFixture, regexFixture, tempSegmentsFixture, contentMentionFixture, postfixFixture, templateFixture, appendFixture, templateBoundaryFixture, dotSegmentFixture, dotDotFixture, redeclaredFixture, reassignedIntoRepoFixture, reassignedOutOfRepoFixture, joinAbsoluteFixture, resolveAbsoluteFixture, leavesCheckoutFixture, renameOutFixture, renameInFixture, renameTempOnlyFixture };
+    const fixtures: Record<string, string> = { originalUnsafePattern, safePattern, safeCopy, unsafeCopy, semicolonFixture, segmentFixture, assignedSegmentsFixture, regexFixture, tempSegmentsFixture, contentMentionFixture, postfixFixture, templateFixture, appendFixture, templateBoundaryFixture, dotSegmentFixture, dotDotFixture, redeclaredFixture, reassignedIntoRepoFixture, reassignedOutOfRepoFixture, joinAbsoluteFixture, resolveAbsoluteFixture, leavesCheckoutFixture, renameOutFixture, renameInFixture, renameTempOnlyFixture, templateDotFixture, templateDotDotFixture };
     for (const [name, text] of Object.entries(fixtures)) {
       const syntaxErrors = ts.transpileModule(text, { reportDiagnostics: true, fileName: `${name}.ts`, compilerOptions: { target: ts.ScriptTarget.Latest } }).diagnostics ?? [];
       expect(syntaxErrors.length, `fixture ${name} is not valid TypeScript`).toBe(0);
@@ -255,6 +259,38 @@ describe('ESLint baseline gate', () => {
     expect(findUnsafeWrites(renameOutFixture), 'moving a repo file out of the checkout mutates it').not.toEqual([]);
     expect(findUnsafeWrites(renameInFixture), 'moving a file into the checkout mutates it').not.toEqual([]);
     expect(findUnsafeWrites(renameTempOnlyFixture), 'a rename between temp paths is fine').toEqual([]);
+    expect(findUnsafeWrites(templateDotFixture), 'a "." segment in a static template path does not hide the write').not.toEqual([]);
+    expect(findUnsafeWrites(templateDotDotFixture), 'a static template path that leaves tests with ".." is not a write under tests').toEqual([]);
+    // Every writer name pinned on its own, so removing ONE name from a set fails (a loop over the sets under test would hide it): the
+    // names are listed HERE. Each call must also be valid TypeScript.
+    const validTypeScript = (text: string): boolean => (ts.transpileModule(text, { reportDiagnostics: true, fileName: 'fixture.ts', compilerOptions: { target: ts.ScriptTarget.Latest } }).diagnostics ?? []).length === 0;
+    const COPY_NAMES = ['cpSync', 'copyFileSync', 'cp', 'copyFile'];
+    const RENAME_NAMES = ['renameSync', 'rename'];
+    const SINGLE_NAMES = ['writeFileSync', 'appendFileSync', 'mkdirSync', 'writeFile', 'appendFile', 'mkdir', 'createWriteStream'];
+    const inRepo = "path.join(repoRoot, 'tests', 'probe.ts')";
+    const inTemp = "path.join(tempDir, 'probe.ts')";
+    const otherTemp = "path.join(tempDir, 'other.ts')";
+    const writerCalls: Array<{ what: string; text: string; flagged: boolean }> = [];
+    for (const prefix of ['', 'fs.promises.']) {
+      for (const name of COPY_NAMES) {
+        writerCalls.push({ what: `${prefix}${name}: a copy out of the checkout is safe`, text: `${prefix}${name}(${inRepo}, ${inTemp});`, flagged: false });
+        writerCalls.push({ what: `${prefix}${name}: a copy into the checkout mutates it`, text: `${prefix}${name}(${inTemp}, ${inRepo});`, flagged: true });
+      }
+      for (const name of RENAME_NAMES) {
+        writerCalls.push({ what: `${prefix}${name}: moving a file out of the checkout mutates it`, text: `${prefix}${name}(${inRepo}, ${inTemp});`, flagged: true });
+        writerCalls.push({ what: `${prefix}${name}: moving a file into the checkout mutates it`, text: `${prefix}${name}(${inTemp}, ${inRepo});`, flagged: true });
+        writerCalls.push({ what: `${prefix}${name}: a rename between temp paths is fine`, text: `${prefix}${name}(${inTemp}, ${otherTemp});`, flagged: false });
+      }
+      for (const name of SINGLE_NAMES) {
+        writerCalls.push({ what: `${prefix}${name}: writing into the checkout`, text: `${prefix}${name}(${inRepo}, 'x');`, flagged: true });
+        writerCalls.push({ what: `${prefix}${name}: writing into a temp dir`, text: `${prefix}${name}(${inTemp}, 'x');`, flagged: false });
+      }
+    }
+    for (const { what, text, flagged } of writerCalls) {
+      expect(validTypeScript(text), `the fixture for "${what}" is not valid TypeScript`).toBe(true);
+      if (flagged) expect(findUnsafeWrites(text), what).not.toEqual([]);
+      else expect(findUnsafeWrites(text), what).toEqual([]);
+    }
     expect(findUnsafeWrites(safeCopy)).toEqual([]);
     expect(findUnsafeWrites(unsafeCopy)).not.toEqual([]);
     expect(findUnsafeWrites(originalUnsafePattern)).not.toEqual([]);
@@ -316,7 +352,13 @@ function unsafeRepoWrites(source: string): string[] {
       if (node.head.text !== '' || !span || !ts.isIdentifier(span.expression) || span.expression.text !== 'repoRoot') return false;
       const literal = span.literal.text;
       // The directory name must end at a slash, or at the end of the whole template: more text after an interpolation continues it.
-      return /^\/(?:src|tests|scripts)\//.test(literal) || (node.templateSpans.length === 1 && /^\/(?:src|tests|scripts)$/.test(literal));
+      // Fully static after repoRoot: evaluate it like path.join ('.', '..', doubled slashes), then read the first directory.
+      if (node.templateSpans.length === 1) {
+        const relative = path.posix.relative('/checkout', path.posix.join('/checkout', literal));
+        return REPO_DIRS.has(relative.split('/')[0] ?? '');
+      }
+      // With a further interpolation the directory name must still end at a slash: more text after it continues the name.
+      return /^\/(?:src|tests|scripts)\//.test(literal);
     }
     if (!ts.isCallExpression(node)) return false;
     const operation = /^(?:path\.)?(join|resolve)$/.exec(node.expression.getText(file))?.[1];
