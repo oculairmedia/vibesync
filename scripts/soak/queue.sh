@@ -2,7 +2,10 @@
 set -u
 
 refuse() { echo "Refused: $*; no writes made, bead not labelled" >&2; exit 1; }
-partial() { echo "Failed: $*; worktree/branch may exist at $worktree ($branch), tracker updates and report removal may have occurred; label may have been attempted. Inspect before cleanup." >&2; exit 2; }
+partial() {
+  echo "Failed: $*; fetch=$fetch_state; worktree/branch=$worktree_state ($worktree, $branch); dependencies=$deps_state; brief=$brief_state; metadata=$metadata_state; report removal=$report_state; label=$label_state. Attempted operations may have partially completed; inspect before cleanup." >&2
+  exit 2
+}
 
 [ "$#" -eq 3 ] || refuse 'usage: queue.sh <bead-id> <brief-file> <branch-name>'
 bead=$1 brief=$2 branch=$3
@@ -19,7 +22,8 @@ response=$(curl -fsS --max-time 8 "$health") || refuse 'health unavailable'
 jq -e '.orchestration.ready == true' <<<"$response" >/dev/null || refuse 'health not ready or malformed'
 roots=$("$bd" list --type molecule_root --status open,in_progress --json --limit 0) || refuse 'cannot query molecules'
 jq -e 'type == "array" and all(.[]; type == "object" and (.metadata | type == "object"))' <<<"$roots" >/dev/null || refuse 'malformed molecules'
-jq -e --arg bead "$bead" 'any(.[]; .metadata.exec.motivating_bead == $bead)' <<<"$roots" >/dev/null && refuse 'open molecule for bead'
+match=$(jq -r --arg bead "$bead" 'any(.[]; .metadata.exec.motivating_bead == $bead)' <<<"$roots") || refuse 'malformed molecule metadata'
+[ "$match" = false ] || refuse 'open molecule for bead'
 contexts=$("$bd" list --label vibesync:sling-context --status open --include-ephemeral --json --limit 0) || refuse 'cannot query sling contexts'
 jq -e 'type == "array" and all(.[]; type == "object" and (.description | type == "string") and ((.description | (try fromjson catch null) | type) == "object"))' <<<"$contexts" >/dev/null || refuse 'malformed sling contexts'
 jq -e --arg bead "$bead" 'any(.[]; (.description | fromjson | .work_bead_id) == $bead)' <<<"$contexts" >/dev/null && refuse 'open sling context for bead'
@@ -32,17 +36,34 @@ git show-ref --verify --quiet "refs/heads/$branch"
 status=$?
 [ "$status" -eq 1 ] || { [ "$status" -eq 0 ] && refuse 'branch exists'; refuse 'cannot check branch'; }
 
+fetch_state=not-attempted worktree_state=not-attempted deps_state=not-attempted
+brief_state=not-attempted metadata_state=not-attempted report_state=not-attempted label_state=not-attempted
+fetch_state=attempted
 git fetch origin || partial 'fetch failed'
+fetch_state=completed
 base=$(git rev-parse origin/main) || partial 'cannot resolve origin/main'
+worktree_state=attempted
 git worktree add -b "$branch" "$worktree" origin/main || partial 'worktree creation failed'
+worktree_state=completed
+deps_state=attempted
 (cd "$worktree" && bun install --frozen-lockfile --ignore-scripts && npm rebuild better-sqlite3) || partial 'dependency installation failed'
 [ -f "$worktree/node_modules/vitest/vitest.mjs" ] || partial 'vitest missing'
+deps_state=completed
+brief_state=attempted
 "$bd" update "$bead" --body-file "$brief" || partial 'brief update failed'
+brief_state=written
 issue=$("$bd" show "$bead" --json) || partial 'brief read-back failed'
 jq -e --rawfile brief "$brief" 'length == 1 and (.[0].description | type == "string") and ((.[0].description | sub("\\s+$"; "")) == ($brief | sub("\\s+$"; "")))' <<<"$issue" >/dev/null || partial 'brief read-back differs'
+brief_state=verified
+metadata_state=attempted
 "$bd" update "$bead" --set-metadata "workdir=$worktree" --set-metadata step_timeout_ms=1500000 || partial 'metadata update failed'
+metadata_state=written
 issue=$("$bd" show "$bead" --json) || partial 'metadata read-back failed'
 jq -e --arg worktree "$worktree" 'length == 1 and .[0].metadata.workdir == $worktree and (.[0].metadata.step_timeout_ms | tostring) == "1500000"' <<<"$issue" >/dev/null || partial 'metadata read-back differs'
+metadata_state=verified
+report_state=attempted
 rm -f -- "$report_dir/vitest-$bead.json" || partial 'report removal failed'
+report_state=completed
+label_state=attempted
 "$bd" update "$bead" --add-label scheduler:eligible || partial 'label update failed'
 printf '%s %s %s %s\n' "$bead" "$worktree" "$branch" "$base"

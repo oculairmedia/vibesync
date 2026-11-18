@@ -44,6 +44,7 @@ update) shift; node "$STATE/tracker.cjs" update "$@";;
 let issue=JSON.parse(fs.readFileSync(file));
 if(a[0]==='show'){if(fs.existsSync(p+'/mismatch')) issue.description='wrong'; console.log(JSON.stringify([issue])); process.exit()}
 fs.appendFileSync(p+'/writes',JSON.stringify(a)+'\\n');
+if(fs.existsSync(p+'/fail-label') && a.includes('--add-label')) process.exit(1);
 if(a.includes('--body-file')) issue.description=fs.readFileSync(a[a.indexOf('--body-file')+1],'utf8');
 for(let i=0;i<a.length;i++) if(a[i]==='--set-metadata'){const [k,v]=a[++i].split('='); issue.metadata[k]=v}
 if(a.includes('--add-label')) issue.labels.push(a[a.indexOf('--add-label')+1]); fs.writeFileSync(file,JSON.stringify(issue));`);
@@ -54,7 +55,7 @@ if(a.includes('--add-label')) issue.labels.push(a[a.indexOf('--add-label')+1]); 
 }
 afterEach(() => { if (root) rmSync(root, { recursive: true, force: true }); });
 
-it.each(['missing brief', 'empty brief', 'health', 'malformed health', 'molecule', 'context', 'worktree', 'branch', 'eligible', 'malformed roots', 'malformed context', 'malformed bead'])('refuses %s before writes', (kind) => {
+it.each(['missing brief', 'empty brief', 'health', 'malformed health', 'molecule', 'context', 'worktree', 'branch', 'eligible', 'malformed roots', 'malformed nested metadata', 'malformed context', 'malformed bead'])('refuses %s before writes', (kind) => {
   const s = sandbox();
   if (kind === 'missing brief') rmSync(s.brief);
   if (kind === 'empty brief') writeFileSync(s.brief, '');
@@ -66,6 +67,7 @@ it.each(['missing brief', 'empty brief', 'health', 'malformed health', 'molecule
   if (kind === 'branch') run('git', ['branch', 'feature/test'], s.repo);
   if (kind === 'eligible') writeFileSync(join(s.state, 'issue'), '{"id":"work-1","labels":["scheduler:eligible"]}');
   if (kind === 'malformed roots') writeFileSync(join(s.state, 'roots'), '{}');
+  if (kind === 'malformed nested metadata') writeFileSync(join(s.state, 'roots'), '[{"metadata":{"exec":"invalid"}}]');
   if (kind === 'malformed context') writeFileSync(join(s.state, 'contexts'), '[{"description":"bad"}]');
   if (kind === 'malformed bead') writeFileSync(join(s.state, 'issue'), '{}');
   const result = s.invoke(); expect(result.status, result.stderr).toBe(1);
@@ -76,6 +78,16 @@ it('fails closed when brief read-back differs', () => {
   const s = sandbox(); writeFileSync(join(s.state, 'mismatch'), '1');
   const result = s.invoke(); expect(result.status, result.stderr).toBe(2);
   expect(readFileSync(join(s.state, 'writes'), 'utf8')).not.toContain('--add-label');
+  expect(result.stderr).toContain(`worktree/branch=completed (${s.repo}/.letta/worktrees/q-work-1, feature/test)`);
+  expect(result.stderr).toContain('dependencies=completed; brief=written; metadata=not-attempted; report removal=not-attempted; label=not-attempted');
+  expect(existsSync(join(s.repo, '.letta/worktrees/q-work-1'))).toBe(true);
+});
+
+it('reports an attempted label only after earlier stages complete', () => {
+  const s = sandbox(); writeFileSync(join(s.state, 'fail-label'), '1');
+  const result = s.invoke(); expect(result.status, result.stderr).toBe(2);
+  expect(result.stderr).toContain('brief=verified; metadata=verified; report removal=completed; label=attempted');
+  expect(JSON.parse(readFileSync(join(s.state, 'issue'), 'utf8')).labels).not.toContain('scheduler:eligible');
 });
 
 it('queues other beads independently, removes stale report and labels last', () => {
