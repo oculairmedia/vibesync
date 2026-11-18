@@ -84,3 +84,36 @@ it('finishes a slow stream and removes the abort listener before a late abort', 
     expect(dispatcher.liveMoleculeIds()).toEqual([]);
   } finally { vi.unstubAllGlobals(); }
 });
+
+it('writes the cancel marker before aborting observation or requesting stops', async () => {
+  const log: string[] = [];
+  const base = newFakeProvider({
+    script: () => (async function* () {
+      log.push('stream-started');
+      yield { kind: 'started' as const, ts: new Date().toISOString() };
+      await new Promise(() => undefined); // stay silent
+    })(),
+  });
+  const provider = {
+    ...base,
+    stop: async (handle: { id: string; providerKind: string }) => {
+      log.push('provider-stop');
+      return base.stop(handle);
+    },
+  };
+  const store = new InMemoryDoltClient();
+  const markOrig = store.markMoleculeRootCancelRequested.bind(store);
+  store.markMoleculeRootCancelRequested = async (id: string) => {
+    log.push('marker-start');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await markOrig(id);
+    log.push('marker-end');
+  };
+  const dispatcher = newDriven(store, { idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }), cancelUnwindMs: 300 });
+  let id = '';
+  const pending = dispatcher.run({ formula, pack: pack(), input: 'go', onStarted: (value) => { id = value; } });
+  pending.catch(() => undefined);
+  await until(() => log.includes('stream-started'));
+  await dispatcher.cancel(id);
+  expect(log.indexOf('marker-end')).toBeLessThan(log.indexOf('provider-stop'));
+});

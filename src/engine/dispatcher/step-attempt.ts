@@ -149,16 +149,23 @@ export class StepAttemptRunner {
     let agentActed = false;
     const it = args.provider.observe(handle)[Symbol.asyncIterator]();
     const signal = args.cancelSignal;
-    let onCancel: (() => void) | undefined;
-    const cancelled = new Promise<null>((resolve) => {
-      onCancel = () => resolve(null);
-      if (signal?.aborted) onCancel();
-      else signal?.addEventListener('abort', onCancel, { once: true });
-    });
     try {
       while (true) {
+        if (signal?.aborted || args.cancelled?.()) break;
+        let removeListener: (() => void) | undefined;
+        const cancelled = new Promise<null>((resolve) => {
+          if (signal?.aborted) { resolve(null); return; }
+          const onAbort = () => resolve(null);
+          signal?.addEventListener('abort', onAbort, { once: true });
+          removeListener = () => signal?.removeEventListener('abort', onAbort);
+        });
         const next = it.next();
-        const result = await Promise.race([next, cancelled]);
+        let result: IteratorResult<SessionEvent> | null;
+        try {
+          result = await Promise.race([next, cancelled]);
+        } finally {
+          removeListener?.();
+        }
         if (result === null) {
           void next.catch(() => undefined);
           break;
@@ -179,7 +186,7 @@ export class StepAttemptRunner {
         }
       }
     } finally {
-      if (onCancel) signal?.removeEventListener('abort', onCancel);
+      // Stream exited or cancelled
     }
     return { text, eventCount };
   }

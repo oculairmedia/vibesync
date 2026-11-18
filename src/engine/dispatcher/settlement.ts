@@ -279,6 +279,7 @@ export class MoleculeSettler {
       // The stops are asked for, not waited on: a stop that never settles must not hold the run open (outside review
       // of PR #188). The bounded wait for the turns below is what decides when cancel() moves on.
       this.requestStops(running, run.provider);
+      run.cancelController.abort();
       await this.waitForTurnsToReturn(run);
       // Read fresh after the wait: a step admitted just before the flag can land as in_progress after the first read.
       const cancelledStepCount = await this.recordStepsStillRunning(moleculeId, await this.deps.walker.findRunning(moleculeId));
@@ -286,6 +287,7 @@ export class MoleculeSettler {
       run.rootClosed = true;
       return { moleculeId, cancelledStepCount };
     } finally {
+      run.cancelController.abort();
       // Also when cancel() failed part-way: the run settles as cancelled, and closes its root if cancel() did not.
       await this.releaseAfterCancel(run);
     }
@@ -363,7 +365,6 @@ export class MoleculeSettler {
     if (!liveRun) return undefined;
     liveRun.cancelInProgress = true;
     liveRun.cancelled = true;
-    liveRun.cancelController.abort();
     return liveRun;
   }
 
