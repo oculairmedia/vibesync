@@ -35,7 +35,9 @@ function live(dispatcher: ReturnType<typeof newDriven>, id: string) {
 
 it('cancellation releases a silent attempt even when stop never settles', async () => {
   let observing = false;
-  const h = setup(() => (async function* () { observing = true; await new Promise(() => undefined); })(), true);
+  const h = setup(() => ({
+    [Symbol.asyncIterator]: () => ({ next: () => { observing = true; return new Promise(() => undefined); } }),
+  }), true);
   let id = '';
   const pending = h.dispatcher.run({ formula, pack: pack(), input: 'go', onStarted: (value) => { id = value; } });
   const outcome = pending.then(() => 'resolved', (error: Error) => error.message);
