@@ -165,13 +165,18 @@ export class StepAttemptRunner {
         }
         if (result.done) break;
         const event = result.value;
-        eventCount++;
-        this.deps.emitRuntimeSessionEvent(event, buildStepAttemptEventPayload(args, handle, taskId, conversationId));
-        if (event.kind === 'message-delta') {
-          text += event.text;
+        try {
+          eventCount++;
+          this.deps.emitRuntimeSessionEvent(event, buildStepAttemptEventPayload(args, handle, taskId, conversationId));
+          if (event.kind === 'message-delta') {
+            text += event.text;
+          }
+          agentActed = didAgentAct(event, agentActed);
+          this.handleStepAttemptEvent(event, agentActed);
+        } catch (error) {
+          try { await iterator.return?.(); } catch { /* Preserve the event-processing error. */ }
+          throw error;
         }
-        agentActed = didAgentAct(event, agentActed);
-        this.handleStepAttemptEvent(event, agentActed);
         if (args.cancelled?.()) break;
         if (event.kind === 'turn-done') {
           await iterator.return?.();
