@@ -10,44 +10,41 @@ const repoRoot = process.cwd();
 describe('ESLint baseline gate', () => {
   it('allows an existing baselined violation', () => {
     const temporaryDir = mkdtempSync(path.join(tmpdir(), 'vibesync-eslint-'));
-    const existingFile = path.join(repoRoot, 'tests/unit/eslint-baseline-existing.lint.ts');
+    const existingFile = path.join(temporaryDir, 'tests/unit/eslint-baseline-existing.lint.ts');
     try {
       const baseline = JSON.parse(readFileSync(path.join(repoRoot, 'eslint-baseline.json'), 'utf8')) as Record<string, number>;
       baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-explicit-any'] = 2;
       baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-unused-vars'] = 2;
-      baseline['scripts/eslint-baseline-check.test-helper.mjs:quotes'] = 3;
       writeFileSync(path.join(temporaryDir, 'eslint-baseline.json'), JSON.stringify(baseline));
 
       const checkInRepo = writeBaselineCheckHelper(temporaryDir);
 
       writeFileSync(existingFile, 'const existing: any = 1;\n');
       const existingResult = spawnSync(process.execPath, [checkInRepo], {
-        cwd: repoRoot,
+        cwd: temporaryDir,
         encoding: 'utf8',
         env: { ...process.env, ESLINT_EXTRA_FILE: existingFile, ESLINT_BASELINE_PATH: path.join(temporaryDir, 'eslint-baseline.json') },
       });
       expect(existingResult.status, existingResult.stderr).toBe(0);
     } finally {
       rmSync(existingFile, { force: true });
-      rmSync(path.join(repoRoot, 'scripts/eslint-baseline-check.test-helper.mjs'), { force: true });
       rmSync(temporaryDir, { recursive: true, force: true });
     }
   });
 
   it('rejects a new violation', () => {
     const temporaryDir = mkdtempSync(path.join(tmpdir(), 'vibesync-eslint-'));
-    const newFile = path.join(repoRoot, 'tests/unit/eslint-baseline-new.lint.ts');
+    const newFile = path.join(temporaryDir, 'tests/unit/eslint-baseline-new.lint.ts');
     try {
       const baseline = JSON.parse(readFileSync(path.join(repoRoot, 'eslint-baseline.json'), 'utf8')) as Record<string, number>;
       baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-explicit-any'] = 2;
       baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-unused-vars'] = 2;
-      baseline['scripts/eslint-baseline-check.test-helper.mjs:quotes'] = 3;
       writeFileSync(path.join(temporaryDir, 'eslint-baseline.json'), JSON.stringify(baseline));
       const checkInRepo = writeBaselineCheckHelper(temporaryDir);
 
       writeFileSync(newFile, 'const regression: any = 1;\n');
       const newResult = spawnSync(process.execPath, [checkInRepo], {
-        cwd: repoRoot,
+        cwd: temporaryDir,
         encoding: 'utf8',
         env: { ...process.env, ESLINT_EXTRA_FILE: newFile, ESLINT_BASELINE_PATH: path.join(temporaryDir, 'eslint-baseline.json') },
       });
@@ -55,25 +52,23 @@ describe('ESLint baseline gate', () => {
       expect(newResult.stderr).toContain('ESLint introduced');
     } finally {
       rmSync(newFile, { force: true });
-      rmSync(path.join(repoRoot, 'scripts/eslint-baseline-check.test-helper.mjs'), { force: true });
       rmSync(temporaryDir, { recursive: true, force: true });
     }
   });
 
   it('rejects a malformed file', () => {
     const temporaryDir = mkdtempSync(path.join(tmpdir(), 'vibesync-eslint-'));
-    const malformedFile = path.join(repoRoot, 'tests/unit/eslint-baseline-malformed.lint.ts');
+    const malformedFile = path.join(temporaryDir, 'tests/unit/eslint-baseline-malformed.lint.ts');
     try {
       const baseline = JSON.parse(readFileSync(path.join(repoRoot, 'eslint-baseline.json'), 'utf8')) as Record<string, number>;
       baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-explicit-any'] = 2;
       baseline['tests/unit/eslint-baseline-existing.lint.ts:@typescript-eslint/no-unused-vars'] = 2;
-      baseline['scripts/eslint-baseline-check.test-helper.mjs:quotes'] = 3;
       writeFileSync(path.join(temporaryDir, 'eslint-baseline.json'), JSON.stringify(baseline));
       const checkInRepo = writeBaselineCheckHelper(temporaryDir);
 
       writeFileSync(malformedFile, 'const malformed: = ;\n');
       const malformedResult = spawnSync(process.execPath, [checkInRepo], {
-        cwd: repoRoot,
+        cwd: temporaryDir,
         encoding: 'utf8',
         env: { ...process.env, ESLINT_EXTRA_FILE: malformedFile, ESLINT_BASELINE_PATH: path.join(temporaryDir, 'eslint-baseline.json') },
       });
@@ -81,7 +76,6 @@ describe('ESLint baseline gate', () => {
       expect(malformedResult.stderr).toContain('fatal or unclassified diagnostics');
     } finally {
       rmSync(malformedFile, { force: true });
-      rmSync(path.join(repoRoot, 'scripts/eslint-baseline-check.test-helper.mjs'), { force: true });
       rmSync(temporaryDir, { recursive: true, force: true });
     }
   });
@@ -130,7 +124,7 @@ describe('ESLint baseline gate', () => {
     const testFiles = readdirSync(path.join(repoRoot, 'tests'), { recursive: true })
       .filter((file): file is string => typeof file === 'string' && file.endsWith('.test.ts'));
     const unsafeWrites: string[] = [];
-    const rootSrcPath = /(?:const|let|var)\s+(\w+)\s*=\s*path\.(?:join|resolve)\(\s*repoRoot\s*,\s*['"`]src\//g;
+    const rootSrcPath = /(?:const|let|var)\s+(\w+)\s*=\s*path\.(?:join|resolve)\(\s*repoRoot\s*,\s*['"`](?:src|tests|scripts)\//g;
     const writeCalls = /\b(?:writeFileSync|mkdirSync|cpSync)\s*\(([^;]*?)\);/g;
     const findUnsafeWrites = (source: string): string[] => {
       const rootSrcVariables = new Set<string>();
@@ -138,8 +132,9 @@ describe('ESLint baseline gate', () => {
         if (match[1]) rootSrcVariables.add(match[1]);
       }
       return [...source.matchAll(writeCalls)].flatMap((match) => {
-        const args = match[1] ?? '';
-        return /(?:repoRoot[\s\S]*?['"`]src\/|path\.(?:join|resolve)\(\s*repoRoot\s*,\s*['"`]src\/)/.test(args)
+        // cpSync(source, destination) writes only to its destination: a copy FROM the repo into a temp dir is safe.
+        const args = /^cpSync/.test(match[0]) ? destinationArgument(match[1] ?? '') : match[1] ?? '';
+        return /(?:repoRoot[\s\S]*?['"`](?:src|tests|scripts)\/|path\.(?:join|resolve)\(\s*repoRoot\s*,\s*['"`](?:src|tests|scripts)\/)/.test(args)
           || [...rootSrcVariables].some((variable) => new RegExp(`\\b${variable}\\b`).test(args))
           ? [match[0]]
           : [];
@@ -149,7 +144,9 @@ describe('ESLint baseline gate', () => {
       const filePath = path.join(repoRoot, 'tests', relativeFile);
       const source = readFileSync(filePath, 'utf8');
       const withoutFixtureSource = source.replace(/const originalUnsafePattern = `[^`]*`;/, '')
-        .replace(/const safePattern = `[^`]*`;/, '');
+        .replace(/const safePattern = `[^`]*`;/, '')
+        .replace(/const safeCopy = `[^`]*`;/, '')
+        .replace(/const unsafeCopy = `[^`]*`;/, '');
       if (findUnsafeWrites(withoutFixtureSource).length > 0) {
         unsafeWrites.push(path.relative(repoRoot, filePath));
       }
@@ -159,22 +156,53 @@ describe('ESLint baseline gate', () => {
       const extraFile = path.join(repoRoot, 'src/engine/runtime/probe.ts');
       writeFileSync(extraFile, 'probe');
     `;
+    // A copy FROM the repo into a temp dir is safe; a copy INTO the repo is not. The examples sit in template strings the scan
+    // removes (like the two above), so they are not mistaken for this file's own writes.
+    const safeCopy = `
+      cpSync(path.join(repoRoot, 'scripts/check.mjs'), path.join(tempDir, 'check.mjs'));
+    `;
+    const unsafeCopy = `
+      cpSync(path.join(tempDir, 'check.mjs'), path.join(repoRoot, 'scripts/check.mjs'));
+    `;
     const safePattern = `
       const repoRoot = process.cwd();
       const extraFile = path.join(tempDir, 'src/engine/runtime/probe.ts');
       writeFileSync(extraFile, 'probe');
     `;
+    expect(findUnsafeWrites(safeCopy)).toEqual([]);
+    expect(findUnsafeWrites(unsafeCopy)).not.toEqual([]);
     expect(findUnsafeWrites(originalUnsafePattern)).not.toEqual([]);
     expect(findUnsafeWrites(safePattern)).toEqual([]);
-    expect(unsafeWrites).toEqual([]);
+    expect(unsafeWrites.join(', '), 'test files that write into the repository tree (src, tests or scripts); use a private temp dir').toBe('');
   });
 });
 
+/**
+ * A private copy of the repo's lint setup under `temporaryDir`: the config, a link to node_modules and the UNMODIFIED check
+ * script at scripts/, so its root is the temp tree and baseline keys match the real ones. Nothing is written into the repo,
+ * so two suite runs (or a suite run and `npm run lint`) in one checkout cannot see each other's scratch files
+ * (vibesync-eoo1: overlapping runs failed this file's tests).
+ */
 function writeBaselineCheckHelper(temporaryDir: string): string {
-  const checkScript = readFileSync(path.join(repoRoot, 'scripts/eslint-baseline-check.mjs'), 'utf8')
-    .replace("path.join(root, 'eslint-baseline.json')", `path.join(root, ${JSON.stringify(path.join(temporaryDir, 'eslint-baseline.json'))})`)
-    .replaceAll("'node_modules/eslint/bin/eslint.js'", JSON.stringify(path.join(repoRoot, 'node_modules/eslint/bin/eslint.js')));
-  const checkInRepo = path.join(repoRoot, 'scripts/eslint-baseline-check.test-helper.mjs');
-  writeFileSync(checkInRepo, checkScript);
-  return checkInRepo;
+  symlinkSync(path.join(repoRoot, 'node_modules'), path.join(temporaryDir, 'node_modules'), 'dir');
+  cpSync(path.join(repoRoot, 'eslint.config.js'), path.join(temporaryDir, 'eslint.config.js'));
+  writeFileSync(path.join(temporaryDir, 'package.json'), '{"type":"module"}\n');
+  mkdirSync(path.join(temporaryDir, 'tests/unit'), { recursive: true });
+  mkdirSync(path.join(temporaryDir, 'scripts'), { recursive: true });
+  const checkPath = path.join(temporaryDir, 'scripts/eslint-baseline-check.mjs');
+  cpSync(path.join(repoRoot, 'scripts/eslint-baseline-check.mjs'), checkPath);
+  return checkPath;
 }
+
+/** The second top-level argument of a call's argument text (cpSync's destination), or '' when there is none. */
+function destinationArgument(args: string): string {
+  let depth = 0;
+  for (let i = 0; i < args.length; i++) {
+    const c = args[i];
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+    else if (c === ',' && depth === 0) return args.slice(i + 1);
+  }
+  return '';
+}
+
