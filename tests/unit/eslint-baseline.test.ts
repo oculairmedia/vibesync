@@ -139,7 +139,7 @@ describe('ESLint baseline gate', () => {
     const testFiles = readdirSync(path.join(repoRoot, 'tests'), { recursive: true })
       .filter((file): file is string => typeof file === 'string' && file.endsWith('.test.ts'));
     const unsafeWrites: string[] = [];
-    const rootSrcPath = /(?:const|let|var)\s+(\w+)\s*=\s*path\.(?:join|resolve)\(\s*repoRoot\s*,\s*['"`](?:src|tests|scripts)\//g;
+    const rootSrcPath = /(?:const|let|var)\s+(\w+)\s*=\s*path\.(?:join|resolve)\(\s*repoRoot\s*,\s*['"`](?:src|tests|scripts)(?:\/|['"`])/g;
 ;
     const findUnsafeWrites = (source: string): string[] => {
       const rootSrcVariables = new Set<string>();
@@ -149,7 +149,7 @@ describe('ESLint baseline gate', () => {
       return writeCallSites(source).flatMap((site) => {
         // A copy or rename writes only to its destination: a copy FROM the repo into a temp dir is safe.
         const args = site.destinationOnly ? destinationArgument(site.args) : site.args;
-        return /(?:repoRoot[\s\S]*?['"`](?:src|tests|scripts)\/|path\.(?:join|resolve)\(\s*repoRoot\s*,\s*['"`](?:src|tests|scripts)\/)/.test(args)
+        return /(?:repoRoot[\s\S]*?['"`](?:src|tests|scripts)(?:\/|['"`])|path\.(?:join|resolve)\(\s*repoRoot\s*,\s*['"`](?:src|tests|scripts)(?:\/|['"`]))/.test(args)
           || [...rootSrcVariables].some((variable) => new RegExp(`\\b${variable}\\b`).test(args))
           ? [site.text]
           : [];
@@ -162,7 +162,11 @@ describe('ESLint baseline gate', () => {
         .replace(/const safePattern = `[^`]*`;/, '')
         .replace(/const safeCopy = `[^`]*`;/, '')
         .replace(/const unsafeCopy = `[^`]*`;/, '')
-        .replace(/const semicolonFixture = `[^`]*`;/, '');
+        .replace(/const semicolonFixture = `[^`]*`;/, '')
+        .replace(/const segmentFixture = `[^`]*`;/, '')
+        .replace(/const assignedSegmentsFixture = `[^`]*`;/, '')
+        .replace(/const regexFixture = `[^`]*`;/, '')
+        .replace(/const tempSegmentsFixture = `[^`]*`;/, '');
       if (findUnsafeWrites(withoutFixtureSource).length > 0) {
         unsafeWrites.push(path.relative(repoRoot, filePath));
       }
@@ -186,12 +190,31 @@ describe('ESLint baseline gate', () => {
       const existingFile = path.join(repoRoot, 'tests/unit/eslint-baseline-existing.lint.ts');
       writeFileSync(existingFile, 'const existing: any = 1;\n');
     `;
+    // CodeRabbit on #194: a repo path built from separate segments, assigned or direct, and a regex literal holding an escaped
+    // bracket (which the bracket scan used to count as a real one) must not hide a repository write.
+    const segmentFixture = `
+      writeFileSync(path.join(repoRoot, 'tests', 'probe.ts'), 'probe');
+    `;
+    const assignedSegmentsFixture = `
+      const probe = path.join(repoRoot, 'tests', 'probe.ts');
+      writeFileSync(probe, 'probe');
+    `;
+    const regexFixture = `
+      writeFileSync(path.join(repoRoot, 'src/probe.ts'), value.replace(/\\(/g, ''));
+    `;
+    const tempSegmentsFixture = `
+      writeFileSync(path.join(temporaryDir, 'tests', 'probe.ts'), 'probe');
+    `;
     const safePattern = `
       const repoRoot = process.cwd();
       const extraFile = path.join(tempDir, 'src/engine/runtime/probe.ts');
       writeFileSync(extraFile, 'probe');
     `;
     expect(findUnsafeWrites(semicolonFixture), 'a write whose content contains a semicolon must be seen').not.toEqual([]);
+    expect(findUnsafeWrites(segmentFixture), 'a repo path built from separate segments must be seen').not.toEqual([]);
+    expect(findUnsafeWrites(assignedSegmentsFixture), 'an assigned repo path built from separate segments must be seen').not.toEqual([]);
+    expect(findUnsafeWrites(regexFixture), 'an escaped bracket inside a regex literal must not hide the write').not.toEqual([]);
+    expect(findUnsafeWrites(tempSegmentsFixture), 'the same segments under a temp dir are fine').toEqual([]);
     expect(findUnsafeWrites(safeCopy)).toEqual([]);
     expect(findUnsafeWrites(unsafeCopy)).not.toEqual([]);
     expect(findUnsafeWrites(originalUnsafePattern)).not.toEqual([]);
@@ -261,6 +284,8 @@ function matchingBracket(source: string, open: number): number {
       const end = source.indexOf('*/', i + 2);
       if (end < 0) return -1;
       i = end + 1;
+    } else if (c === '/' && regexAllowedAfter(source, i)) {
+      i = skipRegex(source, i);
     } else if (c === '(' || c === '[' || c === '{') depth++;
     else if (c === ')' || c === ']' || c === '}') {
       depth--;
@@ -305,3 +330,27 @@ function destinationArgument(args: string): string {
   }
   return '';
 }
+
+/** True when a '/' at `index` starts a regular expression literal (after an operator, an opening bracket or `return`), not a division. */
+function regexAllowedAfter(source: string, index: number): boolean {
+  let i = index - 1;
+  while (i >= 0 && /\s/.test(source[i]!)) i--;
+  if (i < 0) return true;
+  if ('(,=:[!&|?{};+-*%<>~^'.includes(source[i]!)) return true;
+  return /\breturn$/.test(source.slice(Math.max(0, i - 6), i + 1));
+}
+
+/** Index of the '/' closing the regex literal that starts at `start`; `start` itself when it is not one (so scanning goes on). */
+function skipRegex(source: string, start: number): number {
+  let inClass = false;
+  for (let i = start + 1; i < source.length; i++) {
+    const c = source[i];
+    if (c === '\\') i++;
+    else if (c === '[') inClass = true;
+    else if (c === ']') inClass = false;
+    else if (c === '/' && !inClass) return i;
+    else if (c === '\n') return start;
+  }
+  return start;
+}
+
