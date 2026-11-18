@@ -176,7 +176,7 @@ describe('ESLint baseline gate', () => {
     // (outside review: the guard caught the original file only through its helper-script write, not its fixture writes).
     const semicolonFixture = `
       const existingFile = path.join(repoRoot, 'tests/unit/eslint-baseline-existing.lint.ts');
-      writeFileSync(existingFile, 'const existing: any = 1;\n');
+      writeFileSync(existingFile, 'const existing: any = 1;\\n');
     `;
     // CodeRabbit on #194: a repo path built from separate segments, assigned or direct, and a regex literal holding an escaped
     // bracket (which the bracket scan used to count as a real one) must not hide a repository write.
@@ -221,6 +221,14 @@ describe('ESLint baseline gate', () => {
       const extraFile = path.join(tempDir, 'src/engine/runtime/probe.ts');
       writeFileSync(extraFile, 'probe');
     `;
+    // A parser recovers from broken input, so a fixture with a stray newline in a string could pass for the wrong reason (CodeRabbit,
+    // outside the diff on #194): every fixture must be valid TypeScript before it is judged. transpileModule reports syntax errors
+    // through the public API.
+    const fixtures: Record<string, string> = { originalUnsafePattern, safePattern, safeCopy, unsafeCopy, semicolonFixture, segmentFixture, assignedSegmentsFixture, regexFixture, tempSegmentsFixture, contentMentionFixture, postfixFixture, templateFixture, appendFixture, templateBoundaryFixture, dotSegmentFixture, dotDotFixture, redeclaredFixture, reassignedIntoRepoFixture, reassignedOutOfRepoFixture, joinAbsoluteFixture, resolveAbsoluteFixture, leavesCheckoutFixture };
+    for (const [name, text] of Object.entries(fixtures)) {
+      const syntaxErrors = ts.transpileModule(text, { reportDiagnostics: true, fileName: `${name}.ts`, compilerOptions: { target: ts.ScriptTarget.Latest } }).diagnostics ?? [];
+      expect(syntaxErrors.length, `fixture ${name} is not valid TypeScript`).toBe(0);
+    }
     expect(findUnsafeWrites(semicolonFixture), 'a write whose content contains a semicolon must be seen').not.toEqual([]);
     expect(findUnsafeWrites(segmentFixture), 'a repo path built from separate segments must be seen').not.toEqual([]);
     expect(findUnsafeWrites(assignedSegmentsFixture), 'an assigned repo path built from separate segments must be seen').not.toEqual([]);
