@@ -147,16 +147,39 @@ export class StepAttemptRunner {
     let text = '';
     let eventCount = 0;
     let agentActed = false;
-    for await (const event of args.provider.observe(handle)) {
-      eventCount++;
-      this.deps.emitRuntimeSessionEvent(event, buildStepAttemptEventPayload(args, handle, taskId, conversationId));
-      if (event.kind === 'message-delta') {
-        text += event.text;
+    const it = args.provider.observe(handle)[Symbol.asyncIterator]();
+    const signal = args.cancelSignal;
+    let onCancel: (() => void) | undefined;
+    const cancelled = new Promise<null>((resolve) => {
+      onCancel = () => resolve(null);
+      if (signal?.aborted) onCancel();
+      else signal?.addEventListener('abort', onCancel, { once: true });
+    });
+    try {
+      while (true) {
+        const next = it.next();
+        const result = await Promise.race([next, cancelled]);
+        if (result === null) {
+          void next.catch(() => undefined);
+          break;
+        }
+        if (result.done) break;
+        const event = result.value;
+        eventCount++;
+        this.deps.emitRuntimeSessionEvent(event, buildStepAttemptEventPayload(args, handle, taskId, conversationId));
+        if (event.kind === 'message-delta') {
+          text += event.text;
+        }
+        agentActed = didAgentAct(event, agentActed);
+        this.handleStepAttemptEvent(event, agentActed);
+        if (args.cancelled?.()) break;
+        if (event.kind === 'turn-done') {
+          await it.return?.();
+          break;
+        }
       }
-      agentActed = didAgentAct(event, agentActed);
-      this.handleStepAttemptEvent(event, agentActed);
-      if (event.kind === 'turn-done') break;
-      if (args.cancelled?.()) break;
+    } finally {
+      if (onCancel) signal?.removeEventListener('abort', onCancel);
     }
     return { text, eventCount };
   }
