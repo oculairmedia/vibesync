@@ -73,7 +73,9 @@ function harness(cancelUnwindMs?: number, stopNeverSettles = false) {
       yield { kind: 'turn-done', ts };
     })(),
   });
-  if (stopNeverSettles) provider.stop = () => new Promise<void>(() => undefined);
+  let releaseStop = () => {};
+  const stopped = new Promise<void>((resolve) => { releaseStop = resolve; });
+  if (stopNeverSettles) provider.stop = () => stopped;
   const eventBus = new EventBus({ noPersist: true });
   const events: Event[] = [];
   eventBus.subscribe((event) => events.push(event));
@@ -81,7 +83,7 @@ function harness(cancelUnwindMs?: number, stopNeverSettles = false) {
     idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus, maxParallelSteps: 2,
     ...(cancelUnwindMs !== undefined ? { cancelUnwindMs } : {}),
   });
-  return { store, provider, events, dispatcher, gates };
+  return { store, provider, events, dispatcher, gates, releaseStop };
 }
 
 describe('a run settles once, and only when none of its turns is in flight', () => {
@@ -165,6 +167,7 @@ describe('a run settles once, and only when none of its turns is in flight', () 
     expect(h.dispatcher.liveMoleculeIds()).toContain(moleculeId);
 
     h.gates.right(); // the turn comes back
+    h.releaseStop();
     await pending.catch(() => undefined);
     await settle();
 
