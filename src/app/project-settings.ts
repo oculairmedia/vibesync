@@ -5,6 +5,7 @@ export interface ProjectEngineSettings {
   readonly readyLabel?: string;
   readonly poolSize?: number;
   readonly ciChecks?: readonly string[];
+  readonly runStatus?: boolean;
 }
 
 export type ProjectSettingsSource = (projectIdentifier: string) => ProjectEngineSettings;
@@ -32,6 +33,7 @@ const ENGINE_FIELDS: readonly { readonly name: keyof ProjectEngineSettings; read
   { name: 'readyLabel', valid: (v) => typeof v === 'string' && READY_LABEL.test(v), rule: 'must match [a-z0-9][a-z0-9:_-]{0,63}' },
   { name: 'poolSize', valid: (v) => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 8, rule: 'must be an integer from 1 to 8' },
   { name: 'ciChecks', valid: (v) => Array.isArray(v) && v.length <= 16, rule: 'must be an array of at most 16 strings' },
+  { name: 'runStatus', valid: (v) => typeof v === 'boolean', rule: 'must be a boolean' },
 ];
 
 function isCheckName(value: unknown): boolean {

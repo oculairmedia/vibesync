@@ -25,6 +25,10 @@ describe('committed project engine settings', () => {
     expect(load('alpha')).toEqual({ formula: 'implement-fix', readyLabel: 'ready:now', poolSize: 4, ciChecks: ['check'] });
   });
 
+  it.each([true, false])('reads runStatus=%s from committed project settings', (runStatus) => {
+    expect(source(JSON.stringify({ engine: { runStatus } })).load('alpha').runStatus).toBe(runStatus);
+  });
+
   it.each([
     ['formula', { formula: 'Bad' }, 'formula', 'match'],
     ['readyLabel', { readyLabel: 'Bad label' }, 'readyLabel', 'match'],
@@ -34,6 +38,7 @@ describe('committed project engine settings', () => {
     ['ciChecks count', { ciChecks: Array(17).fill('x') }, 'ciChecks', 'at most 16'],
     ['ciChecks entry', { ciChecks: [''] }, 'ciChecks', '1 to 100'],
     ['ciChecks entry length', { ciChecks: ['x'.repeat(101)] }, 'ciChecks', '1 to 100'],
+    ['runStatus type', { runStatus: 'false' }, 'runStatus', 'boolean'],
   ])('rejects invalid %s and names the field and rule', (_case, invalid, field, rule) => {
     const { load } = source(JSON.stringify({ engine: invalid }));
     expect(() => load('alpha')).toThrow(new RegExp(`alpha.*engine\\.${field}.*${rule}`));
