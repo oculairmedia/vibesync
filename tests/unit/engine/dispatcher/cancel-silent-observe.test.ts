@@ -42,6 +42,25 @@ it('settles a cancelled silent observation even when stop never settles', async 
   expect(dispatcher.liveMoleculeIds()).not.toContain(id);
 });
 
+it('settles cancellation when iterator closure never resolves', async () => {
+  let closing = false;
+  const base = newFakeProvider({ script: () => ({ [Symbol.asyncIterator]: () => ({
+    next: async () => ({ done: false as const, value: { kind: 'turn-done' as const, ts: new Date().toISOString() } }),
+    return: () => { closing = true; return new Promise<IteratorResult<never>>(() => undefined); },
+  }) }) });
+  const provider = { ...base, stop: () => new Promise<void>(() => undefined) };
+  const store = new InMemoryDoltClient();
+  const dispatcher = newDriven(store, { idPrefix: 'mol', provider, walker: new MoleculeWalker(store), eventBus: new EventBus({ noPersist: true }), attemptStopTimeoutMs: 100, cancelUnwindMs: 300 });
+  let id = '';
+  const pending = dispatcher.run({ formula, pack: pack(), input: 'go', onStarted: (value) => { id = value; } });
+  const told = pending.then(() => 'resolved', (error: Error) => error.message);
+  await until(() => closing);
+  await dispatcher.cancel(id);
+  const result = await Promise.race([told, new Promise<string>((resolve) => setTimeout(() => resolve('timed out'), 1000))]);
+  expect(result).toContain('was cancelled');
+  expect(dispatcher.liveMoleculeIds()).not.toContain(id);
+});
+
 it('finishes a slow stream and removes the abort listener before a late abort', async () => {
   const controllers: AbortController[] = [];
   const Original = globalThis.AbortController;

@@ -174,7 +174,7 @@ export class StepAttemptRunner {
         this.handleStepAttemptEvent(event, agentActed);
         if (args.cancelled?.()) break;
         if (event.kind === 'turn-done') {
-          await it.return?.();
+          void it.return?.().catch(() => undefined);
           break;
         }
       }
