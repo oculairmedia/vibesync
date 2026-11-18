@@ -89,6 +89,7 @@ interface Harness {
   readonly dispatcher: ReturnType<typeof newDriven>;
   /** Lets the gated turns return. */
   readonly release: () => void;
+  readonly releaseStop: () => void;
 }
 
 /**
@@ -108,9 +109,11 @@ function harness(args: {
   const store = new InMemoryDoltClient();
   let release: () => void = () => {};
   const gate = new Promise<void>((resolve) => { release = resolve; });
+  let releaseStop: () => void = () => {};
+  const stopped = new Promise<void>((resolve) => { releaseStop = resolve; });
   const base = newFakeProvider({ kind: 'fake-runtime', script: (spec) => turn(gate, args.ending, args.before ? () => args.before!(spec, store) : undefined) });
-  // A silent turn is interrupted on cancel, so hold it open with a stop that never settles.
-  const provider: FakeProvider = args.stopNeverSettles ? { ...base, stop: () => new Promise<void>(() => undefined) } : args.releaseOnStop
+  // A silent turn is interrupted on cancel, so hold its stop until the test releases it.
+  const provider: FakeProvider = args.stopNeverSettles ? { ...base, stop: () => stopped } : args.releaseOnStop
     ? { ...base, stop: async (handle) => { await base.stop(handle); release(); await settle(); } }
     : base;
   const eventBus = new EventBus({ noPersist: true });
@@ -123,7 +126,7 @@ function harness(args: {
     ...(args.stepJudge ? { stepJudge: args.stepJudge } : {}),
     ...(args.turnLimitPreserver ? { turnLimitPreserver: args.turnLimitPreserver } : {}),
   });
-  return { store, provider, events, eventBus, dispatcher, release };
+  return { store, provider, events, eventBus, dispatcher, release, releaseStop };
 }
 
 function deferred(): { readonly promise: Promise<void>; readonly open: () => void; readonly reached: () => boolean; readonly enter: () => Promise<void> } {
@@ -277,7 +280,8 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
     expect((await exec(h.store, moleculeId))['outcome']).toBe('cancelled');
     // The turn returns long after: its result is still not written.
     h.release();
-    await settle();
+    h.releaseStop();
+    await pending.catch(() => undefined);
     await expectCancelled(h.store, stepId(), 'after the late turn');
     expect(h.events.filter((event) => event.kind === 'dispatcher/step.finished')).toEqual([]);
   }, 20_000);
@@ -362,8 +366,9 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
     expect(second).toBeInstanceOf(Error);
     expect(String((second as Error).message)).toContain('already being cancelled');
     h.release();
+    h.releaseStop();
     expect(await first).toEqual({ moleculeId, cancelledStepCount: 1 });
-    await settle();
+    await pending.catch(() => undefined);
     await expectCancelled(h.store, stepId(), 'after both');
     expect(h.events.filter((event) => event.kind === 'dispatcher/formula.cancelled')).toHaveLength(1);
     expect(h.events.filter((event) => event.kind === 'dispatcher/step.cancelled')).toHaveLength(1);
@@ -693,6 +698,7 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
     const during = await h.dispatcher.cancel(moleculeId).then(() => 'ok', (error: unknown) => String((error as Error).message));
     expect(during).toMatch(/already being cancelled/);
     h.release();
+    h.releaseStop();
     expect(await cancelling).toMatchObject({ moleculeId });
     empty = false;
     expect(await told).toBe('rejected');
@@ -726,6 +732,7 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
     const second = await h.dispatcher.cancel(moleculeId).then(() => 'ok', (error: unknown) => String((error as Error).message));
     expect(second).toContain('already');
     h.release(); // the late turn returns
+    h.releaseStop();
     await pending.catch(() => undefined);
     await settle();
     await expectCancelled(h.store, stepId(), 'after the late turn');
