@@ -210,6 +210,11 @@ describe('ESLint baseline gate', () => {
     const dotDotFixture = "writeFileSync(path.join(repoRoot, 'tests', '..', 'scratch', 'probe.ts'), 'probe');";
     const redeclaredFixture = "{ const probe = path.join(repoRoot, 'tests', 'a.ts'); readFileSync(probe); } { const probe = path.join(tempDir, 'b.ts'); writeFileSync(probe, 'x'); }";
     const reassignedIntoRepoFixture = "let probe = path.join(tempDir, 'a.ts'); probe = path.join(repoRoot, 'tests', 'b.ts'); writeFileSync(probe, 'x');";
+    // CodeRabbit on #194, fifth round: join and resolve differ for an absolute segment; a path that leaves the checkout and comes back
+    // into a directory of the same name is a different directory.
+    const joinAbsoluteFixture = "writeFileSync(path.join(repoRoot, '/tests', 'probe.ts'), 'probe');";
+    const resolveAbsoluteFixture = "writeFileSync(path.resolve(repoRoot, 'tests', '/scratch/probe.ts'), 'probe');";
+    const leavesCheckoutFixture = "writeFileSync(path.join(repoRoot, '..', 'tests', 'probe.ts'), 'probe');";
     const reassignedOutOfRepoFixture = "let probe = path.join(repoRoot, 'tests', 'a.ts'); probe = path.join(tempDir, 'b.ts'); writeFileSync(probe, 'x');";
     const safePattern = `
       const repoRoot = process.cwd();
@@ -231,6 +236,9 @@ describe('ESLint baseline gate', () => {
     expect(findUnsafeWrites(redeclaredFixture), 'a later declaration of the same name replaces the earlier one').toEqual([]);
     expect(findUnsafeWrites(reassignedIntoRepoFixture), 'a reassignment into the repo is seen').not.toEqual([]);
     expect(findUnsafeWrites(reassignedOutOfRepoFixture), 'a reassignment out of the repo is seen').toEqual([]);
+    expect(findUnsafeWrites(joinAbsoluteFixture), 'join glues a leading-slash segment on: still under tests').not.toEqual([]);
+    expect(findUnsafeWrites(resolveAbsoluteFixture), 'resolve restarts at an absolute segment: outside the checkout').toEqual([]);
+    expect(findUnsafeWrites(leavesCheckoutFixture), 'a path that leaves the checkout is not a write under its tests directory').toEqual([]);
     expect(findUnsafeWrites(safeCopy)).toEqual([]);
     expect(findUnsafeWrites(unsafeCopy)).not.toEqual([]);
     expect(findUnsafeWrites(originalUnsafePattern)).not.toEqual([]);
@@ -293,15 +301,20 @@ function unsafeRepoWrites(source: string): string[] {
       return /^\/(?:src|tests|scripts)\//.test(literal) || (node.templateSpans.length === 1 && /^\/(?:src|tests|scripts)$/.test(literal));
     }
     if (!ts.isCallExpression(node)) return false;
-    if (!/^(?:path\.)?(?:join|resolve)$/.test(node.expression.getText(file))) return false;
+    const operation = /^(?:path\.)?(join|resolve)$/.exec(node.expression.getText(file))?.[1];
+    if (!operation) return false;
     const [root, ...rest] = node.arguments;
     if (!root || !ts.isIdentifier(root) || root.text !== 'repoRoot') return false;
     const segments = staticSegments(rest);
     if (segments.length === 0) return false;
-    // The leading static segments, normalised: '.' and '..' do what they do, so the result's first directory decides.
-    const joined = path.posix.normalize(segments.join('/'));
-    if (joined.startsWith('/') || joined === '..' || joined.startsWith('../')) return false;
-    return REPO_DIRS.has(joined.split('/')[0] ?? '');
+    // Evaluate the leading static segments the way Node does, from a stand-in checkout root: `join` glues a leading-slash segment on,
+    // `resolve` restarts at an absolute one (CodeRabbit on #194, fifth round). The first directory of the path relative to the checkout
+    // decides. No separate containment test: a path that leaves the checkout comes out starting with '..', which is not one of REPO_DIRS
+    // (a mutation removing an explicit containment check changed no outcome).
+    const checkout = '/checkout';
+    const evaluated = operation === 'join' ? path.posix.join(checkout, ...segments) : path.posix.resolve(checkout, ...segments);
+    const relative = path.posix.relative(checkout, evaluated);
+    return REPO_DIRS.has(relative.split('/')[0] ?? '');
   };
   const out: string[] = [];
   const visit = (node: ts.Node): void => {
