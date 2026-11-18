@@ -149,6 +149,7 @@ export class StepAttemptRunner {
     let agentActed = false;
     const it = args.provider.observe(handle)[Symbol.asyncIterator]();
     const signal = args.cancelSignal;
+    let exhausted = false;
     try {
       while (true) {
         if (signal?.aborted || args.cancelled?.()) break;
@@ -170,7 +171,7 @@ export class StepAttemptRunner {
           void next.catch(() => undefined);
           break;
         }
-        if (result.done) break;
+        if (result.done) { exhausted = true; break; }
         const event = result.value;
         eventCount++;
         this.deps.emitRuntimeSessionEvent(event, buildStepAttemptEventPayload(args, handle, taskId, conversationId));
@@ -181,12 +182,13 @@ export class StepAttemptRunner {
         this.handleStepAttemptEvent(event, agentActed);
         if (args.cancelled?.()) break;
         if (event.kind === 'turn-done') {
-          void it.return?.().catch(() => undefined);
           break;
         }
       }
     } finally {
-      // Stream exited or cancelled
+      if (!exhausted) {
+        try { void it.return?.().catch(() => undefined); } catch { /* Preserve the loop's error. */ }
+      }
     }
     return { text, eventCount };
   }
