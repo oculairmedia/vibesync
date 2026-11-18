@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { spawnSync } from 'node:child_process';
+import ts from 'typescript';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -139,35 +140,11 @@ describe('ESLint baseline gate', () => {
     const testFiles = readdirSync(path.join(repoRoot, 'tests'), { recursive: true })
       .filter((file): file is string => typeof file === 'string' && file.endsWith('.test.ts'));
     const unsafeWrites: string[] = [];
-    const rootSrcPath = /(?:const|let|var)\s+(\w+)\s*=\s*path\.(?:join|resolve)\(\s*repoRoot\s*,\s*['"`](?:src|tests|scripts)(?:\/|['"`])/g;
-;
-    const findUnsafeWrites = (source: string): string[] => {
-      const rootSrcVariables = new Set<string>();
-      for (const match of source.matchAll(rootSrcPath)) {
-        if (match[1]) rootSrcVariables.add(match[1]);
-      }
-      return writeCallSites(source).flatMap((site) => {
-        // A copy or rename writes only to its destination: a copy FROM the repo into a temp dir is safe.
-        const args = site.destinationOnly ? destinationArgument(site.args) : site.args;
-        return /(?:repoRoot[\s\S]*?['"`](?:src|tests|scripts)(?:\/|['"`])|path\.(?:join|resolve)\(\s*repoRoot\s*,\s*['"`](?:src|tests|scripts)(?:\/|['"`]))/.test(args)
-          || [...rootSrcVariables].some((variable) => new RegExp(`\\b${variable}\\b`).test(args))
-          ? [site.text]
-          : [];
-      });
-    };
+    const findUnsafeWrites = (source: string): string[] => unsafeRepoWrites(source);
     for (const relativeFile of testFiles) {
       const filePath = path.join(repoRoot, 'tests', relativeFile);
       const source = readFileSync(filePath, 'utf8');
-      const withoutFixtureSource = source.replace(/const originalUnsafePattern = `[^`]*`;/, '')
-        .replace(/const safePattern = `[^`]*`;/, '')
-        .replace(/const safeCopy = `[^`]*`;/, '')
-        .replace(/const unsafeCopy = `[^`]*`;/, '')
-        .replace(/const semicolonFixture = `[^`]*`;/, '')
-        .replace(/const segmentFixture = `[^`]*`;/, '')
-        .replace(/const assignedSegmentsFixture = `[^`]*`;/, '')
-        .replace(/const regexFixture = `[^`]*`;/, '')
-        .replace(/const tempSegmentsFixture = `[^`]*`;/, '');
-      if (findUnsafeWrites(withoutFixtureSource).length > 0) {
+      if (findUnsafeWrites(source).length > 0) {
         unsafeWrites.push(path.relative(repoRoot, filePath));
       }
     }
@@ -205,6 +182,17 @@ describe('ESLint baseline gate', () => {
     const tempSegmentsFixture = `
       writeFileSync(path.join(temporaryDir, 'tests', 'probe.ts'), 'probe');
     `;
+    // CodeRabbit on #194 (third round): only the DESTINATION decides, not the content written; and a postfix ++ before a division
+    // slash must not be read as the start of a regex literal.
+    const contentMentionFixture = `
+      writeFileSync(path.join(tempDir, 'probe.txt'), "repoRoot 'tests/probe.ts'");
+    `;
+    const postfixFixture = `
+      writeFileSync(path.join(repoRoot, 'tests/probe.ts'), String(n++ / 2)); // ratio
+    `;
+    const BACKTICK = String.fromCharCode(96);
+    const templateFixture = "writeFileSync(" + BACKTICK + "${repoRoot}/scripts/probe.mjs" + BACKTICK + ", 'probe');";
+    const appendFixture = "appendFileSync(path.join(repoRoot, 'src', 'probe.ts'), 'probe');";
     const safePattern = `
       const repoRoot = process.cwd();
       const extraFile = path.join(tempDir, 'src/engine/runtime/probe.ts');
@@ -215,6 +203,10 @@ describe('ESLint baseline gate', () => {
     expect(findUnsafeWrites(assignedSegmentsFixture), 'an assigned repo path built from separate segments must be seen').not.toEqual([]);
     expect(findUnsafeWrites(regexFixture), 'an escaped bracket inside a regex literal must not hide the write').not.toEqual([]);
     expect(findUnsafeWrites(tempSegmentsFixture), 'the same segments under a temp dir are fine').toEqual([]);
+    expect(findUnsafeWrites(contentMentionFixture), 'text that merely mentions a repo path in the CONTENT is not a repo write').toEqual([]);
+    expect(findUnsafeWrites(postfixFixture), 'a postfix ++ before a division must not hide the write').not.toEqual([]);
+    expect(findUnsafeWrites(templateFixture), 'a template-literal repo path must be seen').not.toEqual([]);
+    expect(findUnsafeWrites(appendFixture), 'appendFileSync into the repo must be seen').not.toEqual([]);
     expect(findUnsafeWrites(safeCopy)).toEqual([]);
     expect(findUnsafeWrites(unsafeCopy)).not.toEqual([]);
     expect(findUnsafeWrites(originalUnsafePattern)).not.toEqual([]);
@@ -240,117 +232,45 @@ function writeBaselineCheckHelper(temporaryDir: string): string {
   return checkPath;
 }
 
-const WRITER_NAMES = ['writeFileSync', 'appendFileSync', 'mkdirSync', 'cpSync', 'copyFileSync', 'renameSync', 'writeFile', 'appendFile', 'mkdir', 'cp', 'copyFile', 'rename', 'createWriteStream'];
+const WRITER_NAMES = new Set(['writeFileSync', 'appendFileSync', 'mkdirSync', 'cpSync', 'copyFileSync', 'renameSync', 'writeFile', 'appendFile', 'mkdir', 'cp', 'copyFile', 'rename', 'createWriteStream']);
 const DESTINATION_ONLY = new Set(['cpSync', 'copyFileSync', 'renameSync', 'cp', 'copyFile', 'rename']);
-
-interface WriteCallSite {
-  readonly text: string;
-  readonly args: string;
-  readonly destinationOnly: boolean;
-}
+const REPO_DIRS = new Set(['src', 'tests', 'scripts']);
 
 /**
- * Every call of a file writer in `source`, with its argument text. The closing parenthesis is found by matching brackets and
- * skipping string literals and comments, so a ';' or ')' inside a string (a fixture's file content) cannot end the call early.
- * The first version used /\(([^;]*?)\);/ and never saw `writeFileSync(file, 'x: any = 1;\n')` (outside review of vibesync-eoo1).
- * Still a targeted check, not a proof: it looks for repo-rooted paths by spelling (see findUnsafeWrites).
+ * Source text of every file-writing call whose DESTINATION is a path under the repository's src, tests or scripts. Read with the
+ * TypeScript parser, so strings, templates, regex literals and comments are what they are (the hand-written scanner this
+ * replaces went wrong three times on them: a ';' in a string, an escaped bracket in a regex, `n++ / 2`; CodeRabbit on #194).
+ * A copy or rename is judged by its destination argument, every other writer by its first. A destination counts as a repo
+ * path when it is built from `repoRoot` with a first segment in REPO_DIRS (a literal like 'tests/x.ts' or separate segments),
+ * or is a variable assigned such a path. Still a targeted check, not a proof (it cannot follow every way of building a path).
  */
-function writeCallSites(source: string): WriteCallSite[] {
-  const sites: WriteCallSite[] = [];
-  const opener = new RegExp(`\\b(?:${WRITER_NAMES.join('|')})\\s*\\(`, 'g');
-  for (const match of source.matchAll(opener)) {
-    const start = match.index ?? 0;
-    const open = start + match[0].length - 1;
-    const close = matchingBracket(source, open);
-    if (close < 0) continue;
-    const name = match[0].replace(/\s*\($/, '');
-    sites.push({ text: source.slice(start, close + 1), args: source.slice(open + 1, close), destinationOnly: DESTINATION_ONLY.has(name) });
-  }
-  return sites;
-}
-
-/** Index of the bracket that closes the one at `open`, skipping strings, templates and comments; -1 when unbalanced. */
-function matchingBracket(source: string, open: number): number {
-  let depth = 0;
-  for (let i = open; i < source.length; i++) {
-    const c = source[i]!;
-    if (c === "'" || c === '"') i = skipQuoted(source, i, c);
-    else if (c === '`') i = skipTemplate(source, i);
-    else if (c === '/' && source[i + 1] === '/') {
-      const newline = source.indexOf('\n', i);
-      if (newline < 0) return -1;
-      i = newline;
-    } else if (c === '/' && source[i + 1] === '*') {
-      const end = source.indexOf('*/', i + 2);
-      if (end < 0) return -1;
-      i = end + 1;
-    } else if (c === '/' && regexAllowedAfter(source, i)) {
-      i = skipRegex(source, i);
-    } else if (c === '(' || c === '[' || c === '{') depth++;
-    else if (c === ')' || c === ']' || c === '}') {
-      depth--;
-      if (depth === 0) return i;
+function unsafeRepoWrites(source: string): string[] {
+  const file = ts.createSourceFile('guarded.ts', source, ts.ScriptTarget.Latest, true);
+  const repoVariables = new Set<string>();
+  const isRepoPath = (node: ts.Node | undefined): boolean => {
+    if (!node) return false;
+    if (ts.isIdentifier(node)) return repoVariables.has(node.text);
+    if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isNonNullExpression(node)) return isRepoPath(node.expression);
+    if (ts.isTemplateExpression(node)) return node.head.text === '' && node.templateSpans[0] !== undefined && ts.isIdentifier(node.templateSpans[0].expression) && node.templateSpans[0].expression.text === 'repoRoot' && /^\/(?:src|tests|scripts)(?:\/|$)/.test(node.templateSpans[0].literal.text);
+    if (!ts.isCallExpression(node)) return false;
+    const callee = node.expression.getText(file);
+    if (!/^(?:path\.)?(?:join|resolve)$/.test(callee)) return false;
+    const [root, first] = node.arguments;
+    if (!root || !ts.isIdentifier(root) || root.text !== 'repoRoot' || !first) return false;
+    return (ts.isStringLiteral(first) || ts.isNoSubstitutionTemplateLiteral(first)) && REPO_DIRS.has(first.text.split('/')[0] ?? '');
+  };
+  const out: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && isRepoPath(node.initializer)) repoVariables.add(node.name.text);
+    if (ts.isCallExpression(node)) {
+      const callee = ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : ts.isIdentifier(node.expression) ? node.expression.text : '';
+      if (WRITER_NAMES.has(callee)) {
+        const destination = DESTINATION_ONLY.has(callee) ? node.arguments[1] : node.arguments[0];
+        if (isRepoPath(destination)) out.push(node.getText(file));
+      }
     }
-  }
-  return -1;
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return out;
 }
-
-function skipQuoted(source: string, start: number, quote: string): number {
-  for (let i = start + 1; i < source.length; i++) {
-    if (source[i] === '\\') i++;
-    else if (source[i] === quote) return i;
-  }
-  return source.length;
-}
-
-function skipTemplate(source: string, start: number): number {
-  for (let i = start + 1; i < source.length; i++) {
-    const c = source[i];
-    if (c === '\\') i++;
-    else if (c === '`') return i;
-    else if (c === '$' && source[i + 1] === '{') {
-      const close = matchingBracket(source, i + 1);
-      if (close < 0) return source.length;
-      i = close;
-    }
-  }
-  return source.length;
-}
-
-/** The second top-level argument of a call's argument text (a copy's destination), or '' when there is none. */
-function destinationArgument(args: string): string {
-  let depth = 0;
-  for (let i = 0; i < args.length; i++) {
-    const c = args[i]!;
-    if (c === "'" || c === '"') i = skipQuoted(args, i, c);
-    else if (c === '`') i = skipTemplate(args, i);
-    else if (c === '(' || c === '[' || c === '{') depth++;
-    else if (c === ')' || c === ']' || c === '}') depth--;
-    else if (c === ',' && depth === 0) return args.slice(i + 1);
-  }
-  return '';
-}
-
-/** True when a '/' at `index` starts a regular expression literal (after an operator, an opening bracket or `return`), not a division. */
-function regexAllowedAfter(source: string, index: number): boolean {
-  let i = index - 1;
-  while (i >= 0 && /\s/.test(source[i]!)) i--;
-  if (i < 0) return true;
-  if ('(,=:[!&|?{};+-*%<>~^'.includes(source[i]!)) return true;
-  return /\breturn$/.test(source.slice(Math.max(0, i - 6), i + 1));
-}
-
-/** Index of the '/' closing the regex literal that starts at `start`; `start` itself when it is not one (so scanning goes on). */
-function skipRegex(source: string, start: number): number {
-  let inClass = false;
-  for (let i = start + 1; i < source.length; i++) {
-    const c = source[i];
-    if (c === '\\') i++;
-    else if (c === '[') inClass = true;
-    else if (c === ']') inClass = false;
-    else if (c === '/' && !inClass) return i;
-    else if (c === '\n') return start;
-  }
-  return start;
-}
-
