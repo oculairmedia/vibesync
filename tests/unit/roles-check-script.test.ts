@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,6 +27,16 @@ function fixture() {
   return { options, run };
 }
 describe('role persona check', () => {
+  it('uses the Bun SQLite driver for the CLI', () => {
+    const { options } = fixture();
+    const args = ['scripts/roles/check-role-agents.ts', '--project', options.project, '--pack', options.pack, '--agents-dir', options.agentsDir, '--registry-db', options.registryDb];
+    const synced = spawnSync('bun', args, { encoding: 'utf8' });
+    expect(synced.status, synced.stderr).toBe(0);
+    writeFileSync(join(options.agentsDir, `${Buffer.from('agent-one').toString('base64')}.json`), JSON.stringify({ system: 'drifted sentence' }));
+    const drift = spawnSync('bun', args, { encoding: 'utf8' });
+    expect(drift.status, drift.stderr).toBe(1);
+    expect(drift.stdout).toContain('drifted sentence');
+  });
   it('passes when all registered role personas match', () => { const { run } = fixture(); expect(run()).toMatchObject({ status: 0, text: expect.stringContaining('two agent-two: in sync') }); });
   it('reports the first differing lines from the store and persona', () => {
     const { options, run } = fixture();

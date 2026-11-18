@@ -1,12 +1,11 @@
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import Database from 'better-sqlite3';
 import { createNativeIrohConnection, resolveNativeIrohConfig } from '../../src/engine/runtime/iroh/native-dialer';
-import { agentId, parseOptions, persona, roleNames, storedSystem, type CheckOptions } from './check-role-agents';
+import { agentId, openRegistry, parseOptions, persona, roleNames, storedSystem, type CheckOptions } from './check-role-agents';
 
 export async function pushRoleAgent(role: string, options: CheckOptions, update: (id: string, system: string) => Promise<unknown>): Promise<void> {
   if (!roleNames(options.pack).includes(role)) throw new Error(`unknown role ${role}`);
-  const db = new Database(options.registryDb, { readonly: true, fileMustExist: true });
+  const db = openRegistry(options.registryDb);
   let id: string;
   try { id = agentId(db, options.project, role); } finally { db.close(); }
   const system = persona(options.pack, role);

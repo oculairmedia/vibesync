@@ -2,8 +2,16 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 import { parse } from 'smol-toml';
+
+const sqliteModuleName = (globalThis as Record<string, unknown>).Bun ? 'bun:sqlite' : 'better-sqlite3';
+const sqliteModule = await import(sqliteModuleName);
+const DatabaseConstructor = sqliteModule.default || sqliteModule.Database;
+
+export function openRegistry(path: string): Database.Database {
+  return new DatabaseConstructor(path, { readonly: true, fileMustExist: true });
+}
 
 export interface CheckOptions {
   project: string;
@@ -44,7 +52,7 @@ export function check(options: CheckOptions, output: (line: string) => void = co
   let db: Database.Database | undefined;
   let status = 0;
   try {
-    db = new Database(options.registryDb, { readonly: true, fileMustExist: true });
+    db = openRegistry(options.registryDb);
     for (const role of roleNames(options.pack)) {
       try {
         const id = agentId(db, options.project, role);
