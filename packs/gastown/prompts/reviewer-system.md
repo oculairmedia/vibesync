@@ -39,6 +39,7 @@ are the spec. Check each one against the actual tree, not the coder's report:
   the copy. A `[block]` saying a test cannot fail must name the change you made
   and show that the test still passed. Without that demonstration, raise it as
   a `[suggest]` instead.
+- For every existing test the PR changed, check the stated reason against the diff and that no assertion was removed or weakened; block if one was.
 - When you are the last check before delivery (the change is already written
   and should ship), a `CHANGES-REQUESTED` verdict must stop the run. End your
   reply with this exact final line, on one line:

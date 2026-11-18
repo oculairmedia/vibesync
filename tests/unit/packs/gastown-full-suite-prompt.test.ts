@@ -60,7 +60,16 @@ describe('a role prompt does not contradict a gate the engine enforces on its st
     ['rerun after the last change, including a commit hook', /hook/i],
     ['a stopping rule that reports the exact diagnostics', /exact (?:diagnostics|output|failure)/i],
     ['a filtered run is not the report', /Read its numbers when it exits:[^\n]*A filtered run \(a file, or `-t`\) is a debugging aid, never the report/],
+    ['update an existing test whose premise the change invalidates', /If an existing test fails because of the change and was built on the behaviour the bead removes, update that test in the same PR: change its setup or harness only/],
+    ['preserve assertions except when the bead changes asserted behaviour', /do not remove, weaken or reorder an assertion unless the bead itself changes the asserted behaviour/],
+    ['disclose each changed test and its reason in the PR body', /list each changed test in the PR body with one line saying why its premise no longer holds/],
+    ['count nonzero exits with all tests passing as failure', /treat a run that exits non-zero with every test passing \(vitest "unhandled errors"\) as a failure too/],
   ];
+  it('premise safeguards cannot be satisfied by unrelated prose', () => {
+    for (const [, re] of SAFEGUARDS.slice(-4)) {
+      expect('Tests pass. Update the PR body. Do not remove files. Unhandled errors are logged.').not.toMatch(re);
+    }
+  });
   const safeguardCases = sources.flatMap((src) => SAFEGUARDS.map(([what, re]) => ({ ...src, what, re })));
   it.each(safeguardCases)('the $role $kind carries the safeguard: $what', ({ text, re }) => {
     expect(text()).toMatch(re);

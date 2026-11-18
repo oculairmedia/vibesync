@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const prompt = (role: string) => readFileSync(join(process.cwd(), 'packs/gastown/prompts', `${role}-system.md`), 'utf8');
+const persona = (role: string) => readFileSync(join(process.cwd(), 'packs/gastown/.letta/agents', `${role}.md`), 'utf8');
 
 describe('gastown tester prompt', () => {
   const tester = prompt('tester');
@@ -39,6 +40,9 @@ describe('gastown tester prompt', () => {
 
 describe('gastown reviewer prompt', () => {
   const reviewer = prompt('reviewer');
+  it.each([['prompt', reviewer], ['persona', persona('reviewer')]])('%s checks each changed test reason and blocks weakened assertions', (_kind, text) => {
+    expect(text).toContain('For every existing test the PR changed, check the stated reason against the diff and that no assertion was removed or weakened; block if one was.');
+  });
   it('settles "this test cannot fail" by running a mutation, else downgrades to [suggest] (trial 2)', () => {
     expect(reviewer).toContain('Settle it by');
     expect(reviewer).toContain('running it, not by reasoning about it');
