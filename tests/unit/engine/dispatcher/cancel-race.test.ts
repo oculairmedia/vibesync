@@ -98,6 +98,7 @@ interface Harness {
 function harness(args: {
   readonly ending: Ending;
   readonly releaseOnStop?: boolean;
+  readonly stopNeverSettles?: boolean;
   readonly cancelUnwindMs?: number;
   readonly before?: (spec: SessionSpec, store: InMemoryDoltClient) => Promise<void>;
   readonly stepJudge?: StepReplyJudge;
@@ -108,7 +109,8 @@ function harness(args: {
   let release: () => void = () => {};
   const gate = new Promise<void>((resolve) => { release = resolve; });
   const base = newFakeProvider({ kind: 'fake-runtime', script: (spec) => turn(gate, args.ending, args.before ? () => args.before!(spec, store) : undefined) });
-  const provider: FakeProvider = args.releaseOnStop
+  // A silent turn is interrupted on cancel, so hold it open with a stop that never settles.
+  const provider: FakeProvider = args.stopNeverSettles ? { ...base, stop: () => new Promise<void>(() => undefined) } : args.releaseOnStop
     ? { ...base, stop: async (handle) => { await base.stop(handle); release(); await settle(); } }
     : base;
   const eventBus = new EventBus({ noPersist: true });
@@ -168,6 +170,8 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
     const h = harness({ ending });
     let moleculeId = '';
     const pending = h.dispatcher.run({ formula: formula(['worker'], retries), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    // Cancellation can settle the run before its later handler is attached.
+    pending.catch(() => undefined);
     const stepId = () => newMoleculeStepId(moleculeId, 'worker');
     await until(async () => moleculeId !== '' && (await h.store.getBead(stepId()))?.status === 'in_progress', 'worker in progress');
 
@@ -227,6 +231,8 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
     });
     let moleculeId = '';
     const pending = h.dispatcher.run({ formula: formula(['left', 'right'], 2), pack: pack(['left', 'right']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    // Cancellation can settle the run before its later handler is attached.
+    pending.catch(() => undefined);
     await until(() => h.provider.recorder.starts.length === 2, 'both turns started');
     const left = newMoleculeStepId(moleculeId, 'left');
     const right = newMoleculeStepId(moleculeId, 'right');
@@ -249,7 +255,7 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
   });
 
   it('a turn that never returns does not hold the cancel open: cancel() records the step itself after its wait', async () => {
-    const h = harness({ ending: 'reply', cancelUnwindMs: 150 }); // never released during the cancel
+    const h = harness({ ending: 'reply', cancelUnwindMs: 150, stopNeverSettles: true }); // never released during the cancel
     let moleculeId = '';
     const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
     pending.catch(() => undefined);
@@ -343,7 +349,7 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
   });
 
   it('a second cancel while the first is still running is refused, and the first completes', async () => {
-    const h = harness({ ending: 'reply', cancelUnwindMs: 300 });
+    const h = harness({ ending: 'reply', cancelUnwindMs: 300, stopNeverSettles: true });
     let moleculeId = '';
     const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
     pending.catch(() => undefined);
@@ -395,6 +401,8 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
     const h = harness({ ending: 'reply', stepJudge: { judge: async () => { judged++; return { answers: APPROVES, model: 'fake', inputTokens: 1 }; } } });
     let moleculeId = '';
     const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
+    // Cancellation can settle the run before its later handler is attached.
+    pending.catch(() => undefined);
     const stepId = () => newMoleculeStepId(moleculeId, 'worker');
     await until(async () => moleculeId !== '' && (await h.store.getBead(stepId()))?.status === 'in_progress', 'worker in progress');
 
@@ -670,7 +678,7 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
     // The read that would find the running step is made to come back empty, so cancel() stops no session; the
     // turn is released by the test, as its session would otherwise run to its end. cancel() must not refuse (a
     // live run is never refused for having nothing in_progress; outside review of PR #188), and the run must end.
-    const h = harness({ ending: 'reply', cancelUnwindMs: 200 });
+    const h = harness({ ending: 'reply', cancelUnwindMs: 200, stopNeverSettles: true });
     const findRunning = h.store.findRunningStepsForMolecule.bind(h.store);
     let moleculeId = '';
     let empty = true;
@@ -707,7 +715,7 @@ describe('cancel while a turn is in flight: one writer per step (vibesync-6zos.3
     // Review on PR #188, round 2: after a timed-out cancel, cancelInProgress is false but cancelled is true and a turn
     // is still out. A second cancel used to claim the run, be refused (nothing running), and clear `cancelled`
     // when it gave the run back, so the late turn wrote its result under the closed root.
-    const h = harness({ ending: 'reply', cancelUnwindMs: 150 });
+    const h = harness({ ending: 'reply', cancelUnwindMs: 150, stopNeverSettles: true });
     let moleculeId = '';
     const pending = h.dispatcher.run({ formula: formula(['worker']), pack: pack(['worker']), input: 'go', onStarted: (id) => { moleculeId = id; } });
     pending.catch(() => undefined);

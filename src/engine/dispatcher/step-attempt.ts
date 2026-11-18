@@ -147,16 +147,46 @@ export class StepAttemptRunner {
     let text = '';
     let eventCount = 0;
     let agentActed = false;
-    for await (const event of args.provider.observe(handle)) {
-      eventCount++;
-      this.deps.emitRuntimeSessionEvent(event, buildStepAttemptEventPayload(args, handle, taskId, conversationId));
-      if (event.kind === 'message-delta') {
-        text += event.text;
+    const it = args.provider.observe(handle)[Symbol.asyncIterator]();
+    const signal = args.cancelSignal;
+    try {
+      while (true) {
+        if (signal?.aborted || args.cancelled?.()) break;
+        let removeListener: (() => void) | undefined;
+        const cancelled = new Promise<null>((resolve) => {
+          if (signal?.aborted) { resolve(null); return; }
+          const onAbort = () => resolve(null);
+          signal?.addEventListener('abort', onAbort, { once: true });
+          removeListener = () => signal?.removeEventListener('abort', onAbort);
+        });
+        const next = it.next();
+        let result: IteratorResult<SessionEvent> | null;
+        try {
+          result = await Promise.race([next, cancelled]);
+        } finally {
+          removeListener?.();
+        }
+        if (result === null) {
+          void next.catch(() => undefined);
+          break;
+        }
+        if (result.done) break;
+        const event = result.value;
+        eventCount++;
+        this.deps.emitRuntimeSessionEvent(event, buildStepAttemptEventPayload(args, handle, taskId, conversationId));
+        if (event.kind === 'message-delta') {
+          text += event.text;
+        }
+        agentActed = didAgentAct(event, agentActed);
+        this.handleStepAttemptEvent(event, agentActed);
+        if (args.cancelled?.()) break;
+        if (event.kind === 'turn-done') {
+          void it.return?.().catch(() => undefined);
+          break;
+        }
       }
-      agentActed = didAgentAct(event, agentActed);
-      this.handleStepAttemptEvent(event, agentActed);
-      if (event.kind === 'turn-done') break;
-      if (args.cancelled?.()) break;
+    } finally {
+      // Stream exited or cancelled
     }
     return { text, eventCount };
   }

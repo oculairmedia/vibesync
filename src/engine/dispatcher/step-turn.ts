@@ -163,6 +163,7 @@ export class StepTurnRunner {
           : {}),
         ...(args.workdir !== undefined ? { workdir: args.workdir } : {}),
         cancelled: args.cancelled,
+        ...(args.cancelSignal ? { cancelSignal: args.cancelSignal } : {}),
       });
       return { output, failure: null };
     } catch (error) {
