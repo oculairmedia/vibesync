@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { spawnSync } from 'node:child_process';
 import ts from 'typescript';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -10,7 +10,7 @@ const repoRoot = process.cwd();
 
 describe('ESLint baseline gate', () => {
   it('allows an existing baselined violation', () => {
-    const temporaryDir = mkdtempSync(path.join(tmpdir(), 'vibesync-eslint-'));
+    const temporaryDir = makeTempDir('vibesync-eslint-');
     const existingFile = path.join(temporaryDir, 'tests/unit/eslint-baseline-existing.lint.ts');
     try {
       const baseline = JSON.parse(readFileSync(path.join(repoRoot, 'eslint-baseline.json'), 'utf8')) as Record<string, number>;
@@ -47,7 +47,7 @@ describe('ESLint baseline gate', () => {
   });
 
   it('rejects a new violation', () => {
-    const temporaryDir = mkdtempSync(path.join(tmpdir(), 'vibesync-eslint-'));
+    const temporaryDir = makeTempDir('vibesync-eslint-');
     const newFile = path.join(temporaryDir, 'tests/unit/eslint-baseline-new.lint.ts');
     try {
       const baseline = JSON.parse(readFileSync(path.join(repoRoot, 'eslint-baseline.json'), 'utf8')) as Record<string, number>;
@@ -72,7 +72,7 @@ describe('ESLint baseline gate', () => {
   });
 
   it('rejects a malformed file', () => {
-    const temporaryDir = mkdtempSync(path.join(tmpdir(), 'vibesync-eslint-'));
+    const temporaryDir = makeTempDir('vibesync-eslint-');
     const malformedFile = path.join(temporaryDir, 'tests/unit/eslint-baseline-malformed.lint.ts');
     try {
       const baseline = JSON.parse(readFileSync(path.join(repoRoot, 'eslint-baseline.json'), 'utf8')) as Record<string, number>;
@@ -97,7 +97,7 @@ describe('ESLint baseline gate', () => {
   });
 
   it('rejects an engine import from a higher layer', () => {
-    const temporaryDir = mkdtempSync(path.join(tmpdir(), 'vibesync-eslint-layer-'));
+    const temporaryDir = makeTempDir('vibesync-eslint-layer-');
     const extraFile = path.join(temporaryDir, 'src/engine/runtime/layer-regression.lint.ts');
     try {
       symlinkSync(path.join(repoRoot, 'node_modules'), path.join(temporaryDir, 'node_modules'), 'dir');
@@ -133,6 +133,17 @@ describe('ESLint baseline gate', () => {
       expect(JSON.parse(sameLayer.stdout)[0].messages).toEqual([]);
     } finally {
       rmSync(temporaryDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to build its private tree inside the checkout (CodeRabbit, outside the diff)', () => {
+    const saved = process.env['TMPDIR'];
+    process.env['TMPDIR'] = path.join(repoRoot, 'tests');
+    try {
+      expect(() => makeTempDir('vibesync-eslint-')).toThrow(/inside the checkout/);
+    } finally {
+      if (saved === undefined) delete process.env['TMPDIR'];
+      else process.env['TMPDIR'] = saved;
     }
   });
 
@@ -193,6 +204,13 @@ describe('ESLint baseline gate', () => {
     const BACKTICK = String.fromCharCode(96);
     const templateFixture = "writeFileSync(" + BACKTICK + "${repoRoot}/scripts/probe.mjs" + BACKTICK + ", 'probe');";
     const appendFixture = "appendFileSync(path.join(repoRoot, 'src', 'probe.ts'), 'probe');";
+    // CodeRabbit on #194, fourth round: template boundary, normalised segments, variables in source order, reassignment.
+    const templateBoundaryFixture = "writeFileSync(" + BACKTICK + "${repoRoot}/tests${'-fixtures'}/probe.ts" + BACKTICK + ", 'probe');";
+    const dotSegmentFixture = "writeFileSync(path.join(repoRoot, '.', 'tests', 'probe.ts'), 'probe');";
+    const dotDotFixture = "writeFileSync(path.join(repoRoot, 'tests', '..', 'scratch', 'probe.ts'), 'probe');";
+    const redeclaredFixture = "{ const probe = path.join(repoRoot, 'tests', 'a.ts'); readFileSync(probe); } { const probe = path.join(tempDir, 'b.ts'); writeFileSync(probe, 'x'); }";
+    const reassignedIntoRepoFixture = "let probe = path.join(tempDir, 'a.ts'); probe = path.join(repoRoot, 'tests', 'b.ts'); writeFileSync(probe, 'x');";
+    const reassignedOutOfRepoFixture = "let probe = path.join(repoRoot, 'tests', 'a.ts'); probe = path.join(tempDir, 'b.ts'); writeFileSync(probe, 'x');";
     const safePattern = `
       const repoRoot = process.cwd();
       const extraFile = path.join(tempDir, 'src/engine/runtime/probe.ts');
@@ -207,6 +225,12 @@ describe('ESLint baseline gate', () => {
     expect(findUnsafeWrites(postfixFixture), 'a postfix ++ before a division must not hide the write').not.toEqual([]);
     expect(findUnsafeWrites(templateFixture), 'a template-literal repo path must be seen').not.toEqual([]);
     expect(findUnsafeWrites(appendFixture), 'appendFileSync into the repo must be seen').not.toEqual([]);
+    expect(findUnsafeWrites(templateBoundaryFixture), 'tests followed by more template text is another directory').toEqual([]);
+    expect(findUnsafeWrites(dotSegmentFixture), 'a "." segment does not hide the write').not.toEqual([]);
+    expect(findUnsafeWrites(dotDotFixture), 'a path that leaves tests with ".." is not a write under tests').toEqual([]);
+    expect(findUnsafeWrites(redeclaredFixture), 'a later declaration of the same name replaces the earlier one').toEqual([]);
+    expect(findUnsafeWrites(reassignedIntoRepoFixture), 'a reassignment into the repo is seen').not.toEqual([]);
+    expect(findUnsafeWrites(reassignedOutOfRepoFixture), 'a reassignment out of the repo is seen').toEqual([]);
     expect(findUnsafeWrites(safeCopy)).toEqual([]);
     expect(findUnsafeWrites(unsafeCopy)).not.toEqual([]);
     expect(findUnsafeWrites(originalUnsafePattern)).not.toEqual([]);
@@ -242,26 +266,47 @@ const REPO_DIRS = new Set(['src', 'tests', 'scripts']);
  * replaces went wrong three times on them: a ';' in a string, an escaped bracket in a regex, `n++ / 2`; CodeRabbit on #194).
  * A copy or rename is judged by its destination argument, every other writer by its first. A destination counts as a repo
  * path when it is built from `repoRoot` with a first segment in REPO_DIRS (a literal like 'tests/x.ts' or separate segments),
- * or is a variable assigned such a path. Still a targeted check, not a proof (it cannot follow every way of building a path).
+ * or is a variable assigned such a path. Still a targeted check, not a proof: it cannot follow every way of building a path, and follows variables in source order, not by scope.
  */
 function unsafeRepoWrites(source: string): string[] {
   const file = ts.createSourceFile('guarded.ts', source, ts.ScriptTarget.Latest, true);
-  const repoVariables = new Set<string>();
+  // Followed in SOURCE ORDER, not by scope: a declaration or an assignment sets the name's current state, so a later temp-rooted
+  // `probe` replaces an earlier repo-rooted one and a reassignment is honoured (CodeRabbit on #194, fourth round).
+  const repoVariables = new Map<string, boolean>();
+  const staticSegments = (args: readonly ts.Expression[]): string[] => {
+    const out: string[] = [];
+    for (const arg of args) {
+      if (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) out.push(arg.text);
+      else break;
+    }
+    return out;
+  };
   const isRepoPath = (node: ts.Node | undefined): boolean => {
     if (!node) return false;
-    if (ts.isIdentifier(node)) return repoVariables.has(node.text);
+    if (ts.isIdentifier(node)) return repoVariables.get(node.text) === true;
     if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isNonNullExpression(node)) return isRepoPath(node.expression);
-    if (ts.isTemplateExpression(node)) return node.head.text === '' && node.templateSpans[0] !== undefined && ts.isIdentifier(node.templateSpans[0].expression) && node.templateSpans[0].expression.text === 'repoRoot' && /^\/(?:src|tests|scripts)(?:\/|$)/.test(node.templateSpans[0].literal.text);
+    if (ts.isTemplateExpression(node)) {
+      const [span] = node.templateSpans;
+      if (node.head.text !== '' || !span || !ts.isIdentifier(span.expression) || span.expression.text !== 'repoRoot') return false;
+      const literal = span.literal.text;
+      // The directory name must end at a slash, or at the end of the whole template: more text after an interpolation continues it.
+      return /^\/(?:src|tests|scripts)\//.test(literal) || (node.templateSpans.length === 1 && /^\/(?:src|tests|scripts)$/.test(literal));
+    }
     if (!ts.isCallExpression(node)) return false;
-    const callee = node.expression.getText(file);
-    if (!/^(?:path\.)?(?:join|resolve)$/.test(callee)) return false;
-    const [root, first] = node.arguments;
-    if (!root || !ts.isIdentifier(root) || root.text !== 'repoRoot' || !first) return false;
-    return (ts.isStringLiteral(first) || ts.isNoSubstitutionTemplateLiteral(first)) && REPO_DIRS.has(first.text.split('/')[0] ?? '');
+    if (!/^(?:path\.)?(?:join|resolve)$/.test(node.expression.getText(file))) return false;
+    const [root, ...rest] = node.arguments;
+    if (!root || !ts.isIdentifier(root) || root.text !== 'repoRoot') return false;
+    const segments = staticSegments(rest);
+    if (segments.length === 0) return false;
+    // The leading static segments, normalised: '.' and '..' do what they do, so the result's first directory decides.
+    const joined = path.posix.normalize(segments.join('/'));
+    if (joined.startsWith('/') || joined === '..' || joined.startsWith('../')) return false;
+    return REPO_DIRS.has(joined.split('/')[0] ?? '');
   };
   const out: string[] = [];
   const visit = (node: ts.Node): void => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && isRepoPath(node.initializer)) repoVariables.add(node.name.text);
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) repoVariables.set(node.name.text, isRepoPath(node.initializer));
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left)) repoVariables.set(node.left.text, isRepoPath(node.right));
     if (ts.isCallExpression(node)) {
       const callee = ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : ts.isIdentifier(node.expression) ? node.expression.text : '';
       if (WRITER_NAMES.has(callee)) {
@@ -273,4 +318,14 @@ function unsafeRepoWrites(source: string): string[] {
   };
   visit(file);
   return out;
+}
+
+/** A private scratch directory that is NOT inside the checkout: a concurrent `npm run lint` scans the checkout and would see it. */
+function makeTempDir(prefix: string): string {
+  const parent = realpathSync(tmpdir());
+  const root = realpathSync(repoRoot);
+  if (parent === root || parent.startsWith(`${root}/`)) {
+    throw new Error(`the temp dir ${parent} is inside the checkout ${root}: a concurrent lint would scan the scratch files`);
+  }
+  return mkdtempSync(path.join(parent, prefix));
 }
