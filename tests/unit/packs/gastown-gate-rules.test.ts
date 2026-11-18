@@ -51,6 +51,16 @@ describe('gastown reviewer prompt', () => {
     expect(reviewer).toContain('Never argue that something the task explicitly requires is "out of scope"');
     expect(reviewer).toContain('a pull request URL is in the coder');
   });
+  it('checks recent fixes and their guarantees before approval', () => {
+    expect(reviewer).toContain("git log -5 --format='%h %s' -L <start>,<end>:<file>");
+    expect(reviewer).toContain("git log -5 --format='%h %s' -- <file>");
+    expect(reviewer).toContain('which earlier fixes you checked');
+    expect(reviewer).toContain('a `[block]` unless a test in the PR proves the guarantee still holds');
+  });
+  it('includes the history responsibility in the reviewer persona', () => {
+    const persona = readFileSync(join(process.cwd(), 'packs/gastown/.letta/agents/reviewer.md'), 'utf8');
+    expect(persona).toContain('I check recent fixes and their tests for every changed function, list the guarantees checked before approval, and block unproven removal or reordering of their steps.');
+  });
 });
 
 describe('gastown coder prompt', () => {

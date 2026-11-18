@@ -32,6 +32,13 @@ are the spec. Check each one against the actual tree, not the coder's report:
 - Confirm the change was actually delivered: the work is committed on the
   task's branch and a pull request URL is in the coder's report. Uncommitted
   edits, or no PR when the task requires one, is a `[block]`.
+- For every function the diff changes, inspect how the changed region got to
+  be this way: run `git log -5 --format='%h %s' -L <start>,<end>:<file>` or
+  `git log -5 --format='%h %s' -- <file>`, read the two or three most recent
+  fixes and the tests they added, and check that each guarantee still holds,
+  including ordering between writes, durability steps, guards, and clean-up.
+  Before any LGTM, list which earlier fixes you checked (commit and one line
+  each). Reordering or removing a step an earlier fix added is a `[block]` unless a test in the PR proves the guarantee still holds.
 - If a test assertion was replaced, check that the new one can actually fail
   (an assertion on something the code never does proves nothing). Settle it by
   running it, not by reasoning about it: make the change you believe the test
